@@ -1,10 +1,10 @@
 # FlowMap Trade Terminal
 
-[![CI](https://github.com/nazmiefearmutcu/flowmap/actions/workflows/ci.yml/badge.svg)](https://github.com/nazmiefearmutcu/flowmap/actions/workflows/ci.yml)
+[![CI](https://github.com/nazmiefearmutcu/flowmap-trade-terminal/actions/workflows/ci.yml/badge.svg)](https://github.com/nazmiefearmutcu/flowmap-trade-terminal/actions/workflows/ci.yml)
 
 FlowMap Trade Terminal is a desktop application for studying liquidity and order flow in crypto and US equities. It combines a live depth heatmap, a depth-of-market ladder, time and sales, and recorded-session replay. It reads market data and supports visual analysis; it does not place orders or hold funds.
 
-[Download releases](https://github.com/nazmiefearmutcu/flowmap/releases/latest) · [User guide](docs/user-guide.md) · [Architecture](docs/architecture.md)
+[Download releases](https://github.com/nazmiefearmutcu/flowmap-trade-terminal/releases/latest) · [User guide](docs/user-guide.md) · [Architecture](docs/architecture.md)
 
 ## What it does
 
@@ -60,8 +60,8 @@ The service binds to loopback. It is intended for local use and has no user auth
 Use Python 3.13+, [uv](https://docs.astral.sh/uv/), and Node.js 22.13+ or 24 with npm. Packaged releases bundle their runtime and do not need a source setup.
 
 ```bash
-git clone https://github.com/nazmiefearmutcu/flowmap.git
-cd flowmap
+git clone https://github.com/nazmiefearmutcu/flowmap-trade-terminal.git
+cd flowmap-trade-terminal
 ```
 
 Start the service in one terminal:
