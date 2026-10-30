@@ -134,4 +134,4 @@ Estimated minimum requirements. See [benchmark notes](docs/windows-minimum-bench
 | Storage | 2 GB free space, plus recordings |
 | Display | 900 × 600 |
 
-Created By Nazmi Efe Armutcu (Aylin)
+Created By Aylin (Nazmi Efe Armutcu)
