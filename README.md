@@ -23,6 +23,10 @@ FlowMap Trade Terminal is a desktop application for studying liquidity and order
 
 ![Wide SANDUSDT heatmap covering sixteen hours of recorded market data](docs/media/ultra-wide-16-hours.png)
 
+### Live price tracking
+
+![Animated BTCUSDT heatmap showing live price tracking alongside the order book and trade tape](docs/media/live-price-tracking.gif)
+
 ## Market data and its limits
 
 | Feed | Available data | Important distinction |
