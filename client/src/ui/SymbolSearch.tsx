@@ -38,7 +38,8 @@
  *
  * The parts live beside this file: data hooks in SymbolSearchHooks.ts, pure
  * helpers in SymbolSearchModel.ts, rows in SymbolSearchRows.tsx, the result list
- * in SymbolSearchResults.tsx and the preview in SymbolSearchPreview.tsx.
+ * in SymbolSearchResults.tsx, the preview in SymbolSearchPreview.tsx and the open
+ * dialog, with its scope bar, in SymbolSearchPalette.tsx.
  */
 
 import {
@@ -51,26 +52,17 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useT } from '../i18n/useT';
 import { formatNumber } from '../i18n/format';
 import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 
-import {
-  ALL_VENUES,
-  capabilityChipClass,
-  capabilityChipTitle,
-  fuzzyRank,
-  rankVenueOptions,
-  venueOptions,
-  type VenueOption,
-} from './symbols';
+import { ALL_VENUES, fuzzyRank, rankVenueOptions, venueOptions, type VenueOption } from './symbols';
 import { loadRecents, pushRecent, type RecentPick } from './recents';
+import { safeLocalStorage } from '../state/safeStorage';
 import { pushOverlay } from './overlayStack';
 import { useMoversWarmup, usePreviewQuotes, usePreviewWarmup, useScopeListing, useUniverse, useVenueCatalog, useWarmSymbols } from './SymbolSearchHooks';
-import { searchChord, trapFocusKeyDown, venueText, type Row } from './SymbolSearchModel';
-import { PreviewPane } from './SymbolSearchPreview';
-import { SymbolSearchResults } from './SymbolSearchResults';
+import { searchChord, venueText, type Row } from './SymbolSearchModel';
+import { SymbolSearchPalette } from './SymbolSearchPalette';
 
 export interface SymbolSearchHandle {
   /** Open the palette (bound to the `/` and ⌘K/Ctrl-K global shortcuts). */
@@ -101,9 +93,7 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
     // Recent picks (localStorage, max 5, most recent first) — shown as their own
     // section above the directory when the query is empty. Read once at mount; a
     // pick rewrites both the persisted list and this state.
-    const [recents, setRecents] = useState<RecentPick[]>(() =>
-      loadRecents(typeof window !== 'undefined' ? window.localStorage : null),
-    );
+    const [recents, setRecents] = useState<RecentPick[]>(() => loadRecents(safeLocalStorage()));
     const universe = useUniverse(open);
     useWarmSymbols(current, recents, universe, previewQuotes);
     // Venue scope: `all` = the bundled directory (instant), else a market string
@@ -245,7 +235,7 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
         // so the next empty-query open surfaces it above the directory.
         setRecents(
           pushRecent(
-            typeof window !== 'undefined' ? window.localStorage : null,
+            safeLocalStorage(),
             row.entry.market,
             row.entry.symbol,
             recents,
@@ -269,6 +259,13 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
       setPickingVenue(false);
       setQuery('');
       setActive(0);
+      inputRef.current?.focus();
+    }, []);
+
+    /** Open or close the venue list, keeping the input focused. */
+    const togglePicker = useCallback(() => {
+      setPickingVenue((v) => !v);
+      setQuery('');
       inputRef.current?.focus();
     }, []);
 
@@ -367,7 +364,7 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
           aria-label={t('search.openAria')}
           title={singleKeys
             ? t('search.openTitle', { chord: searchChord() })
-            : t('search.openTitleChord', { chord: searchChord() })}
+            : t('search.openTitleNoSlash', { chord: searchChord() })}
         >
           <span className="symsearch__icon" aria-hidden="true">
             ⌕
@@ -378,115 +375,39 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
           </span>
         </button>
 
-        {open &&
-          createPortal(
-            <div
-              className="sympal__backdrop"
-              data-testid="symbol-search-backdrop"
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget) close();
-              }}
-            >
-              <div
-                className="sympal"
-                role="dialog"
-                aria-modal="true"
-                aria-label={t('search.dialogAria')}
-                onKeyDown={trapFocusKeyDown}
-              >
-                <div className="sympal__head">
-                  <span className="sympal__icon" aria-hidden="true">
-                    ⌕
-                  </span>
-                  <input
-                    ref={inputRef}
-                    className="sympal__input"
-                    type="text"
-                    spellCheck={false}
-                    autoComplete="off"
-                    data-testid="symbol-search-input"
-                    placeholder={placeholder}
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={onKeyDown}
-                    role="combobox"
-                    aria-autocomplete="list"
-                    aria-expanded
-                    aria-controls="sympal-listbox"
-                    aria-activedescendant={count ? `sympal-opt-${active}` : undefined}
-                    aria-label={t('search.inputAria')}
-                  />
-                  <button type="button" className="sympal__esc" onClick={close} aria-label={t('search.closeAria')}>
-                    esc
-                  </button>
-                </div>
-
-                <div className="sympal__scope">
-                  <button
-                    type="button"
-                    className={`sympal__venuebtn${pickingVenue ? ' is-on' : ''}`}
-                    data-testid="venue-picker-toggle"
-                    aria-expanded={pickingVenue}
-                    onClick={() => {
-                      setPickingVenue((v) => !v);
-                      setQuery('');
-                      inputRef.current?.focus();
-                    }}
-                  >
-                    <span className="sympal__venuebtn-k">{t('search.venueLabel')}</span>
-                    <span className="sympal__venuebtn-v" data-testid="venue-scope">
-                      {scopeLabel}
-                    </span>
-                    <span className="sympal__venuebtn-c" aria-hidden="true">
-                      ▾
-                    </span>
-                  </button>
-                  {scopeDepth ? (
-                    <span className={capabilityChipClass(scopeDepth)} title={capabilityChipTitle(scopeDepth, t)}>
-                      {scopeDepth}
-                    </span>
-                  ) : null}
-                  <span className="sympal__scopenote">{scopeNote}</span>
-                </div>
-
-                <div className="sympal__body">
-                  <SymbolSearchResults
-                    listRef={listRef}
-                    pickingVenue={pickingVenue}
-                    venuesLoaded={venues !== null}
-                    venueRows={venueRows}
-                    venueTotal={allVenues.length}
-                    rows={rows}
-                    recentCount={recentCount}
-                    scope={scope}
-                    scopeState={scopeState}
-                    scopeRowCount={scopeRows?.length ?? 0}
-                    query={query}
-                    active={active}
-                    onHover={setActive}
-                    onChooseVenue={chooseVenue}
-                    onCommit={commit}
-                    onRetry={retryScope}
-                  />
-                  <PreviewPane
-                    pickingVenue={pickingVenue}
-                    activeVenue={activeVenue}
-                    activeRow={activeRow}
-                    shown={shownPreview}
-                    scope={scope}
-                  />
-                </div>
-
-                <div className="sympal__foot">
-                  <span><kbd>↑↓</kbd> {t('search.hintNavigate')}</span>
-                  <span><kbd>Home/End</kbd> {t('search.hintEdges')}</span>
-                  <span><kbd>↵</kbd> {t('search.hintSelect')}</span>
-                  <span><kbd>esc</kbd> {pickingVenue ? t('search.hintBack') : t('search.hintClose')}</span>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )}
+        {open && (
+          <SymbolSearchPalette
+            query={query}
+            onQueryChange={setQuery}
+            onInputKeyDown={onKeyDown}
+            inputRef={inputRef}
+            listRef={listRef}
+            placeholder={placeholder}
+            count={count}
+            active={active}
+            onHover={setActive}
+            onClose={close}
+            pickingVenue={pickingVenue}
+            onTogglePicker={togglePicker}
+            scope={scope}
+            scopeLabel={scopeLabel}
+            scopeDepth={scopeDepth}
+            scopeNote={scopeNote}
+            venuesLoaded={venues !== null}
+            venueRows={venueRows}
+            venueTotal={allVenues.length}
+            onChooseVenue={chooseVenue}
+            rows={rows}
+            recentCount={recentCount}
+            scopeState={scopeState}
+            scopeRowCount={scopeRows?.length ?? 0}
+            onCommit={commit}
+            onRetry={retryScope}
+            activeVenue={activeVenue}
+            activeRow={activeRow}
+            shownPreview={shownPreview}
+          />
+        )}
       </>
     );
   },

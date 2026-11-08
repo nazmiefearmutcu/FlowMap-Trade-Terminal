@@ -273,6 +273,8 @@ export function PriceAlerts({ rendererRef, soundEnabled, containerRef }: PriceAl
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // A held key auto-repeats: one press is one alert, never a burst of them.
+      if (e.repeat) return;
       const action = routeGlobalKey(e.key, classifyTarget(e.target));
       if (action?.type !== 'create-alert') return;
       if (key === null) return;
@@ -284,8 +286,9 @@ export function PriceAlerts({ rendererRef, soundEnabled, containerRef }: PriceAl
         return;
       }
       // Only a probe from the live pointer position counts (see lastProbe.ts).
+      // A probe read on another market:symbol is no price for this chart.
       const spot = lastProbeSpot();
-      if (spot === null || spot.price === null) {
+      if (spot === null || spot.price === null || spot.key !== key) {
         notify(t('alerts.pressAHint'));
         return;
       }

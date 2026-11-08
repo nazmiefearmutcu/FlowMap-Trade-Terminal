@@ -58,19 +58,40 @@ function utc(ns: bigint | null): string {
 }
 
 /**
- * Why a recording request failed, as a category the picker can localize. The
- * server's own detail text is English internals and is never shown.
+ * Why a recording request failed, as a category the picker can localize. `code` is
+ * the server's `error.code` (for example `recording_store_missing`), when it sent one.
+ * The server's own detail text is English internals and is never shown.
  */
 export class ReplayRequestError extends Error {
-  constructor(readonly kind: 'network' | 'http' | 'invalid', readonly status: number) {
-    super(`replay request ${kind} ${status}`);
+  constructor(
+    readonly kind: 'network' | 'http' | 'invalid',
+    readonly status: number,
+    readonly code: string | null = null,
+  ) {
+    super(`replay request ${kind} ${status}${code === null ? '' : ` ${code}`}`);
   }
 }
 
-/** The translation key that explains a failed recording request. */
+/** The `error.code` of the server's `{"error": {"code", "message"}}` envelope, or null. */
+function errorCodeOf(data: unknown): string | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const error: unknown = (data as { error?: unknown }).error;
+  if (typeof error !== 'object' || error === null) return null;
+  const code: unknown = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : null;
+}
+
+/**
+ * The translation key that explains a failed recording request. A server code names
+ * the cause, so a 404 from a missing route (`not_found`) is not mistaken for a
+ * recording store that is switched off. The status decides only when no code came back.
+ */
 function replayErrorKey(e: unknown): { key: string; status?: number } {
   if (!(e instanceof ReplayRequestError) || e.kind === 'network') return { key: 'replayPicker.errorUnreachable' };
   if (e.kind === 'invalid') return { key: 'replayPicker.errorResponse' };
+  if (e.code === 'recording_store_missing') return { key: 'replayPicker.errorRecordingOff' };
+  if (e.code === 'replay_unavailable' || e.code === 'invalid_window') return { key: 'replayPicker.errorRejected' };
+  if (e.code !== null) return { key: 'replayPicker.errorHttp', status: e.status };
   if (e.status === 404) return { key: 'replayPicker.errorRecordingOff' };
   if (e.status === 422) return { key: 'replayPicker.errorRejected' };
   return { key: 'replayPicker.errorHttp', status: e.status };
@@ -98,7 +119,7 @@ async function readJson<T>(path: string, signal: AbortSignal): Promise<T> {
   }
   // A non-JSON error body (an HTML 500 page, an empty body, a proxy page) means no
   // engine answered, so it reads as unreachable rather than as an HTTP detail.
-  if (!response.ok) throw new ReplayRequestError(data === undefined ? 'network' : 'http', response.status);
+  if (!response.ok) throw new ReplayRequestError(data === undefined ? 'network' : 'http', response.status, errorCodeOf(data));
   if (data === undefined || data === null || typeof data !== 'object') {
     throw new ReplayRequestError('invalid', response.status);
   }

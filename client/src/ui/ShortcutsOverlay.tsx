@@ -11,7 +11,8 @@ import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 import { isTopOverlay, pushOverlay } from './overlayStack';
-import { isHelpToggle, keysheetRows } from './keysheet';
+import { isHelpToggle } from './keysheet';
+import { KeysheetRows } from './keysheetList';
 import { classifyTarget } from '../input/keys';
 import { isSingleKeyShortcutsEnabled, useSingleKeyShortcuts } from '../input/shortcutPrefs';
 import { useT } from '../i18n/useT';
@@ -22,8 +23,8 @@ interface ShortcutsOverlayProps {
 
 export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Element {
   const t = useT(); // i18n shell pass
-  // The footer names the `?` toggle only while single-key shortcuts are on, and
-  // the sheet lists only the bindings that currently work.
+  // The footer names the `?` toggle only while single-key shortcuts are on. The
+  // sheet keeps every binding and marks the bare-key rows off while the switch is off.
   const singleKeys = useSingleKeyShortcuts();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -117,12 +118,7 @@ export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Elemen
           </button>
         </header>
         <div className="keysheet keyshelp__sheet" data-testid="shortcuts-list">
-          {keysheetRows(singleKeys).map((entry) => (
-            <div key={entry.keys} className="keysheet__row">
-              <kbd className="keysheet__keys">{entry.keys}</kbd>
-              <span className="keysheet__action">{t(entry.actionKey)}</span>
-            </div>
-          ))}
+          <KeysheetRows singleKeys={singleKeys} />
         </div>
         <div className="keyshelp__foot">
           <span>
@@ -135,7 +131,7 @@ export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Elemen
           </span>
         </div>
         <div className="keyshelp__foot" data-testid="shortcuts-single-key-note">
-          <span>{singleKeys ? t('shortcuts.singleKeysHint') : t('shortcuts.singleKeysOff')}</span>
+          <span>{singleKeys ? t('shortcuts.singleKeysHint') : t('shortcuts.singleKeysOffHint')}</span>
         </div>
       </div>
     </div>,

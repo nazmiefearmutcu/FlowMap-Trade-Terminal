@@ -222,6 +222,21 @@ describe('IntelligenceDrawer', () => {
     expect(container.querySelector('[data-testid="intel-demo-label"]')).toBeNull();
   });
 
+  it('localizes the macro stress regime word in Turkish', () => {
+    const store = useIntelligenceStore.getState();
+    store.setActiveTab('FLOW');
+    store.ingestMacro({ type: MsgType.MACRO_STRESS, ts_ns: 1n, sofr: 5.32, hy_spread: 3.42, yield_10y2y: -0.18, stress_score: 0.4, status: 'ELEVATED' });
+    setLocale('tr');
+    try {
+      const { container } = render(<IntelligenceDrawer activeSymbol="NVDA" onClose={vi.fn()} />);
+      const badge = container.querySelector('.macro-regime-badge')?.textContent ?? '';
+      expect(badge).toContain('YÜKSEK STRES (SEZGİSEL)');
+      expect(badge).not.toContain('ELEVATED');
+    } finally {
+      setLocale('en');
+    }
+  });
+
   it('prints macro rates with the Turkish decimal comma and the bp unit', () => {
     const store = useIntelligenceStore.getState();
     store.setActiveTab('FLOW');

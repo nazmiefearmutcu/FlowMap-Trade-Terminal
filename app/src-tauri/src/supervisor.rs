@@ -13,7 +13,7 @@ use crate::dialog_text::{text, Key};
 use crate::listener;
 use crate::sidecar::{
     check_child, child_recording, health_ok, kill_sidecar, spawn_sidecar, stop_child, ChildCheck,
-    Launch, ManagedChild, SidecarState, GRACEFUL_STOP,
+    Launch, ManagedChild, SidecarState, GRACEFUL_STOP, RESTART_STOP,
 };
 use crate::{alert, is_shutting_down, lock_or_recover, shell_log};
 
@@ -64,6 +64,8 @@ impl SupervisorCommand {
 /// budget of the restart in progress. An `ApplySettings` restarts only a sidecar that
 /// was spawned with the other recording switch. A sidecar spawned after the change
 /// already reads the new value, and a queued duplicate then finds nothing to change.
+/// The queue is not drained after a respawn: a switch flipped while the spawn still waited
+/// for its port may be missing from the child, so the command must still be judged.
 fn command_restarts(
     command: SupervisorCommand,
     phase: Phase,
@@ -222,9 +224,22 @@ fn confirm_port_owner(
     match listener::wait_until_owned(&mut child, port, timeout) {
         Ok(()) => Ok(child),
         Err(err) => {
-            stop_child(&mut child, GRACEFUL_STOP);
+            // The child never listened, so it has no recorder to flush.
+            stop_child(&mut child, RESTART_STOP);
             Err(err)
         }
+    }
+}
+
+/// How long stopping the old sidecar waits before the kill. A restart the user asked for
+/// (Retry, or a Settings change that needs a new sidecar) ends the recorder the way a
+/// quit does, so it gets the full flush budget. An automatic restart of a sidecar that
+/// crashed or stopped answering does not wait it out.
+fn stop_grace(user_requested: bool) -> Duration {
+    if user_requested {
+        GRACEFUL_STOP
+    } else {
+        RESTART_STOP
     }
 }
 
@@ -372,7 +387,9 @@ pub(crate) fn spawn_supervisor(
                 continue;
             };
 
-            kill_sidecar(&state);
+            // `retry` is true for any command from the window (Retry or a Settings change),
+            // and each of those is a user request.
+            kill_sidecar(&state, stop_grace(retry));
             if is_shutting_down(&app) {
                 return;
             }
@@ -481,6 +498,12 @@ mod tests {
             "a child that does not own the port must not be used"
         );
         drop(holder);
+    }
+
+    #[test]
+    fn a_user_restart_flushes_like_a_quit_and_an_automatic_one_does_not_wait_it_out() {
+        assert_eq!(stop_grace(true), GRACEFUL_STOP);
+        assert!(stop_grace(false) < stop_grace(true));
     }
 
     #[test]

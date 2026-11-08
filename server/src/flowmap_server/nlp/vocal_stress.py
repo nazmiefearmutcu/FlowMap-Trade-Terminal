@@ -3,6 +3,10 @@
 Transcript text contains no measured pitch, jitter, shimmer or pause duration.
 Caller-supplied acoustic measures can produce a heuristic descriptor, never a
 validated stress, confidence, evasion or deception assessment.
+
+Wiring status: this build starts no producer for this module, so nothing it
+produces reaches a client. Only the tests exercise it. Treat the description above
+as the module's design, not as data this build serves.
 """
 
 from __future__ import annotations

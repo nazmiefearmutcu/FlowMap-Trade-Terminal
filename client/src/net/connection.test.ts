@@ -1308,6 +1308,20 @@ describe('Connection — sidecar hold (desktop engine down)', () => {
     conn.close();
   });
 
+  it('opens no socket while the engine is failed, and a Retry while failed still waits for live', () => {
+    const { h, conn, sock } = setup();
+    sock.open();
+    sock.drop(1001);
+    conn.setSidecarHold(true); // shell: failed
+    h.clock.advance(60_000);
+    expect(h.sockets).toHaveLength(1);
+    conn.reconnectNow(); // the user presses Retry before the shell has restarted
+    expect(h.sockets).toHaveLength(1);
+    conn.setSidecarHold(false); // shell: live
+    expect(h.sockets).toHaveLength(2);
+    conn.close();
+  });
+
   it('defers a subscribe made while held and opens it on release', () => {
     const h = harness();
     const conn = h.makeConn();

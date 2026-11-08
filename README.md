@@ -14,7 +14,7 @@ FlowMap Trade Terminal is a desktop application for studying liquidity and order
 - Records sessions to Parquet and replays the recorded data with seeking, pause, and speed controls. Recording is on by default in the installed app; turn it off under Settings > Data, or set `"enabled": false` in `recording.json` in the app data folder before launch (see [SECURITY.md](SECURITY.md#what-it-writes)). From source, `FLOWMAP_RECORDING_ENABLED=0` turns it off. The default soft limit is 20 GB; the oldest recording parts are removed as it is exceeded, except the `*-epochs-*` parts, which are kept.
 - Offers two chart styles in Settings > Display: *Normal*, the smooth heatmap (default), and *Pixel*, which draws blocks in the theme colours.
 - Exports chart images and finalized depth columns as CSV or JSON.
-- Runs in a Tauri desktop shell or as a local browser client. The interface supports English and Turkish, themes, and keyboard controls. Settings > Keyboard can turn off the single-key shortcuts. Its typefaces are bundled, so the client loads nothing from the web. Settings > About and legal shows the version, the licence and the data-source attribution.
+- Runs in a Tauri desktop shell or as a local browser client. The interface supports English and Turkish, themes, and keyboard controls. Settings > Keyboard can turn off the single-key shortcuts; Ctrl and Cmd chords and the arrow keys keep working. Its typefaces are bundled, so the client loads nothing from the web. Settings > About and legal shows the version, the licence and the data-source attribution.
 
 ### Live market example
 
@@ -113,7 +113,7 @@ Set environment variables before starting the service. Common settings are:
 | `FLOWMAP_PORT` | `8720`; source runs listen here. The development client (`client/vite.config.ts`) connects to `FLOWMAP_DEV_SERVER_PORT` when it is set and otherwise to this port, so setting `FLOWMAP_PORT` alone moves both. |
 | `FLOWMAP_LOG_LEVEL` | `info`; server log verbosity. |
 | `FLOWMAP_LOG_FILE` | Unset; when set, server logs are written to this file. At 20 MB it rotates to `.1`, keeping three numbered backups (`.1` to `.3`). |
-| `FLOWMAP_DATA_DIR` | Source runs: recordings default to `~/.flowmap/recordings` and the intelligence store (`warehouse.duckdb`) to `~/.flowmap/intelligence`. Setting this moves both. The installed app uses its app data directory; see the [security guide](SECURITY.md#what-it-writes). |
+| `FLOWMAP_DATA_DIR` | Source runs: recordings default to `~/.flowmap/recordings` and the intelligence store (`warehouse.duckdb`) to `~/.flowmap/intelligence`. Setting this moves both. The installed app uses its app data directory; see the [security guide](SECURITY.md#what-it-writes). The store's DuckDB `*.wal` files sit beside `warehouse.duckdb`. Raw capture (`CROCODILE_RAW_CAPTURE=1`, source runs only) writes `raw-capture/<capture_id>/` under the recordings folder. |
 | `FLOWMAP_RECORDING_ENABLED` | `1`; set to `0` to disable recording. The dev launchers default to `0`, and the installed app sets `1`. Accepts 0/1, false/true, no/yes or off/on; any other value is refused at startup. |
 | `FLOWMAP_RECORDING_GB_CAP` | `20.0`; soft disk budget for recordings, in GB. `*-epochs-*` parts are never deleted, so the total can exceed the cap. |
 | `FLOWMAP_FLUSH_INTERVAL_S` | `10.0`; recording flush cadence, in seconds. |
@@ -134,8 +134,8 @@ Set environment variables before starting the service. Common settings are:
 | `FLOWMAP_DT_CRYPTO_NS` | `250000000`; crypto update cadence, in nanoseconds. Between 1 ms and 1 hour. |
 | `FLOWMAP_DT_EQUITY_KEYLESS_NS` | `10000000000`; keyless equity update cadence (10 s). Between 1 ms and 1 hour. |
 | `FLOWMAP_DT_EQUITY_KEYLESS_GRID_NS` | `1000000000`; keyless equity grid cadence (1 s). Between 1 ms and 1 hour. |
-| `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Optional equity market-data credentials; supply both. Read by a source run. The installed app does not pass them to its server. |
-| `FINNHUB_API_KEY` | Optional equity tape access. Read by a source run; the installed app does not pass it to its server. |
+| `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Optional equity market-data credentials; supply both. Read from your environment by a source run and passed through by the installed app. |
+| `FINNHUB_API_KEY` | Optional equity tape access. Read from your environment by a source run and passed through by the installed app. |
 | `FLOWMAP_SESSION_TOKEN` | Set by the desktop shell at each launch; when present, every request (except `/api/health` and CORS preflight) must send it in `X-FlowMap-Token`, and every WebSocket connection must offer it as the `flowmap.auth.<token>` subprotocol (on a WebSocket, the `token` query parameter is accepted for tools). Leave it unset for source runs. |
 
 Logs in the installed app go to the app data folder: `flowmap-server.log` (the server's output, moved to `flowmap-server.previous.log` at 20 MB) and `shell.log` (the shell's lifecycle messages, moved to `shell.previous.log` at 1 MB, at the next launch). The per-OS paths are in the [security guide](SECURITY.md#what-it-writes).

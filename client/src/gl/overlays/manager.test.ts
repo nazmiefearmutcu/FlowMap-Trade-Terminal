@@ -12,6 +12,7 @@ import { OverlayManager, type OverlayDrawContext } from './manager';
 import { makeFakeGL } from '../mockGL';
 import { t } from '../../i18n';
 import { PriceLine } from './priceLine';
+import { VOLBAR_HEIGHT_FRAC } from './volbars';
 import { Profile } from './profile';
 import { ViewWorker } from '../viewWorker';
 import type { ViewResult } from '../viewWorkerEngine';
@@ -179,6 +180,17 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     manager.dispose();
     expect(volume.isConnected).toBe(false);
     expect(textCanvas.isConnected).toBe(false);
+  });
+
+  it('sizes the volume canvas to the exact CSS strip height, so it meets the plot with no gap', () => {
+    const volume = (manager as unknown as { volumeText: { canvas: HTMLCanvasElement } }).volumeText.canvas;
+    for (const cssH of [480, 517, 663, 700]) {
+      const ctx = drawCtx();
+      manager.draw({ ...ctx, dims: { cssW: 640, cssH, drawW: 640, drawH: cssH } });
+      const stage = cssH / (1 - VOLBAR_HEIGHT_FRAC);
+      const cssStrip = Math.max(16, Math.min(44, stage * 0.07));
+      expect(parseFloat(volume.style.height)).toBeCloseTo(cssStrip, 6);
+    }
   });
 
   it('fills every device row of the volume strip at fractional strip heights', () => {

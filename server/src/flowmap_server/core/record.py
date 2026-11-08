@@ -1011,7 +1011,7 @@ class Recorder:
             previous = json.loads((self._base / ".flowmap-retention.json").read_bytes())
             if isinstance(previous, dict):
                 self.retention_status.update(previous)
-        except (OSError, ValueError):
+        except (OSError, ValueError):  # no readable previous status: keep the defaults
             pass
         if self._enabled and self._base.is_dir():
             # Boot runs before any writer exists, so no live temp part can be

@@ -12,11 +12,11 @@
 //      the server origin and the session token BEFORE the client JS runs, so the
 //      SPA can reach the sidecar's REST and WebSocket endpoints;
 //   4. on quit (window close or Cmd-Q) stop the sidecar gracefully: close its
-//      stdin (EOF is the server's stop signal), SIGTERM on unix,
-//      then SIGKILL after a short grace period. The sidecar also dies with the
-//      shell: a Linux parent-death signal, the stdin EOF on macOS (the server
-//      exits on it when FLOWMAP_EXIT_ON_STDIN_EOF=1), and a kill-on-close job
-//      object on Windows;
+//      stdin (EOF is the server's stop signal), SIGTERM on unix, then SIGKILL
+//      once the grace period (`GRACEFUL_STOP`) is over. The sidecar also dies
+//      with the shell: a Linux parent-death signal, the stdin EOF on macOS (the
+//      server exits on it when FLOWMAP_EXIT_ON_STDIN_EOF=1), and a kill-on-close
+//      job object on Windows;
 //   5. guard against a second instance via an OS-held advisory lock on a
 //      sentinel file under the app-data dir (two shells would race the
 //      recorder's disk-scan part numbering and corrupt recordings); the OS
@@ -60,6 +60,7 @@ use recording::{read_recording_pref, swap_recording, write_recording_pref};
 use server_log::rotate_to_previous;
 use sidecar::{
     kill_sidecar, spawn_sidecar, stop_child, Launch, SidecarState, GRACEFUL_STOP, RECORDING_GB_CAP,
+    RESTART_STOP,
 };
 use supervisor::{
     publish, retry_sidecar, sidecar_status, spawn_supervisor, Phase, Supervisor, SupervisorCommand,
@@ -433,7 +434,7 @@ fn main() {
                 }
                 std::thread::spawn(move || {
                     if let Some(state) = handle.try_state::<SidecarState>() {
-                        kill_sidecar(&state);
+                        kill_sidecar(&state, GRACEFUL_STOP);
                     }
                     release_instance_lock(&handle);
                     handle.exit(0);
@@ -456,7 +457,7 @@ fn main() {
                     state.0.store(true, Ordering::Relaxed);
                 }
                 if let Some(state) = app_handle.try_state::<SidecarState>() {
-                    kill_sidecar(&state);
+                    kill_sidecar(&state, GRACEFUL_STOP);
                 }
                 release_instance_lock(app_handle);
             }
@@ -602,7 +603,8 @@ fn start_bundled_sidecar(
     // and the app stops with a dialog.
     if let Err(err) = listener::wait_until_owned(&mut child, port, STARTUP_HEALTH_TIMEOUT) {
         shell_log(&format!("the sidecar did not take its port: {err}"));
-        stop_child(&mut child, GRACEFUL_STOP);
+        // The child never listened, so it has no recorder to flush (as in the supervisor).
+        stop_child(&mut child, RESTART_STOP);
         let log = text(lang, Key::LogAt).replace("{}", &launch.log_path.display().to_string());
         fatal(
             lang,
@@ -689,7 +691,7 @@ fn open_main_window(
         // The sidecar is already running. Stop it before exiting: on macOS the stdin
         // EOF is its only orphan guard, and the process would otherwise outlive the shell.
         if let Some(state) = handle.try_state::<SidecarState>() {
-            kill_sidecar(&state);
+            kill_sidecar(&state, GRACEFUL_STOP);
         }
         fatal(
             lang,

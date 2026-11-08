@@ -25,21 +25,21 @@
   gap: 8px;
   max-width: 100%;
   padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--line, rgba(148, 163, 184, 0.45));
-  background: var(--bg, #081B37);
-  color: var(--chart-ink, #e2e8f0);
-  font-size: var(--fs-md, 12px);
+  border-radius: var(--r-2);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--chart-ink);
+  font-size: var(--fs-md);
   line-height: 1.4;
 }
 
 .app-notice--fatal {
-  border-color: var(--sell-line, #f87171);
+  border-color: var(--sell-line);
 }
 
 .app-notice--sim {
-  border-color: var(--warn-line, #fbbf24);
-  color: var(--warn, #fbbf24);
+  border-color: var(--warn-line);
+  color: var(--warn);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -54,7 +54,7 @@
 .app-notice button,
 .gl-fallback__btn {
   padding: 3px 10px;
-  border-radius: 4px;
+  border-radius: var(--r-1);
   border: 1px solid var(--accent-line, currentColor);
   background: transparent;
   color: inherit;

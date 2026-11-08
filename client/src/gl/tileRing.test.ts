@@ -1,7 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
-import { Residency, TileRing } from './tileRing';
+import { FULLRES_BYTES_PER_TEXEL, fullResRingBytes, Residency, TileRing } from './tileRing';
 import { makeFakeGL } from './mockGL';
+
+describe('fullResRingBytes (GPU memory budget)', () => {
+  const MiB = 1024 * 1024;
+
+  it('prices a texel at RG32F: two channels of four bytes', () => {
+    expect(FULLRES_BYTES_PER_TEXEL).toBe(2 * 4);
+  });
+
+  it('gives the production budget: 6144 columns at 4096 rows is 192 MiB', () => {
+    expect(fullResRingBytes(6144, 4096) / MiB).toBe(192);
+  });
+
+  it('gives the perf-gate geometry: 10240 columns at 2048 rows is 160 MiB', () => {
+    expect(fullResRingBytes(10_240, 2048) / MiB).toBe(160);
+  });
+});
 
 /**
  * Pure full-res residency book-keeping — the addressing/eviction logic the

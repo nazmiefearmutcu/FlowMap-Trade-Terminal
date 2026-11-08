@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { version } from '../../package.json';
 import { setLocale, t } from '../i18n';
 import { FONT_LICENSES } from '../theme/fontLicenses';
-import { AboutDialog, APP_LICENSE, DATA_SOURCES, REPO_URL } from './About';
+import { AboutDialog, APP_LICENSE, buildCommitOf, DATA_SOURCES, REPO_URL } from './About';
 import { resetOverlays } from './overlayStack';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -65,6 +65,28 @@ describe('AboutDialog', () => {
     expect(DATA_SOURCES).toContain('Google Finance');
     expect(DATA_SOURCES).not.toContain('FRED');
     expect(el.querySelector('[data-testid="about-not-advice"]')?.textContent).toBe(t('about.notAdvice'));
+  });
+
+  it('shows no build line in a local build that recorded no commit', () => {
+    expect(mount().querySelector('[data-testid="about-build"]')).toBeNull();
+  });
+
+  it('names the short build commit when the release build recorded one', () => {
+    vi.stubEnv('VITE_BUILD_COMMIT', '3fa9c1e0d2b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8');
+    try {
+      const el = mount();
+      expect(el.querySelector('[data-testid="about-build"]')?.textContent).toBe(t('about.build', { commit: '3fa9c1e0d2b4' }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('accepts only a git object name as a build commit', () => {
+    expect(buildCommitOf('3fa9c1e0d2b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8')).toBe('3fa9c1e0d2b4');
+    expect(buildCommitOf(' abc1234 ')).toBe('abc1234');
+    expect(buildCommitOf('<script>')).toBe('');
+    expect(buildCommitOf('')).toBe('');
+    expect(buildCommitOf(undefined)).toBe('');
   });
 
   it('offers no log action outside the desktop shell', () => {

@@ -33,9 +33,10 @@ window.addEventListener('error', (e) => {
 });
 window.addEventListener('unhandledrejection', (e) => reportBackgroundError(e.reason));
 
-// Boot seeders: stamp the persisted theme onto <html data-theme> and
-// restore the persisted locale BEFORE the first render, so the shell paints in
-// the user's theme/language and never flashes the default. Idempotent.
+// Boot seeders: stamp the persisted theme onto <html data-theme> and restore the
+// persisted locale before the first React render, so the app's first frame uses
+// the user's theme and language. A deferred module can run after the first paint,
+// so that paint is governed by the static markup in index.html. Idempotent.
 initTheme();
 initLocale();
 

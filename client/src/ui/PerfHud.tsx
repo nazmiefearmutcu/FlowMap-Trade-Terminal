@@ -73,6 +73,8 @@ export function PerfHud({ rendererRef, visible, onToggle }: PerfHudProps): JSX.E
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // Holding H must not flicker the chip on and off at the key repeat rate.
+      if (e.repeat) return;
       const action = routeGlobalKey(e.key, classifyTarget(e.target));
       if (action?.type !== 'toggle-hud') return;
       e.preventDefault();

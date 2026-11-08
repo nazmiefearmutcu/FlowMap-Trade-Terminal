@@ -5,3 +5,12 @@
   color: var(--warn);
   border-color: var(--warn-line);
 }
+
+/* The panel title is a heading. The wrapper keeps the header's flex layout. */
+.dom-ladder .panel__heading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  font: inherit;
+}

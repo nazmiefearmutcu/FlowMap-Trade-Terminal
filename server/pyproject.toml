@@ -51,10 +51,11 @@ crocodile = { path = "vendor/crocodile-0.3.2-py3-none-any.whl" }
 constraint-dependencies = ["mypy-extensions<=1.1.0", "coverage<=7.17.0"]
 
 # Static type gate. Scoped to the packages whose typing this gate owns: the
-# feed, data and NLP packages, the protocol codec, and the WebSocket transport
-# module. follow_imports=silent keeps errors in the modules they import (core/)
-# out of this gate, so each package's gate stays its own. The vendored engine
-# ships no stubs for ccxt, so its import is untyped on purpose.
+# feed, data and NLP packages, the protocol codec, the WebSocket transport module,
+# and the core modules that already type-check. follow_imports=silent keeps errors
+# in the other core modules out of this gate: they are listed below until they
+# are cleared. The vendored engine ships no stubs for ccxt, so its import is
+# untyped on purpose.
 [tool.mypy]
 python_version = "3.13"
 files = [
@@ -67,7 +68,19 @@ files = [
   "src/flowmap_server/benchmark_provenance.py",
   "src/flowmap_server/_compat.py",
   "src/flowmap_server/config.py",
+  "src/flowmap_server/core/__init__.py",
+  "src/flowmap_server/core/grid.py",
+  "src/flowmap_server/core/price_scale.py",
+  "src/flowmap_server/core/price_scale_np.py",
+  "src/flowmap_server/core/session.py",
+  "src/flowmap_server/core/session_capability.py",
+  "src/flowmap_server/core/session_common.py",
+  "src/flowmap_server/core/session_queue.py",
+  "src/flowmap_server/core/stats.py",
 ]
+# Core modules not yet gated (type errors to clear, then add above):
+# backfill, gex, overview, pyramid, record, session_book, session_boot,
+# session_core, session_fanout, session_history, session_manager, session_recording.
 follow_imports = "silent"
 warn_unused_ignores = true
 warn_redundant_casts = true

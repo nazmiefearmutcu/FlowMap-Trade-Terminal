@@ -105,8 +105,9 @@ it('offers a symbol search, and no retry, while the market has no feed', () => {
   ));
   act(() => useFlowMapStore.setState({ noFeed: true, feedState: 'closed' }));
   expect(element.querySelector('strong')?.textContent).toBe('NO FEED');
-  // The sentence lives in the closed banner; the gate does not repeat it.
+  // The sentence lives in the closed banner; the gate does not repeat it, but it says what to do.
   expect(element.textContent).not.toContain('no feed available for this market');
+  expect(element.textContent).toContain('Choose a symbol from another market to continue.');
   expect(element.querySelector('[data-testid="chart-startup-resubscribe"]')).toBeNull();
   act(() => element.querySelector<HTMLButtonElement>('[data-testid="chart-startup-search"]')?.click());
   expect(onSearchSymbols).toHaveBeenCalledOnce();
@@ -136,6 +137,26 @@ it('shows no recovery controls when the host supplies none', () => {
   frame(100);
   expect(element.querySelector('strong')?.textContent).toBe('Historical data unavailable');
   expect(element.querySelector('.chart-startup__actions')).toBeNull();
+});
+
+it('offers retry-now while the connection reconnects, and names a failed engine instead of connecting', () => {
+  const retryNow = vi.fn();
+  const original = useFlowMapStore.getState().retryNow;
+  useFlowMapStore.setState({ retryNow });
+  try {
+    act(() => useFlowMapStore.setState({ status: 'reconnecting', feedState: 'reconnecting' }));
+    frame(100);
+    expect(element.querySelector('strong')?.textContent).toBe('Reconnecting…');
+    act(() => element.querySelector<HTMLButtonElement>('[data-testid="chart-startup-reconnect"]')?.click());
+    expect(retryNow).toHaveBeenCalledOnce();
+
+    act(() => root.render(<ChartStartupGate rendererRef={rendererRef} engineFailed />));
+    expect(element.querySelector('strong')?.textContent).toBe('The FlowMap engine stopped and did not restart.');
+    expect(element.textContent).not.toContain('Connecting to market data');
+    expect(element.querySelector('[data-testid="chart-startup-reconnect"]')).toBeNull();
+  } finally {
+    useFlowMapStore.setState({ retryNow: original });
+  }
 });
 
 it('hides the gate while disabled', () => {

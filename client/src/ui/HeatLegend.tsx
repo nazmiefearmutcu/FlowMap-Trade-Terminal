@@ -60,7 +60,11 @@ export function HeatLegend({ colormap, channel }: HeatLegendProps): JSX.Element 
         aria-hidden="true"
       />
       <span className="heat-legend__cap">{legend.bottomCap}</span>
-      <span className="heat-legend__tier" data-testid="heat-legend-tier" title={recorded ? t('depthChip.recorded') : undefined}>
+      <span
+        className={`heat-legend__tier${tier === 'L2-SNAPSHOT' ? ' heat-legend__tier--caution' : ''}`}
+        data-testid="heat-legend-tier"
+        title={recorded ? t('depthChip.recorded') : undefined}
+      >
         {tier ?? 'liq'}
       </span>
       {legend.channelNote !== null && (

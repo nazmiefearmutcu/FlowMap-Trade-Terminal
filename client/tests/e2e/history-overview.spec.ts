@@ -46,7 +46,7 @@ async function waitForOverview(page: Page, minimumBuckets = 30): Promise<void> {
     const stride = 2 ** Math.max(0, Math.ceil(Math.log2(view.colScale / 480)));
     const lo = Math.max(0, Math.floor(view.colOffset / stride));
     const hi = Math.min(Math.floor(renderer.newestColSeq / stride), Math.ceil((view.colOffset + view.colScale) / stride) - 1);
-    const plan = (renderer as unknown as { overviewHistory: { range: { stride: number; lo: number; hi: number } } }).overviewHistory?.range;
+    const plan = stats.plan;
     return plan?.stride === stride && plan.lo === lo && plan.hi === hi &&
       !stats.inFlight && stats.error === null && stats.buckets >= minimum && stats.resident &&
       stats.progress.loaded === stats.progress.total;
@@ -55,16 +55,11 @@ async function waitForOverview(page: Page, minimumBuckets = 30): Promise<void> {
     const diagnostics = await page.evaluate(() => {
       const live = window.__flowmapLive!;
       const r = live.renderer, s = live.store.getState();
-      const inspect = r as unknown as { priceEpoch: number; overviewEpoch: number; awaitingSession: boolean;
-        overviewHistory: { generation: number; range: unknown; progress: unknown; error: unknown; loaded: Set<number>; present: Set<number> } | null };
-      const h = inspect.overviewHistory;
       return { view: r.viewSnapshot, timeline: r.timeline(), stats: r.stats(), newest: r.newestColSeq,
         raw: r.residentRange(), rawHistory: r.historyStats(), overview: r.overviewStats(),
-        overviewEpoch: inspect.overviewEpoch, priceEpoch: inspect.priceEpoch, awaitingSession: inspect.awaitingSession,
         timeWindow: r.timeWindowMs, ready: r.marketFrameReady,
         session: s.sessionId, subscription: s.subscription, status: s.status, gridEpoch: s.gridEpoch,
-        epochs: [...s.epochs.values()], loader: h && { generation: h.generation, range: h.range, progress: h.progress,
-          loaded: [...h.loaded].sort((a, b) => a - b), present: [...h.present].sort((a, b) => a - b), error: h.error },
+        epochs: [...s.epochs.values()],
         requests: (window as RequestWindow).__overviewHistoryRequests, work: (window as RequestWindow).__overviewWork };
     });
     console.log('overview timeout diagnostics', JSON.stringify(diagnostics, (_, value) => typeof value === 'bigint' ? value.toString() : value));

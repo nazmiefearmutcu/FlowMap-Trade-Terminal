@@ -193,12 +193,13 @@ def is_crypto_market(market: str) -> bool:
 
 # -- symbol translation, memoized for the server process lifetime --------
 #
-# `data.venues.resolve_symbol` downloads the venue's full ccxt market table on
-# every miss; before this cache every feed restart and every kline backfill
-# re-downloaded it for the same unchanging symbol. Translation is a pure
-# function of the venue's listing, which is stable on a session timescale, so
-# the successful result is cached forever; a failed/identity result is NOT
-# cached so the next call retries.
+# `data.venues.resolve_symbol` reads the venue's ccxt market table, which that
+# module keeps for its own TTL. Without this cache every feed restart and every
+# kline backfill would repeat the lookup for the same unchanging symbol. Translation
+# is a pure function of the venue's listing, which is stable on a session
+# timescale, so the successful result is cached forever. A failed/identity result
+# is NOT cached so the next call retries; a symbol the venue does not list raises
+# before anything is cached.
 
 _RESOLVED_SYMBOLS: dict[tuple[str, str], str] = {}
 _PENDING_RESOLVES: dict[tuple[str, str], "asyncio.Task[str]"] = {}

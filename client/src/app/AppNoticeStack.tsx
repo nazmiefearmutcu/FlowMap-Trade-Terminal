@@ -6,15 +6,18 @@ interface AppNoticeStackProps {
   engine: EngineStatus;
   /** The server's recording writer is stalled. */
   recordingDegraded: boolean;
+  /** The server's market overview is running behind its deadline. */
+  overviewDegraded: boolean;
   /** The chart shows the simulated feed. */
   simActive: boolean;
 }
 
 /**
  * The notices pinned over the chart: a failed desktop engine (with retry and
- * open-log actions), a stalled recording, and the simulated-feed badge.
+ * open-log actions), a stalled recording, a lagging market overview, and the
+ * simulated-feed badge.
  */
-export function AppNoticeStack({ engine, recordingDegraded, simActive }: AppNoticeStackProps): JSX.Element {
+export function AppNoticeStack({ engine, recordingDegraded, overviewDegraded, simActive }: AppNoticeStackProps): JSX.Element {
   const t = useT();
   const { sidecar, logOpen, onRetrySidecar, onOpenLogFolder } = engine;
   return (
@@ -42,6 +45,11 @@ export function AppNoticeStack({ engine, recordingDegraded, simActive }: AppNoti
       {recordingDegraded && (
         <div className="app-notice" role="status" data-testid="recording-degraded">
           <span>{t('banner.recordingDegraded')}</span>
+        </div>
+      )}
+      {overviewDegraded && (
+        <div className="app-notice" role="status" data-testid="overview-degraded">
+          <span>{t('banner.overviewDegraded')}</span>
         </div>
       )}
       {simActive && (

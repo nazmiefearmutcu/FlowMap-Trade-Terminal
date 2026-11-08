@@ -85,7 +85,19 @@ class FanoutMixin:
         """Percentile hint for client normalization: p99 of the nonzero
         densities over the most recent ≤64 columns, or 1.0 when empty.
 
-        Non-finite values are filtered before the percentile: a ``+inf``
+        Memoised on the retained window and the live epoch: a new column, a
+        ring wrap, a preload or a re-anchor changes one of them, and an attach
+        to an unchanged window reuses the last percentile."""
+        key = (self._grid.retained_sequence_range(), self._grid.current_epoch_params().epoch)
+        memo = self._norm_seed_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        seed = self._compute_norm_seed()
+        self._norm_seed_memo = (key, seed)
+        return seed
+
+    def _compute_norm_seed(self) -> float:
+        """Non-finite values are filtered before the percentile: a ``+inf``
         texel rehydrated from a pre-clamp recording would otherwise make the
         p99 — and with it the wire ``norm_seed`` — infinite."""
         cols = self._grid.history(_T_MAX, 64)

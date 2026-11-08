@@ -285,3 +285,9 @@ class MacroStressUpdate(msgspec.Struct):
     yield_10y2y: float
     stress_score: float
     status: str
+    # Appended with defaults (a cold JSON message, so older readers ignore them).
+    # ``as_of`` maps each series to the observation date (YYYY-MM-DD) the reading
+    # was taken on, not the fetch date. ``source_status`` maps each series to
+    # "ok" or the reason it has no reading.
+    as_of: dict[str, str] = {}
+    source_status: dict[str, str] = {}

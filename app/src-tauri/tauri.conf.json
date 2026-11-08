@@ -24,6 +24,7 @@
     "homepage": "https://github.com/nazmiefearmutcu/flowmap",
     "shortDescription": "FlowMap dual-market order-flow terminal",
     "longDescription": "FlowMap is a dual-market order-flow terminal. It runs its market-data server on this computer, and the window talks to that server over the loopback interface only.",
+    "licenseFile": "../../LICENSE",
     "resources": {
       "resources/LICENSE": "LICENSE",
       "resources/NOTICE": "NOTICE"

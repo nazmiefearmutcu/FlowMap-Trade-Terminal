@@ -22,15 +22,19 @@ import {
   AXIS_TICK_ALPHA,
   AXIS_TICK_LEN,
   AXIS_TIME_LABEL_SIZE,
+  drawGridlines,
   drawPriceAxis,
   drawTimeAxis,
   priceAxisModel,
   priceTickPositions,
+  snapToPixelBlock,
   timeAxisLabelFormatter,
   timeAxisModel,
   timeTickPositions,
+  type TimeAxisClock,
 } from './axes';
 import { GridMap, type PriceMap, type TimeMap } from './coords';
+import { PIXEL_BLOCK_CSS } from '../heatmap';
 import type { TextLayer } from '../textLayer';
 import { makeHybrid } from '../priceScale';
 import { priceFrame } from '../camera';
@@ -214,6 +218,80 @@ describe('drawTimeAxis — typography, ticks, edge clamping', () => {
     expect(texts[texts.length - 1].x).toBe(800 - 2);
     // ...while the tick marks themselves stay on the true tick positions.
     expect(lines[lines.length - 1].x0).toBe(model[model.length - 1].pos);
+  });
+});
+
+describe('time axis zone label', () => {
+  const UTC_CLOCK: TimeAxisClock = { pref: 'utc', exchangeZone: 'UTC' };
+
+  it('prints the zone abbreviation at the right end of the strip on a clock', () => {
+    const g = gm({ p0: 0, step: 0.5 });
+    const { layer, texts } = stubLayer(800, 22);
+    drawTimeAxis(layer, g, UTC_CLOCK);
+    const zone = texts.filter(t => t.str === 'UTC');
+    expect(zone).toHaveLength(1);
+    expect(zone[0].x).toBe(800 - 2);
+    expect(zone[0].opts.align).toBe('right');
+    expect(zone[0].y).toBe(15);
+  });
+
+  it('keeps the session-relative axis free of a zone label', () => {
+    const g = gm({ p0: 0, step: 0.5 });
+    const { layer, texts } = stubLayer(800, 22);
+    drawTimeAxis(layer, g, null);
+    expect(texts.some(t => t.str === 'UTC')).toBe(false);
+  });
+
+  it('lays the time labels out in the width the zone label leaves', () => {
+    const g = gm({ p0: 0, step: 0.5 });
+    const clockModel = timeAxisModel(g, 800, UTC_CLOCK);
+    const reserve = 'UTC'.length * AXIS_TIME_LABEL_SIZE * 0.6 + 8;
+    expect(clockModel.length).toBeGreaterThan(0);
+    for (const label of clockModel) expect(label.pos).toBeLessThanOrEqual(800 - reserve + 1 + 1e-8);
+  });
+});
+
+describe('pixel chart style — axes snap to the block grid', () => {
+  it('snapToPixelBlock is the identity outside pixel style', () => {
+    expect(snapToPixelBlock(100.4, false)).toBe(100.4);
+    expect(snapToPixelBlock(100.4, undefined)).toBe(100.4);
+  });
+
+  it('snapToPixelBlock centres a position on its block of PIXEL_BLOCK_CSS', () => {
+    const block = PIXEL_BLOCK_CSS;
+    for (const pos of [0.2, 5.9, 6.0, 100.4, 317.7]) {
+      const snapped = snapToPixelBlock(pos, true);
+      expect(Math.floor(snapped / block)).toBe(Math.floor(pos / block));
+      expect(snapped % block).toBe(block / 2);
+    }
+  });
+
+  it('draws price ticks, labels and the time strip on block centres', () => {
+    const g = gm({ p0: 0, step: 0.5 });
+    const { layer, lines, texts } = stubLayer(62, DIMS.cssH);
+    drawPriceAxis(layer, g, null, { pixel: true });
+    expect(lines.length).toBeGreaterThan(3);
+    for (let i = 0; i < lines.length; i++) {
+      expect(lines[i].y0 % PIXEL_BLOCK_CSS).toBe(PIXEL_BLOCK_CSS / 2);
+      expect(texts[i].y).toBe(lines[i].y0);
+    }
+    const timeLayer = stubLayer(800, 22);
+    drawTimeAxis(timeLayer.layer, g, null, { pixel: true });
+    for (const ln of timeLayer.lines) expect(ln.x0 % PIXEL_BLOCK_CSS).toBe(PIXEL_BLOCK_CSS / 2);
+  });
+
+  it('snaps gridlines to block centres and keeps one line per block', () => {
+    const g = gm({ p0: 0, step: 0.5 });
+    const lines: LineCall[] = [];
+    const text = { width: 800, height: 400, line: (x0: number, y0: number, x1: number, y1: number, color: string, w = 1) => {
+      lines.push({ x0, y0, x1, y1, color, width: w, alpha: 1 });
+    } } as unknown as TextLayer;
+    drawGridlines(text, g, { pixel: true });
+    expect(lines.length).toBeGreaterThan(0);
+    for (const ln of lines) {
+      const pos = ln.y0 === ln.y1 ? ln.y0 : ln.x0;
+      expect(pos % PIXEL_BLOCK_CSS).toBe(PIXEL_BLOCK_CSS / 2);
+    }
   });
 });
 

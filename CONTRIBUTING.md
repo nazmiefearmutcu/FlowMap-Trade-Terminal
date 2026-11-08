@@ -6,7 +6,7 @@ maintainer will check before merging.
 ## Dev setup
 
 Prerequisites: Python 3.13 with [uv](https://docs.astral.sh/uv/), Node.js 22.13+ (or 24) with npm.
-Rust 1.89 or newer is needed only to run the desktop shell's tests in `app/src-tauri`.
+Optional: Rust 1.89 or newer, needed only to run the desktop shell's tests in `app/src-tauri`.
 
 ```bash
 # server venv + deps (crocodile is a vendored wheel: server/vendor/, pinned by sha256 in server/uv.lock)
@@ -56,7 +56,7 @@ Before opening a PR, please confirm:
   CI prints the current test counts; this guide does not repeat them.
 - [ ] **Lint clean.** `cd client && npm run lint` (eslint, with zero warnings allowed) and
   `cd server && uv run ruff check .` both pass. Colours and font sizes in TypeScript come from the
-  theme tokens in `client/src/theme`, and `python3 scripts/check_css_font_sizes.py` must pass for
+  theme tokens in `client/src/theme`, and `python3 scripts/check_css_font_sizes.py` (`py -3` on Windows) must pass for
   any stylesheet you touch.
 - [ ] **TypeScript clean.** `npx tsc -b` in `client/` reports no errors.
 - [ ] **The honest-data rule holds.** Never render, badge, or replay data that the feed did not

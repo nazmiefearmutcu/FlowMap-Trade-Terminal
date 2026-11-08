@@ -81,9 +81,11 @@ export function apiBase(): string {
 }
 
 /**
- * Longest a REST call waits for a restarting engine before it fails. The shell
- * reports `live` or `failed` well inside this bound; the bound only keeps a
- * silent shell from stalling every palette and replay request forever.
+ * Longest a REST call waits for a held engine before it fails. A shell that
+ * reports `live` answers well inside this bound. A `failed` engine never reports
+ * `live` by itself, so a call parked by that state fails at this bound, and a
+ * Retry restores it. The bound also keeps a silent shell from stalling every
+ * palette and replay request forever.
  */
 export const SIDECAR_REST_HOLD_MS = 60_000;
 
@@ -91,10 +93,11 @@ export const SIDECAR_REST_HOLD_MS = 60_000;
 let restHeld: Array<() => void> | null = null;
 
 /**
- * Park or release REST calls while the desktop shell brings its engine back: the
- * same window in which the connection parks its socket opens. Held, a call waits
- * instead of sending the session token to whatever answers the port meanwhile.
- * Released, every parked call goes out at once. Driven by `holdWhileSidecarDown`.
+ * Park or release REST calls while the desktop shell reports its engine starting,
+ * restarting or failed: the same window in which the connection parks its socket
+ * opens. Held, a call waits instead of sending the session token to whatever
+ * answers the port meanwhile. Released, every parked call goes out at once. Driven
+ * by `holdWhileSidecarDown`.
  */
 export function setSidecarRestHold(held: boolean): void {
   if (held) {

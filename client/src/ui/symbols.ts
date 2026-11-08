@@ -15,7 +15,7 @@
  * guessing, and the old string heuristic survives only as the pre-fetch fallback.
  */
 
-import { tFor } from '../i18n';
+import { t as activeT, tFor } from '../i18n';
 import { honestDepthTier } from '../gl/depthTier';
 
 export interface SymbolEntry {
@@ -200,7 +200,10 @@ export function rankVenueOptions(
   if (q.trim() === '') return options.slice(0, limit);
   const scored: Array<{ option: VenueOption; score: number }> = [];
   for (const option of options) {
-    const score = Math.max(fuzzyScore(q, option.market), fuzzyScore(q, option.label) - 20);
+    const score = Math.max(
+      fuzzyScore(searchFold(q), searchFold(option.market)),
+      fuzzyScore(searchFold(q), searchFold(option.label)) - 20,
+    );
     if (score >= 0) scored.push({ option, score });
   }
   scored.sort((a, b) => b.score - a.score || a.option.market.length - b.option.market.length);
@@ -208,34 +211,30 @@ export function rankVenueOptions(
 }
 
 /**
- * Case-insensitive substring filter over symbol AND market (defensive dedupe of
- * the server filter), plus the derived display group so typing a group word
- * surfaces the whole group: its key (`crypto`), its English alias (`Simulated`)
- * and its translated word in the active locale (`Kripto`, `Hisse`).
+ * Match key for symbol search. Canonical decomposition with combining marks
+ * removed (so a composed `é` and a decomposed one agree), then the Turkish dotted
+ * and dotless I folded onto `i` (`İ`, `I`, `ı` all become `i`), then lowercased.
+ * `iz`, `İZ`, `Iz` and `ız` therefore name the same search.
  */
-export function filterSymbols(
-  entries: readonly SymbolEntry[],
-  q: string,
-  t: Translate = englishT,
-): SymbolEntry[] {
-  const needle = searchKey(q.trim());
-  if (needle === '') return [...entries];
-  return entries.filter((e) => {
-    if (searchKey(e.symbol).includes(needle) || searchKey(e.market).includes(needle)) return true;
-    const key = marketGroup(e.market);
-    return key.includes(needle)
-      || searchKey(GROUP_SEARCH_ALIAS[key]).includes(needle)
-      || searchKey(venueGroupLabel(key, t)).includes(needle);
-  });
+export function searchFold(s: string): string {
+  return s.normalize('NFD').replace(/\p{M}/gu, '').replace(/[İIı]/g, 'i').toLowerCase();
 }
 
 /**
- * Match key for symbol search: canonical decomposition with combining marks
- * removed, then lowercased. `İ` (I + U+0307) and decomposed `é` then match their
- * plain forms, so a composed and a decomposed spelling of the same name agree.
+ * How well a folded query names an entry's display group: its key (`crypto`), its
+ * English alias (`Simulated`) and its translated word in the active locale (`Kripto`,
+ * `Hisse`). Ranked below a direct symbol hit, so a group word surfaces the group
+ * without outranking a ticker that is spelled the same way.
  */
-export function searchKey(s: string): string {
-  return s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+function groupMatchScore(needle: string, market: string, t: Translate): number {
+  const key = marketGroup(market);
+  const words = [key, GROUP_SEARCH_ALIAS[key], venueGroupLabel(key, t)];
+  let best = -1;
+  for (const word of words) {
+    const s = fuzzyScore(needle, searchFold(word)) - 300;
+    if (s > best) best = s;
+  }
+  return best;
 }
 
 /**
@@ -308,11 +307,21 @@ export function fuzzyScore(query: string, text: string): number {
  * Fuzzy-rank a directory by the query, best first. A match on the SYMBOL ranks
  * above a match on the market/venue. Empty query returns the input order (capped).
  */
-export function fuzzyRank(entries: readonly SymbolEntry[], q: string, limit = 60): SymbolEntry[] {
-  if (q.trim() === '') return entries.slice(0, limit);
+export function fuzzyRank(
+  entries: readonly SymbolEntry[],
+  q: string,
+  limit = 60,
+  t: Translate = activeT,
+): SymbolEntry[] {
+  const needle = searchFold(q.trim());
+  if (needle === '') return entries.slice(0, limit);
   const scored: Array<{ entry: SymbolEntry; score: number }> = [];
   for (const e of entries) {
-    const s = Math.max(fuzzyScore(q, e.symbol), fuzzyScore(q, e.market) - 60);
+    const s = Math.max(
+      fuzzyScore(needle, searchFold(e.symbol)),
+      fuzzyScore(needle, searchFold(e.market)) - 60,
+      groupMatchScore(needle, e.market, t),
+    );
     if (s >= 0) scored.push({ entry: e, score: s });
   }
   scored.sort((a, b) => b.score - a.score || a.entry.symbol.length - b.entry.symbol.length);
@@ -441,4 +450,31 @@ export function capabilityChipTitle(chip: string, t: Translate = englishT): stri
   if (chip.includes('SNAPSHOT')) return t('depthChip.snapshot');
   if (chip === 'L1') return t('depthChip.l1');
   return undefined;
+}
+
+/**
+ * The chip's VISIBLE text in the active locale. The English token stays the chip's
+ * identity (the React key, the CSS class from {@link capabilityChipClass}, the
+ * title from {@link capabilityChipTitle}); only what a reader sees is translated.
+ * A chip with no translated wording shows its token unchanged.
+ */
+export function capabilityChipLabel(chip: string, t: Translate = activeT): string {
+  if (chip === 'RECORDED DENSITY') return t('chip.recordedDensity');
+  if (chip === 'SIM') return t('chip.sim');
+  if (chip === 'SYNTH' || chip === 'SYNTH_PROFILE') return t('chip.synth');
+  if (chip === 'L2-SNAPSHOT') return t('chip.snapshot');
+  if (chip === 'UNKNOWN') return t('chip.unknown');
+  if (chip.startsWith('TAPE ')) {
+    const value = chip.slice('TAPE'.length).trim();
+    const shown = value === 'POLL' ? t('chip.poll') : value === 'TICK' ? t('chip.tick') : value;
+    return `${t('chip.tape')} ${shown}`;
+  }
+  if (chip.startsWith('SIDE')) {
+    const side = sideValue(chip);
+    const shown = side.includes('INFERRED')
+      ? t('chip.inferred')
+      : isNoSideClaim(side) ? t('chip.none') : side;
+    return `${t('chip.side')} ${shown}`;
+  }
+  return chip;
 }

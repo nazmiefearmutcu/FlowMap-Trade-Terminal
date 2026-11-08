@@ -13,7 +13,7 @@
 .market-strip__windows { margin-left: auto; display: flex; gap: 3px; }
 .market-strip__windows button { border: 1px solid transparent; border-radius: var(--r-1); background: transparent; color: var(--text-2); padding: 5px 8px; cursor: pointer; font: var(--fs-sm) var(--font-mono); }
 .market-strip__windows button:hover, .market-strip__windows button[aria-pressed='true'] { border-color: var(--line-2); background: var(--bg-3); color: var(--text); }
-.market-strip__windows button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.market-strip__windows button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .panel__resolution { color: var(--text-2); font: var(--fs-2xs) var(--font-mono); white-space: nowrap; }
 @media (max-width: 850px) { .market-strip { gap: 10px; padding-inline: 8px; } .market-strip__quotes { gap: 10px; } .market-strip__quotes > div { min-width: 55px; } .market-strip__feed { display: none; } .market-strip__windows button { padding-inline: 5px; } }
 @media (max-width: 580px) { .market-strip { flex-wrap: wrap; } .market-strip__windows { width: 100%; justify-content: flex-end; } .market-strip__quotes { flex: 1; justify-content: space-between; } }

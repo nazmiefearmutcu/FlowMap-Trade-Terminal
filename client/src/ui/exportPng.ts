@@ -34,7 +34,7 @@ import {
   type Colormap,
 } from '../gl/lut';
 
-import { resolveLegend, type LegendInput, type LegendDescriptor } from './heatLegendModel';
+import { depthIsSynthetic, depthReadoutTier, resolveLegend, type LegendInput, type LegendDescriptor } from './heatLegendModel';
 import { t } from '../i18n';
 import {
   exchangeZoneFor,
@@ -178,10 +178,20 @@ export function exportProvenanceNotes(input: ExportProvenanceInput): string[] {
   const cap = input.capability;
   if (cap) {
     if (cap.history === 'reconstructed') notes.push(t('export.note.reconstructed'));
-    if (typeof cap.depth === 'string' && cap.depth.startsWith('SYNTH')) notes.push(t('export.note.syntheticDepth'));
+    // The same verdict the on-screen legend and crosshair read, not the raw tier string.
+    if (depthIsSynthetic(cap, null)) notes.push(t('export.note.syntheticDepth'));
     if (typeof cap.tape === 'string' && cap.tape !== 'tick') notes.push(t('export.note.tape', { kind: cap.tape }));
   }
   return notes;
+}
+
+/**
+ * The density ramp chip's honesty verdict for a capability: whether the depth is
+ * synthetic (the amber ramp) and the tier tag under it. Read through the same
+ * helpers as the on-screen legend, so the exported PNG cannot disagree with the screen.
+ */
+export function exportRampVerdict(capability: Record<string, unknown> | null | undefined): { synth: boolean; tier: string | null } {
+  return { synth: depthIsSynthetic(capability, null), tier: depthReadoutTier(capability, null) };
 }
 
 /** The footer's mode word, in the UI language: the same `live` and `replay` the chart shows. */

@@ -15,6 +15,7 @@ import {
   fmtDeltaTime,
   priceAtRow,
   sumDepthInBand,
+  type ChartMapPair,
   type DeltaTimeUnits,
 } from './MeasureTool';
 
@@ -183,6 +184,20 @@ describe('MeasureTool pure helpers', () => {
 });
 
 describe('MeasureTool interaction (affine map)', () => {
+  it('M toggles the tool once per press, never on each auto-repeat of a held key', () => {
+    publishEpoch();
+    installBook();
+    const host = document.createElement('div');
+    const { container } = render(<MeasureTool containerRef={{ current: host }} map={SCALE_MAP} />);
+    const overlay = container.querySelector('[data-testid="measure-overlay"]')!;
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', repeat: true, bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', repeat: true, bubbles: true }));
+    });
+    expect(overlay.className).toContain('is-armed');
+  });
+
   it('M arms, a drag draws a rect + readout, and the result persists after release', async () => {
     publishEpoch();
     installBook();
@@ -231,6 +246,19 @@ describe('MeasureTool interaction (affine map)', () => {
     // The renderer is not up yet: rendererChartMap answers null, not a coordinate.
     const unplaced = { fromChart: () => null, toChart: SCALE_MAP.toChart };
     const { container } = render(<MeasureTool containerRef={{ current: host }} map={unplaced} />);
+    fireKey('m');
+    const overlay = container.querySelector('[data-testid="measure-overlay"]')!;
+    firePointer(overlay, 'pointerdown', 100, 100);
+    firePointer(overlay, 'pointermove', 150, 180);
+    expect(container.querySelector('[data-testid="measure-rect"]')).toBeNull();
+  });
+
+  it('a map supplied without fromChart places no point, rather than falling back to the identity', () => {
+    publishEpoch();
+    installBook();
+    const host = document.createElement('div');
+    const toOnly = { toChart: SCALE_MAP.toChart } as unknown as ChartMapPair;
+    const { container } = render(<MeasureTool containerRef={{ current: host }} map={toOnly} />);
     fireKey('m');
     const overlay = container.querySelector('[data-testid="measure-overlay"]')!;
     firePointer(overlay, 'pointerdown', 100, 100);

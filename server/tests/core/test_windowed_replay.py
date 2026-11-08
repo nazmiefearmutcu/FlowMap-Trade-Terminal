@@ -153,6 +153,34 @@ async def test_end_bounded_window_loads_only_the_window(tmp_path):
     await _retire(mgr, timer, sess)
 
 
+async def test_end_bound_clamps_playback_to_the_requested_end(tmp_path):
+    """A window end between two column starts still loads the column it
+    straddles (t0 < end_t), but playback must stop at the requested end: the
+    feed's end is clamped to end_t, not to the straddling column's full dt."""
+    root = Recorder(tmp_path / "rec", 20.0)
+    _record(root, t0_idx=0, n=N0, start_seq=0)
+    mgr, timer = _manager(root)
+    end_t = 10 * DT + 1  # column 10 starts inside the window and runs past it
+
+    sess = await mgr.subscribe(_sub(start_t=5 * DT, end_t=end_t), ClientTx())
+    feed = sess._feed
+    assert list(feed._t0s) == [(5 + i) * DT for i in range(6)]
+    assert feed.end_ns == end_t
+    await _retire(mgr, timer, sess)
+
+
+async def test_end_bound_on_the_column_grid_keeps_the_last_column_whole(tmp_path):
+    root = Recorder(tmp_path / "rec", 20.0)
+    _record(root, t0_idx=0, n=N0, start_seq=0)
+    mgr, timer = _manager(root)
+
+    sess = await mgr.subscribe(_sub(start_t=5 * DT, end_t=10 * DT), ClientTx())
+    feed = sess._feed
+    assert list(feed._t0s) == [(5 + i) * DT for i in range(5)]
+    assert feed.end_ns == 10 * DT  # last column 9*DT + one dt, unchanged
+    await _retire(mgr, timer, sess)
+
+
 async def test_open_ended_start_t_loads_from_start(tmp_path):
     root = Recorder(tmp_path / "rec", 20.0)
     _record(root, t0_idx=0, n=N0, start_seq=0)

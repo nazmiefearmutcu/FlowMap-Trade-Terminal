@@ -51,6 +51,8 @@ export function IndicatorPicker(): JSX.Element | null {
       const target = classifyTarget(e.target);
       if (target.editable) return;
       if (e.key === 'Escape') {
+        // A keystroke another surface already consumed stays consumed.
+        if (e.defaultPrevented) return;
         // Esc belongs to the TOPMOST open overlay. The picker is one of them
         // (pushed while open), so a focus inside its own role=dialog does not
         // swallow the key, while a surface opened above it keeps its Escape.
@@ -59,6 +61,8 @@ export function IndicatorPicker(): JSX.Element | null {
         return;
       }
       if (e.key !== 'i' && e.key !== 'I') return;
+      // A held key auto-repeats; one press toggles the picker once.
+      if (e.repeat) return;
       if (!isSingleKeyShortcutsEnabled()) return;
       // A no-op inside another dialog: its own keyboard owns the `I` key there. The
       // picker is itself a role=dialog, so focus inside it still toggles it shut.

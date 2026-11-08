@@ -8,6 +8,14 @@ interface IntelMacroBarProps {
   demo: boolean;
 }
 
+/** The translation key of each stress regime the macro feed reports. */
+const REGIME_KEY: Record<MacroStressData['stressRegime'], string> = {
+  NORMAL: 'intel.regime.normal',
+  ELEVATED: 'intel.regime.elevated',
+  SEVERE: 'intel.regime.severe',
+  UNKNOWN: 'intel.regime.unknown',
+};
+
 /**
  * The macro liquidity footer of the research drawer: SOFR, the high-yield spread,
  * the 10Y-2Y curve and the heuristic stress regime, with when the figures arrived.
@@ -38,7 +46,7 @@ export function IntelMacroBar({ macro, demo }: IntelMacroBarProps): JSX.Element 
         title={macro ? macro.status : t('intel.macroNotConnected')}
       >
         {demo ? `${t('intel.demoBadge')} · ` : ''}
-        {macro ? t('intel.stressRegime', { regime: macro.stressRegime }) : t('intel.macroNotConnected')}
+        {macro ? t('intel.stressRegime', { regime: t(REGIME_KEY[macro.stressRegime] ?? REGIME_KEY.UNKNOWN) }) : t('intel.macroNotConnected')}
       </div>
       {macro && (
         <span className="macro-chip__lbl" data-testid="intel-macro-received">

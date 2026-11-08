@@ -152,3 +152,37 @@ it('names a polled venue snapshot L2-SNAPSHOT, never L2', () => {
     useFlowMapStore.setState({ capability: null });
   }
 });
+
+it('reads a readout flagged sessionClock as the T+ clock, even off a sim subscription', () => {
+  useFlowMapStore.setState({ subscription: null });
+  const mounted = mountProbedCrosshair({ timeNs: 12_500_000_000n, sessionClock: true });
+  try {
+    expect(mounted.container.querySelector('[data-testid="crosshair-time"]')?.textContent).toBe('00:00:12.500');
+  } finally {
+    mounted.done();
+  }
+});
+
+it('gives a polled venue snapshot the caution tone, never the synthetic one', () => {
+  useFlowMapStore.setState({ capability: { depth: 'L2-snapshot' } });
+  const mounted = mountProbedCrosshair({});
+  try {
+    const tag = mounted.container.querySelector('[data-testid="crosshair-src"]');
+    expect(tag?.className).toContain('crosshair__tag--caution');
+    expect(tag?.className).not.toContain('crosshair__tag--synth');
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ capability: null });
+  }
+});
+
+it('records the probe under the market and symbol it was read on', () => {
+  useFlowMapStore.setState({ subscription: { market: 'kraken', symbol: 'XBT/USD', band: 'native', mode: 'live' } });
+  const mounted = mountProbedCrosshair({});
+  try {
+    expect(lastProbeSpot()?.key).toBe('kraken:XBT/USD');
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ subscription: null });
+  }
+});

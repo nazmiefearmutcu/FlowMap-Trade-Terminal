@@ -21,9 +21,12 @@ SOURCE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".html"
 
 # The forms the server rule (server/tests/test_process_comments.py) catches that
 # also occur in TypeScript, CSS and HTML: ticket ids, lane and campaign names,
-# survey and gap ids, milestone and review codes, round and wave numbers, QA
-# codes and audit tags such as ``gl-19``. Domain words that merely look similar
-# (``L2``, ``T0``, ``F10`` as a key name, ``lane`` in ordinary prose) do not match.
+# survey and gap ids, milestone and review codes, round, wave and goal numbers,
+# QA codes, audit tags such as ``gl-19`` and swarm item labels. Domain words
+# that merely look similar (``L2``, ``T0``, ``F10`` as a key name, ``lane`` in
+# ordinary prose, ``SA`` as a ladder label, ``M2`` as SVG path data, a bare
+# ``gap1`` in test data) do not match. scripts/test_check_process_comments.py
+# pins this list against the server's alternatives.
 PROCESS_ID = re.compile(
     r"FM-\d{3}"
     r"|\b[Ll]ane[ -][A-Z][A-Z0-9]{0,2}\b"
@@ -38,12 +41,18 @@ PROCESS_ID = re.compile(
     r"|\bM\d+ T\d+\b"
     r"|\bT[1-9]\d?\b"
     r"|\b[A-Z]\d-[A-Z]\d+\b"
+    r"|\b[A-Z]\d-\d+\b"
     r"|\b[A-Z]-\d\b"
     r"|\b[Rr]ound[ -]?\d\b"
-    r"|\b[Ww]ave \d+\b"
+    r"|\b[Ww]ave[ -]?\d+\b"
+    r"|\b[Ww]ave N\b"
+    r"|\bGOAL \d\b"
+    r"|\bF\d+/T\d+\b"
     r"|\bQA\d+\b"
     r"|\bF\d{2,3}\b"
-    r"|\b[CDH]\d\b"
+    r"|\b[CDHR]\d\b"
+    r"|\baudit FM\b"
+    r"|\bSB item\b"
 )
 
 

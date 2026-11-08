@@ -39,36 +39,15 @@
  * line with an indeterminate progress element carries the reason.
  */
 
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type RefObject } from 'react';
+import type { RefObject } from 'react';
 
 import type { Renderer } from '../gl/renderer';
 import { useT } from '../i18n/useT';
 import type { ConnStatus } from '../net/connection';
 import { useFlowMapStore } from '../state/store';
-import {
-  formatDurationNs,
-  fractionOfExtent,
-  nextSpeed,
-  seekTargetNs,
-  transportPhase,
-  type TimeExtent,
-} from './replay';
-import { closeReasonText } from './ReconnectBanner';
-
-/** Minimap poll interval (ms). */
-const POLL_MS = 250;
-
-interface MinimapGeom {
-  leftPct: number;
-  widthPct: number;
-  extent: TimeExtent | null;
-}
-
-const EMPTY_GEOM: MinimapGeom = { leftPct: 0, widthPct: 100, extent: null };
-
-function clamp01(x: number): number {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+import { formatDurationNs, nextSpeed, seekTargetNs, transportPhase } from './replay';
+import { MinimapLabel, MinimapTrack, TransportButtons } from './TimelineParts';
+import { SCRUB_STEPS, useTimelineSync } from './useTimelineSync';
 
 /**
  * What the transport is ALLOWED to claim, given the attach state.
@@ -123,193 +102,8 @@ export function Timeline({ rendererRef }: TimelineProps): JSX.Element {
   const sessionId = useFlowMapStore((s) => s.sessionId);
   const lastClose = useFlowMapStore((s) => s.lastClose);
   const playback = useFlowMapStore((s) => s.replayPlayback);
-
-  const [geom, setGeom] = useState<MinimapGeom>(EMPTY_GEOM);
-  const [scrub, setScrub] = useState(0); // 0..1000 scrubber position (replay)
-  // Camera follow state, from the SAME ≤4 Hz poll as the extent (a plain boolean getter).
-  const [following, setFollowing] = useState(true);
-  const geomRef = useRef<MinimapGeom>(EMPTY_GEOM);
-  const draggingRef = useRef(false); // true while the user actively scrubs
-  const seekTimerRef = useRef<number | null>(null); // trailing-throttle handle
-  const pendingFracRef = useRef(0); // latest scrub fraction awaiting a seek
-  const windowRef = useRef<HTMLDivElement | null>(null);
   const isReplay = mode === 'replay';
-
-  // Coarse refresh owns time mapping, playhead and labels. The drawn window's
-  // left/width are owned only by the DOM writer below, never by React styles.
-  const refresh = useCallback((): void => {
-    const r = rendererRef.current;
-    const tl = r?.timeline();
-    const state = useFlowMapStore.getState();
-    const replay = state.subscription?.mode === 'replay' ? state.replayPlayback : null;
-    if (r) setFollowing((f) => (f === r.following ? f : r.following));
-    if (!tl) {
-      if (geomRef.current !== EMPTY_GEOM) {
-        geomRef.current = EMPTY_GEOM;
-        setGeom(EMPTY_GEOM);
-      }
-      return;
-    }
-    const span = Math.max(1, tl.newestSeq - tl.oldestSeq);
-    const leftPct = clamp01((tl.viewStartCol - tl.oldestSeq) / span) * 100;
-    const rightPct = clamp01((tl.viewEndCol - tl.oldestSeq) / span) * 100;
-    let extent: TimeExtent | null = null;
-    let toNs: ((col: number) => bigint) | null = null;
-    if (tl.timeBase) {
-      const { anchorSeq, anchorT0Ns, dtNs } = tl.timeBase;
-      toNs = (col: number): bigint =>
-        r?.timestampAtColumn?.(col) ?? anchorT0Ns + BigInt(Math.round((col - anchorSeq) * dtNs));
-      extent = { startNs: toNs(tl.oldestSeq), endNs: toNs(tl.newestSeq) };
-    }
-    if (state.subscription?.mode === 'replay') extent = replay ? { startNs: replay.startNs, endNs: replay.endNs } : null;
-    // Advance the playhead: map the newest column to ns and drive the scrubber
-    // from its fraction of the session extent — unless the user is scrubbing.
-    // Also self-corrects a stale thumb across session/symbol switches.
-    if (extent && toNs && !draggingRef.current) {
-      const f = fractionOfExtent(replay?.positionNs ?? toNs(tl.newestSeq), extent);
-      const nv = Math.round(f * 1000);
-      setScrub((prev) => (prev === nv ? prev : nv));
-    }
-    const next: MinimapGeom = {
-      leftPct,
-      widthPct: Math.max(0.6, rightPct - leftPct),
-      extent,
-    };
-    const prev = geomRef.current;
-    // Skip a re-render unless something moved perceptibly.
-    if (
-      Math.abs(prev.leftPct - next.leftPct) > 0.3 ||
-      Math.abs(prev.widthPct - next.widthPct) > 0.3 ||
-      (prev.extent === null) !== (next.extent === null) ||
-      prev.extent?.startNs !== next.extent?.startNs || prev.extent?.endNs !== next.extent?.endNs
-    ) {
-      geomRef.current = next;
-      setGeom(next);
-    }
-  }, [rendererRef]);
-
-  const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
-
-  // Ref assignment does not render React: the existing poll also owns renderer
-  // attachment. Hot notifications only paint scalar drawn-window geometry.
-  useEffect(() => {
-    let boundRenderer: Renderer | null = null;
-    let unsubscribe: (() => void) | null = null;
-    let disposed = false;
-    let attachment = 0;
-    let paintedWindow: HTMLDivElement | null = null;
-    let paintedLeft = NaN;
-    let paintedWidth = NaN;
-
-    const paintWindow = (r: Renderer | null): void => {
-      const node = windowRef.current;
-      if (!node) return;
-      let leftPct = EMPTY_GEOM.leftPct;
-      let widthPct = EMPTY_GEOM.widthPct;
-      const range = r?.residentRange();
-      if (r && range != null) {
-        const newest = Math.max(range.newest, r.newestColSeq);
-        const view = r.viewSnapshot;
-        const right = view.colOffset + view.colScale;
-        if (!Number.isFinite(newest) || !Number.isFinite(view.colOffset) ||
-            !Number.isFinite(view.colScale) || !Number.isFinite(right)) return;
-        // Match timeline(): session oldest=0, newest=max(resident, appended).
-        const span = Math.max(1, newest);
-        leftPct = clamp01(view.colOffset / span) * 100;
-        const rightPct = clamp01(right / span) * 100;
-        widthPct = Math.max(0.6, rightPct - leftPct);
-      }
-      if (node === paintedWindow && leftPct === paintedLeft && widthPct === paintedWidth) return;
-      node.style.left = `${leftPct}%`;
-      node.style.width = `${widthPct}%`;
-      paintedWindow = node;
-      paintedLeft = leftPct;
-      paintedWidth = widthPct;
-    };
-
-    const syncAttachment = (): void => {
-      const r = rendererRef.current;
-      if (r === boundRenderer) return;
-      const token = ++attachment;
-      unsubscribe?.();
-      unsubscribe = null;
-      boundRenderer = r;
-      if (r) {
-        unsubscribe = r.onViewChanged(() => {
-          // The token also rejects a stale callback after A→B→A reattachment.
-          if (disposed || token !== attachment || rendererRef.current !== r) return;
-          paintWindow(r);
-        });
-      }
-    };
-
-    syncAttachment();
-    paintWindow(boundRenderer);
-    const id = window.setInterval(() => {
-      syncAttachment();
-      refreshRef.current();
-      paintWindow(boundRenderer);
-    }, POLL_MS);
-    return () => {
-      disposed = true;
-      window.clearInterval(id);
-      unsubscribe?.();
-      unsubscribe = null;
-      boundRenderer = null;
-    };
-  }, [rendererRef]);
-
-  // Reset the scrub gate on a mode switch, and drop any pending throttled seek.
-  // Keyed on `isReplay` — NOT `[]` — because Timeline never unmounts (App renders
-  // it unconditionally): a replay→live switch mid-drag would otherwise leak a
-  // Seek onto a LIVE subscription and leave draggingRef stuck true, freezing the
-  // playhead for the rest of the session.
-  useEffect(() => {
-    return () => {
-      draggingRef.current = false;
-      if (seekTimerRef.current !== null) {
-        window.clearTimeout(seekTimerRef.current);
-        seekTimerRef.current = null;
-      }
-    };
-  }, [isReplay]);
-
-  // Emit a Seek at the given scrubber fraction. Early-return on a null extent so
-  // no bogus Seek{0} (1970 epoch) is sent before a session's timebase is known.
-  const commitSeek = (fraction: number): void => {
-    const p = useFlowMapStore.getState().replayPlayback;
-    const extent = p ? { startNs: p.startNs, endNs: p.endNs } : geomRef.current.extent;
-    if (!extent) return;
-    seek(seekTargetNs(fraction, extent));
-  };
-
-  // While dragging: immediate thumb feedback (setScrub) but only a trailing,
-  // throttled seek so we don't spam the connection with a Seek per input event.
-  const onScrub = (e: ChangeEvent<HTMLInputElement>): void => {
-    const v = Number(e.target.value);
-    setScrub(v);
-    draggingRef.current = true;
-    pendingFracRef.current = v / 1000;
-    if (seekTimerRef.current === null) {
-      seekTimerRef.current = window.setTimeout(() => {
-        seekTimerRef.current = null;
-        commitSeek(pendingFracRef.current);
-      }, 250);
-    }
-  };
-
-  // Pointer/key release: flush any pending throttled seek and release the drag
-  // gate so the poll effect resumes driving the playhead.
-  const onScrubCommit = (): void => {
-    if (!draggingRef.current) return;
-    draggingRef.current = false;
-    if (seekTimerRef.current !== null) {
-      window.clearTimeout(seekTimerRef.current);
-      seekTimerRef.current = null;
-    }
-    commitSeek(pendingFracRef.current);
-  };
+  const { geom, scrub, following, windowRef, onScrub, onScrubCommit } = useTimelineSync(rendererRef, isReplay, seek);
 
   // Read the speed at CLICK time, not from the render closure, so a fast
   // double-click steps 1→2→5 instead of emitting SetSpeed(2) twice.
@@ -328,7 +122,7 @@ export function Timeline({ rendererRef }: TimelineProps): JSX.Element {
   const waiting =
     display === 'connecting' || display === 'reconnecting' || display === 'refused';
   const durationNs = extent ? extent.endNs - extent.startNs : 0n;
-  const positionNs = extent ? (playback?.positionNs ?? seekTargetNs(scrub / 1000, extent)) - extent.startNs : 0n;
+  const positionNs = extent ? (playback?.positionNs ?? seekTargetNs(scrub / SCRUB_STEPS, extent)) - extent.startNs : 0n;
   const playing = attached && isReplay && !paused && !playback?.ended;
   const phase = transportPhase(isReplay, paused, following);
   // `—` until an attached session has produced real geometry — never the dead
@@ -345,170 +139,62 @@ export function Timeline({ rendererRef }: TimelineProps): JSX.Element {
       : display === 'refused'
         ? 'state-pill state-pill--live-detached'
         : 'state-pill';
-  // Translated pill text per phase (replay.ts's phaseLabel is English-only).
-  const phaseKey =
-    phase === 'live-following' ? 'transport.following'
-      : phase === 'live-detached' ? 'transport.scrolledBack'
-        : phase === 'replay-playing' ? 'transport.replayPlaying'
-          : 'transport.replayPaused';
-  let pillText: string;
-  switch (display) {
-    case 'attached':
-      pillText = playback?.ended && isReplay ? t('transport.replayEnded', { speed }) : t(phaseKey, { speed });
-      break;
-    case 'refused':
-      pillText = t('transport.replayRefused');
-      break;
-    case 'no-feed':
-      pillText = t('transport.noFeed');
-      break;
-    case 'reconnecting':
-      pillText = isReplay ? t('transport.replayConnecting') : t('transport.reconnecting');
-      break;
-    default:
-      pillText = isReplay ? t('transport.replayConnecting') : t('transport.connecting');
-      break;
-  }
-  const pillTitle =
-    display === 'refused'
-      ? t('transport.refusedTitle', { reason: closeReasonText(lastClose) })
-      : display === 'reconnecting'
-        ? t('transport.waitingReason', { reason: closeReasonText(lastClose) })
-        : display === 'connecting'
-          ? t('transport.waitingTitle')
-          : undefined;
-  const waitText =
-    display === 'refused'
-      ? t('transport.capacity')
-      : display === 'reconnecting'
-        ? t('transport.waitingReason', { reason: closeReasonText(lastClose) })
-        : t('transport.waitingFeed');
+
+  // A finished replay restarts from its first moment and plays on.
+  const onPlayToggle = (): void => {
+    if (playback?.ended === true && extent) {
+      seek(seekTargetNs(0, extent));
+      resume();
+    } else if (paused) {
+      resume();
+    } else {
+      pause();
+    }
+  };
+  const playTitle = attached
+    ? playing
+      ? t('transport.pause')
+      : playback?.ended === true
+        ? t('transport.restart')
+        : t('transport.play')
+    : t('transport.attachWait');
 
   return (
     <footer className="timeline" data-testid="timeline">
-      <div className="transport" data-testid="transport">
-        {isReplay && (
-          <>
-            <button
-              type="button"
-              className={`transport__play${playing ? ' is-playing' : ''}`}
-              data-testid="transport-play"
-              // The name is the action the button performs now (Pause while playing);
-              // no aria-pressed, which would announce the same state a second time.
-              aria-label={playing ? t('transport.pause') : t('transport.play')}
-              title={
-                attached
-                  ? playing
-                    ? t('transport.pause')
-                    : playback?.ended === true
-                      ? t('transport.restart')
-                      : t('transport.play')
-                  : t('transport.attachWait')
-              }
-              disabled={!attached}
-              onClick={() => {
-                // A finished replay restarts from its first moment and plays on.
-                if (playback?.ended === true && extent) {
-                  seek(seekTargetNs(0, extent));
-                  resume();
-                } else if (paused) {
-                  resume();
-                } else {
-                  pause();
-                }
-              }}
-            >
-              {playing ? '❚❚' : '▶'}
-            </button>
-            <button
-              type="button"
-              className="speed-cycle"
-              data-testid="speed-cycle"
-              data-speed={speed}
-              aria-label={t('transport.speedAria', { speed })}
-              title={t('transport.speedTitle')}
-              disabled={!attached}
-              onClick={onCycleSpeed}
-            >
-              {speed}×
-            </button>
-          </>
-        )}
-      </div>
-
+      <TransportButtons
+        t={t}
+        isReplay={isReplay}
+        attached={attached}
+        playing={playing}
+        speed={speed}
+        playTitle={playTitle}
+        onPlayToggle={onPlayToggle}
+        onCycleSpeed={onCycleSpeed}
+      />
       <div className={`minimap${isReplay ? ' minimap--replay' : ''}`}>
-        <div className="minimap__label">
-          <span
-            tabIndex={-1}
-            className={pillClass}
-            data-testid="transport-state"
-            data-transport={display}
-            title={pillTitle}
-          >
-            {pillText}
-          </span>
-          {waiting && (
-            <span
-              className="minimap__waiting"
-              data-testid="transport-waiting"
-              role="status"
-              aria-live="polite"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                minWidth: 0,
-                overflow: 'hidden',
-                whiteSpace: 'nowrap',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              <progress
-                data-testid="transport-progress"
-                aria-label={t('transport.waitingTitle')}
-                style={{ width: 64, height: 6, accentColor: 'var(--accent)' }}
-              />
-              {waitText}
-            </span>
-          )}
-          {!isReplay && attached && extent && (
-            // In live mode the readout is the loaded session's SPAN, not elapsed time.
-            <span className="minimap__readout-k" style={{ opacity: 0.6 }}>{t('transport.span')}</span>
-          )}
-          <span
-            className="minimap__readout"
-            data-testid="time-readout"
-            style={{ fontVariantNumeric: 'tabular-nums' }}
-          >
-            {readout}
-          </span>
-        </div>
-        <div className="minimap__track" data-testid="minimap-track">
-          <div className="minimap__extent" style={{ left: 0, width: '100%' }} />
-          <div
-            ref={windowRef}
-            className="minimap__window"
-            data-testid="minimap-window"
-          />
-          {isReplay && (
-            <input
-              type="range"
-              className="minimap__scrub"
-              min={0}
-              max={1000}
-              step={1}
-              value={scrub}
-              disabled={!attached}
-              data-testid="seek-scrubber"
-              aria-label={t('transport.seekAria')}
-              aria-valuetext={readout}
-              onChange={onScrub}
-              onPointerUp={onScrubCommit}
-              onKeyUp={onScrubCommit}
-              onBlur={onScrubCommit}
-            />
-          )}
-        </div>
+        <MinimapLabel
+          t={t}
+          display={display}
+          phase={phase}
+          ended={playback?.ended === true}
+          speed={speed}
+          isReplay={isReplay}
+          pillClass={pillClass}
+          waiting={waiting}
+          lastClose={lastClose}
+          live={!isReplay && attached && extent !== null}
+          readout={readout}
+        />
+        <MinimapTrack
+          t={t}
+          windowRef={windowRef}
+          isReplay={isReplay}
+          attached={attached}
+          scrub={scrub}
+          readout={readout}
+          onScrub={onScrub}
+          onScrubCommit={onScrubCommit}
+        />
       </div>
     </footer>
   );

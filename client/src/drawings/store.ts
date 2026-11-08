@@ -31,7 +31,7 @@ import { create } from 'zustand';
 
 import { createDrawing, movePoint as modelMovePoint, restyleDrawing, translateDrawing } from './model';
 import { hasDrawingRoom, loadDrawings, saveDrawings, type StorageLike } from './persist';
-import { safeLocalStorage } from '../state/safeStorage';
+import { lazyLocalStorage } from '../state/safeStorage';
 import { clampWidth, DEFAULT_STYLE, POINTS_PER_TOOL, type ChartPoint, type Drawing, type DrawingTool, type DrawStyle } from './types';
 
 /** Undo-stack depth (at least 20; generous because snapshots are cheap). */
@@ -111,22 +111,20 @@ export interface DrawingsState {
 }
 
 /**
- * Last Storage handed to setDrawingsStorage — module-scoped because
- * persistence wiring is environment plumbing, not something components render.
- * `undefined` means "not resolved yet"; null disables persistence
- * (session-local drawings).
+ * Storage handed to setDrawingsStorage — module-scoped because persistence wiring
+ * is environment plumbing, not something components render. `undefined` means
+ * "use the browser's localStorage"; null disables persistence (session-local drawings).
  */
-let savedStorage: StorageLike | null | undefined;
+let storageOverride: StorageLike | null | undefined;
 
 /** Test seam / SSR seam: inject a storage double (or null to disable). */
 export function setDrawingsStorage(s: StorageLike | null): void {
-  savedStorage = s;
+  storageOverride = s;
 }
 
-/** The browser's localStorage, resolved lazily; drawings stay session-local when it is denied. */
+/** The storage drawings persist to; session-local when the browser denies localStorage. */
 function getStorage(): StorageLike | null {
-  if (savedStorage === undefined) savedStorage = safeLocalStorage();
-  return savedStorage;
+  return storageOverride === undefined ? lazyLocalStorage() : storageOverride;
 }
 
 let idCounter = 0;
@@ -438,7 +436,7 @@ export function toggleDrawToolbar(): void {
  * scope switches go through setScope, which preserves cross-scope documents.
  */
 export function resetDrawingsForTest(): void {
-  savedStorage = undefined;
+  storageOverride = undefined;
   useDrawingsStore.setState({
     market: null,
     symbol: null,

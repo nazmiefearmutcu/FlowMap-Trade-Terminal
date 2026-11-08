@@ -1,4 +1,4 @@
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,7 @@ import { getTimeZonePref, setTimeZonePref } from '../i18n/format';
 import { isSingleKeyShortcutsEnabled, setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import { setTheme, THEME_IDS } from '../theme';
 import { useFlowMapStore } from '../state/store';
+import { IndicatorPicker } from './IndicatorPicker';
 import { closeOnboarding, isOnboardingOpen } from './OnboardingCard';
 import { KEYSHEET } from './keysheet';
 import { pushOverlay } from './overlayStack';
@@ -125,7 +126,7 @@ describe('SettingsDrawer range accessibility', () => {
     const bubble = container.querySelector('[data-testid="setting-bubble"]')!;
     const tickNotches = container.querySelectorAll('[data-testid^="tickGrouping-"]');
     expect(tickNotches.length).toBe(3);
-    // i18n pass (MIGRATION.md): the aria label moved onto the shared
+    // i18n pass (docs/i18n-migration.md): the aria label moved onto the shared
     // settings.normalization key (EN text 'Normalization').
     expect(norm.getAttribute('aria-label')).toBe('Normalization');
     expect(norm.getAttribute('aria-valuetext')).toBe('p95');
@@ -656,6 +657,51 @@ describe('SettingsDrawer single-key switch-off wording', () => {
     expect(container.querySelector('[data-testid="toggle-indicator-picker"]')!.textContent).toBe(t('settings.indicatorPicker'));
     expect(container.textContent).toContain(t('shortcuts.singleKeysHint'));
     expect(container.querySelectorAll('[data-testid="keysheet-row-off"]')).toHaveLength(0);
+  });
+});
+
+describe('SettingsDrawer opens the indicator picker over the chart', () => {
+  afterEach(() => {
+    resetIndicatorStoreForTest();
+  });
+
+  it('closes itself and moves focus to the picker close button, which the scrim would hide', () => {
+    const onClose = vi.fn();
+    // A host that unmounts the drawer when it asks to close, as the app does.
+    function Host(): JSX.Element {
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <IndicatorPicker />
+          {open && (
+            <SettingsDrawer
+              settings={settings()}
+              onChange={() => {}}
+              onClose={() => {
+                onClose();
+                setOpen(false);
+              }}
+            />
+          )}
+        </>
+      );
+    }
+    render(<Host />);
+    click(document.querySelector('[data-testid="toggle-indicator-picker"]')!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-testid="settings-drawer"]')).toBeNull();
+    expect(document.querySelector('[data-testid="indi-close"]')).not.toBeNull();
+    expect(document.activeElement).toBe(document.querySelector('[data-testid="indi-close"]'));
+  });
+
+  it('opens the picker from the switch once, and switching it off again leaves the drawer alone', () => {
+    const onClose = vi.fn();
+    render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={onClose} />);
+    click(document.querySelector('[data-testid="toggle-indicator-picker"]')!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    onClose.mockClear();
+    click(document.querySelector('[data-testid="toggle-indicator-picker"]')!);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
 

@@ -4,3 +4,20 @@
 .tape__time {
   position: relative;
 }
+
+/* The tape's clock label: the zone of its wall-clock times, or the session marker for
+   the sim. Small and muted beside the badges, so it names the clock without competing
+   with the tier and the HELD state. */
+.tape__clock {
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+}
+
+/* The panel title is a heading. The wrapper keeps the header's flex layout. */
+.tape .panel__heading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  font: inherit;
+}

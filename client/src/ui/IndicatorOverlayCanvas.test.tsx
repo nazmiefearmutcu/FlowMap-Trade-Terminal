@@ -19,6 +19,8 @@ import { resetIndicatorStoreForTest, useIndicatorStore } from '../indicators/sto
 import { ingestForTest as ingestCandleMsg, getSnapshot as getCandleSnapshot, resetForTest as resetCandles } from '../candles/store';
 import { MsgType, type DepthColumn, type Trade } from '../proto/types';
 import { useFlowMapStore } from '../state/store';
+import { setLocale } from '../i18n';
+import { fmtVal } from './IndicatorOverlayCanvasPaint';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -148,6 +150,28 @@ afterEach(() => {
   delete (HTMLCanvasElement.prototype as { clientWidth?: unknown }).clientWidth;
   delete (HTMLCanvasElement.prototype as { clientHeight?: unknown }).clientHeight;
   vi.useRealTimers();
+});
+
+describe('fmtVal — pane label', () => {
+  it('rounds before it picks the tier, so no label reads 1000.0K', () => {
+    expect(fmtVal(999_960)).toBe('1.00M');
+    expect(fmtVal(999_999.96)).toBe('1.00M');
+    expect(fmtVal(9_999.96)).toBe('10.0K');
+    expect(fmtVal(12_345)).toBe('12.3K');
+    expect(fmtVal(1_234_567)).toBe('1.23M');
+    expect(fmtVal(250)).toBe('250.0');
+    expect(fmtVal(42.5)).toBe('42.50');
+  });
+
+  it('uses the UI locale decimal separator', () => {
+    try {
+      setLocale('tr');
+      expect(fmtVal(999_960)).toBe('1,00M');
+      expect(fmtVal(12_345)).toBe('12,3K');
+    } finally {
+      setLocale('en');
+    }
+  });
 });
 
 describe('IndicatorOverlayCanvas — mount/visibility', () => {

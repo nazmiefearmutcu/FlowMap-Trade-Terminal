@@ -169,6 +169,8 @@ def test_unrecorded_keyless_equity_replays_as_synth_never_real_l2(tmp_path):
 def test_unrecorded_crypto_recording_never_claims_exchange_side(tmp_path):
     feed = ReplayFeed(market="binance-spot", symbol="BTCUSDT", tail=_recorded_tail(tmp_path, 4))
     assert feed.capability["depth"] != "L2"
+    # The stand-in is the snapshot tier the client badges as L2-SNAPSHOT.
+    assert feed.capability["depth"] == "L2-snapshot"
     assert feed.capability["trade_side"] == "na"
     assert feed.capability["cvd"] == "na"
 
@@ -185,8 +187,21 @@ def test_replayed_sim_recording_is_flagged_synthetic_even_with_recorded_l2(tmp_p
     assert feed.capability["synthetic"] is True
 
 
-def test_replayed_keyless_equity_recording_is_flagged_synthetic(tmp_path):
+def test_replayed_keyless_equity_recording_is_not_synthetic(tmp_path):
+    """Its prices and trades were observed; only the depth tier is SYNTH. The
+    sim badge keys on ``synthetic``, so this must not carry it."""
     feed = ReplayFeed(market="equity", symbol="AAPL", tail=_recorded_tail(tmp_path, 4))
+    assert feed.capability["depth"] == "SYNTH"
+    assert feed.capability["synthetic"] is False
+    assert feed.capability["depth_provenance"] == "recorded-density"
+
+
+def test_replayed_sim_market_stays_synthetic_whatever_depth_was_recorded(tmp_path):
+    recorded = {"depth": "SYNTH", "tape": "tick", "trade_side": "na", "cvd": "na"}
+    feed = ReplayFeed(
+        market="sim", symbol="SIM-DEMO", tail=_recorded_tail(tmp_path, 4),
+        recorded_capability=recorded,
+    )
     assert feed.capability["synthetic"] is True
 
 

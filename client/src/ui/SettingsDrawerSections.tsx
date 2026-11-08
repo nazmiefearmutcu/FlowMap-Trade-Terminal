@@ -50,11 +50,19 @@ export function SettingsAppearanceSection({
   settings,
   onChange,
   onOpenAbout,
-}: SettingsSectionProps & { onOpenAbout?: () => void }): JSX.Element {
+  onCloseDrawer,
+}: SettingsSectionProps & { onOpenAbout?: () => void; onCloseDrawer?: () => void }): JSX.Element {
   const t = useT(); // re-renders on locale change
   const toolbarVisible = useDrawingsStore((s) => s.toolbarVisible);
   const pickerOpen = useIndicatorStore((s) => s.pickerOpen);
   const singleKeys = useSingleKeyShortcuts();
+  // The picker is drawn in the chart, under this drawer's scrim. Opening it from
+  // here closes the drawer, so focus lands on the picker's own close button rather
+  // than on a control the scrim hides. Closing the picker keeps the drawer open.
+  const onPickerSwitch = (): void => {
+    toggleIndicatorPicker();
+    if (!pickerOpen) onCloseDrawer?.();
+  };
   return (
     <>
       {/* language picker (i18n shell: EN default + TR). useT() above makes
@@ -106,7 +114,7 @@ export function SettingsAppearanceSection({
         aria-checked={pickerOpen}
         className={`check${pickerOpen ? ' is-on' : ''}`}
         data-testid="toggle-indicator-picker"
-        onClick={toggleIndicatorPicker}
+        onClick={onPickerSwitch}
       >
         {t(singleKeys ? 'settings.indicatorPicker' : 'settings.indicatorPickerNoKey')}
         <span className="check__box" aria-hidden="true" />

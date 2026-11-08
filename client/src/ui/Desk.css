@@ -4,7 +4,7 @@
 .desk-toolbar button:hover, .desk-window button:hover { background: var(--bg-3); color: var(--text); }
 .desk-toolbar button[aria-pressed='true'] { color: var(--text); background: var(--bg-3); border-color: var(--line-2); }
 .desk-toolbar__layout button[aria-pressed='true'] { border-bottom-color: var(--accent); }
-.desk-toolbar button:focus-visible, .desk-window button:focus-visible, .desk-channel select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.desk-toolbar button:focus-visible, .desk-window button:focus-visible, .desk-channel select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .desk-channel { display: flex; align-items: center; gap: 6px; font-size: var(--fs-2xs); color: var(--text-2); white-space: nowrap; }
 .desk-channel select { color: var(--text); background: var(--bg-1); border: 1px solid var(--line-2); border-radius: var(--r-1); padding: 4px; font: var(--fs-sm) var(--font-mono); }
 .desk-toolbar__navigation { margin-left: auto; }
@@ -18,7 +18,7 @@
 .pane-resizer { flex: 0 0 auto; background: var(--bg-1); position: relative; touch-action: none; z-index: 8; }
 .pane-resizer::after { content: ''; position: absolute; background: var(--line-2); }
 .pane-resizer:hover::after, .pane-resizer:focus-visible::after { background: var(--accent); }
-.pane-resizer:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.pane-resizer:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .pane-resizer--x { width: 5px; cursor: col-resize; }
 .pane-resizer--x::after { top: 0; bottom: 0; left: 2px; width: 1px; }
 .pane-resizer--y { height: 5px; cursor: row-resize; }
@@ -36,7 +36,7 @@
 .flow-panel__body { padding: 9px 12px 10px; }
 .flow-panel__context { display: flex; justify-content: space-between; gap: 6px; font-size: var(--fs-2xs); color: var(--text-2); }
 .flow-panel__delta { display: flex; align-items: baseline; gap: 10px; margin: 8px 0; font-size: var(--fs-2xs); color: var(--text-2); }
-.flow-panel__delta strong { font: 600 20px/24px var(--font-mono); letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
+.flow-panel__delta strong { font: 600 var(--fs-3xl)/24px var(--font-mono); letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
 .flow-panel__delta > :last-child { margin-left: auto; font-variant-numeric: tabular-nums; font-size: var(--fs-2xs); }
 .flow-panel [data-side='buy'], .flow-panel .is-buy { color: var(--accent-bright); }
 .flow-panel [data-side='sell'], .flow-panel .is-sell { color: var(--sell-bright, var(--sell)); }

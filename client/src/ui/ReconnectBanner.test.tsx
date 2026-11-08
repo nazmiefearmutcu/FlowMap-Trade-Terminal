@@ -148,26 +148,16 @@ describe('ReconnectBanner terminal and escalated states', () => {
     expect(document.body.querySelector('[data-testid="reconnect-banner"]')).toBeNull();
   });
 
-  it('shows a known refusal code as its sentence, with no retry control', () => {
-    useFlowMapStore.setState({ status: 'closed', refusal: { reason: 'invalid_symbol' } });
-    render();
-    const el = document.body.querySelector('[data-testid="refusal-banner"]')!;
-    expect(el.getAttribute('role')).toBe('alert');
-    expect(el.textContent).toBe(
-      t('banner.refusedWithReason', { reason: t('banner.refusalReason.invalidSymbol') }),
-    );
-    expect(el.textContent).not.toContain('invalid_symbol');
-    expect(document.body.querySelector('[data-testid="reconnect-retry"]')).toBeNull();
-  });
-
-  it('shows the generic unrecognized-reason copy for an unknown code, never the raw token', () => {
-    useFlowMapStore.setState({ status: 'closed', refusal: { reason: 'no recording for this session' } });
-    render();
-    const el = document.body.querySelector('[data-testid="refusal-banner"]')!;
-    expect(el.textContent).toBe(
-      t('banner.refusedWithReason', { reason: t('banner.refusalReason.unknown') }),
-    );
-    expect(el.textContent).not.toContain('no recording');
+  it('shows the refusal copy with no retry control, and never the raw server token', () => {
+    for (const reason of ['invalid_symbol', 'no recording for this session']) {
+      useFlowMapStore.setState({ status: 'closed', refusal: { reason } });
+      render();
+      const el = document.body.querySelector('[data-testid="refusal-banner"]')!;
+      expect(el.getAttribute('role')).toBe('alert');
+      expect(el.textContent).toBe(t('banner.refused'));
+      expect(el.textContent).not.toContain(reason);
+      expect(document.body.querySelector('[data-testid="reconnect-retry"]')).toBeNull();
+    }
   });
 
   it('uses the plain refusal copy when the server gives no reason', () => {

@@ -253,7 +253,7 @@ export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
 } as const;
 /**
  * Under-stroke drawn beneath an overlay trace (VWAP, CVD, POC, GEX). Where the
- * density ramp runs pale (t of 0.6 and up), a trace drawn straight onto it can
+ * density ramp runs pale (t of 0.5 and up), a trace drawn straight onto it can
  * lose contrast, so the halo sits between the two. Black on the dark themes and
  * white on the light ones: each keeps at least 3:1 against that hot end.
  */

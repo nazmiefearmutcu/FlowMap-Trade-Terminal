@@ -11,6 +11,7 @@
  */
 
 import { t } from '../../i18n';
+import { formatPrice } from '../../i18n/format';
 import { quoteDecimals } from './axisTicks';
 import type { OverlayFrame } from './frame';
 import { OVERLAY } from './palette';
@@ -124,7 +125,7 @@ export class GexOverlay {
       solid.flush();
 
       // Right-edge badge on text layer, at its stacked anchor (the line stays on the true row).
-      text.badge(cssW - 4, level.labelY, `${level.label} ${level.price.toFixed(decimals)}`, {
+      text.badge(cssW - 4, level.labelY, `${level.label} ${formatPrice(level.price, decimals)}`, {
         align: 'right',
         color: level.colorCss,
         size: 10,

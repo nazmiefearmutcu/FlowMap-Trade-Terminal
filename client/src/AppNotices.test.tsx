@@ -100,14 +100,14 @@ describe('App notices', () => {
     expect(alerts[0].textContent).toContain('2');
   });
 
-  it('a refused subscription is one terminal notice with its translated reason and no retry control', () => {
+  it('a refused subscription is one terminal notice with the refusal copy and no retry control', () => {
     const container = mountApp();
     act(() => {
       useFlowMapStore.setState({ refusal: { reason: 'invalid_symbol' } });
     });
     const notices = container.querySelectorAll('[data-testid="refusal-banner"]');
     expect(notices).toHaveLength(1);
-    expect(notices[0].textContent).toContain(t('banner.refusalReason.invalidSymbol'));
+    expect(notices[0].textContent).toBe(t('banner.refused'));
     expect(notices[0].textContent).not.toContain('invalid_symbol');
     expect(notices[0].querySelector('button')).toBeNull();
   });
@@ -134,6 +134,21 @@ describe('App notices', () => {
       useFlowMapStore.setState({ recordingDegraded: false });
     });
     expect(container.querySelector('[data-testid="recording-degraded"]')).toBeNull();
+  });
+
+  it('a lagging market overview shows a polite status notice that clears when the overview recovers', () => {
+    const container = mountApp();
+    expect(container.querySelector('[data-testid="overview-degraded"]')).toBeNull();
+    act(() => {
+      useFlowMapStore.setState({ capability: { overview_degraded: true } });
+    });
+    const notice = container.querySelector('[data-testid="overview-degraded"]');
+    expect(notice?.getAttribute('role')).toBe('status');
+    expect(notice?.textContent).toContain(t('banner.overviewDegraded'));
+    act(() => {
+      useFlowMapStore.setState({ capability: {} });
+    });
+    expect(container.querySelector('[data-testid="overview-degraded"]')).toBeNull();
   });
 
   it('a failed desktop engine shows its log path and a Retry that asks the shell to restart it', async () => {

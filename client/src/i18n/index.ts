@@ -14,7 +14,7 @@
  * overlays' labels, the tape, watchlist, drawings, measure tool and keyboard
  * reference. Data identifiers (market ids, symbols, theme ids) are never
  * translated. Components call `t()` (or `useT()` to re-render on a locale
- * change); see MIGRATION.md for any surface still to be migrated.
+ * change); see docs/i18n-migration.md for any surface still to be migrated.
  */
 
 import { en } from './en';

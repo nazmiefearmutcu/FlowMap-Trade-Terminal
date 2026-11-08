@@ -1,5 +1,6 @@
 """Tests for scripts/check_process_comments.py (stdlib unittest)."""
 
+import ast
 import contextlib
 import io
 import sys
@@ -75,6 +76,83 @@ class ProcessIdentifierTests(unittest.TestCase):
     def test_offenders_carry_their_line_number(self):
         text = "clean\n// (FM-101) old\nclean\n"
         self.assertEqual(checker.offenders_in(text, "a.ts"), ["a.ts:2: // (FM-101) old"])
+
+
+class ServerParityTests(unittest.TestCase):
+    """The client gate and the server rule (server/tests/test_process_comments.py) share one list.
+
+    Every server alternative must appear in SERVER_FORMS, so a new server form
+    cannot land without a decision here. Each form either has a client sample
+    that the client pattern flags, or is listed as a documented client exemption.
+    """
+
+    SERVER_FORMS = {
+        r"FM-\d{3}": ("FM-123", True),
+        r"\blanes?\b": ("lane", False),  # ordinary prose uses "lane"
+        r"\blane [A-Z]{2}\b": ("lane DW", True),
+        r"\bswarm\b": ("swarm", True),
+        r"\bcampaign\b": ("campaign", True),
+        r"NEEDS-CORE": ("NEEDS-CORE", True),
+        r"\bcontract C\d": ("contract C4", True),
+        r"\bsurvey-?\d": ("survey-4", True),
+        r"\bgap\d-\d": ("gap2-13", True),
+        r"\bcore-\d{2}\b": ("core-19", True),
+        r"\bapi-\d{2}\b": ("api-02", True),
+        r"\bM\d( T\d+)?\b": ("M2 T10", True),  # bare M2 is SVG path data
+        r"\bT\d{1,2}\b": ("T7", True),  # T0 is time zero in code
+        r"\bGOAL \d\b": ("GOAL 4", True),
+        r"\bC\d\b": ("C4", True),
+        r"\bH\d\b": ("H5", True),
+        r"\bR\d-[A-Z]\d\b": ("R1-M2", True),
+        r"\bQA\d+\b": ("QA3", True),
+        r"\bround \d\b": ("round 2", True),
+        r"\baudit FM": ("audit FM", True),
+        r"\bSB item": ("SB item", True),
+        r"\bSA\b": ("SA", False),  # a ladder label in the i18n tables
+        r"\bSB\b": ("SB", False),  # the same label family as SA
+        r"\bA\d-\d+\b": ("A1-12", True),
+        r"\b[Rr]ound-?\d\b": ("round-2", True),
+        r"\bR\d\b": ("R2", True),
+        r"\bM-\d\b": ("M-1", True),
+        r"\bwave[ -]?\d+\b": ("wave-3", True),
+        r"\bwave N\b": ("wave N", True),
+        r"\bF\d+/T\d+\b": ("F9/T3", True),
+        r"\bgap-?\d+\b": ("gap3", False),  # bare gapN occurs in test data strings
+    }
+
+    @staticmethod
+    def server_alternatives():
+        source = (checker.ROOT / "server/tests/test_process_comments.py").read_text(encoding="utf-8")
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "PROCESS_ID" for target in node.targets
+            ):
+                return _literal_concat(node.value.args[0]).split("|")
+        raise AssertionError("server PROCESS_ID not found")
+
+    def test_every_server_alternative_is_accounted_for(self):
+        self.assertEqual(set(self.server_alternatives()), set(self.SERVER_FORMS))
+
+    def test_client_flags_every_shared_form(self):
+        for form, (sample, flagged) in self.SERVER_FORMS.items():
+            if flagged:
+                with self.subTest(form=form):
+                    self.assertTrue(checker.PROCESS_ID.search(sample), f"{form} misses {sample!r}")
+
+    def test_client_exemptions_stay_exempt(self):
+        for form, (sample, flagged) in self.SERVER_FORMS.items():
+            if not flagged:
+                with self.subTest(form=form):
+                    self.assertIsNone(checker.PROCESS_ID.search(sample), f"{form} now flags {sample!r}")
+
+
+def _literal_concat(node):
+    """The text of a chain of string literals joined with ``+`` (the server's regex parts)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _literal_concat(node.left) + _literal_concat(node.right)
+    raise AssertionError(f"not a plain string concatenation: {ast.dump(node)}")
 
 
 class ScanTests(unittest.TestCase):

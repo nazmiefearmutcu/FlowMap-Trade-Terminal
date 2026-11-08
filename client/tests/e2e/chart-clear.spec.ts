@@ -15,7 +15,7 @@ import { expect, test, type Page } from '@playwright/test';
  * `.price-axis .axis-canvas`, `.time-axis .axis-canvas`, `.indi-canvas`. Every
  * wait is a condition poll.
  *
- * Determinism note (honest, per the lane brief): the sim universe has exactly
+ * Determinism note: the sim universe has exactly
  * ONE symbol (`SIM-DEMO`), so a real palette symbol switch is not available on
  * the sim session; the session-reset spec drives the same `renderer.resetForSession()`
  * path the App uses on a `sessionResetKey` change (also used by

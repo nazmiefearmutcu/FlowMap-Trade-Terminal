@@ -29,7 +29,14 @@ webview: WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux) that:
    window shows the failure and offers Retry (`retry_sidecar` command). Only a
    Retry refills the budget. A Settings change that needs a new sidecar restarts
    only a sidecar that runs with the other value, and a restart already under way
-   is not repeated for a queued command.
+   is not repeated for a queued command. A restart the user asks for (Retry or a
+   Settings change) stops the old sidecar with the same 12 s grace as a quit; an
+   automatic restart of a crashed or silent sidecar waits 3 s before the kill.
+
+The sidecar inherits only an allowlisted set of environment variables
+(`src/sidecar.rs`), so a `FLOWMAP_*` variable in the user's shell does not reach it.
+The market-data keys `ALPACA_API_KEY`, `ALPACA_API_SECRET` and `FINNHUB_API_KEY` are
+on that list, so the installed app passes them to the server as a source run does.
 
 ## Layout
 
@@ -56,7 +63,7 @@ app/
     src/sidecar.rs           spawning and stopping the sidecar process (env allowlist, job object)
     src/supervisor.rs        health probes, restart policy and backoff, sidecar-status events
     src/instance_lock.rs     single-instance lock on flowmap.lock and the "already running" hand-off
-    src/native_dialog.rs     native error dialogs (Win32 message box, osascript, zenity/kdialog)
+    src/native_dialog.rs     native error dialogs (Win32 message box, osascript, zenity, kdialog, notify-send)
     src/listener.rs          proves the port's listener is the sidecar before the token is sent
     src/redact.rs            masks session tokens in the sidecar log
     src/server_log.rs        the sidecar log: first-spawn rotation, respawn separator, size cap
@@ -113,13 +120,15 @@ when that stamp and the config disagree. Bumping a release means editing
 `flowmap_server/__init__.py`, `client/package.json`(+`.lock`), then rerunning
 `make-bg.py`.
 
-**Current state:** the committed DMG artwork is still stamped `1.3.1`
-(`app/icons/dmg/RENDERED_VERSION`), so `scripts/check_dmg_art.py` fails until the
-art is re-rendered for `1.6.0`. The render needs macOS with Menlo installed, so it
-waits for a macOS machine, and the stamp is not edited by hand. The
-first-run line in `make-bg.py` now carries the macOS 15 wording (System Settings →
-Privacy & Security → Open Anyway, the same words as the first-run section below and
-`build-dmg.sh`); the artwork itself still needs that same render on macOS.
+**Current state:** the committed DMG artwork is stamped `1.6.0`
+(`app/icons/dmg/RENDERED_VERSION`), the same version as `tauri.conf.json`, so
+`scripts/check_dmg_art.py` passes. `make-bg.py` sets its text in the JetBrains Mono
+files the app ships (`client/src/assets/fonts`), so a render needs only Python with
+Pillow, on any OS, and no system font. Rerun `make-bg.py <version> --all` when the
+version changes, and commit the PNGs with `RENDERED_VERSION`; the stamp is written
+by the script and not edited by hand. The first-run line in `make-bg.py` carries the
+macOS 15 wording (System Settings → Privacy & Security → Open Anyway), the same words
+as the first-run section below and `build-dmg.sh`.
 
 ## Build
 
@@ -251,7 +260,9 @@ builds have no console. The sidecar's stdout and stderr go to
 `flowmap-server.log` in the same folder, with session tokens masked. Each launch moves the
 previous run's log to `flowmap-server.previous.log`, so a crash traceback survives the
 relaunch. The server log is moved aside to `flowmap-server.previous.log` once it
-passes 20 MB. The shell log is moved aside at startup once it passes 1 MB.
+passes 20 MB. The shell log is moved aside at startup once it passes 1 MB. On Linux
+a startup failure is shown with zenity, kdialog or notify-send; when none of them is
+installed, the message is only in `shell.log`.
 The webview can open this folder with the `open_log_folder` command.
 
 Two small files in the same folder keep the user's choices across launches:

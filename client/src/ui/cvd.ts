@@ -77,8 +77,15 @@ export function cvdColToX(col: number, startCol: number, endCol: number, width: 
   return ((col + 0.5 - startCol) / span) * width;
 }
 
+/** The compact CVD tiers, ascending. `digits` is the precision each tier prints at. */
+const CVD_TIERS: readonly { readonly div: number; readonly suffix: string; readonly digits: number }[] = [
+  { div: 1e3, suffix: 'K', digits: 1 },
+  { div: 1e6, suffix: 'M', digits: 2 },
+  { div: 1e9, suffix: 'B', digits: 2 },
+];
+
 /**
- * Compact signed label for a CVD magnitude (e.g. +1.20M, −45.0k, 0). The digits
+ * Compact signed label for a CVD magnitude (e.g. +1.20M, −45.0K, 0). The digits
  * follow the UI locale's decimal separator (`+1,20M` in Turkish).
  */
 export function fmtCvd(v: number): string {
@@ -86,11 +93,16 @@ export function fmtCvd(v: number): string {
   if (v === 0) return '0';
   const sign = v > 0 ? '+' : '−';
   const a = Math.abs(v);
-  if (a >= 1e9) return `${sign}${formatFixed(a / 1e9, 2)}B`;
-  if (a >= 1e6) return `${sign}${formatFixed(a / 1e6, 2)}M`;
-  if (a >= 1e3) return `${sign}${formatFixed(a / 1e3, 1)}K`;
-  if (a >= 1) return `${sign}${formatFixed(a, 0)}`;
-  return `${sign}${formatFixed(a, 2)}`;
+  if (a < 1) return `${sign}${formatFixed(a, 2)}`;
+  // The tier is picked after rounding at its own precision, so a value that rounds
+  // up to 1000 of its unit moves up a tier: 999,960 reads 1.00M, not 1000.0K.
+  let idx = -1; // -1 is the unit tier, printed without a suffix
+  for (let i = 0; i < CVD_TIERS.length; i += 1) if (a >= CVD_TIERS[i].div) idx = i;
+  const shown = idx < 0 ? Number(a.toFixed(0)) : Number((a / CVD_TIERS[idx].div).toFixed(CVD_TIERS[idx].digits));
+  if (shown >= 1000 && idx < CVD_TIERS.length - 1) idx += 1;
+  if (idx < 0) return `${sign}${formatFixed(a, 0)}`;
+  const tier = CVD_TIERS[idx];
+  return `${sign}${formatFixed(a / tier.div, tier.digits)}${tier.suffix}`;
 }
 
 // --- single-pass projection (the CvdPane repaint path) ---------------------------

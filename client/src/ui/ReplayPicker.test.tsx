@@ -76,6 +76,31 @@ describe('ReplayPicker', () => {
     expect(alert).not.toContain('{');
   });
 
+  it('reports a 404 without the recording-store code as an HTTP error, not as a switched-off recorder', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404,
+      text: async () => JSON.stringify({ error: { code: 'not_found', message: 'Not Found' } }) }));
+    await mount();
+    const alert = document.querySelector('[role="alert"]')!.textContent ?? '';
+    expect(alert).toContain('HTTP 404');
+    expect(alert).not.toContain('no recording store');
+  });
+
+  it('explains a recording store that is missing when the server names that code', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404,
+      text: async () => JSON.stringify({ error: { code: 'recording_store_missing', message: 'no recording store is configured' } }) }));
+    await mount();
+    expect(document.querySelector('[role="alert"]')!.textContent).toContain('The engine has no recording store');
+  });
+
+  it('reads a coded 422 replay_unavailable as a rejected interval', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify(availability) })
+      .mockResolvedValueOnce({ ok: false, status: 422,
+        text: async () => JSON.stringify({ error: { code: 'replay_unavailable', message: 'no replayable recording covers this window' } }) }));
+    await mount();
+    await act(async () => button('Check interval').click());
+    expect(document.querySelector('[role="alert"]')!.textContent).toContain('cannot be replayed');
+  });
+
   it('says recording is turned off, not that no recordings exist, when /api/health reports it disabled', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify({ ...availability, hours: [], latest_column_ns: null }) })

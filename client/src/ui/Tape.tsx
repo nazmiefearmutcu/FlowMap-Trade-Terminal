@@ -40,7 +40,7 @@ import {
 } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
 import { useT } from '../i18n/useT';
-import { exchangeZoneFor, formatClock, formatFixed, formatNumber, formatPrice, useTimeZone, type TimeZonePref } from '../i18n/format';
+import { exchangeZoneFor, formatClock, formatFixed, formatNumber, formatPrice, useTimeZone, zoneLabel, type TimeZonePref } from '../i18n/format';
 import { priceDecimals } from './DomLadder';
 import { marketGroup } from './symbols';
 import './TradingPanels.css';
@@ -233,8 +233,16 @@ export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element
   const zonePref = useTimeZone();
   const subMarket = useFlowMapStore((s) => s.subscription?.market);
   // Sim timestamps are SESSION-RELATIVE: no wall zone applies, so they stay UTC digits.
-  const tapePref: TimeZonePref = (subMarket ?? 'sim') === 'sim' ? 'utc' : zonePref;
+  const sessionClock = (subMarket ?? 'sim') === 'sim';
+  const tapePref: TimeZonePref = sessionClock ? 'utc' : zonePref;
   const tapeZone = exchangeZoneFor(marketGroup(subMarket ?? 'sim'));
+  // The zone abbreviation follows daylight saving, so it is re-read once a minute.
+  const [zoneNow, setZoneNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setZoneNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const zoneText = useMemo(() => zoneLabel(tapePref, tapeZone, zoneNow), [tapePref, tapeZone, zoneNow]);
   const [snap, setSnap] = useState<BookSnapshot>(() => getSnapshot());
   const [collapsed, setCollapsed] = useState(false);
   // Hover-pause freezes the list so a row can be read; without a visible
@@ -321,25 +329,30 @@ export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element
   return (
     <section className={`panel tape${collapsed ? ' is-collapsed' : ''}`} data-testid="tape">
       <header className="panel__header">
-        <button
-          type="button"
-          className="panel__collapse"
-          aria-expanded={!collapsed}
-          onClick={() => {
-            setCollapsed((c) => !c);
-            if (!explicitHoldRef.current) {
-              pausedRef.current = false;
-              setHeld(false);
-              setSnap(getSnapshot());
-            }
-          }}
-          data-testid="tape-collapse"
-        >
-          <span className="panel__chevron">{collapsed ? '▸' : '▾'}</span>
-          <span className="panel__title">{t('tape.title')}</span>
-        </button>
+        <h2 className="panel__heading">
+          <button
+            type="button"
+            className="panel__collapse"
+            aria-expanded={!collapsed}
+            onClick={() => {
+              setCollapsed((c) => !c);
+              if (!explicitHoldRef.current) {
+                pausedRef.current = false;
+                setHeld(false);
+                setSnap(getSnapshot());
+              }
+            }}
+            data-testid="tape-collapse"
+          >
+            <span className="panel__chevron">{collapsed ? '▸' : '▾'}</span>
+            <span className="panel__title">{t('tape.title')}</span>
+          </button>
+        </h2>
         <span className="panel__badge panel__badge--tape" data-testid="tape-badge">
           {badge}
+        </span>
+        <span className="panel__badge tape__clock" data-testid={sessionClock ? 'tape-session' : 'tape-zone'}>
+          {sessionClock ? t('tape.sessionClock') : zoneText}
         </span>
         {held && (
           <span className="panel__badge tape__held" data-testid="tape-held" title={t('tape.heldTitle')}>

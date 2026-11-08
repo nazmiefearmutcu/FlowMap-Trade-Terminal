@@ -65,6 +65,13 @@ describe('fmtCvd — compact signed magnitude', () => {
     expect(fmtCvd(-2_400_000)).toBe('−2.40M');
     expect(fmtCvd(42)).toBe('+42');
   });
+  it('rounds before it picks the suffix, so no tier reads 1000.0', () => {
+    expect(fmtCvd(999_960)).toBe('+1.00M');
+    expect(fmtCvd(-999_960)).toBe('−1.00M');
+    expect(fmtCvd(999.6)).toBe('+1.0K');
+    expect(fmtCvd(999.4)).toBe('+999');
+    expect(fmtCvd(1000)).toBe('+1.0K');
+  });
   it('handles non-finite input', () => {
     expect(fmtCvd(Number.NaN)).toBe('—');
   });

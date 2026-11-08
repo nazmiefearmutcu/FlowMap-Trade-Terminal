@@ -205,7 +205,7 @@ export function SettingsDrawer({ settings, onChange, onClose, onOpenAbout }: Set
               })}
             </div>
           </div>
-          <SettingsAppearanceSection settings={settings} onChange={onChange} onOpenAbout={onOpenAbout} />
+          <SettingsAppearanceSection settings={settings} onChange={onChange} onOpenAbout={onOpenAbout} onCloseDrawer={onClose} />
 
           <SettingsDisplaySection
             settings={settings}

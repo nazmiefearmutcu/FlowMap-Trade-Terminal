@@ -8,6 +8,12 @@
  */
 
 export interface ProbeSpot {
+  /**
+   * The `market:symbol` the probe was read on. An alert is anchored only when it
+   * matches the symbol on screen, so a probe from before a symbol switch never
+   * becomes a level on the new symbol.
+   */
+  key: string;
   /** Price under the cursor, null when off-grid / no data. */
   price: number | null;
   /** Decimals to print `price` with. */

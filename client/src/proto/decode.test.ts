@@ -451,8 +451,17 @@ describe('robustness — malformed input throws WireError', () => {
       expect(decode(coldJsonFrame(MsgType.MACRO_STRESS, macro)).msg).toMatchObject({ type: MsgType.MACRO_STRESS, status: 'calm' });
     });
 
+    it('fills an absent Marker price or size and an absent Status next_open_ts with null', () => {
+      const bare = { ts_ns: 1_000, kind: 'gap', text: '' };
+      expect(decode(coldJsonFrame(MsgType.MARKER, bare)).msg).toMatchObject({ type: MsgType.MARKER, price: null, size: null });
+      const noNextOpen = { feed_state: 'live', capability: {}, latency_ms: 1, clock_skew_ms: 0 };
+      expect(decode(coldJsonFrame(MsgType.STATUS, noNextOpen)).msg).toMatchObject({ type: MsgType.STATUS, next_open_ts: null });
+    });
+
     it.each([
       ['a Hello without epoch geometry', MsgType.HELLO, { ...hello, epoch_params: undefined }],
+      ['a Subscribe whose mode is neither live nor replay', MsgType.SUBSCRIBE, { market: 'crypto', symbol: 'BTCUSDT', mode: 'paper', source: null, start_t: null, band: 'native' }],
+      ['a HistoryRequest without a req_id', MsgType.HISTORY_REQ, { before_t: 5, n_cols: 3 }],
       ['a Hello whose session_id is a number', MsgType.HELLO, { ...hello, session_id: 7 }],
       ['a Hello whose capability is an array', MsgType.HELLO, { ...hello, capability: [] }],
       ['a Hello with a non-numeric norm_seed', MsgType.HELLO, { ...hello, norm_seed: 'x' }],

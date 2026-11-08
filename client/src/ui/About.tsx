@@ -34,6 +34,17 @@ export const APP_LICENSE = 'Apache-2.0';
 /** Public source repository. Its LICENSE and NOTICE files hold the full texts. */
 export const REPO_URL = 'https://github.com/nazmiefearmutcu/flowmap';
 
+/**
+ * The short commit the build came from, or '' for a local build. The release build
+ * sets VITE_BUILD_COMMIT (Vite passes VITE_ variables to the client); anything that
+ * is not a git object name is ignored rather than printed.
+ */
+export function buildCommitOf(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const commit = raw.trim();
+  return /^[0-9a-f]{7,40}$/i.test(commit) ? commit.slice(0, 12) : '';
+}
+
 /** True when the element sits inside a collapsed <details> body, so it is not on screen. */
 function isInClosedDetails(el: HTMLElement): boolean {
   const details = el.closest('details');
@@ -50,6 +61,7 @@ export function AboutDialog({ onClose }: AboutDialogProps): JSX.Element {
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const [logState, setLogState] = useState<'idle' | 'opened' | 'failed'>('idle');
   const inShell = inDesktopShell();
+  const buildCommit = buildCommitOf(import.meta.env.VITE_BUILD_COMMIT);
   // The desktop shell has no external-link handler, so there the address is plain text.
   const repoRef = inShell ? (
     <code className="about__code">{REPO_URL}</code>
@@ -142,6 +154,9 @@ export function AboutDialog({ onClose }: AboutDialogProps): JSX.Element {
           <p className="about__version" data-testid="about-version">
             {t('about.version', { version: APP_VERSION })}
           </p>
+          {buildCommit !== '' && (
+            <p className="about__version" data-testid="about-build">{t('about.build', { commit: buildCommit })}</p>
+          )}
           <p>{t('about.license', { license: APP_LICENSE })}</p>
           <p>{t('about.licenseFiles')}</p>
           <p className="about__source" data-testid="about-source">{t('about.sourceCode')} {repoRef}</p>

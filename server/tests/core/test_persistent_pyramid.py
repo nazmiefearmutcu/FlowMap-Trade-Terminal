@@ -470,6 +470,21 @@ def test_malformed_optional_epoch_index_is_a_safe_cache_miss(tmp_path, broken):
     assert reopened.prepare(params)["max_source_batch"] <= 64
 
 
+@pytest.mark.parametrize("inner", [[], "wrong", 7])
+def test_epoch_index_with_a_matching_stamp_but_a_non_mapping_entry_is_a_cache_miss(tmp_path, inner):
+    """The cached epoch index is trusted only when its stamps match. A matching
+    stamp with a malformed mapping entry must still fall back to the raw scan,
+    not raise AttributeError out of the query path."""
+    root, writer, params, _ = fixture(tmp_path, 32)
+    store = PersistentPyramid(root, "sim", "PYRAMID", writer.recording_id)
+    store.prepare(params)
+    doc = json.loads(store.manifest.read_bytes())
+    doc["epoch_index"] = {"parts": store._epoch_stamps(), "mapping": {writer.recording_id: inner}}
+    store.manifest.write_text(json.dumps(doc), encoding="utf8")
+    reopened = PersistentPyramid(root, "sim", "PYRAMID", writer.recording_id)
+    assert reopened.epoch_maps(params, [])
+
+
 def test_query_pins_published_document_during_concurrent_cache_eviction(tmp_path, monkeypatch):
     root, writer, params, columns = fixture(tmp_path)
     store = pyramid_for(root, "sim", "PYRAMID", writer.recording_id)

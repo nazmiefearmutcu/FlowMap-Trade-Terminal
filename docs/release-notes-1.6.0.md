@@ -12,6 +12,8 @@ FlowMap 1.6.0 is a release-quality and security pass on 1.5.1. It adds a per-lau
 - **Price zoom keys.** `]` and `[` zoom the price axis in and out while the chart has focus.
 - **Candles and indicators** restart after each reconnect, so a gap in the feed is never bridged with stale bars.
 - **Drawings.** New drawings start in teal (`#2a8f7e`, previously `#33d6c4`). The toolbar's swatches are darker hues, so every ink keeps at least 3:1 contrast against light chart grounds.
+- **Market-data keys.** The installed app passes `ALPACA_API_KEY`, `ALPACA_API_SECRET` and `FINNHUB_API_KEY` from your environment to its server, so the optional equity upgrades can use them there too.
+- **Installer artwork.** The macOS DMG background is rendered from the bundled JetBrains Mono font by `app/icons/dmg/make-bg.py`. It runs on any OS and needs neither macOS nor Menlo.
 - **Licence files.** Each installer carries `LICENSE` and `NOTICE`, and each release attaches `THIRD-PARTY-NOTICES.txt`, `SHA256SUMS` and build-provenance attestations. The release runs the full CI workflow on the tagged commit before anything is built or published.
 
 ## New in Settings
@@ -20,7 +22,7 @@ FlowMap 1.6.0 is a release-quality and security pass on 1.5.1. It adds a per-lau
 |---|---|---|
 | Data | Record market data | Turns recording on or off in the installed app. |
 | Display | Chart style | *Normal* (default) or *Pixel*. |
-| Keyboard | Single-key shortcuts | Turns off the single-character shortcuts. Ctrl and Cmd shortcuts keep working. The choice is kept in this browser. |
+| Keyboard | Single-key shortcuts | Turns off the single-character shortcuts, including `+`, `−`, `[` and `]` on the chart. Ctrl and Cmd shortcuts and the arrow keys keep working, so Shift+Up and Shift+Down still zoom the price axis. The choice is kept in this browser. |
 | About and legal | (existing panel) | Shows the version, the licence and the data-source attribution. |
 
 ## Known limits

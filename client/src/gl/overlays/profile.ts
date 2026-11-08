@@ -22,10 +22,11 @@ import { priceToRow, rowToPrice, type PriceScale } from '../priceScale';
 import { ViewWorker } from '../viewWorker';
 import { systemClock, type GlClock } from '../clock';
 import { t } from '../../i18n';
+import { formatPrice } from '../../i18n/format';
 
 /** A moving view keeps its last profile; a new window is requested after this quiet period. */
 const PROFILE_SETTLE_MS = 150;
-/** Worker failures retried for one window before the profile stays failed until the view changes. */
+/** Worker failures retried for one window of one data version before the profile stays failed until the view or the data changes. */
 const PROFILE_MAX_RETRIES = 3;
 /** First retry delay after a worker failure; doubles per failure up to the cap. */
 const PROFILE_RETRY_BASE_MS = 2000;
@@ -210,8 +211,10 @@ export class Profile {
   private completedVersion = -1;
   private workerResult: ProfileResult | null = null;
   private generation = 0;
-  /** Worker failures since the last success or view change (bounded retry). */
+  /** Worker failures since the last success, view change or data change (bounded retry). */
   private failures = 0;
+  /** The data version the retry budget was last counted against. */
+  private budgetVersion = -1;
   /** Earliest clock time at which a run may start (settle period or retry backoff). */
   private notBefore = 0;
   /** Pending re-draw that starts a deferred run without new input. */
@@ -277,6 +280,11 @@ export class Profile {
         if (this.notBefore > now) this.wake(frame.changed, this.notBefore);
       }
       const version = frame.dataVersion ?? 0;
+      // New data is a new attempt: the retry budget covers one window of one data version.
+      if (version !== this.budgetVersion) {
+        this.budgetVersion = version;
+        this.failures = 0;
+      }
       const stale = this.completedKey !== key || this.completedVersion !== version;
       if (stale && this.failures <= PROFILE_MAX_RETRIES && !this.worker?.busy) {
         if (now < this.notBefore) this.wake(frame.changed, this.notBefore);
@@ -343,8 +351,8 @@ export class Profile {
       // The bucket can be much wider than the venue's actual quote increment.
       const decimals = quoteDecimals(gm.price.tick ?? gm.price.step);
       const y = gm.cssY(center);
-      const prefix = result.sampled ? '≈POC' : 'POC';
-      text.badge(cssW - 3, y, `${prefix} ${price.toFixed(decimals)}`, {
+      const prefix = result.sampled ? t('overlay.profile.pocApprox') : t('overlay.profile.poc');
+      text.badge(cssW - 3, y, `${prefix} ${formatPrice(price, decimals)}`, {
         align: 'right',
         color: OVERLAY.poc.css,
         size: 10,

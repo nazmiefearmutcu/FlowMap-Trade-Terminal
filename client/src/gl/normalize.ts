@@ -90,7 +90,7 @@ const DEFAULT_MAX_TILES = 128;
 const SETTLE_EPS = 0.02;
 /** A moving window keeps its held norm; the new window merges after this quiet period. */
 const NORM_SETTLE_MS = 150;
-/** Worker merge failures retried for one window before the merge stays failed until the window changes. */
+/** Worker merge failures retried for one window of one data version before the merge stays failed until the window or the data changes. */
 const NORM_MAX_RETRIES = 3;
 const NORM_RETRY_BASE_MS = 2000;
 const NORM_RETRY_MAX_MS = 30_000;
@@ -266,8 +266,10 @@ export class ViewportNormalizer {
   private workerView = '';
   private workerVersion = -1;
   private workerGeneration = 0;
-  /** Worker failures since the last success or window change (bounded retry, gl-v1). */
+  /** Worker failures since the last success, window change or data change (bounded retry). */
   private workerFailures = 0;
+  /** The data version the retry budget was last counted against. */
+  private workerFailuresVersion = -1;
   /** Earliest clock time a merge may start (settle period or retry backoff). */
   private workerNotBefore = 0;
   private workerWakeAt = Infinity;
@@ -599,6 +601,11 @@ export class ViewportNormalizer {
     // ranks: the run keeps its captured columns, the last completed merge
     // keeps the norm steady, and the new window is merged once the view is still.
     const now = this.clock.now();
+    // New data is a new attempt: the retry budget covers one window of one data version.
+    if (this.versionN !== this.workerFailuresVersion) {
+      this.workerFailuresVersion = this.versionN;
+      this.workerFailures = 0;
+    }
     if (key !== this.workerKey) {
       this.workerKey = key; this.workerFailures = 0;
       // The first merge (nothing held yet) starts at once; a held norm waits for the view to settle.

@@ -84,8 +84,8 @@ no funds, and has no code path that could.
 ## The local API and its session token — plainly stated
 
 The sidecar's HTTP and WebSocket endpoints (`/api/*` and `/ws` on `127.0.0.1`, on port `8720` in
-source runs and on a per-launch free port in the installed app, including the operational snapshot at
-`/api/health`) are protected in two layers.
+source runs and on a per-launch free port in the installed app) are protected in two layers. The one
+exception is `/api/health`, the liveness probe, which is exempt from the token (see point 2).
 
 1. **Host check, always on.** A request whose `Host` header is not a loopback name is refused.
    A web page cannot reach the API by rebinding its own domain to `127.0.0.1`.
@@ -95,10 +95,13 @@ source runs and on a per-launch free port in the installed app, including the op
    the client offers the token as a WebSocket subprotocol, `flowmap.auth.<token>`, next to
    `flowmap.v1` (sent in the `Sec-WebSocket-Protocol` header). The server accepts that entry and never echoes it
    back in the handshake. A non-browser client may send the `X-FlowMap-Token` header on the handshake instead. On a
-   WebSocket, the `token` query parameter is still accepted for command-line tools and older clients, and the
+   WebSocket, the `token` query parameter is still accepted for command-line tools only, and the
    server redacts its value from its access and error logs. Requests without a valid token get HTTP 401
    (WebSocket close 4401).
-   `/api/health` and CORS preflight requests are exempt so that readiness probes work.
+   `/api/health` and CORS preflight requests are exempt so that readiness probes work. Any page on a
+   loopback origin can read `/api/health` through CORS, so a request without the token gets only the
+   status, the version, the wire protocol version and the uptime. The feed list, session identifiers,
+   statistics and configuration errors are returned only to requests that carry the token.
    Source runs and the browser dev server do not set a token; the check is then skipped and only
    the Host check applies.
 
@@ -168,7 +171,7 @@ and the launch warm-up decide which hosts are contacted.
 | Crypto history backfill | `api.binance.com`, `fapi.binance.com`, `dapi.binance.com` ([`core/backfill.py`](server/src/flowmap_server/core/backfill.py)) | On by default for the first subscribe; `FLOWMAP_BACKFILL_ENABLED=0` turns it off |
 | US equities, keyless last price | `www.google.com/finance` page scrape (default when no keyed source is configured) | Unofficial page scrape, used only by a subscribed keyless equity feed; display quotes use Yahoo. Its terms of use may not permit this use, and the maintainer has not confirmed them. Treat the price as informational |
 | US equities, keyless history and display quotes | `query1.finance.yahoo.com` / `query2.finance.yahoo.com` chart endpoint | Unofficial, undocumented endpoint with a generic `User-Agent`; history can stop without an error on screen. Watchlist, alert, equity-movers and warm-up quotes use it without a subscription |
-| US equities, optional upgrades | Alpaca (`ALPACA_API_KEY` + `ALPACA_API_SECRET`), Finnhub (`FINNHUB_API_KEY`) | **Market-data** credentials, read from the environment of a source run. The installed app does not pass these variables to its server (its shell passes a fixed list of variables, see [`sidecar.rs`](app/src-tauri/src/sidecar.rs)), so the upgrade applies to source runs only |
+| US equities, optional upgrades | Alpaca (`ALPACA_API_KEY` + `ALPACA_API_SECRET`), Finnhub (`FINNHUB_API_KEY`) | **Market-data** credentials, read from your environment. A source run reads them from its shell. The installed app passes these three variables from your environment to its server (its shell passes a fixed list of variables, see [`sidecar.rs`](app/src-tauri/src/sidecar.rs)) |
 | Macro, dark pool, politics, aviation, contracts, headcount | `api.stlouisfed.org` (FRED), `cdn.finra.org`, the House Stock Watcher S3 bucket, `opensky-network.org`, `api.usaspending.gov`, `boards-api.greenhouse.io` | Public data sources. Their feed modules exist, but no producer is started in this build, so these hosts are not contacted today |
 | `sim:SIM-DEMO` feed | none | No network at all. Use it to watch what the app does before giving it a live source |
 
@@ -209,10 +212,13 @@ Where FlowMap writes depends on how you run it.
 `scripts/dev-unix.sh` start with recording **off** unless you set `FLOWMAP_RECORDING_ENABLED=1`.
 `scripts/dev-windows.ps1` starts with recording off unless you pass `-EnableRecording` or set
 `FLOWMAP_RECORDING_ENABLED=1`. `FLOWMAP_LOG_FILE`, when set, is rotated at 20 MB with three numbered
-backups (`.1` to `.3`). `FLOWMAP_DATA_DIR` moves the recordings and the intelligence store elsewhere. Apart from those two
-and the log file that `FLOWMAP_LOG_FILE` names, the server writes nothing outside the repository.
+backups (`.1` to `.3`). Source runs write to these places and nothing else outside the repository: the recordings folder
+(`FLOWMAP_DATA_DIR`, or `~/.flowmap/recordings`); the intelligence store (`warehouse.duckdb` and DuckDB's
+`*.wal` files beside it, in `FLOWMAP_DATA_DIR`, or `~/.flowmap/intelligence`); and `raw-capture/<capture_id>/`
+under the recordings folder when raw capture is on (`CROCODILE_RAW_CAPTURE=1`, off by default; the installed
+app never sets it). `FLOWMAP_LOG_FILE`, when set, names the one log file.
 
-**The intelligence store.** `warehouse.duckdb` is written to `FLOWMAP_DATA_DIR` when that is set and
+**The intelligence store.** `warehouse.duckdb`, with DuckDB's `*.wal` files beside it, is written to `FLOWMAP_DATA_DIR` when that is set and
 to `~/.flowmap/intelligence/` otherwise. The installed app sets `FLOWMAP_DATA_DIR`, so its copy is
 under `<data>/recordings/`. A database left in `./.flowmap_data/` by an earlier build is not read;
 move it by hand if you need it.

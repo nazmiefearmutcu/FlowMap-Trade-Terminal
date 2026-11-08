@@ -692,6 +692,14 @@ describe('DomLadder render', () => {
 });
 
 // --- Truthful connection and empty states ---
+describe('DomLadder panel heading', () => {
+  it('wraps the collapse control in a heading', () => {
+    const { container } = render(<DomLadder />);
+    const heading = container.querySelector('h2.panel__heading');
+    expect(heading?.querySelector('[data-testid="ladder-collapse"]')).not.toBeNull();
+  });
+});
+
 describe('DomLadder states', () => {
   it('says disconnected — not waiting — while the socket is down', () => {
     useFlowMapStore.setState({

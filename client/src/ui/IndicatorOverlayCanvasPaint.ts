@@ -67,11 +67,13 @@ export interface PaintFrame {
  * through the UI locale's decimal separator (`4,00` in Turkish), like the rest
  * of the chart's non-price numbers.
  */
-function fmtVal(v: number): string {
+export function fmtVal(v: number): string {
   if (!Number.isFinite(v)) return '—';
   const abs = Math.abs(v);
-  if (abs >= 1_000_000) return `${formatFixed(v / 1_000_000, 2)}M`;
-  if (abs >= 10_000) return `${formatFixed(v / 1_000, 1)}K`;
+  // Each tier is picked after rounding at its own precision, so a value that rounds
+  // up to the next unit moves up a tier: 999,960 reads 1.00M, not 1000.0K.
+  if (abs >= 1_000_000 || Number((abs / 1_000).toFixed(1)) >= 1_000) return `${formatFixed(v / 1_000_000, 2)}M`;
+  if (Number(abs.toFixed(1)) >= 10_000) return `${formatFixed(v / 1_000, 1)}K`;
   if (abs >= 100) return formatFixed(v, 1);
   if (abs >= 1) return formatFixed(v, 2);
   if (abs === 0) return '0';

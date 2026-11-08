@@ -60,10 +60,8 @@ import type { StreamMsg } from '../net/connection';
 import type { FlowMapState } from '../state/store';
 import type { DepthColumn, GexLevelUpdate } from '../proto/types';
 import { OverlayManager } from './overlays/manager';
-import type { TimeAxisClock } from './overlays/axes';
 import { subscribeTimeZone } from '../i18n/format';
 import type { OverlayVisibility } from './overlays/frame';
-import type { PriceMap, TimeMap, TimeSlots } from './overlays/coords';
 import type {
   ChartThemeInput,
   CrosshairReadout,
@@ -104,7 +102,9 @@ interface RendererStore {
  * held full-res; scroll-back re-fetches them (net/history) and deep zoom-out
  * renders from the SUM-mips.
  */
-// Include the row-only and SUM mips: ~253 MiB total at 4096 rows.
+// Include the row-only and SUM mips: ~253 MiB total at 4096 rows. The CPU
+// ColumnCache mirrors the same cells at Float32 (bid + ask, 8 B per cell) and
+// is NOT part of this figure; it is bounded by the same column budget.
 const DEFAULT_CAPACITY_COLS = 6_144;
 const DEFAULT_COLUMN_PX = 3;
 const DEFAULT_MAX_VISIBLE = 512;
@@ -344,6 +344,7 @@ export class Renderer {
       updateView: () => this.updateView(),
       forgetPresentedSession: () => this.frameLoop.forgetPresentedSession(),
       countUpload: () => this.frameLoop.countUpload(),
+      programsReady: () => this.frameLoop.programsReadyForIngest(),
     });
 
     // Frame loop: rAF scheduling, render health, the perf run and the stats (see render/frameLoop.ts).
@@ -410,11 +411,6 @@ export class Renderer {
       this.frameLoop.renderFailure = err instanceof Error ? err.message : String(err);
     }
     this.frameLoop.start();
-  }
-
-  /** The time-axis clock for this frame (see OverlayLayer.timeAxisClockFor). Test hook. */
-  timeAxisClockFor(): TimeAxisClock | null {
-    return this.overlayLayer.timeAxisClockFor();
   }
 
   /** Newest absolute col_seq appended (or -1 before any column). Diagnostics. */
@@ -543,6 +539,22 @@ export class Renderer {
     timeAxisCanvas: HTMLCanvasElement | null,
   ): void {
     this.overlayLayer.attachOverlaySurfaces(priceAxisCanvas, timeAxisCanvas);
+  }
+
+  /**
+   * The time-axis gutter canvas the overlay layer draws into, or null before one is
+   * attached. The App's price-axis component reads it to rebind both gutters together.
+   */
+  timeAxisCanvas(): HTMLCanvasElement | null {
+    return this.overlayLayer.timeAxisCanvas();
+  }
+
+  /**
+   * Re-match both gutter backing stores to their own live CSS boxes at `dpr`
+   * (see OverlayManager.syncGutters). True when a backing store changed size.
+   */
+  syncGutters(dpr: number): boolean {
+    return this.overlayLayer.syncGutters(dpr);
   }
 
   /** Toggle which overlays render (App visibility state). */
@@ -748,11 +760,6 @@ export class Renderer {
 
   // --- gesture control (see render/viewport.ts) ---------------------------------
 
-  /** A fresh camera controller over this renderer's view (see Viewport.makeController). */
-  makeController(): CameraController {
-    return this.viewport.makeController();
-  }
-
   /** Turn TIME follow on/off (`Space` in live mode, `F`, the transport pill). */
   setFollowTime(on: boolean): void {
     this.follow.setFollowTime(on);
@@ -770,18 +777,14 @@ export class Renderer {
     this.ingest.spliceColumn(col);
   };
 
-  /**
-   * Rebuild the ring at a DIFFERENT row count (see GpuLifecycle.recreateRingForRows):
-   * a grid-geometry change, or a mid-session epoch change. Overlays, the col_seq
-   * cursors and the user's follow/zoom intent are untouched.
-   */
-  recreateRingForRows(rows: number): void {
-    this.gpu.recreateRingForRows(rows);
-  }
-
   /** The overview surface when the view is zoomed out past the ring, else null. */
   private activeOverview(): ReturnType<GpuLifecycle['activeOverview']> {
     return this.gpu.activeOverview();
+  }
+
+  /** The coarse overview surface whatever the view (diagnostics and e2e). */
+  get overviewSurface(): GpuLifecycle['overviewSurface'] {
+    return this.gpu.overviewSurface;
   }
 
   overviewStats(): ReturnType<GpuLifecycle['overviewStats']> {
@@ -823,7 +826,7 @@ export class Renderer {
   /**
    * True while the frame runs without EXT_color_buffer_float: mip levels are
    * unavailable, so zoomed-out walls are averaged by sampling and read coarser.
-   * The App shows a visible reduced-density badge while this holds.
+   * The App requires EXT_color_buffer_float, so this is a diagnostic flag only.
    */
   isReducedDensity(): boolean {
     return this.viewport.isReducedDensity();
@@ -834,46 +837,12 @@ export class Renderer {
     return this.shading.currentLevel(includeFloor);
   }
 
-  /** Recompute u_norm from the visible window (see Shading.updateNormalization). */
-  updateNormalization(): void {
-    this.shading.updateNormalization();
-  }
-
   /**
    * Crosshair readout at a canvas CSS pixel: the exact CPU column-cache read
    * (see Viewport.probeAt). Null before the first column.
    */
   probeAt(cssX: number, cssY: number): CrosshairReadout | null {
     return this.viewport.probeAt(cssX, cssY);
-  }
-
-  // --- overlay draw -------------------------------------------------------
-
-  /** Overlay draw for the current frame (see OverlayLayer.drawOverlays). */
-  drawOverlays(): void {
-    this.overlayLayer.drawOverlays();
-  }
-
-  /**
-   * Move the price axis into `epoch`'s row coordinates (see FollowPolicy.remapPriceEpoch).
-   */
-  remapPriceEpoch(epoch: number): void {
-    this.follow.remapPriceEpoch(epoch);
-  }
-
-  /** Row→price affine for the current grid epoch, or null before any epoch. */
-  overlayPriceMap(): PriceMap | null {
-    return this.axis.overlayPriceMap();
-  }
-
-  /** Column⇄time affine for overlays, with the piecewise slot table attached when it covers the anchor (see AxisMap.overlayTimeMap). Test hook. */
-  overlayTimeMap(): TimeMap | null {
-    return this.axis.overlayTimeMap();
-  }
-
-  /** Piecewise slot table covering the anchor, or null (see AxisMap.overlaySlotsFor). Test hook. */
-  overlaySlotsFor(): TimeSlots | null {
-    return this.axis.overlaySlotsFor();
   }
 
   /**
@@ -897,11 +866,6 @@ export class Renderer {
   colForTsForTest(tsNs: bigint): number | null { return this.columnAtTimestamp(tsNs); }
 
   // --- context-loss lifecycle (delegates; see render/gpuLifecycle.ts) -----
-
-  /** The restored-context handler; the lifecycle rebuilds every GL object. Test and e2e seam. */
-  onContextRestored = (): void => {
-    this.gpu.onContextRestored();
-  };
 
   /** Rebuild every GL object after a restore (a spy target: the restore path calls it by name). */
   private recreateGL(): void {

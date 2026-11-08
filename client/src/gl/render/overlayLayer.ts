@@ -63,6 +63,8 @@ export class OverlayLayer {
   private readonly axisClock: { pref: TimeZonePref; exchangeZone: string } = { pref: 'local', exchangeZone: 'UTC' };
   /** Price-gutter gesture disposer; null until the gutter canvas is attached. */
   private axisGesturesDispose: (() => void) | null = null;
+  /** The time-gutter canvas last attached through {@link attachOverlaySurfaces}. */
+  private timeAxisCanvasN: HTMLCanvasElement | null = null;
   private readonly host: OverlayLayerHost;
   private readonly canvas: HTMLCanvasElement;
   private readonly store: StateSource;
@@ -140,6 +142,7 @@ export class OverlayLayer {
     timeAxisCanvas: HTMLCanvasElement | null,
   ): void {
     this.overlays.attachAxes(priceAxisCanvas, timeAxisCanvas);
+    this.timeAxisCanvasN = timeAxisCanvas;
     // The price gutter is a CONTROL surface: wheel = price zoom, vertical
     // drag = price scale, double-click = auto-fit. Listeners live on the canvas
     // so the AUTO chip can be an absolutely-positioned sibling whose clicks
@@ -149,6 +152,16 @@ export class OverlayLayer {
       ? attachAxisGestures(priceAxisCanvas, this.controller)
       : null;
     this.frameState.dirty = true;
+  }
+
+  /** The time-gutter canvas last attached, or null before one is attached. */
+  timeAxisCanvas(): HTMLCanvasElement | null {
+    return this.timeAxisCanvasN;
+  }
+
+  /** Re-match both gutter backing stores at `dpr` (see OverlayManager.syncGutters). */
+  syncGutters(dpr: number): boolean {
+    return this.overlays.syncGutters(dpr);
   }
 
   /** Toggle which overlays render (App visibility state). */

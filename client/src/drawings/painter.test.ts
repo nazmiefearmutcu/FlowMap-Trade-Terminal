@@ -85,6 +85,13 @@ describe('helpers', () => {
     expect(fmtPriceTag(0.0000012)).not.toBe('0.00000');
   });
 
+  it('a large or tiny level keeps every digit at the venue precision', () => {
+    expect(fmtPriceTag(12345.67, 2)).toBe('12345.67'); // not 12345.7
+    expect(fmtPriceTag(0.000001234, 9)).toBe('0.000001234'); // not 0.00000
+    expect(fmtPriceTag(12345.67)).toBe('12345.67'); // no tick: the magnitude path keeps cents
+    expect(fmtPriceTag(0.000001234)).toBe('0.00000123'); // no tick: never prints as zero
+  });
+
   it('with the instrument tick precision the tag reads at exactly that many decimals', () => {
     expect(fmtPriceTag(5234.25, 2)).toBe('5234.25'); // 0.25 tick
     expect(fmtPriceTag(5234.2, 2)).toBe('5234.20');

@@ -3,7 +3,7 @@
  *
  * The renderer's store subscription lands in {@link DepthIngest.onMessage}:
  * depth columns pass the session gate and the forward-gap repair, then reach
- * {@link DepthIngest.writeColumn}, the one shared column write (ring, extents,
+ * {@link ColumnWriter.writeColumn}, the one shared column write (ring, extents,
  * mips, exact CPU cache, histogram fold, overlay anchor). Bar, trade, BBO,
  * marker and GEX messages feed the overlay layer. The session resets rewind the
  * cursors when the subscription changes: the GL teardown runs through the GPU
@@ -14,27 +14,21 @@
 import { limitsFor, type Camera } from '../camera';
 import type { ColumnCache } from '../columnCache';
 import type { BenchmarkMetrics } from '../benchmarkMetrics';
-import { densityForScale } from '../columnGeometry';
-import type { GLContext } from '../context';
 import type { HistoryLoader } from '../../net/history';
 import type { StreamMsg } from '../../net/connection';
-import { renderProgramsReady } from '../heatmapProgram';
-import { isRepeatBar } from '../barGate';
-import type { MipChain } from '../mips';
-import type { PriceMap } from '../overlays/coords';
 import type { OverlayManager } from '../overlays/manager';
 import { PartialDepthGate } from '../partialGate';
-import { MIP_BATCH_MIN_COLS } from '../spliceMips';
 import { planDepthColumn, sessionGateOpen } from '../sessionGate';
 import type { TileRing } from '../tileRing';
-import type { ViewportNormalizer } from '../normalize';
-import { MsgType, type BarColumn, type DepthColumn } from '../../proto/types';
+import { MsgType, type DepthColumn } from '../../proto/types';
 import type { AxisMap } from './axisMap';
 import type { FollowPolicy } from './followPolicy';
 import type { FrameState, StateSource } from './frameState';
 import type { GpuLifecycle } from './gpuLifecycle';
 import type { OverlayLayer } from './overlayLayer';
 import type { Shading } from './shading';
+import { ColumnWriter, sameNativePrice } from './columnWrite';
+import { OverlayFeed } from './overlayFeed';
 
 /**
  * What the depth ingest needs from its owner. The collaborators are the live
@@ -60,6 +54,11 @@ export interface IngestHost {
   forgetPresentedSession(): void;
   /** Counts one texel-column upload for the stats readout. */
   countUpload(): void;
+  /**
+   * Program readiness with the frame loop's bounded retry (see FrameLoop.programsReadyForIngest).
+   * False while the loop holds a shader that never links, so staged columns wait without a recompile.
+   */
+  programsReady(): boolean;
 }
 
 /** Floor on the normalization divisor so a tiny norm_seed can't blow out intensity. */
@@ -76,11 +75,6 @@ const NORM_FLOOR = 6;
  */
 const GAP_ZERO_MAX_COLS = 512;
 
-function sameNativePrice(a: PriceMap, b: PriceMap): boolean {
-  return a === b || (a.p0 === b.p0 && a.step === b.step && a.tick === b.tick
-    && JSON.stringify(a.scale) === JSON.stringify(b.scale));
-}
-
 export class DepthIngest {
   private readonly host: IngestHost;
   private readonly store: StateSource;
@@ -94,10 +88,11 @@ export class DepthIngest {
   private readonly columnCache: ColumnCache;
   private readonly benchmark: BenchmarkMetrics | null;
   private readonly capacityColsTarget: number;
+  /** The shared column write (see columnWrite.ts). */
+  private readonly writer: ColumnWriter;
+  /** Non-depth stream messages (bars, trades, BBO, markers, GEX) for the overlays. */
+  private readonly overlayFeed: OverlayFeed;
 
-  // Created lazily on the first column, once the row count is known.
-  private densityBid = new Float32Array(0);
-  private densityAsk = new Float32Array(0);
   /** Columns staged while the GL side is not ready; the frame loop drains them. */
   readonly pendingDepth: DepthColumn[] = [];
   /** True while the frame loop drains {@link pendingDepth}. */
@@ -131,8 +126,6 @@ export class DepthIngest {
 
   /** Skips byte-identical re-sends of the forming column (see partialGate.ts). */
   readonly partialGate = new PartialDepthGate();
-  /** The last bar column forwarded to the overlays; an identical repeat is dropped (see barGate.ts). */
-  private lastBar: BarColumn | null = null;
 
   constructor(host: IngestHost) {
     this.host = host;
@@ -147,11 +140,8 @@ export class DepthIngest {
     this.columnCache = host.columnCache;
     this.benchmark = host.benchmark;
     this.capacityColsTarget = host.capacityColsTarget;
-  }
-
-  /** The live GL context; a restore replaces it, so it is read at use time. */
-  private get ctx(): GLContext {
-    return this.gpu.ctx;
+    this.writer = new ColumnWriter(host, this.partialGate);
+    this.overlayFeed = new OverlayFeed({ store: this.store, overlayLayer: this.overlayLayer, follow: this.follow, frameState: this.frameState });
   }
 
   /** The depth ring, or null before the first column. */
@@ -159,19 +149,9 @@ export class DepthIngest {
     return this.gpu.ring;
   }
 
-  /** The SUM-mip chain, or null when float FBOs are absent. */
-  private get mips(): MipChain | null {
-    return this.gpu.mips;
-  }
-
   /** The deep scroll-back loader, or null before the ring exists. */
   private get history(): HistoryLoader | null {
     return this.gpu.history;
-  }
-
-  /** The viewport normalizer, owned by the shading (the GL objects share it). */
-  private get normalizer(): ViewportNormalizer {
-    return this.shading.normalizer;
   }
 
   /** The overlay manager; read at call time so tests can swap its methods. */
@@ -204,39 +184,8 @@ export class DepthIngest {
         return;
       }
       // Overlays: feed the overlay manager; a redraw is scheduled so the
-      // sprites/lines/glyphs update in lock-step with the heatmap. Cheap — the
-      // manager only stores into bounded rings/maps here (O(1)); drawing is
-      // O(visible) on the next dirty frame.
-      switch (msg.type) {
-        case MsgType.BOOK_UPDATE:
-          if (this.store.getState().capability?.depth_provenance !== 'recorded-density') return;
-          this.overlays.onRecordedBook(msg);
-          break;
-        case MsgType.TRADE:
-          this.overlays.onTrade(msg);
-          break;
-        case MsgType.BBO:
-          this.overlays.onBbo(msg, this.store.getState().capability?.depth_provenance === 'recorded-density');
-          break;
-        case MsgType.BAR_COL:
-          // The forming bar is re-sent on every flush tick. An identical repeat
-          // changes no overlay state, so it is dropped before any redraw.
-          if (isRepeatBar(this.lastBar, msg)) return;
-          this.lastBar = msg;
-          this.overlays.onBar(msg);
-          // Snapshot pairs are depth→bar. Coalesce their price input changes
-          // for the next presentation, including a paused final/only column.
-          if (Number.isFinite(msg.c) && msg.c > 0) this.follow.barPriceFitPending = true;
-          break;
-        case MsgType.MARKER:
-          this.overlays.onMarker(msg);
-          break;
-        case MsgType.GEX_UPDATE:
-          this.overlays.onGex(msg);
-          break;
-        default:
-          return;
-      }
+      // sprites/lines/glyphs update in lock-step with the heatmap (see overlayFeed.ts).
+      if (!this.overlayFeed.feed(msg)) return;
       this.frameState.dirty = true;
     } catch (err) {
       this.benchmark?.count('streamIngestErrors');
@@ -288,7 +237,7 @@ export class DepthIngest {
       }
       return;
     }
-    if (!this.drainingDepth && (!renderProgramsReady(this.ctx.gl, this.ctx.caps.colorBufferFloat) || this.pendingDepth.length > 0)) {
+    if (!this.drainingDepth && (!this.host.programsReady() || this.pendingDepth.length > 0)) {
       const last = this.pendingDepth.at(-1);
       if (last && !last.final && last.epoch === col.epoch && last.col_seq === col.col_seq) {
         this.benchmark?.count('partialReplaced');
@@ -416,7 +365,7 @@ export class DepthIngest {
       this.benchmark?.count('partialUnchanged');
       return;
     }
-    this.writeColumn(col, rows, false, gapZeroed);
+    this.writer.writeColumn(col, rows, false, gapZeroed);
     this.benchmark?.count(col.final ? 'finalizedApplied' : 'partialApplied');
     // The zeroed band's SUM-mip groups must be re-baked or the coarse levels
     // keep summing pre-zero stale members (the append above only baked the
@@ -425,7 +374,7 @@ export class DepthIngest {
     // client's queue, so the columns are usually still servable and can replace
     // the zeroes with real data (the zeroes stay the honest fallback).
     if (gapZeroed) {
-      this.bakeGapMips(gapFrom, col.col_seq);
+      this.writer.bakeGapMips(gapFrom, col.col_seq);
       this.history?.refetchBand(gapFrom, col.col_seq - 1, col.t0_ns);
     }
 
@@ -435,7 +384,7 @@ export class DepthIngest {
     if (!this.normSeeded) {
       const seed = this.store.getState().normSeed;
       if (seed && seed > 0) {
-        this.normalizer.seed(Math.max(seed, NORM_FLOOR));
+        this.shading.normalizer.seed(Math.max(seed, NORM_FLOOR));
         this.normSeeded = true;
       }
     }
@@ -448,6 +397,11 @@ export class DepthIngest {
 
     this.host.updateView();
     this.frameState.dirty = true;
+  }
+
+  /** The shared column write (see {@link ColumnWriter.writeColumn}). */
+  writeColumn(col: DepthColumn, rows: number, deferMips = false, gapZeroed = false): void {
+    this.writer.writeColumn(col, rows, deferMips, gapZeroed);
   }
 
   /**
@@ -476,7 +430,7 @@ export class DepthIngest {
     // synchronously, and one range pass per level per tile layer at page end is
     // ~80× fewer FBO passes than per-column regeneration.
     try {
-      this.writeColumn(col, rows, true);
+      this.writer.writeColumn(col, rows, true);
       this.benchmark?.count('historyApplied');
     } catch (error) {
       this.benchmark?.count('historyDiscarded:writeError');
@@ -484,86 +438,6 @@ export class DepthIngest {
     }
     this.frameState.dirty = true;
   };
-
-  /**
-   * The shared column write: upload the texel column, regenerate the affected
-   * SUM-mip group (append-time, O(1) in history; a history splice DEFERS it to
-   * a batched range pass — see {@link SpliceMipBatch.flush}), refresh the per-slot
-   * non-zero extent, and record (col_seq → t0_ns) for the loader's before_t
-   * mapping.
-   */
-  writeColumn(col: DepthColumn, rows: number, deferMips = false, gapZeroed = false): void {
-    const ring = this.ring!;
-    ring.append(col.col_seq, col.epoch, col.bid, col.ask, rows, gapZeroed);
-    this.partialGate.note(col, ring);
-    const nativeEpoch = this.store.getState().epochs.get(col.epoch);
-    const cachedPrice = this.columnCache.timeAt(col.col_seq) === col.t0_ns
-      && this.columnCache.epochAt(col.col_seq) === col.epoch ? this.columnCache.priceAt(col.col_seq) : null;
-    const nativePrice = cachedPrice ?? (nativeEpoch ? this.axis.priceMapFor(nativeEpoch) : null);
-    const nativeScale = nativePrice?.scale ?? null;
-    if (nativeScale) ring.geometry.set(col.col_seq, nativeScale, col.epoch);
-    this.host.countUpload();
-    if (deferMips) this.gpu.spliceMips.defer(col.col_seq);
-    else this.mips?.updateFrom(ring, col.col_seq);
-
-    const cap = ring.capacityCols;
-    const slot = ((col.col_seq % cap) + cap) % cap;
-    const [lo, hi, bidTop, askBot] = columnExtent(col.bid, col.ask, rows);
-    this.gpu.extents.write(slot, lo, hi, col.col_seq);
-    // the true start time of this resident column, for the piecewise time
-    // map (reconstructed history columns are 60 s apart despite a 250 ms epoch).
-    this.axis.slots.write(slot, col.t0_ns);
-    this.axis.slots.extendRun(col.col_seq);
-    // Price auto-follow tracks the LIVE edge only: a backfilled history column
-    // must never move the tracked row (renderer.ts spliceColumn shares this path).
-    if (col.col_seq >= this.frameState.newestSeq) this.follow.noteLiveRow(bidTop, askBot, lo, hi, col.epoch);
-    // The fit memo is keyed on the visible window; a new column inside it
-    // invalidates the cached extent union.
-    this.follow.priceFitMemo = null;
-
-    // Feed the exact CPU cache (crosshair readout) and the per-tile
-    // histogram (viewport normalization). The DepthColumn arrays are fresh,
-    // immutable copies (decode.ts), so the cache holds references directly.
-    this.columnCache.put(col.col_seq, col.bid, col.ask, col.t0_ns, col.epoch, nativePrice);
-    // Only FINAL columns fold into the histogram: a forming edge column is
-    // re-sent every flush and history pages overlap, so folding every write
-    // inflated the histogram ~2×+ and biased the white point. foldColumnFinal
-    // additionally dedupes by column id so an overlapping history re-splice
-    // folds exactly once.
-    if (col.final) {
-      if (nativeScale?.kind === 'hybrid') {
-        if (this.densityBid.length !== rows) { this.densityBid = new Float32Array(rows); this.densityAsk = new Float32Array(rows); }
-        this.normalizer.foldColumnFinal(col.col_seq, densityForScale(nativeScale, col.bid, this.densityBid),
-          col.ask ? densityForScale(nativeScale, col.ask, this.densityAsk) : null, nativeScale);
-      } else this.normalizer.foldColumnFinal(col.col_seq, col.bid, col.ask, nativeScale);
-    }
-
-    this.history?.noteColumn(col.col_seq, col.t0_ns);
-
-    // Overlays: remember an absolute (col_seq → t0_ns) anchor for the
-    // ts_ns→column mapping (any resident column is a valid anchor within an
-    // epoch), and keep the per-window VWAP map bounded to the resident range.
-    this.axis.noteWritten(col);
-    const r = ring.residentRange();
-    if (r !== null) this.overlayLayer.pruneOverlayWindows(r.oldest, r.newest);
-  }
-
-  // --- gap-repair mip re-bake (see spliceMips.ts for the splice batch) ----------
-
-  /**
-   * Re-bake the SUM-mips over a zeroed gap band + the post-gap column. Without
-   * this the coarse levels keep summing pre-zero stale group members (the
-   * append's own `updateFrom` only covers the new column's group). Range pass
-   * for a full band, per-column for a small one — same split as
-   * {@link SpliceMipBatch.flush}.
-   */
-  private bakeGapMips(from: number, to: number): void {
-    const mips = this.mips;
-    const ring = this.ring;
-    if (mips === null || ring === null || from < 0) return;
-    if (to - from + 1 >= MIP_BATCH_MIN_COLS) mips.updateRange(ring, from, to);
-    else for (let s = from; s <= to; s++) mips.updateFrom(ring, s);
-  }
 
   /**
    * Reset the heatmap renderer to a clean, empty slate for a NEW subscription
@@ -614,11 +488,11 @@ export class DepthIngest {
     // heatmap until bars overwrote them. 2D ops are safe
     // while the GL context is lost; only the GL teardown waits.
     this.overlayLayer.clearOverlayInk();
-    this.normalizer.reset();
+    this.shading.normalizer.reset();
     this.columnCache.reset();
     this.overlays.reset();
     this.overlayLayer.forgetPrune();
-    this.lastBar = null;
+    this.overlayFeed.resetBar();
     this.normSeeded = false;
     this.shading.resetSession();
     this.streamIngestWarned = false;
@@ -711,7 +585,7 @@ export class DepthIngest {
     this.axis.clearAnchor();
     this.follow.barPriceFitPending = false;
     this.overlayLayer.forgetPrune();
-    this.lastBar = null;
+    this.overlayFeed.resetBar();
     // The t0 run table is seq-scoped; a new session re-starts seqs, so
     // drop the run (slots are overwritten as the new columns arrive).
     this.axis.slots.dropRun();
@@ -719,31 +593,4 @@ export class DepthIngest {
     this.overlays.reset();
     this.frameState.dirty = true;
   }
-}
-
-/**
- * First and last row index carrying non-zero density (bid or ask). Returns
- * `[-1, -1]` when the column is entirely empty. Cheap linear scan — runs once
- * per appended column (≤ a few per second live).
- */
-export function columnExtent(
-  bid: Float32Array,
-  ask: Float32Array | null,
-  rows: number,
-): [number, number, number, number] {
-  let lo = -1;
-  let hi = -1;
-  let bidTop = -1;
-  let askBot = -1;
-  for (let r = 0; r < rows; r++) {
-    const b = bid[r] > 0;
-    const a = ask !== null && ask[r] > 0;
-    if (b) bidTop = r; // last one wins → the highest bid row
-    if (a && askBot < 0) askBot = r; // first one wins → the lowest ask row
-    if (b || a) {
-      if (lo < 0) lo = r;
-      hi = r;
-    }
-  }
-  return [lo, hi, bidTop, askBot];
 }

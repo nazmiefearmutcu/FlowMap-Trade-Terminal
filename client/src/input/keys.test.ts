@@ -39,6 +39,10 @@ describe('routeGlobalKey', () => {
     expect(routeGlobalKey('f', PLAIN)).toEqual({ type: 'toggle-follow' });
     expect(routeGlobalKey('F', PLAIN)).toEqual({ type: 'toggle-follow' });
     expect(routeGlobalKey('p', PLAIN)).toEqual({ type: 'toggle-price-follow' });
+    // CapsLock on + Shift reports the lowercase character with the Shift flag: still auto-fit.
+    expect(routeGlobalKey('p', PLAIN, { meta: false, ctrl: false, shift: true })).toEqual({
+      type: 'price-auto-fit',
+    });
     // Shift+P needs the MODIFIER, not just the shifted character (CapsLock sends the same key without Shift):
     // CapsLock produces 'P' with no shift and must TOGGLE, not auto-fit.
     expect(routeGlobalKey('P', PLAIN, { meta: false, ctrl: false, shift: true })).toEqual({

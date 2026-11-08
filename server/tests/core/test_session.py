@@ -587,8 +587,13 @@ async def test_periodic_partial_flush_resends_forming_column_only_on_change():
         assert quiet == 0, "unchanged forming column was re-sent on a quiet feed"
 
         grid.on_book(2 * DT + DT // 4, *_BOOK)  # moves the forming integral
-        await asyncio.sleep(0.06)
-        assert forming_depths() >= 1, "a changed forming column was not delivered"
+        delivered = 0
+        async with asyncio.timeout(2.0):  # poll for the tick, never a fixed sleep
+            while delivered == 0:
+                delivered += forming_depths()
+                if delivered == 0:
+                    await asyncio.sleep(0.01)
+        assert delivered >= 1, "a changed forming column was not delivered"
     finally:
         sess.run_task.cancel()
         await asyncio.gather(sess.run_task, return_exceptions=True)

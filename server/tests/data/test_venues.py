@@ -379,7 +379,18 @@ async def test_later_empty_listing_also_keeps_the_last_good_list(monkeypatch) ->
     assert venues._cache["kraken"] == (SYMBOL_TTL_NS, ["AAA"])
 
 
-# --- resolve_symbol: the no-op paths are pure (no ccxt, no network) ------------
+# --- resolve_symbol: the no-op paths never leave the process -------------------
+#
+# The venue's ccxt market table is served from a fake: a spelling that already
+# fits is only ever checked against what the venue lists, never translated.
+
+
+def _serve_table(monkeypatch: pytest.MonkeyPatch, markets: dict[str, dict]) -> None:
+    async def fake(exchange: str, segment: str, *, now_ns: int | None = None):
+        by_id = {sym: [{"symbol": sym}] for sym in markets}
+        return venues._VenueTables(markets=markets, markets_by_id=by_id)
+
+    monkeypatch.setattr(venues, "_venue_tables", fake)
 
 
 @pytest.mark.parametrize(
@@ -394,6 +405,7 @@ async def test_later_empty_listing_also_keeps_the_last_good_list(monkeypatch) ->
     ],
 )
 async def test_resolve_symbol_is_a_no_op_when_the_spelling_already_fits(
-    market: str, symbol: str
+    market: str, symbol: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _serve_table(monkeypatch, {symbol: {}})
     assert await resolve_symbol(market, symbol) == symbol

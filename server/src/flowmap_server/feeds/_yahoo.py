@@ -12,7 +12,10 @@ import time
 import math
 import ssl
 import weakref
+import zoneinfo
 from collections import OrderedDict
+from collections.abc import Sequence
+from datetime import date, datetime
 from urllib.parse import quote
 
 import aiohttp
@@ -197,6 +200,33 @@ async def _request_bars(symbol: str) -> tuple[OHLCV, ...]:
         if answered_empty:
             raise YahooNoDataError(f"Yahoo returned no bars for {symbol!r} on either host")
         return ()
+
+
+_NEW_YORK = zoneinfo.ZoneInfo("America/New_York")
+
+
+def _session_date(bar: OHLCV) -> date:
+    stamp = bar.source_ts if bar.source_ts is not None else bar.local_ts
+    return datetime.fromtimestamp(int(stamp) // 1_000_000_000, tz=_NEW_YORK).date()
+
+
+def session_reference_close(bars: Sequence[OHLCV]) -> float | None:
+    """The close a session's change is measured from: the previous session's close.
+
+    ``bars`` are Yahoo's regular-session minute bars, oldest first, over up to five
+    days. The session is the New York calendar date of the newest bar, so a
+    weekend or holiday still measures against the last trading day's close, not
+    against itself. When the window holds no earlier session, the close of the
+    session's first bar is used. ``None`` when there are no bars at all.
+    """
+    if not bars:
+        return None
+    session = _session_date(bars[-1])
+    earlier = [bar for bar in bars if _session_date(bar) < session]
+    if earlier:
+        return float(earlier[-1].close)
+    first = next(bar for bar in bars if _session_date(bar) == session)
+    return float(first.close)
 
 
 async def equity_bars(symbol: str) -> tuple[OHLCV, ...]:

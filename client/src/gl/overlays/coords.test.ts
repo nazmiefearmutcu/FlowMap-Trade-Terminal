@@ -6,13 +6,13 @@ import {
   remapRowSpan,
   slotColToTsNs,
   slotTsToCol,
-  toBigNs,
   visibleColRange,
   type PriceMap,
   type SurfaceDims,
   type TimeMap,
   type TimeSlots,
 } from './coords';
+import { toBigNs } from '../../candles/bigNs';
 import type { HeatmapView } from '../heatmap';
 import { makeHybrid, priceToRow, rowToPrice } from '../priceScale';
 

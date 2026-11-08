@@ -179,6 +179,11 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
         # True while the last overview step overran its deadline (see
         # _overview_call); published as capability.overview_degraded.
         self._overview_degraded = False
+        # The overrunning step whose thread has not returned yet. The single
+        # worker is occupied by it, so later steps fail fast instead of queuing.
+        self._overview_wedged: asyncio.Future | None = None
+        # (window, epoch) -> percentile, for the Hello norm_seed (see _norm_seed).
+        self._norm_seed_memo: tuple[tuple[tuple[int, int] | None, int], float] | None = None
         # Consecutive in-memory append failures (see _record / _REC_APPEND_FAIL_LIMIT).
         self._rec_append_failures = 0
         # Flush-failure retry state (see _REC_RETRY_* above): consecutive
@@ -468,7 +473,7 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
             flush_task.cancel()
             try:
                 await flush_task
-            except asyncio.CancelledError:
+            except asyncio.CancelledError:  # the cancel above is the expected outcome
                 pass
             await self.flush_recording_now()
             if self._closed:

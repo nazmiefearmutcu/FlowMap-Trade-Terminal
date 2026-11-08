@@ -75,6 +75,13 @@ export function depthIsSynthetic(capability: Record<string, unknown> | null | un
  */
 export function depthReadoutTier(capability: Record<string, unknown> | null | undefined, bookMode: number | null): string | null {
   if (depthIsSynthetic(capability, bookMode)) return 'SYNTH';
-  if (capability?.depth === 'L2-snapshot') return 'L2-SNAPSHOT';
+  const declared = honestDepthTier(capability);
+  if (declared === 'L2-snapshot') return 'L2-SNAPSHOT';
+  // A tier string this client does not know is not a book mode to fall back on:
+  // naming it from the grid's book mode could print a native L2 for it. Say nothing.
+  if (typeof declared === 'string' && !KNOWN_DEPTH_TIERS.has(declared)) return null;
   return depthTier(capability ?? null, bookMode);
 }
+
+/** The depth tiers the readouts know how to name (see {@link depthTier}). */
+const KNOWN_DEPTH_TIERS: ReadonlySet<string> = new Set(['L2', 'L2-snapshot', 'L1_BAND', 'L1', 'SYNTH', 'SYNTH_PROFILE']);

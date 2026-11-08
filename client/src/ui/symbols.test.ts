@@ -6,7 +6,7 @@ import {
   capabilityChipClass,
   capabilityChipTitle,
   capabilityChips,
-  filterSymbols,
+  capabilityChipLabel,
   fuzzyRank,
   fuzzyScore,
   getVenueCatalog,
@@ -14,6 +14,7 @@ import {
   marketVenueId,
   rankVenueOptions,
   resetVenueCatalog,
+  searchFold,
   setVenueCatalog,
   venueGroupLabel,
   venueLabel,
@@ -174,31 +175,76 @@ describe('rankVenueOptions', () => {
   });
 });
 
-describe('filterSymbols', () => {
-  it('case-insensitive substring over symbol and market', () => {
-    expect(filterSymbols(DIRECTORY, 'btc')).toEqual([BTC]);
-    expect(filterSymbols(DIRECTORY, 'USDT')).toEqual([BTC, ETH]);
-    expect(filterSymbols(DIRECTORY, 'equity')).toEqual([AAPL]);
-    expect(filterSymbols(DIRECTORY, 'zzz')).toEqual([]);
+
+describe('fuzzyRank — group words and Turkish-aware folding', () => {
+  it('finds a group by its key, its English alias and its word in the active locale', () => {
+    expect(fuzzyRank(DIRECTORY, 'crypto')).toEqual([BTC, ETH]);
+    expect(fuzzyRank(DIRECTORY, 'Simulated')).toEqual([SIM]);
+    expect(fuzzyRank(DIRECTORY, 'sim')).toContain(SIM);
+    expect(fuzzyRank(DIRECTORY, 'kripto', 60, (key) => tFor('tr', key))).toEqual([BTC, ETH]);
+    expect(fuzzyRank(DIRECTORY, 'hisse', 60, (key) => tFor('tr', key))).toEqual([AAPL]);
   });
 
-  it('empty query returns a copy of everything', () => {
-    const out = filterSymbols(DIRECTORY, '   ');
-    expect(out).toEqual(DIRECTORY);
-    expect(out).not.toBe(DIRECTORY);
+  it('returns the input order for an empty query', () => {
+    expect(fuzzyRank(DIRECTORY, '   ')).toEqual(DIRECTORY);
   });
 
-  it('matches the derived display group key/label so a group name surfaces the whole group', () => {
-    // No market string contains 'crypto' (binance-spot), but the group does.
-    expect(filterSymbols(DIRECTORY, 'crypto')).toEqual([BTC, ETH]);
-    // Group label match is case-insensitive.
-    expect(filterSymbols(DIRECTORY, 'Simulated')).toEqual([SIM]);
-    expect(filterSymbols(DIRECTORY, 'sim')).toEqual([SIM]);
+  it('folds Turkish dotted and dotless I so every spelling of a query finds the same symbol', () => {
+    const ist: SymbolEntry[] = [
+      { market: 'bist', symbol: 'İZMİR-INDEX', capability: {} },
+      { market: 'binance-spot', symbol: 'BTCUSDT', capability: {} },
+    ];
+    for (const q of ['iz', 'İZ', 'Iz', 'İz', 'ız']) {
+      expect(fuzzyRank(ist, q)[0]?.symbol, q).toBe('İZMİR-INDEX');
+    }
   });
 
-  it('matches a group by its word in the active locale', () => {
-    expect(filterSymbols(DIRECTORY, 'kripto', (key) => tFor('tr', key))).toEqual([BTC, ETH]);
-    expect(filterSymbols(DIRECTORY, 'hisse', (key) => tFor('tr', key))).toEqual([AAPL]);
+  it('matches composed and decomposed accents alike', () => {
+    const cafe: SymbolEntry[] = [{ market: 'kraken', symbol: 'CAFÉ-TOKEN', capability: {} }];
+    expect(fuzzyRank(cafe, 'cafe')).toHaveLength(1);
+    expect(fuzzyRank(cafe, 'CAFE\u0301')).toHaveLength(1);
+    expect(fuzzyRank(cafe, 'café')).toHaveLength(1);
+  });
+
+  it('exposes the match fold as searchFold', () => {
+    expect(searchFold('İZ')).toBe('iz');
+    expect(searchFold('Iı')).toBe('ii');
+    expect(searchFold('CAFE\u0301')).toBe('cafe');
+  });
+});
+
+describe('capabilityChipLabel — visible chip text follows the locale', () => {
+  it('keeps the English tokens in English', () => {
+    const en = (key: string): string => tFor('en', key);
+    expect(capabilityChipLabel('RECORDED DENSITY', en)).toBe('RECORDED DENSITY');
+    expect(capabilityChipLabel('SIDE INFERRED', en)).toBe('SIDE INFERRED');
+    expect(capabilityChipLabel('TAPE POLL', en)).toBe('TAPE POLL');
+    expect(capabilityChipLabel('L2', en)).toBe('L2');
+  });
+
+  it('shows the Turkish words for the translated chips', () => {
+    const tr = (key: string): string => tFor('tr', key);
+    expect(capabilityChipLabel('RECORDED DENSITY', tr)).toBe(tr('chip.recordedDensity'));
+    expect(capabilityChipLabel('RECORDED DENSITY', tr)).not.toBe('RECORDED DENSITY');
+    expect(capabilityChipLabel('SIDE INFERRED', tr)).not.toContain('INFERRED');
+    expect(capabilityChipLabel('TAPE POLL', tr)).not.toContain('POLL');
+    expect(capabilityChipLabel('SYNTH', tr)).toBe(tr('chip.synth'));
+    expect(capabilityChipLabel('L2', tr)).toBe('L2');
+  });
+});
+
+describe('keyless-equity replay capability chips', () => {
+  it('reads SYNTH depth with the provenance chip and no SIM chip', () => {
+    const chips = capabilityChips({
+      playback: { speed: 1 },
+      depth: 'SYNTH',
+      depth_provenance: 'recorded-density',
+      synthetic: false,
+      tape: 'tick',
+    });
+    expect(chips).toContain('SYNTH');
+    expect(chips).toContain('RECORDED DENSITY');
+    expect(chips).not.toContain('SIM');
   });
 });
 

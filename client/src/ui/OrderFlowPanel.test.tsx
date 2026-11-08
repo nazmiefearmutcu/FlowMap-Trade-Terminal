@@ -33,6 +33,14 @@ it('reports no nearby depth instead of NaN bounds when the mid price cannot be p
   const degenerate: EpochParams = { ...epoch, tick: 0 };
   expect(nearbyDepth(snapshot, degenerate)).toBeNull();
 });
+it('the flow panel title is a heading', () => {
+  const original = useFlowMapStore.getState();
+  const el = document.createElement('div'), root = createRoot(el);
+  try {
+    act(() => root.render(<OrderFlowPanel />));
+    expect(el.querySelector('h2.panel__heading .panel__title')).not.toBeNull();
+  } finally { act(() => root.unmount()); useFlowMapStore.setState(original, true); }
+});
 it('changing the window retains accumulated prints and a new instrument clears them', () => {
   vi.useFakeTimers();
   const original = useFlowMapStore.getState();

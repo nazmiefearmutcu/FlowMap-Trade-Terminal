@@ -64,13 +64,13 @@ def _watch_stdin_eof(server: Any, stream: IO[Any]) -> threading.Thread:
     return thread
 
 
-def _run_server(app: Any, **kwargs: Any) -> None:
+def _run_server(app: Any, *, exit_on_stdin_eof: bool, **kwargs: Any) -> None:
     """``uvicorn.run`` unless the shell asked to exit with its stdin.
 
     The EOF watcher needs the ``Server`` object (its ``should_exit`` flag), which
     ``uvicorn.run`` does not expose. ``uvicorn.run`` is just ``Server(Config).run()``,
     so the two paths are the same server."""
-    if os.environ.get(EXIT_ON_STDIN_EOF_ENV) != "1":
+    if not exit_on_stdin_eof:
         uvicorn.run(app, **kwargs)
         return
     server = uvicorn.Server(uvicorn.Config(app, **kwargs))
@@ -87,7 +87,8 @@ def main() -> None:
     log_level = os.environ.get("FLOWMAP_LOG_LEVEL", "info")
     configure_logging(log_level, os.environ.get("FLOWMAP_LOG_FILE") or None)
     try:
-        _run_server(create_app(cfg), host=cfg.host, port=cfg.port,
+        _run_server(create_app(cfg), exit_on_stdin_eof=cfg.exit_on_stdin_eof,
+                    host=cfg.host, port=cfg.port,
                     log_level=log_level, log_config=None,
                     ws_max_size=WS_MAX_MESSAGE_BYTES,
                     limit_concurrency=HTTP_WS_CONCURRENCY)

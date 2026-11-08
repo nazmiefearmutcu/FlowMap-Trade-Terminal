@@ -53,11 +53,13 @@ scripts/    dev.sh, dev-windows.ps1, dev-unix.sh (dev boot), package.sh
             ci.yml (every push and every PR to main; release.yml also calls it on
             the tagged commit): client tsc, lint and vitest, the CSS font-size
             ratchet, the process-identifier gate and the production bundle; client
-            tsc and vitest on Windows; server pytest on ubuntu and windows, ruff lint
-            and mypy on ubuntu; release tooling (version gate, doc links,
-            release-asset validator tests); shell cargo test, clippy and fmt on
-            ubuntu, and cargo test and clippy on Windows and macOS; full Playwright e2e on
-            ubuntu with a skip/flake budget. Documentation-only changes run it too.
+            tsc and vitest on Windows; dependency advisories (npm, pip-audit and
+            cargo audit, ubuntu); server pytest on ubuntu and windows, ruff lint
+            and mypy on ubuntu; release tooling (version gate, DMG artwork stamp,
+            doc links, release-asset validator tests); shell cargo test, clippy and
+            fmt on ubuntu (`shell`), cargo test and clippy on Windows (`shell-windows`)
+            and macOS (`shell-macos`); full Playwright e2e on ubuntu with a skip/flake
+            budget. Documentation-only changes run it too.
             release.yml (tag-triggered: runs ci.yml on the tagged commit, builds
             read-only, then publishes behind the `release` environment with
             attested, checksummed installers). Each platform leg also smoke-tests the
@@ -187,7 +189,9 @@ attestations. Manual outline (from `app/README.md` — read it before building):
    triple: `app/scripts/bundle-python.sh`.
 3. Build the shell: `cargo tauri build` in `app/src-tauri` with the platform config
    (`tauri.<platform>.conf.json` is merged over `tauri.conf.json` by the Tauri CLI). macOS has a
-   full pipeline in `app/scripts/build-dmg.sh`.
+   full pipeline in `app/scripts/build-dmg.sh`. `app/icons/dmg/make-bg.py` renders the DMG
+   background from the bundled JetBrains Mono font on any OS. `scripts/check_dmg_art.py` in CI
+   fails when `app/icons/dmg/RENDERED_VERSION` does not match the app version.
 4. The bundle embeds client assets + pyruntime + the Python dependencies. Nothing is fetched at
    first run.
 

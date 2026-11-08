@@ -23,9 +23,9 @@ Latin subset has no U+2192 arrow, so the arrows in LINE2 are drawn as strokes
 one monospace cell wide.
 
 Usage:
-    python3 make-bg.py 1.3.0                 # → bg-aarch64.png (+@2x)
-    python3 make-bg.py 1.3.0 --arch x86_64   # → bg-x86_64.png  (+@2x)
-    python3 make-bg.py 1.3.0 --all           # both
+    python3 make-bg.py 1.6.0                 # → bg-aarch64.png (+@2x)
+    python3 make-bg.py 1.6.0 --arch x86_64   # → bg-x86_64.png  (+@2x)
+    python3 make-bg.py 1.6.0 --all           # both
 
 Requires Pillow with WOFF2 support in its FreeType (the PyPI wheels have it). Run
 it when the version changes and commit the result — the build script consumes
@@ -137,7 +137,7 @@ def render(version: str, arch: str, scale: int) -> Image.Image:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Render the FlowMap DMG background.")
-    ap.add_argument("version", help="version string shown in the subtitle, e.g. 1.3.0")
+    ap.add_argument("version", help="version string shown in the subtitle, e.g. 1.6.0")
     ap.add_argument("--arch", choices=sorted(ARCH_LABEL), default="aarch64")
     ap.add_argument("--all", action="store_true", help="render every architecture")
     args = ap.parse_args()

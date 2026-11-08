@@ -173,7 +173,7 @@ async def _await_owned(future: asyncio.Future, *, cancel: Callable[[], None] | N
         while not future.done():
             try:
                 await asyncio.shield(future)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError:  # shielded work: keep waiting until it finishes
                 continue
             except Exception:  # cancellation remains the caller's outcome
                 break
@@ -272,38 +272,8 @@ def _band_weights(lo_r: int, hi_r: int, close_r: int) -> np.ndarray:
     return w / w.sum()
 
 
-def columns_from_candles(
-    candles: Sequence[Candle],
-    cfg: GridCfg,
-    *,
-    stretch: int = DEFAULT_BACKFILL_STRETCH,
-) -> tuple[list[FinalizedColumn], EpochParams] | None:
-    """Convert candles to ``(columns, epoch)`` for :meth:`Grid.preload`.
-
-    Each candle is emitted as up to ``stretch`` consecutive columns whose t0s
-    spread across the candle's span on the dt grid, so reconstructed history
-    paints as a continuous band on the time axis instead of one thin bar per
-    minute (the band's density is the candle's per-row density, repeated).
-    ``stretch=1`` restores the historical one-column-per-candle layout.
-
-    Returns ``None`` when nothing usable can be produced (no finite candles, a
-    banded grid, a degenerate price frame) — the caller then degrades to a cold
-    start. Never raises on ordinary bad input; only programming errors surface.
-    """
-    if cfg.band_up is not None or cfg.band_down is not None:
-        # Banded grids freeze tick_multiple from the first real mid — a
-        # pre-seeded epoch cannot honor that. Cold start on those.
-        return None
-
-    rows = cfg.rows
-    step = cfg.tick * cfg.tick_multiple
-    dt = cfg.dt_ns
-    if rows <= 0 or step <= 0.0 or dt <= 0:
-        return None
-
-    # Keep finite candles, sorted by raw t0. Candles snapping onto the same
-    # dt slot are all KEPT — the later one is forced to prev_t0 + dt so t0
-    # strictly increases (preload requires it). No candle is dropped here.
+def _clean_candles(candles: Sequence[Candle]) -> list[Candle]:
+    """Finite, non-negative-volume, positive-close candles, sorted by raw t0."""
     clean: list[Candle] = []
     for cd in candles:
         if not _finite(cd.o, cd.h, cd.l, cd.c, cd.volume):
@@ -311,30 +281,43 @@ def columns_from_candles(
         if cd.volume < 0.0 or not (cd.c > 0.0):
             continue
         clean.append(cd)
-    if not clean:
-        return None
     clean.sort(key=lambda cd: cd.t0_ns)
+    return clean
 
-    ref = float(clean[-1].c)
-    if not (ref > 0.0):
-        return None
-    # The tick is resolved AFTER the reference close so an auto_tick grid
-    # (crypto feeds serving sub-dollar instruments) can bin the reconstructed
-    # history on the same price-proportional step the live first mid will
-    # install. For every other grid this is cfg.tick verbatim.
+
+def _price_frame(ref: float, cfg: GridCfg) -> tuple[float, float, float] | None:
+    """``(tick, p0, step)`` of the seeded epoch, framed on the reference close.
+
+    The tick is resolved AFTER the reference close so an auto_tick grid (crypto
+    feeds serving sub-dollar instruments) can bin the reconstructed history on
+    the same price-proportional step the live first mid will install. For every
+    other grid this is ``cfg.tick`` verbatim. The frame is centred on the close
+    and snapped onto the step grid, so live data continues in this epoch
+    without an immediate re-anchor.
+    """
     tick = adaptive_tick_for(ref, cfg.tick) if cfg.auto_tick else cfg.tick
     step = tick * cfg.tick_multiple
     if tick <= 0.0 or step <= 0.0:
         return None
-    # Frame centered on the last close, snapped onto the step grid, so live data
-    # continues in this epoch without an immediate re-anchor.
-    span = rows * step
+    span = cfg.rows * step
     p0 = max(0.0, round((ref - span / 2.0) / step) * step)
+    return tick, p0, step
+
+
+def _candle_densities(
+    clean: Sequence[Candle], rows: int, dt: int, p0: float, step: float
+) -> tuple[list[np.ndarray], list[int], list[BarColumn], float]:
+    """First pass: raw two-sided densities, t0 per candle, reconstructed bars.
+
+    Each candle's t0 snaps onto the dt grid; a candle sharing a slot with the
+    previous one is forced to ``prev_t0 + dt`` so t0 strictly increases (preload
+    requires it). No candle is dropped here. Returns the per-candle ``[2, rows]``
+    densities, their t0s, the bar columns, and the global density peak.
+    """
 
     def row_of(px: float) -> int:
         return int(round((px - p0) / step))
 
-    # First pass: raw two-sided densities + running bar accumulators.
     raw: list[np.ndarray] = []  # each [2, rows] float64
     t0s: list[int] = []
     cvd_cum = 0.0
@@ -396,7 +379,7 @@ def columns_from_candles(
         bars.append(
             BarColumn(
                 epoch=0,
-                col_seq=len(bars),  # provisional; rewritten below with real seq
+                col_seq=len(bars),  # provisional; rewritten by _emit_columns
                 t0_ns=t0,
                 o=float(cd.o),
                 h=float(cd.h),
@@ -409,7 +392,24 @@ def columns_from_candles(
                 vwap_den_cum=vwap_den,
             )
         )
+    return raw, t0s, bars, global_peak
 
+
+def _emit_columns(
+    raw: list[np.ndarray],
+    t0s: list[int],
+    bars: list[BarColumn],
+    global_peak: float,
+    dt: int,
+    stretch: int,
+) -> list[FinalizedColumn]:
+    """Second pass: spread each candle over up to ``stretch`` consecutive columns.
+
+    Each candle is emitted as up to ``stretch`` consecutive columns whose t0s
+    spread across the candle's span on the dt grid, so reconstructed history
+    paints as a continuous band on the time axis instead of one thin bar per
+    minute (the band's density is the candle's per-row density, repeated).
+    """
     # True size units scaled by the documented display gain: a candle band's
     # per-row density (volume / row span) is lifted to a live-comparable
     # intensity so a viewport that mixes reconstructed and live columns keeps
@@ -447,7 +447,51 @@ def columns_from_candles(
                 )
             )
         next_seq += k
+    return columns
 
+
+def columns_from_candles(
+    candles: Sequence[Candle],
+    cfg: GridCfg,
+    *,
+    stretch: int = DEFAULT_BACKFILL_STRETCH,
+) -> tuple[list[FinalizedColumn], EpochParams] | None:
+    """Convert candles to ``(columns, epoch)`` for :meth:`Grid.preload`.
+
+    Each candle is emitted as up to ``stretch`` consecutive columns whose t0s
+    spread across the candle's span on the dt grid, so reconstructed history
+    paints as a continuous band on the time axis instead of one thin bar per
+    minute (the band's density is the candle's per-row density, repeated).
+    ``stretch=1`` restores the historical one-column-per-candle layout.
+
+    Returns ``None`` when nothing usable can be produced (no finite candles, a
+    banded grid, a degenerate price frame) — the caller then degrades to a cold
+    start. Never raises on ordinary bad input; only programming errors surface.
+    """
+    if cfg.band_up is not None or cfg.band_down is not None:
+        # Banded grids freeze tick_multiple from the first real mid — a
+        # pre-seeded epoch cannot honor that. Cold start on those.
+        return None
+
+    rows = cfg.rows
+    dt = cfg.dt_ns
+    if rows <= 0 or cfg.tick * cfg.tick_multiple <= 0.0 or dt <= 0:
+        return None
+
+    # No candle is dropped for sharing a dt slot (see _candle_densities).
+    clean = _clean_candles(candles)
+    if not clean:
+        return None
+    ref = float(clean[-1].c)
+    if not (ref > 0.0):
+        return None
+    frame = _price_frame(ref, cfg)
+    if frame is None:
+        return None
+    tick, p0, step = frame
+
+    raw, t0s, bars, global_peak = _candle_densities(clean, rows, dt, p0, step)
+    columns = _emit_columns(raw, t0s, bars, global_peak, dt, stretch)
     epoch = EpochParams(
         epoch=0,
         tick=tick,

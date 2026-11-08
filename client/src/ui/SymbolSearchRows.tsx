@@ -6,7 +6,7 @@
 import { useT } from '../i18n/useT';
 import { capabilityChipClass, capabilityChipTitle, capabilityChips, marketGroup, type VenueOption } from './symbols';
 import { fmtPct, fmtPrice, sparkDirection, sparkPath } from './spark';
-import { groupText, venueText, type Row } from './SymbolSearchModel';
+import { capabilityChipLabel, groupText, venueText, type Row } from './SymbolSearchModel';
 
 interface SymbolRowProps {
   row: Row;
@@ -60,7 +60,7 @@ export function SymbolRow({ row, idx, active, recent, onHover, onCommit }: Symbo
             .slice(0, 1)
             .map((c) => (
               <span key={c} className={capabilityChipClass(c)} title={capabilityChipTitle(c, t)}>
-                {c}
+                {capabilityChipLabel(c, t)}
               </span>
             ))}
         </span>

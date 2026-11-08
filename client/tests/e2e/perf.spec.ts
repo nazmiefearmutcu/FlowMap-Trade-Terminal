@@ -45,11 +45,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPORT_PATH = join(__dirname, '../../perf_report.json');
 
 // Geometry: a realistic 2048-row price grid (half the production 4096). 10 000
-// columns → ceil(10000/256)=40 tile layers → capacity 10 240 cols. Ring bytes =
-// 256·2048·40·(RG16F: 2ch·2B) = 80 MiB — well under the 300 MB gate. Documented
-// in the report. (512/1024 rows would trivially pass memory but under-exercise
-// the upload; 2048 keeps the number meaningful while staying comfortably safe.)
+// columns → ceil(10000/256)=40 tile layers → capacity 10 240 cols. The full-res
+// ring holds 10 240 · 2048 texels of RG32F (8 B each) = 160 MiB, under the 300 MB
+// gate. Documented in the report. (512/1024 rows would trivially pass memory but
+// under-exercise the upload; 2048 keeps the number meaningful while staying
+// comfortably safe.) The measured gate covers the GPU ring only; the production
+// geometry is measured after the frame gates, at the end of the test.
 const PERF_ROWS = 2048;
+// Production geometry (session_manager.py: 4096 rows; renderer.ts: 6144 columns),
+// measured on the same ring code. The figure is the full-res RG32F ring only: the
+// mips and the CPU ColumnCache pages are not in it and need one combined CPU and
+// GPU budget.
+const PROD_ROWS = 4096;
+const PROD_COLS = 6144;
+const MIB = 1024 * 1024;
 const SMALL_COLS = 200;
 const BIG_COLS = 10_000;
 const PAN_MS = 2500;
@@ -98,7 +107,7 @@ function fpsOf(deltas: number[]): number {
 test('perf gates: pan/zoom fps + history-independent frame cost @ 10k columns', async ({
   page,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
 
   const consoleErrors: string[] = [];
   page.on('console', (m) => {
@@ -285,4 +294,13 @@ test('perf gates: pan/zoom fps + history-independent frame cost @ 10k columns', 
   for (const line of advisories) {
     test.info().annotations.push({ type: 'perf-advisory', description: line });
   }
+
+  // Production geometry on the same ring code. It runs last, so the larger
+  // allocation cannot disturb the frame measurements above.
+  const prod = await page.evaluate(
+    (cfg) => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.preloadSynthetic(cfg.cols, cfg.rows),
+    { cols: PROD_COLS, rows: PROD_ROWS },
+  ) as { ringBytes: number };
+  const prodMB = prod.ringBytes / MIB;
+  expect(prodMB, `production full-res ring ${prodMB.toFixed(1)} MB at ${PROD_ROWS} rows`).toBeLessThanOrEqual(MEM_GATE_MB);
 });

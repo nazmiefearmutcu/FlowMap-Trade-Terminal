@@ -357,12 +357,6 @@ export class GridMap {
   }
 }
 
-/**
- * The bigint coercion for nanosecond fields is the shared helper in
- * candles/bigNs.ts. Re-exported for the modules that already import it from here.
- */
-export { toBigNs } from '../../candles/bigNs';
-
 /** The visible absolute-column span of a view, clamped to a resident window. */
 export function visibleColRange(
   view: HeatmapView,

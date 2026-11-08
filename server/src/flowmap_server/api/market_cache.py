@@ -37,16 +37,22 @@ Semantics:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from zoneinfo import ZoneInfo
 
 import msgspec
+from crocodile.core.schema.records import OHLCV
 from crocodile.core.scheduler.calendar import USMarketCalendar
 
 from flowmap_server.feeds._yahoo import UnknownSymbolError, YahooUnavailableError
+
+# US equity sessions are dated in Eastern time, whatever the host's zone is.
+_MARKET_TZ = ZoneInfo("America/New_York")
 
 __all__ = [
     "QuoteData",
@@ -613,9 +619,43 @@ async def _crypto_quote(market: str, symbol: str) -> QuoteData:
     )
 
 
-async def _equity_quote(symbol: str) -> QuoteData:
-    import datetime
+def _bar_ts_ns(bar: OHLCV) -> int:
+    return int(bar.source_ts if bar.source_ts is not None else bar.local_ts)
 
+
+def daily_change_pct(bars: Sequence[OHLCV]) -> tuple[float, float | None] | None:
+    """Last close and its percent change against the previous regular session.
+
+    The base is the last close before the newest bar's New York calendar date,
+    which is the previous session's close. When the window holds no earlier
+    session, the base is the first close of the newest session. The change is
+    None when the base is not positive. Returns None when there are no usable
+    closes at all.
+    """
+    rows = sorted(
+        (
+            (
+                _bar_ts_ns(b),
+                datetime.datetime.fromtimestamp(_bar_ts_ns(b) / 1e9, tz=_MARKET_TZ).date(),
+                float(b.close),
+            )
+            for b in bars
+            if b.close is not None
+        ),
+        key=lambda row: row[0],
+    )
+    if not rows:
+        return None
+    _, session, price = rows[-1]
+    base = next((close for _, day, close in reversed(rows) if day < session), None)
+    if base is None:
+        base = next(close for _, day, close in rows if day == session)
+    if base <= 0:
+        return price, None
+    return price, (price - base) / base * 100.0
+
+
+async def _equity_quote(symbol: str) -> QuoteData:
     from flowmap_server.feeds._yahoo import equity_bars
 
     try:
@@ -631,15 +671,14 @@ async def _equity_quote(symbol: str) -> QuoteData:
         # Outage: no price and an unreachable marker, never a fake "fresh" quote.
         return QuoteData(market="equity", symbol=symbol.upper(), reachable=False,
                          stale=True, as_of_ns=time.time_ns())
-    closes = [float(b.close) for b in bars if b.close is not None]
     now = time.time_ns()
-    if not closes:
+    latest = daily_change_pct(bars)
+    if latest is None:
         return QuoteData(market="equity", symbol=symbol.upper(), reachable=True, stale=True, as_of_ns=now)
+    price, change = latest
+    closes = [float(b.close) for b in bars if b.close is not None]
     last_bar = bars[-1]
     last_ts = int(last_bar.source_ts if last_bar.source_ts is not None else last_bar.local_ts)
-    open_px = closes[0]
-    price = closes[-1]
-    change = ((price - open_px) / open_px * 100.0) if open_px else None
     closed = not USMarketCalendar().is_market_open(
         datetime.datetime.fromtimestamp(now / 1e9, tz=datetime.timezone.utc)
     )

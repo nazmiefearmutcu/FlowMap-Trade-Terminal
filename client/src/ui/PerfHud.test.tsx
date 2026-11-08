@@ -140,3 +140,14 @@ describe('PerfHud announces nothing on its 2 Hz refresh (WCAG 4.1.3)', () => {
     expect(container.querySelector('[role="status"]')).toBeNull();
   });
 });
+
+describe('PerfHud key repeat', () => {
+  it('ignores the auto-repeat of a held H so the chip does not flicker', () => {
+    const onToggle = vi.fn();
+    render(<PerfHud rendererRef={{ current: null }} visible={false} onToggle={onToggle} />);
+    fireKey('h', window, { repeat: true });
+    expect(onToggle).not.toHaveBeenCalled();
+    fireKey('h');
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+});

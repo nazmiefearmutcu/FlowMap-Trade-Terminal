@@ -212,6 +212,17 @@ export class FrameLoop {
     }
   }
 
+  /**
+   * Program readiness for the depth ingest. While the hold is set it answers
+   * "not ready" without touching GL, so a shader that never links is not
+   * recompiled once per arriving column; the frame loop owns the retry and
+   * {@link retryRender} lifts the hold. A link failure throws, as in programsReady.
+   */
+  programsReadyForIngest(): boolean {
+    if (this.programHold) return false;
+    return this.programsReady();
+  }
+
   /** Apply this frame's scripted camera op during a perf run. */
   private stepPerf(perf: PerfRun): void {
     if (perf.kind === 'pan') {

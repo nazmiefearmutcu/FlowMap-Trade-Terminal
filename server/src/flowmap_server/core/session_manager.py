@@ -614,7 +614,8 @@ class SessionManager:
             raise ReplayUnavailableError(f"replay window exceeds {self._cfg.ring_columns} columns; choose a shorter interval")
         feed = ReplayFeed(market=market, symbol=symbol, tail=tail,
                           paused=start_t is not None or end_t is not None,
-                          recorded_capability=tail.capability)
+                          recorded_capability=tail.capability,
+                          window_end_ns=end_t)
         # Report what was recorded. The replay engine's literal is the L2 /
         # exchange reading of a crypto venue; a synthetic equity run must not
         # claim real depth or exchange-side trades.

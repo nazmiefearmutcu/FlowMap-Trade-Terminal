@@ -1005,7 +1005,7 @@ def _save_part_index(root: Recorder, directory: Path, paths: list[Path]) -> None
     finally:
         try:
             temporary.unlink(missing_ok=True)
-        except OSError:
+        except OSError:  # already replaced or never created
             pass
 
 

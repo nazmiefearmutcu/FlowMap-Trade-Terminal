@@ -33,7 +33,6 @@ __all__ = ["SIM_MARKET", "build_feed", "feed_factory"]
 SIM_MARKET = "sim"
 
 
-
 def build_feed(
     sub: events.Subscribe, cfg: Config, *, realtime_sim: bool, stats: DropCounters | None = None
 ) -> Feed:
@@ -47,6 +46,8 @@ def build_feed(
     source instead of leaving them write-only.
     """
     if sub.market == SIM_MARKET:
+        # start_ns=0: the sim clock is session-relative (elapsed time from 0), not wall
+        # time. Clients render these timestamps as elapsed T+, never as a clock time.
         return SimFeed(seed=42, dt_ns=cfg.dt_crypto_ns, start_ns=0, realtime=realtime_sim,
                        symbol=sub.symbol)
     if sub.market in EQUITY_MARKETS:

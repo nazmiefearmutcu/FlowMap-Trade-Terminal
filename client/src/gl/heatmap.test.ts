@@ -33,14 +33,8 @@ import {
 } from './heatmap';
 import { buildImbalanceLUT, buildFlowLUT, LUT_SIZE } from './lut';
 import { MipChain } from './mips';
-import { GL, makeFakeGL, type FakeGL } from './mockGL';
+import { makeFakeGL, type FakeGL } from './mockGL';
 import { ViewportNormalizer } from './normalize';
-import {
-  DEFAULT_RECON_FLOOR_SCALE,
-  reconFloorFor,
-  REGION_LIVE,
-  REGION_RECON,
-} from './regionFloor';
 import type { GLContext } from './context';
 import { COLS_PER_TILE, TileRing } from './tileRing';
 import { HEATMAP_FRAG } from './shaders/heatmap';
@@ -942,11 +936,9 @@ describe('the Gaussian sampler + transfer curve in the fragment shader source', 
   });
 
   it('applies the transfer AFTER the black point with exact endpoints', () => {
-    // The black point is now the REGION-SELECTED floor (live floor for
-    // untagged columns — mix(a,b,0) is exactly a — and the relative recon floor
-    // for tagged ones). The transfer itself is unchanged.
+    // The black point is the live floor; the transfer follows it.
     expect(HEATMAP_FRAG).toContain(
-      't = clamp((t - floorSel) * floorScaleSel, 0.0, 1.0);',
+      't = clamp((t - u_floor) * u_floorScale, 0.0, 1.0);',
     );
     expect(HEATMAP_FRAG).toContain('if (t <= k) {');
     expect(HEATMAP_FRAG).toContain('t = span * pow(t / k, u_gamma);');
@@ -1394,160 +1386,6 @@ describe('Heatmap.draw — SUM-path level cross-fade uniform wiring', () => {
     expect(lastFloat(gl, 'u_floor')).toBe(0);
   });
 });
-
-describe('per-region reconstruction floor', () => {
-  function makeRegionHeatmap(layers = 2): { heatmap: Heatmap; gl: FakeGL; ring: TileRing } {
-    const gl = makeFakeGL();
-    const ctx: GLContext = {
-      gl,
-      caps: {
-        maxTextureImageUnits: 16,
-        maxArrayTextureLayers: 2048,
-        maxTextureSize: 8192,
-        colorBufferFloat: true,
-      },
-    };
-    const ring = new TileRing(gl, 16, layers);
-    const heatmap = new Heatmap(ctx, ring, gl.createTexture()!);
-    return { heatmap, gl, ring };
-  }
-  function lastFloat(gl: FakeGL, name: string): number | undefined {
-    const calls = gl
-      .callsOf('uniform1f')
-      .filter((c) => (c.args[0] as { uniform?: string } | null)?.uniform === name);
-    return calls.length > 0 ? (calls[calls.length - 1].args[1] as number) : undefined;
-  }
-  function lastInt(gl: FakeGL, name: string): number | undefined {
-    const calls = gl
-      .callsOf('uniform1i')
-      .filter((c) => (c.args[0] as { uniform?: string } | null)?.uniform === name);
-    return calls.length > 0 ? (calls[calls.length - 1].args[1] as number) : undefined;
-  }
-  /** The LAST region-mask upload recorded (format RGBA, RGBA8-sized). */
-  function lastMaskUpload(gl: FakeGL): Uint8Array | undefined {
-    const calls = gl
-      .callsOf('texSubImage3D')
-      .filter((c) => c.args[8] === GL.RGBA && c.args[5] === COLS_PER_TILE);
-    return calls.length > 0 ? (calls[calls.length - 1].args[10] as Uint8Array) : undefined;
-  }
-  const FLAT = { colOffset: 0, colScale: 320, rowOffset: 0, rowScale: 240 };
-
-  it('declares the mask + recon-floor uniforms and selects them per fragment', () => {
-    expect(HEATMAP_FRAG).toContain('uniform highp sampler2DArray u_region;');
-    expect(HEATMAP_FRAG).toContain('uniform float u_floorRecon;');
-    expect(HEATMAP_FRAG).toContain('uniform float u_floorScaleRecon;');
-    expect(HEATMAP_FRAG).toContain('texelFetch(u_region, ivec3(x0, 0, layer), 0).r > 0.5');
-    expect(HEATMAP_FRAG).toContain('float floorSel = mix(u_floor, u_floorRecon, float(region));');
-    expect(HEATMAP_FRAG).toContain(
-      't = clamp((t - floorSel) * floorScaleSel, 0.0, 1.0);',
-    );
-    // The historical fixed-floor remap must be GONE (that was the global floor).
-    expect(HEATMAP_FRAG).not.toContain('t = clamp((t - u_floor) * u_floorScale, 0.0, 1.0);');
-  });
-
-  it('allocates one RGBA8 mask texel per column (colsPerTile × 1 × layers)', () => {
-    const { gl, ring } = makeRegionHeatmap(3);
-    const allocs = gl
-      .callsOf('texStorage3D')
-      .filter((c) => c.args[3] === COLS_PER_TILE && c.args[4] === 1);
-    expect(allocs.length).toBe(1);
-    expect(allocs[0].args[2]).toBe(GL.RGBA8);
-    expect(allocs[0].args[5]).toBe(3);
-    expect(ring.capacityCols).toBe(COLS_PER_TILE * 3);
-  });
-
-  it('with NO tagged columns uploads recon values bit-equal to the live pair', () => {
-    const { heatmap, gl } = makeRegionHeatmap();
-    heatmap.floor = 0.0128;
-    heatmap.reconFloorScale = 0.25;
-    heatmap.draw(FLAT);
-    // No region was tagged: even though floorRecon is the relative 0.0032, the
-    // shader's mask is all-zero so every fragment selects the LIVE branch — and
-    // the live uniforms are untouched, so live pixels stay byte-identical.
-    expect(lastInt(gl, 'u_region')).toBe(5);
-    expect(lastFloat(gl, 'u_floor')).toBe(0.0128);
-    expect(lastFloat(gl, 'u_floorRecon')).toBe(0.0128 * 0.25);
-    expect(lastFloat(gl, 'u_floorScale')).toBeCloseTo(1 / (1 - 0.0128), 12);
-    expect(lastFloat(gl, 'u_floorScaleRecon')).toBeCloseTo(1 / (1 - 0.0128 * 0.25), 12);
-    expect(heatmap.regionInfo().reconColumns).toBe(0);
-  });
-
-  it('scale 1 is the exact inert endpoint: recon uniforms equal live bit-for-bit', () => {
-    const { heatmap, gl } = makeRegionHeatmap();
-    heatmap.floor = 0.0128;
-    heatmap.reconFloorScale = 1;
-    heatmap.regions.markRange(4, 9, REGION_RECON);
-    heatmap.draw(FLAT);
-    expect(lastFloat(gl, 'u_floorRecon')).toBe(lastFloat(gl, 'u_floor'));
-    expect(lastFloat(gl, 'u_floorScaleRecon')).toBe(lastFloat(gl, 'u_floorScale'));
-    expect(heatmap.regionInfo().reconColumns).toBe(6);
-  });
-
-  it('the relative cut scales the live floor by reconFloorScale × row footprint', () => {
-    const { heatmap, gl } = makeRegionHeatmap();
-    heatmap.floor = 0.0128;
-    heatmap.reconFloorScale = 0.25;
-    heatmap.regions.mark(3, REGION_RECON);
-    heatmap.draw(FLAT);
-    // rpp 1 / no mips → nRowTaps·blk = 1: the relative floor passes through.
-    expect(lastFloat(gl, 'u_floorRecon')).toBe(0.0128 * 0.25);
-    // A 4× row footprint (price zoom-out) scales the recon floor EXACTLY like
-    // the live one — the two t-space semantics stay consistent at every zoom.
-    heatmap.draw({ colOffset: 0, colScale: 320, rowOffset: 0, rowScale: 4 * 240 });
-    expect(lastFloat(gl, 'u_floorRecon')).toBeCloseTo(lastFloat(gl, 'u_floor')! * 0.25, 12);
-  });
-
-  it('uploads the slot-indexed mask lazily: one texSubImage3D per revision', () => {
-    const { heatmap, gl } = makeRegionHeatmap(2);
-    heatmap.draw(FLAT);
-    const initial = lastMaskUpload(gl);
-    expect(initial).toBeDefined();
-    expect(Array.from(initial!.slice(0, 4))).toEqual([0, 0, 0, 0]);
-    const uploadsAfterFirst = gl.callsOf('texSubImage3D').length;
-    // No marks → no new upload on a second draw.
-    heatmap.draw(FLAT);
-    expect(gl.callsOf('texSubImage3D').length).toBe(uploadsAfterFirst);
-    // Tag columns 5..7 (slots 5..7) → one new upload carrying the red bytes.
-    heatmap.regions.markRange(5, 7, REGION_RECON);
-    heatmap.draw(FLAT);
-    const mask = lastMaskUpload(gl)!;
-    const reds = [5, 6, 7].map((s) => mask[s * 4]);
-    expect(reds).toEqual([255, 255, 255]);
-    expect(mask[4 * 4]).toBe(0);
-    expect(mask[5 * 4 + 3]).toBe(255); // alpha mirrors for debug readback
-    expect(gl.callsOf('texSubImage3D').length).toBe(uploadsAfterFirst + 1);
-    // Untag → revision moves again → the mask re-uploads zeroed.
-    heatmap.regions.clear();
-    heatmap.draw(FLAT);
-    expect(lastMaskUpload(gl)![5 * 4]).toBe(0);
-    expect(heatmap.regionInfo().reconColumns).toBe(0);
-  });
-
-  it('mirrors the shader mix: tag 0 → exact live remap, tag 1 → recon remap', () => {
-    // The shader uses mix(a, b, 0|1); assert the endpoint algebra the claim
-    // "live untouched byte-wise" rests on (IEEE: a*1 + 0*b === a).
-    const mix = (a: number, b: number, t: number) => a * (1 - t) + b * t;
-    const live = 0.0513;
-    const recon = 0.0128;
-    expect(mix(live, recon, 0)).toBe(live);
-    expect(mix(live, recon, 1)).toBe(recon);
-    const remap = (t: number, floor: number) => Math.min(1, Math.max(0, (t - floor) / (1 - floor)));
-    // A cell the live floor hides (t=0.02) paints only in the recon region.
-    expect(remap(0.02, mix(live, recon, 0))).toBe(0);
-    expect(remap(0.02, mix(live, recon, 1))).toBeGreaterThan(0);
-    // A wall (t=1) is pinned in BOTH regions (endpoint promise).
-    expect(remap(1, mix(live, recon, 0))).toBe(1);
-    expect(remap(1, mix(live, recon, 1))).toBe(1);
-  });
-
-  it('pins the relative-floor helpers used by the draw', () => {
-    expect(reconFloorFor(0.0128, DEFAULT_RECON_FLOOR_SCALE)).toBe(0.0128 * DEFAULT_RECON_FLOOR_SCALE);
-    expect(REGION_LIVE).toBe(0);
-    expect(REGION_RECON).toBe(1);
-  });
-});
-
-
 
 describe('per-draw kernel tables are reused while their inputs hold', () => {
   it('row-mip weights: same sigma returns the same table; a new sigma recomputes', () => {

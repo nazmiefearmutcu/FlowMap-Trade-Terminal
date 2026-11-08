@@ -45,12 +45,21 @@ interface TauriInternals {
   transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
 }
 
+declare global {
+  interface Window {
+    /** The webview's Tauri IPC bridge; absent outside the desktop shell. */
+    __TAURI_INTERNALS__?: Partial<TauriInternals>;
+  }
+}
+
+function isBridge(i: Partial<TauriInternals> | null | undefined): i is TauriInternals {
+  return !!i && typeof i.invoke === 'function' && typeof i.transformCallback === 'function';
+}
+
 function internals(): TauriInternals | null {
   if (typeof window === 'undefined') return null;
-  const i = (window as unknown as { __TAURI_INTERNALS__?: Partial<TauriInternals> }).__TAURI_INTERNALS__;
-  return i && typeof i.invoke === 'function' && typeof i.transformCallback === 'function'
-    ? (i as TauriInternals)
-    : null;
+  const i = window.__TAURI_INTERNALS__;
+  return isBridge(i) ? i : null;
 }
 
 /** True when this webview runs inside the desktop shell. */
@@ -113,7 +122,8 @@ function engineAnswering(status: SidecarStatus | null): boolean {
  * a cold sidecar and climb the reconnect ladder. Outside the shell,
  * `start` runs at once. Inside it, `start` runs when the shell reports `live` (or
  * `external`), or after `timeoutMs` whichever comes first: a failed or silent
- * engine still gets its connect attempts and its own notice. Returns a cancel
+ * engine still gets its start. A failed engine's connect attempts are then parked
+ * by the connection until it is live (see `sidecarHold`). Returns a cancel
  * function for effect cleanup; cancelling before `start` ran prevents it.
  */
 export function whenSidecarReady(start: () => void, timeoutMs: number = SIDECAR_READY_WAIT_MS): () => void {

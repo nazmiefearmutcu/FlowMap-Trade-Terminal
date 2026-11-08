@@ -64,7 +64,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <pre className="app-crash__detail">{error.message}</pre>
         </details>
         <div className="app-crash__actions">
-          <button type="button" className="app-crash__reload" onClick={() => { void this.copyDetails(); }} data-testid="app-crash-copy">
+          <button type="button" className="app-crash__copy" onClick={() => { void this.copyDetails(); }} data-testid="app-crash-copy">
             {t('error.copy')}
           </button>
           <button type="button" className="app-crash__reload" onClick={() => window.location.reload()}>

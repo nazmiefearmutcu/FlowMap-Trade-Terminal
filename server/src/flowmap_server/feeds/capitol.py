@@ -6,6 +6,10 @@ It carries House disclosures only; Senate filings are not read. Each event is
 stamped with its transaction date, not the time it was fetched. The latest
 transaction date in the dataset is reported with every fetch so a stale third-party
 snapshot is visible.
+
+Wiring status: this build starts no producer for this module, so nothing it
+produces reaches a client. Only the tests exercise it. Treat the description above
+as the module's design, not as data this build serves.
 """
 
 from __future__ import annotations

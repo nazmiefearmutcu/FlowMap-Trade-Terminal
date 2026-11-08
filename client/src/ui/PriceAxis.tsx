@@ -116,7 +116,7 @@ export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxi
    * lands on the right grid even before the next data-driven frame.
    */
   const healAxis = useCallback((): void => {
-    const r = rendererRef.current as unknown as AxisHealView | null;
+    const r = rendererRef.current as AxisHealView | null;
     const c = canvasRef.current;
     if (r === null || c === null || typeof r.attachOverlaySurfaces !== 'function') return;
     const box = boxRef.current?.size();

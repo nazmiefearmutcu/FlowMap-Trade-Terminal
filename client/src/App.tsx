@@ -109,6 +109,8 @@ export function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   // True while the server's recording writer is stalled (Status.capability.recording_health).
   const recordingDegraded = useFlowMapStore((s) => s.recordingDegraded);
+  // True while the server's market overview runs past its own deadline (Status.capability.overview_degraded).
+  const overviewDegraded = useFlowMapStore((s) => s.capability?.overview_degraded === true);
 
   // Theme: App re-renders only on an actual theme switch (useSyncExternalStore),
   // which is human-frequency.
@@ -229,6 +231,7 @@ export function App() {
           mode={subscription?.mode ?? 'live'}
           simActive={subscription?.market === SIM_MARKET}
           recordingDegraded={recordingDegraded}
+          overviewDegraded={overviewDegraded}
           engine={engine}
           glError={glError}
           glFailure={glFailure}

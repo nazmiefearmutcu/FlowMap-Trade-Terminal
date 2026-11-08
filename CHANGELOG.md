@@ -46,7 +46,8 @@ Hardening and release-quality pass: security, release pipeline, tests, tooling a
 - The first-run tour states that recording is on by default in the installed app, where the
   recordings are written, and the 20 GB soft cap.
 - DMG artwork stamp check (`scripts/check_dmg_art.py`) in CI and in the macOS build legs. A stale
-  stamp fails the gate, with the `make-bg.py` command to fix it.
+  stamp fails the gate, with the `make-bg.py` command to fix it. `make-bg.py` renders the artwork from the
+  bundled JetBrains Mono font on any OS, so it needs neither macOS nor Menlo.
 - Token discipline gates for the client. ESLint refuses raw px font sizes, hex colours and rgb()
   literals in `client/src` TS/TSX outside `src/theme`, with a ratchet for the files that predate
   it. `scripts/check_css_font_sizes.py` ratchets the raw px font sizes in client stylesheets.
@@ -68,8 +69,8 @@ Hardening and release-quality pass: security, release pipeline, tests, tooling a
 - `scripts/test_keyboard_reference.py` fails when a key the in-app shortcuts overlay shows is missing
   from the user guide's keyboard table.
 - Settings > Keyboard switch, *Single-key shortcuts*. It turns off the single-character shortcuts (`Space`, `/`,
-  `E`, `M`, `A`, `H`, `C`, `D`, `I`, `J`, `F`, `P`, `R`, `T`, `?`); Ctrl and Cmd chords keep working. The choice
-  is kept in the browser.
+  `E`, `M`, `A`, `H`, `C`, `D`, `I`, `J`, `F`, `P`, `R`, `T`, `+`, `−`, `[`, `]`, `?`); Ctrl and Cmd chords and the
+  arrow keys keep working, so Shift+Up and Shift+Down still zoom the price axis. The choice is kept in the browser.
 - `]` and `[` zoom the price axis in and out while the chart has focus.
 - A `SIM` capability chip on simulated feeds, and a `RECORDED DENSITY` provenance chip on replays of recorded depth.
 - A recording-stalled notice in the top bar when a recording write stays unfinished for 30 seconds or more.
@@ -100,6 +101,8 @@ Hardening and release-quality pass: security, release pipeline, tests, tooling a
   next launch once it has passed 1 MB.
   The server's own file sink (`FLOWMAP_LOG_FILE`) rotates at 20 MB and keeps three numbered backups
   (`.1` to `.3`).
+- The installed app passes `ALPACA_API_KEY`, `ALPACA_API_SECRET` and `FINNHUB_API_KEY` from the user's environment
+  to its server. The shell's environment allowlist names them, and a unit test pins that.
 - The recording cap is soft. Parts named `*-epochs-*` are never deleted, so the total can stay above
   `FLOWMAP_RECORDING_GB_CAP` when only those remain.
 - `FLOWMAP_RECORDING_ENABLED` and `FLOWMAP_BACKFILL_ENABLED` refuse unknown spellings at startup
@@ -112,7 +115,7 @@ Hardening and release-quality pass: security, release pipeline, tests, tooling a
   read and must be moved by hand.
 - `scripts/dev.sh`, `scripts/dev-unix.sh` and `scripts/dev-windows.ps1` stop the whole process
   tree on exit, refuse to start over a server they did not start, and restore the console
-  code page. `scripts/dev-windows.ps1 -Port` is refused: the dev proxy targets 8720.
+  code page. `scripts/dev-windows.ps1 -Port` is refused: the script runs the server on port 8720 only.
 - The webview CSP is stricter: fonts come from the app only (no `data:` fonts), and media, frames,
   plugins and form submissions are blocked. Loopback connections still allow any `127.0.0.1` port,
   because the sidecar's port is chosen at each launch; the session token and Host check guard it.

@@ -120,20 +120,6 @@ uniform float u_lowSpan;
 uniform float u_floor;
 uniform float u_floorScale;
 
-// Per-REGION black point. Reconstructed (stretched
-// 1 m-candle) columns carry a different density scale from the live book —
-// measured recon/live ≈ 0.5× on BTC but ≈26× on ETH — so ONE global floor is
-// calibrated for at most one regime and the dim side reads as background. The
-// mask below tags each ring slot as live (0) or reconstructed (1); tagged
-// columns use u_floorRecon / u_floorScaleRecon (a RELATIVE cut of the live
-// floor — same t-space, same row-footprint scaling) while LIVE columns keep
-// the exact shipped u_floor / u_floorScale pair. With no tagged columns the
-// mask is all zero and every fragment takes the live branch, so live pixels
-// stay byte-identical by construction.
-uniform highp sampler2DArray u_region; // RGBA8, 1 row: r > 0.5 = reconstructed
-uniform float u_floorRecon;
-uniform float u_floorScaleRecon;
-
 // Colormap row: 0 = inferno (default), 1 = synth (amber), 2 = classic thermal.
 uniform int u_ramp;
 
@@ -811,14 +797,8 @@ void main() {
   float t = intensity / max(u_norm, 1e-9);
   // Black point, then the transfer curve. Order matters: clipping AFTER the
   // curve would clip a curve, not a density, and the floor would mean a
-  // different amount of size at every contrast setting. The region mask
-  // selects the live floor for every untagged column — mix(a,b,0)
-  // is exactly a, so the shipped pixels are bit-identical — and the RELATIVE
-  // recon floor for tagged (reconstructed) columns.
-  int region = texelFetch(u_region, ivec3(x0, 0, layer), 0).r > 0.5 ? 1 : 0;
-  float floorSel = mix(u_floor, u_floorRecon, float(region));
-  float floorScaleSel = mix(u_floorScale, u_floorScaleRecon, float(region));
-  t = clamp((t - floorSel) * floorScaleSel, 0.0, 1.0);
+  // different amount of size at every contrast setting.
+  t = clamp((t - u_floor) * u_floorScale, 0.0, 1.0);
   // Two-segment transfer (low-span calibrated 2026-09-13): below the knee the
   // display gamma lifts the mid-field into a FIXED output share u_lowSpan of
   // the ramp; above it log compression spreads the wall band across

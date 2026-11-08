@@ -59,12 +59,12 @@
   transform: translateX(-50%);
   z-index: 7;
   padding: 4px 10px;
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: var(--chart-accent, #2a8f7e);
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  color: var(--chart-accent);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
   border-radius: 999px;
   pointer-events: none;
   white-space: nowrap;
@@ -77,15 +77,15 @@
   min-width: 90px;
   padding: 2px 6px;
   font-family: var(--font-mono);
-  font-size: var(--fs-sm, 11px);
-  color: var(--chart-ink, #e6edf3);
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
-  border-radius: 4px;
+  font-size: var(--fs-sm);
+  color: var(--chart-ink);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
+  border-radius: var(--r-1);
   outline: none;
 }
 .draw-layer__text-input:focus {
-  border-color: var(--chart-accent, #2a8f7e);
+  border-color: var(--chart-accent);
 }
 .draw-layer__text-input:focus-visible {
   outline: 2px solid var(--focus);
@@ -102,9 +102,9 @@
   flex-direction: column;
   gap: 2px;
   padding: 5px;
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
-  border-radius: 8px;
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
+  border-radius: var(--r-3);
   box-shadow: var(--shadow-pop);
 }
 .draw-toolbar__btn {
@@ -113,27 +113,27 @@
   width: 26px;
   height: 26px;
   padding: 0;
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: var(--r-2);
   cursor: pointer;
 }
 .draw-toolbar__btn:hover:not(:disabled) {
-  color: var(--chart-ink, #e6edf3);
-  background: var(--chart-chip-border, #1a2030);
+  color: var(--chart-ink);
+  background: var(--chart-chip-border);
 }
 .draw-toolbar__btn.is-active {
-  color: var(--chart-accent, #2a8f7e);
+  color: var(--chart-accent);
   background: transparent;
-  border-color: var(--chart-accent, #2a8f7e);
+  border-color: var(--chart-accent);
 }
 .draw-toolbar__btn:disabled {
   opacity: 0.35;
   cursor: default;
 }
 .draw-toolbar__btn--danger:hover:not(:disabled) {
-  color: var(--sell-bright, #e8635f);
+  color: var(--sell-bright);
   background: transparent;
 }
 .draw-toolbar__btn svg {
@@ -158,13 +158,13 @@
   cursor: pointer;
 }
 .draw-toolbar__swatch.is-active {
-  outline: 2px solid var(--chart-ink, #e6edf3);
+  outline: 2px solid var(--chart-ink);
   outline-offset: 1px;
 }
 .draw-toolbar__sep {
   height: 1px;
   margin: 3px 2px;
-  background: var(--chart-chip-border, #1a2030);
+  background: var(--chart-chip-border);
 }
 
 /* A drawing toolbar in a narrow chart must not fight the price axis: keep it

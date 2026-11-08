@@ -5,6 +5,10 @@ for awarded defense, intelligence, and agency contracts:
 - Endpoint: https://api.usaspending.gov/api/v2/search/spending_by_award/
 - Maps recipient entity names to stock symbols (LMT, RTX, GD, BA, NOC, PLTR, etc.).
 - Categorizes multi-million / billion dollar allocations into MARKET_INTELLIGENCE events.
+
+Wiring status: this build starts no producer for this module, so nothing it
+produces reaches a client. Only the tests exercise it. Treat the description above
+as the module's design, not as data this build serves.
 """
 
 from __future__ import annotations

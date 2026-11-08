@@ -28,6 +28,7 @@ import {
   type StreamMsg,
   type SubscribeWindow,
 } from '../net/connection';
+import { overviewDegraded } from '../net/overviewState';
 import { recordingDegraded } from '../net/recordingState';
 import { holdWhileSidecarDown } from '../net/sidecarHold';
 import { playbackFromCapability, type ReplayPlayback, type EpochParams, type FeedState, type HistoryResponse, type StreamMode } from '../proto/types';
@@ -98,6 +99,12 @@ export interface FlowMapState {
    * Status; cleared with the rest of the session on a new subscription.
    */
   recordingDegraded: boolean;
+  /**
+   * The server reports that an overview step is overrunning (capability
+   * overview_degraded): the chart keeps streaming while its overview lags. Set
+   * from every Status; cleared with the rest of the session on a new subscription.
+   */
+  overviewDegraded: boolean;
   sessionId: string | null;
   /**
    * Bumped on every Hello, including a same-session reconnect. Each Hello is
@@ -237,6 +244,7 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
   nextOpenTs: null,
   capability: null,
   recordingDegraded: false,
+  overviewDegraded: false,
   sessionId: null,
   attachEpoch: 0,
   protocolVersion: null,
@@ -344,6 +352,7 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
             nextOpenTs: status.next_open_ts ?? null,
             capability: status.capability,
             recordingDegraded: recordingDegraded(status.capability),
+            overviewDegraded: overviewDegraded(status.capability),
             latencyMs: status.latency_ms,
             clockSkewMs: status.clock_skew_ms,
             replayPlayback: playback,
@@ -430,6 +439,7 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
         sessionId: null,
         capability: null,
         recordingDegraded: false,
+        overviewDegraded: false,
         epochs: new Map(),
         gridEpoch: null,
         // A different stream is a new question: its refusal (if any) is not ours.

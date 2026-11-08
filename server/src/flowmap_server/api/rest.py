@@ -28,6 +28,7 @@ import time
 from fastapi import APIRouter, Request
 
 from flowmap_server import __version__
+from flowmap_server.api import _env
 from flowmap_server.api.errors import ApiError
 from flowmap_server.config import Config
 from flowmap_server.data.universe import build_directory, filter_directory
@@ -92,22 +93,50 @@ def current_directory() -> tuple[dict[str, object], ...]:
     )
 
 
+def _health_authorized(request: Request) -> bool:
+    """True when the caller presents the session token (or none is configured).
+
+    ``/api/health`` is token-exempt so liveness probes work without a token.
+    The operational detail below is not public: only a caller that proves the
+    session token gets it. A single ``x-flowmap-token`` header is the only
+    accepted carrier, matching the middleware's rule for HTTP requests.
+    """
+    values = request.headers.getlist("x-flowmap-token")
+    provided = values[0] if len(values) == 1 else None
+    return _env.session_token_ok(provided)
+
+
 @router.get("/health")
 async def health(request: Request) -> dict[str, object]:
-    """Liveness + operational snapshot (v3).
+    """Liveness, plus the operational snapshot for an authorized caller.
 
-    No auth, NO sensitive fields. Goes beyond the legacy ``{status, version}``
-    liveness ping so an operator (or the desktop wrapper) can answer "is the
-    sidecar alive AND is it actually feeding?" in one call: process uptime,
-    wire protocol version, whether recording is enabled, one row per ACTIVE
-    session with its feed kind and live/degraded state — and, when the core
-    mounts a stats producer, its ``snapshot()`` dict VERBATIM under ``stats``.
+    Without the session token the answer is liveness only: ``status``,
+    ``version``, ``protocol_version``, ``uptime_s`` and ``recording_enabled``
+    (the one flag the browser reads before it can explain an empty replay
+    list). Any loopback-origin page can reach this route, so per-session
+    symbols, session ids, stats and config errors are withheld from it.
+
+    With the token, the body is the full operational snapshot (v3): one row
+    per ACTIVE session with its feed kind and live/degraded state, and, when
+    the core mounts a stats producer, its ``snapshot()`` dict VERBATIM under
+    ``stats``.
 
     Reads are defensive: the health probe must never 500. A missing manager, a
     core without ``stats``, or a snapshot that raises degrades to
     ``stats: null`` + ``stats_available: false``, still ``status: ok``.
     """
     cfg: Config | None = getattr(request.app.state, "cfg", None)
+    started = getattr(request.app.state, "started_monotonic_ns", None)
+    uptime_s = max(0.0, (time.monotonic_ns() - started) / 1e9) if started else 0.0
+    recording_enabled = bool(getattr(cfg, "recording_enabled", False))
+    if not _health_authorized(request):
+        return {
+            "status": "ok",
+            "version": __version__,
+            "protocol_version": wire.PROTO_VER,
+            "uptime_s": round(uptime_s, 3),
+            "recording_enabled": recording_enabled,
+        }
     manager = getattr(request.app.state, "manager", None)
     feeds: list[dict[str, str]] = []
     # Keyed (market, symbol, mode, source, band) and, for replay, + (start_t,
@@ -138,8 +167,6 @@ async def health(request: Request) -> dict[str, object]:
                 "session_id": str(s.session_id),
             }
         )
-    started = getattr(request.app.state, "started_monotonic_ns", None)
-    uptime_s = max(0.0, (time.monotonic_ns() - started) / 1e9) if started else 0.0
     # The server-wide stats producer (SessionStats). Rendered VERBATIM —
     # whatever keys snapshot() returns go on the wire untouched.
     stats: dict[str, object] | None = None
@@ -156,7 +183,7 @@ async def health(request: Request) -> dict[str, object]:
         "version": __version__,
         "protocol_version": wire.PROTO_VER,
         "uptime_s": round(uptime_s, 3),
-        "recording_enabled": bool(getattr(cfg, "recording_enabled", False)),
+        "recording_enabled": recording_enabled,
         "active_sessions": len(feeds),
         "feeds": feeds,
         "stats": stats,

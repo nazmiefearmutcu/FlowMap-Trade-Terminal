@@ -32,7 +32,7 @@
   min-width: 150px;
   padding: 6px 9px;
   font-family: var(--font-mono);
-  font-size: var(--fs-xs, 11px);
+  font-size: var(--fs-xs);
   line-height: 1.55;
   color: var(--chart-ink);
   background: var(--chart-chip-bg);
@@ -73,7 +73,7 @@
   transform: translateX(-50%);
   z-index: 7;
   padding: 4px 10px;
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   color: var(--chart-accent);
@@ -105,13 +105,13 @@
   top: -14px;
   padding: 1px 6px;
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
   color: var(--chart-warn);
   background: var(--chart-chip-bg);
   border: 1px solid var(--warn-line);
-  border-radius: 3px;
+  border-radius: var(--r-1);
   white-space: nowrap;
 }
 .alert-line--triggered {
@@ -148,7 +148,7 @@
   gap: 6px;
   padding: 4px 10px;
   font-family: inherit;
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   color: var(--chart-ink-dim);
@@ -181,7 +181,7 @@
   max-height: 46vh;
   display: flex;
   flex-direction: column;
-  font-size: var(--fs-xs, 11px);
+  font-size: var(--fs-xs);
   color: var(--chart-ink);
   background: var(--chart-chip-bg);
   border: 1px solid var(--chart-chip-border);
@@ -225,7 +225,7 @@
   color: var(--chart-ink);
 }
 .alert-row__state {
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   letter-spacing: 0.05em;
   color: var(--chart-ink-dim);
 }
@@ -238,13 +238,13 @@
 .alert-row__btn {
   padding: 2px 7px;
   font-family: inherit;
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.05em;
   color: var(--chart-ink-dim);
   background: transparent;
   border: 1px solid var(--chart-chip-border);
-  border-radius: 4px;
+  border-radius: var(--r-1);
   cursor: pointer;
 }
 .alert-row__btn:hover {
@@ -262,11 +262,11 @@
   min-width: 0;
   padding: 4px 8px;
   font-family: var(--font-mono);
-  font-size: var(--fs-xs, 11px);
+  font-size: var(--fs-xs);
   color: var(--chart-ink);
   background: var(--chart-gutter-bg);
   border: 1px solid var(--chart-chip-border);
-  border-radius: 4px;
+  border-radius: var(--r-1);
 }
 .alerts-add__input:focus-visible {
   outline: 2px solid var(--focus);
@@ -276,13 +276,13 @@
 .alerts-add__go {
   padding: 4px 10px;
   font-family: inherit;
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--chart-accent);
   background: transparent;
   border: 1px solid var(--chart-chip-border);
-  border-radius: 4px;
+  border-radius: var(--r-1);
   cursor: pointer;
 }
 .alerts-add__go:disabled {
@@ -300,12 +300,12 @@
   gap: 10px;
   padding: 4px 10px;
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   line-height: 1.6;
   color: var(--chart-ink-dim);
   background: var(--chart-chip-bg);
   border: 1px solid var(--chart-chip-border);
-  border-radius: 6px;
+  border-radius: var(--r-2);
   pointer-events: none;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;

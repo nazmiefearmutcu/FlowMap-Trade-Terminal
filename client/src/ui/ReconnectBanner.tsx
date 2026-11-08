@@ -17,7 +17,6 @@
 import { t } from '../i18n';
 import { useT } from '../i18n/useT';
 import type { CloseInfo } from '../net/connection';
-import { refusalReasonKey } from '../net/refusalReason';
 import { useFlowMapStore } from '../state/store';
 
 /** Attempts after which the banner says the reconnect is failing, not merely retrying. */
@@ -74,17 +73,11 @@ export function ReconnectBanner(): JSX.Element | null {
     );
   }
   if (refusal) {
-    // The server's refusal token is never shown raw: a known token reads as its
-    // translated reason, an unknown one as the generic "unrecognized reason", and
-    // a refusal with no token as the plain refusal copy.
-    const reasonKey = refusalReasonKey(refusal.reason);
+    // The server's refusal reason is a protocol token, never user copy, so the
+    // banner states the refusal and the way out without repeating the token.
     return (
       <div className="reconnect-banner reconnect-banner--fatal" role="alert" data-testid="refusal-banner">
-        <span className="reconnect-banner__text">
-          {reasonKey !== null
-            ? t('banner.refusedWithReason', { reason: t(reasonKey) })
-            : t('banner.refused')}
-        </span>
+        <span className="reconnect-banner__text">{t('banner.refused')}</span>
       </div>
     );
   }

@@ -49,9 +49,10 @@ _RECORDED_HONESTY_KEYS = ("depth", "tape", "trade_side", "cvd")
 def unrecorded_capability(market: str) -> dict[str, object]:
     """Honest capability for a recording whose live capability was never stored.
 
-    Keyless equity and the sim are synthetic by construction (the depth is
-    generated, not observed), so they replay as ``SYNTH`` and never as the real
-    ``L2`` ramp. Any other venue is a snapshot-driven book. Trade side and CVD
+    Keyless equity replays as ``SYNTH``: its prices and trades were observed,
+    but its depth was generated, so it never replays as the real ``L2`` ramp.
+    The sim is synthetic throughout (see ``synthetic`` in :class:`ReplayFeed`).
+    Any other venue is a snapshot-driven book. Trade side and CVD
     are unknown for a stored recording, so both are ``na``: a replay never
     inherits the exchange-true ``exchange`` a live venue declared.
     """
@@ -104,7 +105,8 @@ class ReplayFeed:
 
     def __init__(self, *, market: str, symbol: str, tail: TailData, speed: float = 1.0,
                  paused: bool = False,
-                 recorded_capability: Mapping[str, object] | None = None) -> None:
+                 recorded_capability: Mapping[str, object] | None = None,
+                 window_end_ns: int | None = None) -> None:
         self.market = market
         self.symbol = symbol
         # The recording's own honesty fields when the live feed stored them, else
@@ -116,17 +118,19 @@ class ReplayFeed:
                 {k: recorded_capability[k] for k in _RECORDED_HONESTY_KEYS
                  if k in recorded_capability}
             )
-        # A replay is synthetic when its data was generated rather than observed:
-        # the sim market, or any recording whose depth tier is SYNTH.
+        # A replay is synthetic when its prices and trades were generated rather
+        # than observed: the sim market. A keyless equity recording has real
+        # recorded prices and trades with generated depth, so its depth tier
+        # (SYNTH) carries that fact and ``synthetic`` stays false.
         self.capability = {
             **honesty,
             "replay": True,
-            "synthetic": market in _GENERATED_MARKETS or honesty["depth"] == "SYNTH",
+            "synthetic": market in _GENERATED_MARKETS,
         }
         # Provenance says how the density was captured: recorded aggregates, never
         # an original raw L2 book. A SYNTH recording keeps it, because its columns
-        # were recorded. Its generated depth is carried by the SYNTH tier and by
-        # ``synthetic`` above, so clients key the honesty labels on those.
+        # were recorded. Clients key the SYNTH depth label on the depth tier and the
+        # generated-data label on ``synthetic`` above.
         self.capability["depth_provenance"] = "recorded-density"
         self.capability["quote_provenance"] = "recorded-row-centres"
         # The Feed protocol's price-adaptive hint is kept for generic consumers.
@@ -146,6 +150,10 @@ class ReplayFeed:
         self.ended = False
         self.start_ns = self._t0s[0]
         self.end_ns = self._t0s[-1] + self._dts[self._cols[-1].epoch]
+        if window_end_ns is not None:
+            # A windowed replay stops at its requested end. The column that
+            # straddles that end is loaded whole, but playback must not run past it.
+            self.end_ns = min(self.end_ns, window_end_ns)
 
         # Bucket trades/markers under the column whose interval contains them
         # (greatest t0 <= ts), matching how they were recorded.

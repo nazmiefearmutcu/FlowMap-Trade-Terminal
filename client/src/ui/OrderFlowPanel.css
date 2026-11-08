@@ -1,0 +1,8 @@
+/* The panel title is a heading. The wrapper keeps the header flex layout. */
+.flow-panel .panel__heading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  font: inherit;
+}

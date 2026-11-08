@@ -62,6 +62,9 @@ def test_replay_of_recorded_synth_equity_reports_synth_not_l2(tmp_path):
     assert feed.capability["cvd"] == "na"
     assert feed.capability["replay"] is True
     assert feed.capability["depth_provenance"] == "recorded-density"
+    # ``synthetic`` means generated prices and trades. A keyless equity run
+    # recorded real prices and trades, only its depth is synthetic.
+    assert feed.capability["synthetic"] is False
 
 
 def test_legacy_equity_recording_defaults_to_honest_synth_reading():

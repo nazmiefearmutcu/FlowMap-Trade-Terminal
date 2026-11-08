@@ -166,7 +166,8 @@ export class Viewport {
   /**
    * True while the frame runs without EXT_color_buffer_float: mip levels are
    * unavailable, so zoomed-out walls are averaged by sampling and read coarser.
-   * The App shows a visible reduced-density badge while this holds.
+   * The App hard-requires EXT_color_buffer_float, so this stays false in the app
+   * and reads true only on a context built without it (diagnostics and tests).
    */
   isReducedDensity(): boolean {
     return !this.gpu.ctx.caps.colorBufferFloat;

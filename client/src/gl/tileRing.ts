@@ -50,6 +50,14 @@ import { ColumnGeometry } from './columnGeometry';
 
 export const COLS_PER_TILE = 256;
 
+/** GPU bytes per texel of a full-res tile: RG32F, 2 channels × 4 bytes. */
+export const FULLRES_BYTES_PER_TEXEL = 8;
+
+/** GPU bytes of a full-res ring of `capacityCols` columns at `rows` rows (RG32F). */
+export function fullResRingBytes(capacityCols: number, rows: number): number {
+  return capacityCols * rows * FULLRES_BYTES_PER_TEXEL;
+}
+
 export interface ResidentRange {
   /** Oldest resident absolute colSeq (inclusive). */
   oldest: number;
@@ -421,7 +429,7 @@ export class TileRing {
 
   /** Full-res GPU bytes this ring holds: cap·rows·RG32F(8 B). */
   fullResBytes(): number {
-    return this.capacityCols * this.rows * 8;
+    return fullResRingBytes(this.capacityCols, this.rows);
   }
 
   /** LRU tile-layer order (oldest-touched first). Diagnostics. */

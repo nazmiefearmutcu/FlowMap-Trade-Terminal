@@ -201,6 +201,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("needs: [prepare, gate]", job_block(RELEASE, "build"))
         self.assertIn("gh release view", job_block(RELEASE, "publish"))
 
+    def test_publish_refuses_a_release_that_became_public_mid_run(self):
+        # prepare refuses a published release, but one can be published while this
+        # run is in flight; the publish job must not write new bytes into it.
+        publish = job_block(RELEASE, "publish")
+        ensure = publish[publish.index("Ensure a draft release exists"):publish.index("Upload installers and SHA256SUMS")]
+        self.assertIn("--json isDraft", ensure)
+        self.assertIn('if [ "$DRAFT" != "true" ]', ensure)
+        self.assertLess(ensure.index("--json isDraft"), ensure.index("gh release edit"))
+
     def test_version_fields_are_checked_by_the_shared_script(self):
         self.assertIn("scripts/check_release_versions.py", RELEASE)
         self.assertIn("scripts/check_release_versions.py", CI)
@@ -290,6 +299,25 @@ class CiWorkflowTests(unittest.TestCase):
 
     def test_the_bundling_pin_tests_run_in_the_release_tooling_job(self):
         self.assertIn("pytest app/scripts/tests", job_block(CI, "release-tooling"))
+
+    def test_the_desktop_release_helper_tests_run_in_ci(self):
+        self.assertIn("unittest discover -s app/scripts/tests", job_block(CI, "release-tooling"))
+
+    def test_checks_after_the_dmg_artwork_step_run_even_when_it_fails(self):
+        # The DMG step still fails the job; the steps behind it must report too.
+        steps = job_block(CI, "release-tooling").split("\n      - name:")
+        dmg = next(i for i, step in enumerate(steps) if "DMG artwork matches" in step)
+        following = steps[dmg + 1:]
+        self.assertGreaterEqual(len(following), 4)
+        for step in following:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertIn("if: always()", step)
+
+    def test_windows_e2e_leg_runs_the_browser_suite(self):
+        job = job_block(CI, "e2e-windows")
+        self.assertIn("runs-on: windows-latest", job)
+        self.assertIn("npx playwright test", job)
+        self.assertIn("checkBudget.mjs", job)
 
     def test_every_release_leg_smoke_tests_its_installer(self):
         build = job_block(RELEASE, "build")

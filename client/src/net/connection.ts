@@ -86,9 +86,10 @@ export const HANDSHAKE_TIMEOUT_MS = 8_000;
  * First handshake window for a socket that carries a subscribe (the normal case:
  * the subscribe is sent on open). The sidecar prepares the stream before it can
  * say Hello, and a cold venue symbol and tick listing alone may take up to 25 s.
- * Until the Hello it sends only progress Status frames (about every 2 s), which
- * extend the window but never shorten it. The bare window would abandon a healthy
- * subscribe that is still preparing and make the server repeat that work.
+ * Until the Hello it sends only progress Status frames (every 2 s, the server's
+ * SUBSCRIBE_PROGRESS_S). Each one extends the window but never shortens it. The
+ * bare window would abandon a healthy subscribe that is still preparing and make
+ * the server repeat that work.
  */
 export const SUBSCRIBE_HANDSHAKE_TIMEOUT_MS = 30_000;
 /**
@@ -98,7 +99,11 @@ export const SUBSCRIBE_HANDSHAKE_TIMEOUT_MS = 30_000;
  * without ever sending Hello is still abandoned at this total.
  */
 export const HANDSHAKE_MAX_MS = 30_000;
-/** Ceiling on a subscribe-bearing socket's handshake (see {@link SUBSCRIBE_HANDSHAKE_TIMEOUT_MS}). */
+/**
+ * Hard ceiling on a subscribe-bearing socket's handshake. The progress Status
+ * frames extend the window only up to here, so a server that stays silent or
+ * wedged is abandoned at this total (see {@link SUBSCRIBE_HANDSHAKE_TIMEOUT_MS}).
+ */
 export const SUBSCRIBE_HANDSHAKE_MAX_MS = 60_000;
 /**
  * Liveness deadline once live: the server pings about once per second, so this
@@ -303,7 +308,7 @@ function defaultUrl(): string {
 }
 
 const defaultWsFactory = (url: string, protocols: string[]): SocketLike =>
-  new WebSocket(url, protocols) as unknown as SocketLike;
+  new WebSocket(url, protocols) as SocketLike;
 const defaultSetTimeout: SetTimeoutFn = (handler, timeoutMs) => globalThis.setTimeout(handler, timeoutMs);
 const defaultClearTimeout: ClearTimeoutFn = (handle) =>
   globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>);
@@ -663,10 +668,10 @@ export class Connection {
   }
 
   /**
-   * Hold or release socket opens while the desktop engine is restarting. Held,
-   * the armed reconnect ticks and the retry button still run, but no socket opens
-   * (no WebSocket, so no token). Released, a deferred open runs at once. Only
-   * the shell's own status drives this; a plain browser never calls it.
+   * Hold or release socket opens while the desktop engine is starting, restarting
+   * or failed. Held, the armed reconnect ticks and the retry button still run, but
+   * no socket opens (no WebSocket, so no token). Released, a deferred open runs at
+   * once. Only the shell's own status drives this; a plain browser never calls it.
    */
   setSidecarHold(held: boolean): void {
     if (held) {
@@ -807,8 +812,9 @@ export class Connection {
       this.reconnectTimer = null;
     }
     if (this.sidecarHeld) {
-      // The shell says the engine is restarting: the token must not reach whatever
-      // answers that port now. Park the open until setSidecarHold(false).
+      // The shell says the engine is not answering (starting, restarting or
+      // failed): the token must not reach whatever answers that port now. Park the
+      // open until setSidecarHold(false).
       this.openDeferred = true;
       this.setConnStatus('reconnecting');
       return;

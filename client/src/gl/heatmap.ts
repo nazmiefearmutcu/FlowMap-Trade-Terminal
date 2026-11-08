@@ -13,12 +13,6 @@ import { checkGLError, type GLContext } from './context';
 import { RAMP_FLOW } from './lut';
 import type { MipChain } from './mips';
 import type { ViewportNormalizer } from './normalize';
-import {
-  DEFAULT_RECON_FLOOR_SCALE,
-  reconFloorFor,
-  RegionTracker,
-  REGION_LIVE,
-} from './regionFloor';
 import { heatmapProgram } from './heatmapProgram';
 import { TileRing } from './tileRing';
 import { rowToPrice, type PriceScale } from './priceScale';
@@ -99,7 +93,6 @@ const LUT_UNIT = 1;
 const MIP1_UNIT = 2;
 const MIP2_UNIT = 3;
 const ROWMIP_UNIT = 4;
-const REGION_UNIT = 5;
 const GEOMETRY_UNIT = 6;
 const RESOLUTION_UNIT = 7;
 
@@ -741,7 +734,6 @@ type UniformName =
   | 'u_mip2'
   | 'u_rowMip1'
   | 'u_lut'
-  | 'u_region'
   | 'u_colOffset'
   | 'u_colScale'
   | 'u_rowOffset'
@@ -769,8 +761,6 @@ type UniformName =
   | 'u_gamma'
   | 'u_floor'
   | 'u_floorScale'
-  | 'u_floorRecon'
-  | 'u_floorScaleRecon'
   | 'u_ramp'
   | 'u_channel'
   | 'u_pixelMode'
@@ -885,37 +875,6 @@ export class Heatmap {
   normalizer: ViewportNormalizer | null = null;
 
   /**
-   * Per-REGION black point. The shipped Tolerance floor is calibrated on the LIVE book;
-   * reconstructed (stretched-candle) columns carry a different density scale
-   * (measured recon/live ≈ 0.5× on BTC but ≈26× on ETH), so one global floor
-   * hides the recon carpet. Columns tagged {@link RegionTracker} as reconstructed
-   * get `floor × reconFloorScale` instead — a RELATIVE cut (same t-space as the
-   * live floor), never an absolute brightness lift. 1 = inert: every column
-   * (tagged or not) paints with the exact shipped live floor. Live columns stay
-   * byte-identical for any value: untagged/stale slots resolve to REGION_LIVE.
-   */
-  reconFloorScale = DEFAULT_RECON_FLOOR_SCALE;
-
-  /**
-   * Per-column region tags in ring-slot space (pure; see gl/regionFloor.ts).
-   * The caller (renderer / e2e harness) classifies columns and calls
-   * `regions.mark`/`markRange` — the next draw uploads the changed mask as ONE
-   * RGBA8 array texture (colsPerTile × 1 × layers, `r` byte = 255 for recon).
-   * Nothing marked → the mask is all zero and the shader selects the live floor
-   * for every fragment (bit-identical to the pre-region pipeline).
-   */
-  readonly regions: RegionTracker;
-
-  private readonly regionTex: WebGLTexture;
-  /** Interleaved RGBA upload mirror for {@link regionTex} (slot-indexed tags). */
-  private readonly regionTexData: Uint8Array;
-  /** Tag revision last uploaded to {@link regionTex} (-1 = never). */
-  private regionRevApplied = -1;
-
-  /** Uploaded region floors from the last draw (diagnostics/tests). */
-  private lastRegion = { floorRecon: 0, floorScaleRecon: 1, reconColumns: 0 };
-
-  /**
    * Gaussian sampler + cross-fade diagnostics from the LAST {@link draw}:
    * the time-axis footprint, the sampler plan, and the row/level fade
    * weights that were uploaded. Defaults to the plan at `colsPerPixel = 1`
@@ -940,31 +899,6 @@ export class Heatmap {
     this.lut = lut;
 
     this.program = heatmapProgram(gl);
-
-    // Per-region mask: one RGBA8 texel per COLUMN in ring-slot space
-    // (colsPerTile × 1 × layers), red byte 0 = live / 255 = reconstructed. Kept
-    // zero-initialized (immutable storage zero-fills) so the default pipeline is
-    // the exact pre-region one. Re-uploaded as ONE texSubImage3D when the
-    // RegionTracker revision changes (see draw) — never per fragment.
-    this.regions = new RegionTracker(tileRing.capacityCols);
-    this.regionTexData = new Uint8Array(tileRing.capacityCols * 4);
-    const regionTex = gl.createTexture();
-    if (!regionTex) throw new Error('flowmap/heatmap: region texture alloc failed');
-    this.regionTex = regionTex;
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, regionTex);
-    gl.texStorage3D(
-      gl.TEXTURE_2D_ARRAY,
-      1,
-      gl.RGBA8,
-      tileRing.colsPerTile,
-      1,
-      tileRing.layers,
-    );
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
 
     // Full-viewport quad as a triangle strip: (pos.xy, uv.xy) interleaved.
     // uv spans 0..1 with y up (uv.y 0 = bottom of the price grid).
@@ -999,7 +933,6 @@ export class Heatmap {
       u_mip2: loc('u_mip2'),
       u_rowMip1: loc('u_rowMip1'),
       u_lut: loc('u_lut'),
-      u_region: loc('u_region'),
       u_colOffset: loc('u_colOffset'),
       u_colScale: loc('u_colScale'),
       u_rowOffset: loc('u_rowOffset'),
@@ -1027,8 +960,6 @@ export class Heatmap {
       u_gamma: loc('u_gamma'),
       u_floor: loc('u_floor'),
       u_floorScale: loc('u_floorScale'),
-      u_floorRecon: loc('u_floorRecon'),
-      u_floorScaleRecon: loc('u_floorScaleRecon'),
       u_ramp: loc('u_ramp'),
       u_channel: loc('u_channel'),
       u_pixelMode: loc('u_pixelMode'),
@@ -1105,17 +1036,6 @@ export class Heatmap {
     gl.activeTexture(gl.TEXTURE0 + ROWMIP_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, rowMip);
     gl.uniform1i(this.u.u_rowMip1, ROWMIP_UNIT);
-
-    // Per-region mask: one RGBA8 texel per ring column. Bound every
-    // draw; re-uploaded as a single texSubImage3D only when the tag revision
-    // moved, so the steady-state cost is a bind + a uniform.
-    gl.activeTexture(gl.TEXTURE0 + REGION_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.regionTex);
-    gl.uniform1i(this.u.u_region, REGION_UNIT);
-    if (this.regionRevApplied !== this.regions.revision) {
-      this.uploadRegions();
-      this.regionRevApplied = this.regions.revision;
-    }
 
     gl.uniform1f(this.u.u_colOffset, view.colOffset);
     gl.uniform1f(this.u.u_colScale, view.colScale);
@@ -1336,26 +1256,6 @@ export class Heatmap {
     );
     gl.uniform1f(this.u.u_floor, floor);
     gl.uniform1f(this.u.u_floorScale, 1 / Math.max(1 - floor, 1e-6));
-    // Per-REGION floor: reconstructed columns use a
-    // RELATIVE cut of the live slider floor (× reconFloorScale) — scaled by the
-    // SAME nRowTaps·blk row footprint, so the t-space semantics match at every
-    // zoom. scale 1 (the default-safe endpoint) uploads values bit-equal to the
-    // live pair; with no tagged columns the shader's live branch is selected
-    // anyway, keeping live pixels byte-identical.
-    const rawRecon = reconFloorFor(calibratedFloor, this.reconFloorScale);
-    const floorRecon = Math.min(
-      TOLERANCE_MAX_FLOOR,
-      Math.max(0, rawRecon) * floorRows,
-    );
-    const floorScaleRecon = 1 / Math.max(1 - floorRecon, 1e-6);
-    gl.uniform1f(this.u.u_floorRecon, floorRecon);
-    gl.uniform1f(this.u.u_floorScaleRecon, floorScaleRecon);
-    this.lastRegion = {
-      floorRecon,
-      floorScaleRecon,
-      reconColumns: this.regions.reconColumns,
-    };
-
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.bindVertexArray(null);
     checkGLError(gl, 'Heatmap.draw', true);
@@ -1386,56 +1286,9 @@ export class Heatmap {
     return { ...this.lastSample };
   }
 
-  /**
-   * Per-region diagnostics from the LAST draw: the uploaded recon
-   * floor pair and the number of tracker-tagged reconstructed columns. The mask
-   * texture itself is slot-addressed; tests assert the uniforms and the
-   * `texSubImage3D` transcript instead (see heatmap.test.ts).
-   */
-  regionInfo(): { floorRecon: number; floorScaleRecon: number; reconColumns: number } {
-    return { ...this.lastRegion };
-  }
-
-  /**
-   * Re-upload the whole region mask as ONE texSubImage3D from the slot-indexed
-   * {@link RegionTracker.tags} array (capacity × 4 bytes — 64 KiB at the
-   * production ring, and only on revision change). Red 0/255 so the shader's
-   * `> 0.5` test is exact; alpha carries a mirror for debug readback.
-   */
-  private uploadRegions(): void {
-    const gl = this.gl;
-    const tags = this.regions.tags;
-    const data = this.regionTexData;
-    for (let i = 0; i < tags.length; i++) {
-      const v = tags[i] === REGION_LIVE ? 0 : 255;
-      const o = i * 4;
-      data[o] = v;
-      data[o + 1] = 0;
-      data[o + 2] = 0;
-      data[o + 3] = v;
-    }
-    gl.activeTexture(gl.TEXTURE0 + REGION_UNIT);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.regionTex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    gl.texSubImage3D(
-      gl.TEXTURE_2D_ARRAY,
-      0,
-      0,
-      0,
-      0,
-      this.tileRing.colsPerTile,
-      1,
-      this.tileRing.layers,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      data,
-    );
-  }
-
   dispose(): void {
     const gl = this.gl;
     gl.deleteBuffer(this.quad);
     gl.deleteVertexArray(this.vao);
-    gl.deleteTexture(this.regionTex);
   }
 }

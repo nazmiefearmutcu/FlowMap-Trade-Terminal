@@ -141,6 +141,24 @@ def test_one_column_is_visible_paused_and_ended_on_attach():
     assert len(columns) == 1 and columns[0].final and columns[0].bid.sum() > 0
 
 
+def test_keyless_equity_replay_shows_synth_depth_with_real_prices_and_trades():
+    """``synthetic`` marks generated prices and trades (the sim market). A keyless
+    equity replay carries recorded prices and trades, so it is not synthetic,
+    yet its depth stays SYNTH and its density is labelled recorded."""
+    keyless = {"depth": "SYNTH", "tape": "poll", "trade_side": "na", "cvd": "na"}
+    feed = ReplayFeed(market="equity", symbol="SYNTH-DEMO", tail=fixture(1), paused=True,
+                      recorded_capability=keyless)
+    assert feed.capability["depth"] == "SYNTH"
+    assert feed.capability["depth_provenance"] == "recorded-density"
+    assert feed.capability["synthetic"] is False
+
+
+def test_sim_replay_is_synthetic_end_to_end():
+    feed = ReplayFeed(market="sim", symbol="SIM-DEMO", tail=fixture(1), paused=True)
+    assert feed.capability["synthetic"] is True
+    assert feed.capability["depth"] == "SYNTH"
+
+
 def test_initial_crossed_snapshot_preserves_recorded_density_and_bars_without_quote():
     tail = fixture(1)
     tail.columns[0].ask[:] = 0

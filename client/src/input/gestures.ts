@@ -257,9 +257,9 @@ export function attachGestures(canvas: HTMLCanvasElement, ctrl: CameraController
       case 'p':
       case 'P':
         // Shift+P restores price AUTO-FIT (same as a gutter double-click). A bare
-        // 'P' toggles follow. With CapsLock on the key reports 'P' WITHOUT Shift,
-        // so the modifier flag is what tells the two apart.
-        if (e.key === 'P' && e.shiftKey) ctrl.setPriceFollow('fit');
+        // 'P' toggles follow. The Shift modifier decides: CapsLock reports 'P'
+        // without Shift, and Shift+P under CapsLock reports 'p' with Shift.
+        if (e.shiftKey) ctrl.setPriceFollow('fit');
         else ctrl.togglePriceFollow();
         break;
       case 'r':

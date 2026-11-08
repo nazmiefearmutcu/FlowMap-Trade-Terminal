@@ -199,6 +199,27 @@ describe('attachGestures keyboard — price zoom without a pointer', () => {
   });
 });
 
+describe('attachGestures keyboard — Shift+P with CapsLock', () => {
+  it('Shift+P auto-fits and bare P toggles, whichever case the key reports', () => {
+    const canvas = document.createElement('canvas');
+    const ctrl = makeController();
+    const dispose = attachGestures(canvas, ctrl);
+
+    // Plain Shift+P reports 'P'; Shift+P under CapsLock reports 'p'. Both carry the Shift flag.
+    canvas.dispatchEvent(keyEvent('P', { shift: true }).event);
+    canvas.dispatchEvent(keyEvent('p', { shift: true }).event);
+    expect(ctrl.setPriceFollow).toHaveBeenCalledTimes(2);
+    expect(ctrl.setPriceFollow).toHaveBeenNthCalledWith(1, 'fit');
+    expect(ctrl.setPriceFollow).toHaveBeenNthCalledWith(2, 'fit');
+
+    // CapsLock alone reports 'P' with no Shift flag: a plain toggle.
+    canvas.dispatchEvent(keyEvent('P').event);
+    canvas.dispatchEvent(keyEvent('p').event);
+    expect(ctrl.togglePriceFollow).toHaveBeenCalledTimes(2);
+    dispose();
+  });
+});
+
 describe('attachGestures keyboard — single-key switch', () => {
   afterEach(() => setSingleKeyShortcutsEnabled(true));
 

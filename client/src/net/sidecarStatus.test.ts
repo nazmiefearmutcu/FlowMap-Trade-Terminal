@@ -174,7 +174,7 @@ describe('whenSidecarReady', () => {
     expect(start).toHaveBeenCalledTimes(1);
   });
 
-  it('starts after the wait even when the engine never reports ready (a failed engine gets its notice and attempts)', async () => {
+  it('starts after the wait even when the engine never reports ready (a failed engine is then held by the connection)', async () => {
     vi.useFakeTimers();
     shellReporting('failed');
     const start = vi.fn();

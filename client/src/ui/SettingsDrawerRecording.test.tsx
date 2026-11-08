@@ -74,13 +74,13 @@ describe('RecordingSection', () => {
     expect(state()).toContain('restarted');
   });
 
-  it('says a change waits for the next launch when no engine was running', async () => {
+  it('says a change waits until the engine next starts when no engine was running', async () => {
     installShell(vi.fn<Invoke>(async (cmd) => (cmd === 'recording_settings'
       ? reply()
       : reply({ enabled: false, restarting: false }))));
     await mount();
     await act(async () => toggle().click());
-    expect(state()).toContain('next launch');
+    expect(state()).toContain('the next time the engine starts');
   });
 
   it('reports a refused change and keeps the last known state', async () => {

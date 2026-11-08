@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from flowmap_server import __version__
+from flowmap_server.api import _env
 from flowmap_server.api.app import create_app
 from flowmap_server.config import Config
 
@@ -80,6 +81,39 @@ async def test_health_reports_active_sessions(app, client):
         ]
     finally:
         manager._sessions = {}
+
+
+async def test_health_withholds_operational_detail_without_the_token(app, monkeypatch):
+    """The token-exempt probe is liveness only. Symbols, session ids, stats and
+    config errors are returned to a caller that presents the session token."""
+    token = "cd" * 32
+    monkeypatch.setenv(_env.ENV_SESSION_TOKEN, token)
+
+    class _StubFeed:
+        market = "sim"
+        symbol = "SIM-DEMO"
+
+    class _StubSession:
+        feed = _StubFeed()
+        feed_state = "live"
+        session_id = "sim:SIM-DEMO:live:abc123def456"
+
+    manager = app.state.manager
+    manager._sessions = {("sim", "SIM-DEMO", "live", None, "0"): _StubSession()}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8720") as c:
+            anonymous = (await c.get("/api/health")).json()
+            authorized = (await c.get("/api/health", headers={"x-flowmap-token": token})).json()
+    finally:
+        manager._sessions = {}
+    assert set(anonymous) == {
+        "status", "version", "protocol_version", "uptime_s", "recording_enabled",
+    }
+    assert anonymous["status"] == "ok"
+    assert authorized["active_sessions"] == 1
+    assert authorized["feeds"][0]["session_id"] == "sim:SIM-DEMO:live:abc123def456"
+    assert "config_error" in authorized and "stats" in authorized
 
 
 async def test_health_survives_mixed_replay_window_keys(app, client):

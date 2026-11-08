@@ -123,6 +123,24 @@ describe('profile worker lifecycle', () => {
     profile.dispose();
   });
 
+  it('a new data version gets a fresh retry budget once the retries of the old one are spent', async () => {
+    mockWorker();
+    const changed = vi.fn();
+    const profile = new Profile({ maxCols: 2 }, clock);
+    profile.draw({ ...frameAt(0, changed), dataVersion: 1 });
+    pending[0].reject(new Error('boom'));
+    await vi.waitFor(() => expect(profile.calculationState).toBe('failed'));
+
+    (profile as unknown as { failures: number }).failures = 99; // retries of version 1 are spent
+    at(10_000); // past any backoff
+    profile.draw({ ...frameAt(0, changed), dataVersion: 1 });
+    expect(run).toHaveBeenCalledTimes(1); // still exhausted for this version
+
+    profile.draw({ ...frameAt(0, changed), dataVersion: 2 });
+    expect(run).toHaveBeenCalledTimes(2); // new data, new budget
+    profile.dispose();
+  });
+
   it('a within-budget profile is reused while the window and frame version are unchanged', () => {
     const changed = vi.fn();
     const profile = new Profile();

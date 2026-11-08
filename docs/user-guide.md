@@ -196,7 +196,7 @@ replay too. Press `M` again (or `Esc`) to disarm.
 
 Price alerts are **client-local**: they live in your browser's
 `localStorage`, per symbol, and are evaluated against the live book mid (or
-last trade) about ten times per second — they never leave your machine.
+last trade) about ten times per second — the alert itself never leaves your machine. For a symbol you are not subscribed to, the background monitor fetches its public quote through the local server, from the provider hosts listed in the [security guide](../SECURITY.md#where-it-connects).
 
 - Press `A` to create an alert at the crosshair price; the bell button
   (chart's bottom-right) opens the alert list, where you can type an exact
@@ -349,6 +349,7 @@ from this table. Update both when a binding changes.
 | `←` `→` `↑` `↓` | Pan time / price (chart focused) |
 | `+` / `−` | Zoom time (chart focused) |
 | `]` / `[` | Zoom price in / out (chart focused) |
+| `Shift`+`↑` / `Shift`+`↓` | Zoom price in / out (chart focused); still works with single-key shortcuts off |
 | `F` | Toggle time follow (chart focused) |
 | `P` / `Shift+P` | Price track on/off · re-fit price |
 | `R` | Return to the live edge |
@@ -360,7 +361,7 @@ from this table. Update both when a binding changes.
 | Vertical drag on price gutter | Scale the price axis about the viewport centre |
 | Double-click on price gutter | Re-fit the price axis |
 
-**Single-key shortcuts.** Settings → *Keyboard* → *Single-key shortcuts* turns off the single-character shortcuts: `Space`, `/`, `E`, `M`, `A`, `H`, `C`, `D`, `I`, `J`, `F`, `P`, `R`, `T` and `?`. Chords with Ctrl or Cmd (such as `Ctrl+K` and `Ctrl+Z`) keep working, and so do the mouse gestures. The chart's own keys (the arrow keys, and `+`, `−`, `[` and `]` while the chart has focus) are handled by the chart and are not turned off by this switch. The choice is kept in this browser.
+**Single-key shortcuts.** Settings → *Keyboard* → *Single-key shortcuts* turns off the single-character shortcuts: `Space`, `/`, `E`, `M`, `A`, `H`, `C`, `D`, `I`, `J`, `F`, `P`, `R`, `T`, `?`, and the chart's `+`, `−`, `[` and `]`. Chords with Ctrl or Cmd (such as `Ctrl+K` and `Ctrl+Z`) keep working, and so do the mouse gestures and the arrow keys. The arrow keys are not characters, so with the switch off they still pan the chart, and `Shift`+`↑` and `Shift`+`↓` still zoom the price axis. The choice is kept in this browser.
 
 ## Export
 
@@ -389,10 +390,11 @@ Two exports, both local:
 
 ## Health endpoint
 
-`GET /api/health` is the operational snapshot — useful for "is it alive, and
-how healthy is the session?" without touching the app. It needs no session
-token, though the Host check still applies. Alongside status, version,
-wire-protocol version, uptime and recording-enabled, v3 adds a
+`GET /api/health` answers "is the server alive?" and needs no session token, though the Host
+check still applies. Without a token it returns only `status`, `version`, `protocol_version` and
+`uptime_s`. The operational snapshot is returned to requests that carry the session token. Source
+runs set no token, so there every request that passes the Host check gets it: recording-enabled,
+the active sessions with their feed kind and live or degraded state, `config_error`, and a v3
 `stats` object (when the stats producer is present; `stats_available` says
 so): drop counters per source, restarts, active/rejected sessions, real
 measured WebSocket latency (`latency_ms`, EMA), per-feed staleness

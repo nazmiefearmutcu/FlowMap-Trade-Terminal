@@ -27,6 +27,8 @@ export function legendItemsFor(theme: ThemeId, overlays?: Partial<OverlayVisibil
   const colors = resolveOverlayColors(THEMES[theme].canvas, THEMES[theme].chart);
   const all: LegendItem[] = [
     { key: 'price', label: t('desk.lastPrice'), kind: 'line', colors: [colors.price] },
+    // VWAP and BBO are market identifiers in both languages (the same names the
+    // order book and the overlay settings use), so they are not translated.
     { key: 'vwap', label: 'VWAP', kind: 'line', colors: [colors.vwap] },
     { key: 'bbo', label: 'BBO', kind: 'pair', colors: [colors.bid, colors.ask] },
     { key: 'bubbles', label: t('desk.bubbles'), kind: 'dots', colors: [colors.buy, colors.sell] },

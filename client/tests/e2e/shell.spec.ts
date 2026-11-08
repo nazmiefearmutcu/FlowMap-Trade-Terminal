@@ -155,21 +155,33 @@ test('replay picker with no recordings keeps LIVE running and cancels without su
   await expectEmptyPickerAndCancel(page, await openRecordedReplayPicker(page));
 });
 
+/**
+ * The replay project's server records its own sim feed. Wait until the recorder has
+ * flushed a part and the availability endpoint lists its hour, so the picker has a
+ * recording to open. A missing recording fails the test instead of skipping it.
+ */
+async function waitForRecordedHours(page: Page): Promise<void> {
+  const subscription = (await sessionSnapshot(page)).subscription;
+  expect(subscription).not.toBeNull();
+  await expect.poll(async () => {
+    const response = await page.request.get('/api/recordings/availability', {
+      params: { market: subscription!.market, symbol: subscription!.symbol },
+    });
+    if (!response.ok()) return 0;
+    return ((await response.json()) as { hours: string[] }).hours.length;
+  }, { timeout: 90_000, intervals: [500] }).toBeGreaterThan(0);
+}
+
 test('replay transport controls (pause/resume/speed/seek) send the correct control messages', async ({
   page,
 }) => {
   test.setTimeout(120_000);
   await seedReplayLocale(page);
   await bootLive(page);
+  await waitForRecordedHours(page);
   const opened = await openRecordedReplayPicker(page);
   const { picker, availability, before } = opened;
-  if (availability.hours.length === 0) {
-    await expectEmptyPickerAndCancel(page, opened);
-    // The existing transport limitation is explicit only AFTER the real empty
-    // picker/LIVE/cancel contract passes. Failed requests or attachment never skip.
-    test.skip(true, 'positive replay transport requires a recording; default Playwright webServer sets FLOWMAP_RECORDING_ENABLED=0 (empty picker/LIVE contract passed)');
-    return;
-  }
+  expect(availability.hours.length).toBeGreaterThan(0);
 
   const hours = picker.getByRole('combobox', { name: 'Recorded dates / hours', exact: true });
   await expect(hours).toBeVisible();
@@ -196,8 +208,10 @@ test('replay transport controls (pause/resume/speed/seek) send the correct contr
   const requested = new URL(response.request().url()).searchParams;
   const requestedStart = requested.get('start_ns');
   const requestedEnd = requested.get('end_ns');
-  expect(requestedStart).toMatch(/^\d+$/);
-  expect(requestedEnd).toMatch(/^\d+$/);
+  // Signed int64 ns: the sim feed's timestamps start near the epoch, so a window
+  // can open before 1970.
+  expect(requestedStart).toMatch(/^-?\d+$/);
+  expect(requestedEnd).toMatch(/^-?\d+$/);
   expect(BigInt(requestedEnd!)).toBeGreaterThan(BigInt(requestedStart!));
   const preview = await response.json() as { start_ns: string; end_ns: string; columns: number };
   expect(preview.columns).toBeGreaterThan(0);
@@ -246,10 +260,24 @@ test('replay transport controls (pause/resume/speed/seek) send the correct contr
     type: SUBSCRIBE, market: before.subscription!.market, symbol: before.subscription!.symbol,
     mode: 'replay', band: before.subscription!.band, start_t: requestedStart, end_t: requestedEnd,
   })]);
-  await expect.poll(() => replayState(page)).toMatchObject({
+  // The replay recorder keeps writing while the test runs, so the loaded playback can
+  // reach past the window the preview read earlier. It must start at the previewed
+  // start and cover at least the previewed window.
+  await expect.poll(async () => {
+    const state = await replayState(page);
+    const playback = state.playback;
+    return {
+      status: state.status, paused: state.paused, speed: state.speed,
+      playback: playback && {
+        startNs: playback.startNs,
+        covers: BigInt(playback.endNs) >= BigInt(preview.end_ns) && playback.columns >= preview.columns,
+        paused: playback.paused, speed: playback.speed, ended: playback.ended,
+      },
+    };
+  }).toMatchObject({
     status: 'live', paused: true, speed: 1,
     playback: {
-      startNs: preview.start_ns, endNs: preview.end_ns, columns: preview.columns,
+      startNs: preview.start_ns, covers: true,
       paused: true, speed: 1, ended: false,
     },
   });
@@ -259,7 +287,8 @@ test('replay transport controls (pause/resume/speed/seek) send the correct contr
   const playBtn = page.getByTestId('transport-play');
   await expect(playBtn).toBeEnabled();
   await expect(playBtn).toHaveAttribute('aria-label', 'play');
-  await expect(playBtn).toHaveAttribute('aria-pressed', 'false');
+  // The state is announced once, by the label; a second aria-pressed would repeat it.
+  await expect(playBtn).not.toHaveAttribute('aria-pressed');
   await expect(page.getByTestId('transport-state')).toHaveText('REPLAY 1× PAUSED');
   await expect(page.getByTestId('transport-state')).toHaveAttribute('data-transport', 'attached');
 
@@ -284,11 +313,11 @@ test('replay transport controls (pause/resume/speed/seek) send the correct contr
   await playBtn.click(); // A recorded window opens paused: the first click resumes.
   await expect.poll(async () => (await replayState(page)).paused).toBe(false);
   await expect(playBtn).toHaveAttribute('aria-label', 'pause');
-  await expect(playBtn).toHaveAttribute('aria-pressed', 'true');
+  await expect(playBtn).not.toHaveAttribute('aria-pressed');
   await playBtn.click();
   await expect.poll(async () => (await replayState(page)).paused).toBe(true);
   await expect(playBtn).toHaveAttribute('aria-label', 'play');
-  await expect(playBtn).toHaveAttribute('aria-pressed', 'false');
+  await expect(playBtn).not.toHaveAttribute('aria-pressed');
   await expect.poll(async () => (await controls(page)).slice(userControlIndex)
     .filter((c) => c.type === RESUME || c.type === PAUSE).map((c) => c.type))
     .toEqual([RESUME, PAUSE]);
@@ -329,8 +358,22 @@ test('replay transport controls (pause/resume/speed/seek) send the correct contr
     .toContain(SEEK);
   const seek = (await controls(page)).slice(seekControlIndex).find((c) => c.type === SEEK);
   expect(typeof seek?.t).toBe('string');
-  const midpoint = BigInt(preview.start_ns)
-    + (BigInt(preview.end_ns) - BigInt(preview.start_ns)) / 2n;
+  // The scrubber maps onto the ATTACHED playback extent. The server fixes that
+  // extent at attach to the requested [start, end), and the picker's end sits one
+  // second past the newest recorded column. Columns recorded between the preview
+  // and the attach fill that second, so the preview's end can be shorter than the
+  // attached one. The extent must not move after attach and must stay inside the
+  // requested end.
+  const extent = (await replayState(page)).playback;
+  expect(extent).not.toBeNull();
+  expect({ startNs: extent?.startNs, endNs: extent?.endNs, columns: extent?.columns })
+    .toEqual({
+      startNs: attached.playback?.startNs, endNs: attached.playback?.endNs,
+      columns: attached.playback?.columns,
+    });
+  expect(BigInt(extent!.endNs)).toBeLessThanOrEqual(BigInt(requestedEnd!));
+  const extentStart = BigInt(extent!.startNs);
+  const midpoint = extentStart + (BigInt(extent!.endNs) - extentStart) / 2n;
   expect(seek?.t).toBe(midpoint.toString());
   await expect.poll(async () => {
     const state = await replayState(page);

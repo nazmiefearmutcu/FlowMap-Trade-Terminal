@@ -659,7 +659,14 @@ jobs:
             exit 1
           fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — reusing it."
+            # prepare refused a published release, but the release can be published
+            # while this run is in flight. Only a draft may receive the new bytes.
+            DRAFT="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+            if [ "$DRAFT" != "true" ]; then
+              echo "Release $TAG was published while this run was in flight. Refusing to overwrite it." >&2
+              exit 1
+            fi
+            echo "Release $TAG already exists as a draft — reusing it."
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES"
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag               --title "FlowMap $TAG" --notes-file "$NOTES" --draft

@@ -70,6 +70,14 @@ afterEach(() => {
 });
 
 describe('visibility', () => {
+  it('a held D toggles the panel once, not on every auto-repeat', () => {
+    const root = render(<DrawToolbar />);
+    fireKey('d');
+    expect(root.querySelector('[data-testid="draw-toolbar"]')).not.toBeNull();
+    fireKey('d', { repeat: true });
+    expect(root.querySelector('[data-testid="draw-toolbar"]')).not.toBeNull();
+  });
+
   it('mounts hidden; D toggles; the exported fn toggles too', () => {
     const root = render(<DrawToolbar />);
     expect(root.querySelector('[data-testid="draw-toolbar"]')).toBeNull();

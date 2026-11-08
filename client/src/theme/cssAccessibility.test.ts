@@ -22,6 +22,9 @@ const featuresCss = read('../ui/features.css');
 const intelligenceCss = read('../ui/IntelligenceDrawer.css');
 const themesCss = read('themes.css');
 const shellCss = read('shell.css');
+const deskCss = read('../ui/Desk.css');
+const marketStripCss = read('../ui/MarketStrip.css');
+const gateCss = read('../ui/ChartStartupGate.css');
 
 /** CSS with block comments removed, so prose never satisfies or breaks a rule. */
 function code(css: string): string {
@@ -130,6 +133,7 @@ describe('animations that were infinite stop under prefers-reduced-motion (WCAG 
     '.reconnect-banner__dot',
     '.livectl__dot',
     '.sympal__loadbar::after',
+    '.drawer-scrim',
   ])('%s is stopped under prefers-reduced-motion', (selector) => {
     expect(reduced).toContain(selector);
   });
@@ -216,5 +220,57 @@ describe('print sheet carries the light tokens it prints with', () => {
 
   it.each(paperTokens(themesCss))('re-declares --%s for print', (token) => {
     expect(printBody).toMatch(new RegExp(`--${token}:\\s*\\S`));
+  });
+});
+
+/** Every `outline` declared on a `:focus-visible` rule, as [selector, value]. */
+function focusVisibleOutlines(css: string): Array<[string, string]> {
+  const found: Array<[string, string]> = [];
+  for (const rule of code(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!rule[1].includes(':focus-visible')) continue;
+    for (const decl of rule[2].matchAll(/\boutline\s*:\s*([^;]+)/g)) {
+      found.push([rule[1].trim(), decl[1].trim()]);
+    }
+  }
+  return found;
+}
+
+describe('focus rings share one token (WCAG 2.4.7)', () => {
+  it.each([
+    ['App.css', appCss],
+    ['ui/Desk.css', deskCss],
+    ['ui/MarketStrip.css', marketStripCss],
+    ['ui/ChartStartupGate.css', gateCss],
+    ['ui/IntelligenceDrawer.css', intelligenceCss],
+    ['drawings/drawings.css', drawingsCss],
+  ])('%s draws every focus ring in --focus, never in the accent', (_file, css) => {
+    const accentRings = focusVisibleOutlines(css).filter(([, value]) => /var\(--accent\)/.test(value));
+    expect(accentRings).toEqual([]);
+  });
+});
+
+describe('the reconnect banner stays reachable over the chart startup gate', () => {
+  it('stacks every banner z-index above the gate z-index', () => {
+    const zIndex = (body: string): number => Number(/z-index:\s*(\d+)/.exec(body)?.[1]);
+    const gate = zIndex(ruleBodies(gateCss, '.chart-startup')[0] ?? '');
+    const banner = ruleBodies(appCss, '.reconnect-banner').filter((body) => /z-index/.test(body));
+    expect(Number.isFinite(gate)).toBe(true);
+    expect(banner.length).toBeGreaterThan(0);
+    for (const body of banner) expect(zIndex(body)).toBeGreaterThan(gate);
+  });
+});
+
+describe('top bar zone label and off-state key rows are styled', () => {
+  it('the zone abbreviation is smaller and muted beside the wall time', () => {
+    const zone = ruleBodies(appCss, '.clock__zone');
+    expect(zone.some((body) => /font-size:\s*var\(--fs-2xs\)/.test(body) && /color:\s*var\(--text-3\)/.test(body))).toBe(
+      true,
+    );
+    expect(ruleBodies(appCss, '.clock__wall').some((body) => /font-size:\s*var\(--fs-md\)/.test(body))).toBe(true);
+  });
+
+  it('a bare-key row with the single-key switch off is dimmed and tagged in text', () => {
+    expect(ruleBodies(appCss, '.keysheet__row.is-off .keysheet__keys').length).toBeGreaterThan(0);
+    expect(ruleBodies(appCss, '.keysheet__off').length).toBeGreaterThan(0);
   });
 });

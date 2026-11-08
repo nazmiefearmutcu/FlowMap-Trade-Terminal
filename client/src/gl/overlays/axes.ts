@@ -22,7 +22,8 @@ import {
 } from './axisTicks';
 import type { GridMap } from './coords';
 import type { LastClose } from './priceLine';
-import { formatClock, type TimeZonePref } from '../../i18n/format';
+import { formatClock, formatPrice, zoneLabel, type TimeZonePref } from '../../i18n/format';
+import { PIXEL_BLOCK_CSS } from '../heatmap';
 import { OVERLAY } from './palette';
 import { DEFAULT_TEXT_SIZE, type TextLayer } from '../textLayer';
 
@@ -47,6 +48,23 @@ export const AXIS_TIME_LABEL_SIZE = 10;
 /** Approximate advance width of the mono axis font (JetBrains Mono ≈ 0.6 em). */
 const MONO_ADVANCE_EM = 0.6;
 const TIME_LABEL_GAP_PX = 8;
+
+/** Drawing options shared by the axes and gridlines. */
+export interface AxisStyle {
+  /**
+   * Pixel chart style: tick marks, gridlines and label anchors snap to the centre
+   * of their block on the {@link PIXEL_BLOCK_CSS} grid. Label text stays in the
+   * UI font.
+   */
+  readonly pixel?: boolean;
+}
+
+/** Snap a CSS-px position to the centre of its pixel block (identity unless pixel style). */
+export function snapToPixelBlock(pos: number, pixel: boolean | undefined): number {
+  if (pixel !== true || !Number.isFinite(pos)) return pos;
+  const block = PIXEL_BLOCK_CSS;
+  return Math.floor(pos / block) * block + block / 2;
+}
 
 export interface AxisLabel {
   /** CSS-px position along the gutter (y for price, x for time). */
@@ -106,9 +124,11 @@ export function priceAxisModel(gm: GridMap, cssH: number, _labelWidthPx?: number
   const pLo = gm.rowToPrice(gm.view.rowOffset);
   const pHi = gm.rowToPrice(gm.view.rowOffset + gm.view.rowScale);
   const { step, ticks } = axisTicks(gm, pLo, pHi);
-  // Decimals from the TICK step, not the finer grid step, so whole-number ticks
-  // don't show a spurious '.00'. The venue tick also sets a FLOOR: a 0.25 tick
-  // prints 5234.25 with two places, never '5234.3'.
+  // Decimals come from the TICK step, not the finer grid step, so whole-number
+  // ticks print without a '.00'. The venue tick is also a FLOOR on the places:
+  // a 0.25 tick prints 5234.25 with two places, never '5234.3', and a 0.01 tick
+  // prints two places even on whole-number ticks (60000.00), because the venue's
+  // precision is kept rather than reduced.
   const tickStep = step > 0 ? step : localStep(gm);
   const dec = Math.max(priceDecimals(tickStep), quoteDecimals(gm.price.tick ?? tickStep));
   const out: AxisLabel[] = [];
@@ -117,7 +137,7 @@ export function priceAxisModel(gm: GridMap, cssH: number, _labelWidthPx?: number
     // so a label sits on the line it names.
     const y = gm.cssY(gm.priceEventToRow(price));
     if (y < -1 || y > cssH + 1) continue;
-    out.push({ pos: y, label: price.toFixed(dec) });
+    out.push({ pos: y, label: formatPrice(price, dec) });
   }
   return out;
 }
@@ -168,7 +188,38 @@ export function timeAxisLabelFormatter(stepNs: bigint, clock: TimeAxisClock | nu
   return (ns: bigint): string => formatClock(Number(ns / 1_000_000n), clock.pref, clock.exchangeZone, withMs);
 }
 
-/** Time ticks with their gutter x (CSS px). Empty when no time affine. */
+/** Gap (CSS px) between the zone label and the time labels before it. */
+const ZONE_LABEL_GAP_PX = 8;
+
+/** The zone abbreviation shown at the right end of the time strip, or '' on the session clock. */
+export function timeAxisZoneText(clock: TimeAxisClock | null): string {
+  if (clock === null) return '';
+  return zoneLabelCached(clock.pref, clock.exchangeZone);
+}
+
+/** Zone abbreviations change only at a DST switch: refresh them once a minute, not every frame. */
+const ZONE_CACHE_MS = 60_000;
+let zoneCache: { key: string; text: string; at: number } | null = null;
+
+function zoneLabelCached(pref: TimeZonePref, exchangeZone: string): string {
+  const key = `${pref}|${exchangeZone}`;
+  const now = Date.now();
+  if (zoneCache === null || zoneCache.key !== key || now - zoneCache.at >= ZONE_CACHE_MS) {
+    zoneCache = { key, text: zoneLabel(pref, exchangeZone, now), at: now };
+  }
+  return zoneCache.text;
+}
+
+/** Width (CSS px) the zone label takes at the right end of the strip, with its gap. */
+function zoneReservePx(zone: string): number {
+  return zone === '' ? 0 : zone.length * AXIS_TIME_LABEL_SIZE * MONO_ADVANCE_EM + ZONE_LABEL_GAP_PX;
+}
+
+/**
+ * Time ticks with their gutter x (CSS px). Empty when no time affine. On a clock
+ * the zone label takes the right end of the strip, so the labels are laid out
+ * in the width that is left.
+ */
 export function timeAxisModel(gm: GridMap, cssW: number, clock: TimeAxisClock | null = null): AxisLabel[] {
   if (!gm.hasEvents) return [];
   const tLo = gm.colToTsNs(gm.view.colOffset);
@@ -179,15 +230,16 @@ export function timeAxisModel(gm: GridMap, cssW: number, clock: TimeAxisClock | 
   // sub-second ladders (< 0.5 s) — 0.5 s ticks already read as clock seconds at
   // a glance, and every 1 s+ ladder before this change paid invisible `.mmm`.
   const fmt = timeAxisLabelFormatter(step, clock);
+  const plotW = cssW - zoneReservePx(timeAxisZoneText(clock));
   const out: AxisLabel[] = [];
   for (const t of ticks) {
     const x = gm.cssX(gm.tsToCol(t));
-    if (x < -1 || x > cssW + 1) continue;
+    if (x < -1 || x > plotW + 1) continue;
     out.push({ pos: x, label: fmt(t) });
   }
   // Irregular recorded cadence and restart gaps can squeeze distant clock
   // ticks into a few pixels. Filter their projected boxes, never their times.
-  return spacedTimeLabels(out, cssW);
+  return spacedTimeLabels(out, plotW);
 }
 
 /**
@@ -228,13 +280,14 @@ export function timeTickPositions(gm: GridMap, cssW: number): number[] {
  * plate, and it stays readable over any heatmap. Clamped into the gutter so a
  * last price at the very edge of the visible band keeps its tag.
  */
-export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | null = null): void {
+export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | null = null, style: AxisStyle = {}): void {
   layer.clear();
   const cssW = layer.width;
   const model = priceAxisModel(gm, layer.height);
   for (const t of model) {
-    layer.line(0, t.pos, AXIS_TICK_LEN, t.pos, OVERLAY.axis.css, 1, AXIS_TICK_ALPHA);
-    layer.text(cssW - 6, t.pos, t.label, {
+    const y = snapToPixelBlock(t.pos, style.pixel);
+    layer.line(0, y, AXIS_TICK_LEN, y, OVERLAY.axis.css, 1, AXIS_TICK_ALPHA);
+    layer.text(cssW - 6, y, t.label, {
       align: 'right',
       baseline: 'middle',
       color: OVERLAY.axis.css,
@@ -248,7 +301,7 @@ export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | n
   // the pill must sit on the cell the heatmap paints.
   const y = gm.cssY(gm.priceEventToRow(last.price));
   if (y < -8 || y > layer.height + 8) return;
-  layer.badge(cssW - 3, Math.min(Math.max(y, 9), layer.height - 9), last.price.toFixed(dec), {
+  layer.badge(cssW - 3, Math.min(Math.max(y, 9), layer.height - 9), formatPrice(last.price, dec), {
     align: 'right',
     bg: OVERLAY.pricePill.css,
     color: OVERLAY.pricePillText.css,
@@ -258,19 +311,32 @@ export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | n
   });
 }
 
-/** Draw the bottom time axis into its gutter layer, on the chosen clock (default: session-relative). */
-export function drawTimeAxis(layer: TextLayer, gm: GridMap, clock: TimeAxisClock | null = null): void {
+/**
+ * Draw the bottom time axis into its gutter layer, on the chosen clock (default:
+ * session-relative). On a clock the zone abbreviation is printed at the right end.
+ */
+export function drawTimeAxis(layer: TextLayer, gm: GridMap, clock: TimeAxisClock | null = null, style: AxisStyle = {}): void {
   layer.clear();
   const cssW = layer.width;
   const model = timeAxisModel(gm, cssW, clock);
   for (let i = 0; i < model.length; i++) {
-    const t = model[i];
+    const t = { pos: snapToPixelBlock(model[i].pos, style.pixel), label: model[i].label };
     layer.line(t.pos, 0, t.pos, AXIS_TICK_LEN, OVERLAY.axis.css, 1, AXIS_TICK_ALPHA);
     // Clamp the edge labels inward so the first/last time isn't half-clipped by
     // the gutters (the tick mark itself stays at t.pos).
     const { x, align } = timeLabelPlacement(t, i, model.length, cssW);
     layer.text(x, 15, t.label, {
       align,
+      baseline: 'alphabetic',
+      color: OVERLAY.axis.css,
+      size: AXIS_TIME_LABEL_SIZE,
+      weight: AXIS_LABEL_WEIGHT,
+    });
+  }
+  const zone = timeAxisZoneText(clock);
+  if (zone !== '') {
+    layer.text(cssW - 2, 15, zone, {
+      align: 'right',
       baseline: 'alphabetic',
       color: OVERLAY.axis.css,
       size: AXIS_TIME_LABEL_SIZE,
@@ -297,17 +363,19 @@ function sameGridline(a: number, b: number): boolean {
  * one pixel row, e.g. an edge tick landing on a major) are drawn once.
  * Color/width stay `OVERLAY.grid` / 1 px (alpha is owned by the palette).
  */
-export function drawGridlines(text: TextLayer, gm: GridMap): void {
+export function drawGridlines(text: TextLayer, gm: GridMap, style: AxisStyle = {}): void {
   const cssW = text.width;
   const cssH = text.height;
   let prev = Number.NaN;
-  for (const y of priceTickPositions(gm, cssH)) {
+  for (const raw of priceTickPositions(gm, cssH)) {
+    const y = snapToPixelBlock(raw, style.pixel);
     if (sameGridline(y, prev)) continue;
     prev = y;
     text.line(0, y, cssW, y, OVERLAY.grid.css, 1);
   }
   prev = Number.NaN;
-  for (const x of timeTickPositions(gm, cssW)) {
+  for (const raw of timeTickPositions(gm, cssW)) {
+    const x = snapToPixelBlock(raw, style.pixel);
     if (sameGridline(x, prev)) continue;
     prev = x;
     text.line(x, 0, x, cssH, OVERLAY.grid.css, 1);

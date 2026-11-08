@@ -24,12 +24,14 @@ import { SymbolSearch, type SymbolSearchHandle } from './SymbolSearch';
 import { Wordmark } from './Wordmark';
 import {
   capabilityChipClass,
+  capabilityChipLabel,
   capabilityChipTitle,
   capabilityChips,
   marketGroup,
   venueGroupLabel,
   venueLabel,
 } from './symbols';
+import { stressRegimeLabel } from './TopBarLabels';
 import './TopBar.css';
 
 /** Connection state → its translation key (raw transport tokens never reach the screen). */
@@ -102,6 +104,9 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
   const mode: StreamMode = subscription?.mode ?? 'live';
   const group = marketGroup(market);
   const chips = capabilityChips(capability);
+  // The SIM badge follows the server's word: `synthetic` decides it once the
+  // capability has arrived. Only before that does the market name stand in for it.
+  const showSimBadge = capability ? capability.synthetic === true : market === 'sim';
   const statusKey = STATUS_KEY[status];
   const statusText = statusKey ? t(statusKey) : status;
   const exchangeZone = exchangeZoneFor(group);
@@ -142,7 +147,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
 
       {/* Persistent while the simulated feed is the source (the sim market, or any feed that reports
           itself synthetic), so fixtures are never mistaken for a market. */}
-      {(market === 'sim' || capability?.synthetic === true) && (
+      {showSimBadge && (
         <span className="topbar__sim" data-testid="sim-badge" title={t('topbar.simBadgeTitle')}>
           {t('topbar.simBadge')}
         </span>
@@ -158,7 +163,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         ) : (
           chips.map((c) => (
             <span key={c} className={capabilityChipClass(c)} title={capabilityChipTitle(c, t)}>
-              {c}
+              {capabilityChipLabel(c, t)}
             </span>
           ))
         )}
@@ -184,7 +189,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
           10Y-2Y <strong>{macro ? `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${formatFixed(macro.yieldCurve10Y2Y, 2)}%` : '—'}</strong>
         </span>
         <span className={`macro-ticker__badge is-${macro?.stressRegime.toLowerCase() ?? 'unavailable'}`} title={macro?.status}>
-          {macro?.stressRegime ?? t('topbar.unavailable')}
+          {macro ? stressRegimeLabel(macro.stressRegime, t) : t('topbar.unavailable')}
         </span>
       </div>
 
@@ -270,7 +275,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         <span className="clock__wall">
           {wallText} <span className="clock__zone">{zoneAbbrev}</span>
         </span>
-        {etText ? <span className="clock__et">{etText} ET</span> : null}
+        {etText ? <span className="clock__et">{etText} {t('topbar.easternShort')}</span> : null}
         {/* The sim's stream ts is SESSION-RELATIVE (a T+ clock): it never gets a UTC label. */}
         <span className="clock__stream">
           {streamClock
@@ -304,7 +309,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         onClick={onExportPng}
         data-testid="export-png"
         aria-label={t('topbar.exportPng')}
-        title={singleKeys ? t('topbar.exportPngHint') : t('topbar.exportPng')}
+        title={singleKeys ? t('topbar.exportPngHint') : t('topbar.exportPngHintNoKey')}
       >
         <svg
           className="tbtn__icon"
@@ -341,7 +346,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
           className="tbtn is-intel"
           onClick={onToggleIntel}
           data-testid="intel-toggle"
-          title={t('topbar.intelTitle')}
+          title={singleKeys ? t('topbar.intelTitle') : t('topbar.intelTitleNoKey')}
         >
           {t('topbar.intelligence')}
         </button>

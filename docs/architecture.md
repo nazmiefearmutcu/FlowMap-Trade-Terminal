@@ -9,11 +9,11 @@ FlowMap is three processes (or two, when you run from source without the desktop
    `window.__FLOWMAP_SESSION_TOKEN__` into the webview, and applies the webview CSP from
    `app/src-tauri/tauri.conf.json`. It stops the sidecar on quit: it closes the sidecar's stdin
    (the server exits through its normal path, flushing its recorder, because the shell sets
-   `FLOWMAP_EXIT_ON_STDIN_EOF=1`), sends SIGTERM on Unix, and kills it after 3 s. If the shell
+   `FLOWMAP_EXIT_ON_STDIN_EOF=1`), sends SIGTERM on Unix, and kills it after 12 s. If the shell
    crashes, the sidecar stops too: a parent-death signal on Linux, the same stdin EOF on macOS, and a
    kill-on-close Job Object on Windows. See [app/README.md](../app/README.md).
 2. **Client** (`client/`) — React 18 + TypeScript + WebGL2. In dev, vite serves it on `:5173`;
-   vite injects the server origin (`http://127.0.0.1:8720`), so the page talks to the server directly,
+   vite injects the server origin (`http://127.0.0.1:8720` by default), so the page talks to the server directly,
    and vite's `/api` and `/ws` proxy is a same-origin fallback (see `client/vite.config.ts`). In the
    packaged app, the same client is bundled static assets.
 3. **Server** (`server/`) — Python 3.13, FastAPI + uvicorn, one asyncio event loop, bound to
@@ -43,13 +43,13 @@ parameter is still accepted for command-line tools, and the server redacts its v
 A WebSocket connection without a valid token closes with 4401. `GET /api/health` and CORS preflight
 (`OPTIONS`) are exempt. Source runs set no token,
 so only the Host check applies. Most routes read in-memory state and never wait on the network. Three can
-wait. `GET /api/quote` and `GET /api/movers` read the network-cached market data and may await a provider
+wait. `GET /api/quote` and `GET /api/movers` read market data through a TTL cache and, on a cache miss, may await one provider
 fetch on a cache miss (a failed fetch returns the last good value flagged stale), and `GET /api/universe`
 with a specific crypto venue enumerates that venue live, behind a cache. The table lists every route:
 
 | Route | Purpose | Source |
 |---|---|---|
-| `GET /api/health` | Liveness + operational snapshot: status, version, wire protocol version, uptime, recording enabled, active sessions with feed kind and live/degraded state — plus the session-statistics producer's snapshot under `stats` (see below) | `api/rest.py` |
+| `GET /api/health` | Liveness probe, exempt from the session token: `status`, `version`, `protocol_version` and `uptime_s`. The operational snapshot (recording enabled, active sessions with feed kind and live/degraded state, `stats` and `config_error`) is returned only with the token (see below) | `api/rest.py` |
 | `GET /api/symbols` | Merged symbol directory, filtered by `?q=` substring | `api/rest.py` |
 | `GET /api/venues` | Subscribable venue list | `api/discovery.py` |
 | `GET /api/universe` | Full bundled universe (same source as `/api/symbols`) | `api/discovery.py` |
@@ -118,7 +118,7 @@ boundary; `payload_len` is always the **unpadded** length, so readers advance by
 | `0x02` | `EPOCH_START` | S→C | cold JSON: grid epoch re-basing |
 | `0x03` | `DEPTH_COL` | S→C | hot: `<IIqBBHI>` header (epoch, col_seq, t0_ns, mode, final, pad, n_rows) + bid `f32[n]` + ask `f32[n]` |
 | `0x04` | `BAR_COL` | S→C | hot: epoch/col_seq/t0_ns + OHLC + vol_buy/sell + cvd_cum + VWAP numerators/denominator |
-| `0x05` | `TRADE` | S→C | hot: ts_ns, price, size, side, side_src + length-prefixed venue string |
+| `0x05` | `TRADE` | S→C | hot: ts_ns, price, size, side, side_src, seq (uint16 LE at payload offset 26; 0 means unknown, and it keeps two trades with equal ts_ns, price and size apart) + length-prefixed venue string |
 | `0x06` | `BBO` | S→C | hot: ts_ns + bid/ask px and sz |
 | `0x07` | `MARKER` | S→C | cold JSON: liquidation / `gap` events |
 | `0x08` | `STATUS` | S→C | cold JSON: degraded/error states |

@@ -235,7 +235,7 @@ body,
   letter-spacing: 0.09em;
   color: var(--warn);
   border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
-  border-radius: 4px;
+  border-radius: var(--r-1);
   padding: 2px 7px;
   white-space: nowrap;
   cursor: help;
@@ -279,6 +279,12 @@ body,
   color: var(--text-money);
 }
 .clock__stream {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+}
+/* The zone abbreviation (GMT+3, UTC) reads as a unit label beside the wall time. */
+.clock__zone {
   font-size: var(--fs-2xs);
   letter-spacing: 0.05em;
   color: var(--text-3);
@@ -365,7 +371,7 @@ body,
   letter-spacing: 0.04em;
   color: var(--warn);
   border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
-  border-radius: 4px;
+  border-radius: var(--r-1);
   padding: 2px 4px 2px 7px;
   white-space: nowrap;
 }
@@ -396,7 +402,7 @@ body,
   height: 28px;
   padding: 0 8px;
   font-family: inherit;
-  color: var(--text-2, #c7d0da);
+  color: var(--text-2);
   background: var(--bg-inset);
   border: 1px solid var(--control-line);
   border-radius: var(--r-2);
@@ -451,7 +457,7 @@ body,
   flex-direction: column;
   background: var(--bg-1);
   border: 1px solid var(--line-2);
-  border-radius: 12px;
+  border-radius: var(--r-dialog);
   box-shadow: var(--shadow-drop);
   overflow: hidden;
   animation: sympal-rise 0.13s ease-out;
@@ -477,7 +483,7 @@ body,
   font-family: inherit;
   font-size: var(--fs-2xl);
   letter-spacing: 0.02em;
-  color: var(--text, #e6ecf3);
+  color: var(--text);
   background: none;
   border: none;
   outline: none;
@@ -570,7 +576,7 @@ body,
   align-items: center;
   gap: 10px;
   padding: 8px;
-  border-radius: 7px;
+  border-radius: var(--r-3);
   cursor: pointer;
 }
 .sympal__row:hover,
@@ -586,7 +592,7 @@ body,
   text-transform: uppercase;
   text-align: center;
   padding: 2px 0;
-  border-radius: 4px;
+  border-radius: var(--r-1);
   color: var(--text-3);
   border: 1px solid var(--line);
 }
@@ -606,7 +612,7 @@ body,
   align-items: center;
   gap: 10px;
   padding: 8px;
-  border-radius: 7px;
+  border-radius: var(--r-3);
   cursor: pointer;
 }
 .sympal__vrow:hover,
@@ -660,7 +666,7 @@ body,
 .sympal__sym {
   font-size: var(--fs-md);
   font-weight: 600;
-  color: var(--text-money, #e6ecf3);
+  color: var(--text-money);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -672,7 +678,7 @@ body,
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
-  color: var(--text-2, #c7d0da);
+  color: var(--text-2);
 }
 .sympal__chg {
   font-size: var(--fs-sm);
@@ -748,7 +754,7 @@ body,
   gap: 4px;
   overflow: hidden;
 }
-.sympal__pv-sym { font-size: var(--fs-2xl); font-weight: 700; color: var(--text, #e6ecf3); }
+.sympal__pv-sym { font-size: var(--fs-2xl); font-weight: 700; color: var(--text); }
 .sympal__pv-mkt { font-size: var(--fs-2xs); color: var(--text-3); letter-spacing: 0.06em; margin-bottom: 6px; }
 .sympal__pv-px { font-family: var(--font-mono); font-size: var(--fs-3xl); font-variant-numeric: tabular-nums; }
 .sympal__pv-px.is-up, .sympal__pv-chg.is-up { color: var(--accent-bright); }
@@ -884,7 +890,7 @@ body,
   gap: 8px;
   padding: 5px 12px;
   border: 1px solid var(--warn-line);
-  border-radius: 5px;
+  border-radius: var(--r-2);
   background: color-mix(in srgb, var(--bg-inset) 90%, transparent);
   box-shadow: var(--shadow-pop);
   color: var(--warn);
@@ -943,11 +949,11 @@ body,
   gap: 7px;
   padding: 6px 12px;
   font-family: inherit;
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.06em;
-  color: var(--chart-ink-dim, #93a1b4);
-  background: var(--chart-chip-bg, rgba(10, 12, 16, 0.92));
+  color: var(--chart-ink-dim);
+  background: var(--chart-chip-bg);
   border: 1px solid var(--chart-chip-border, var(--line));
   border-radius: 999px;
   box-shadow: var(--shadow-pop);
@@ -956,21 +962,21 @@ body,
   font-variant-numeric: tabular-nums;
 }
 .livectl__chip:hover {
-  border-color: var(--accent-line, #2f6f66);
+  border-color: var(--accent-line);
   transform: translateY(-1px);
 }
 .livectl__chip--live {
   /* chart-region control: ride the theme's sell channel (the baked #ff5d5d
      read ~2.6:1 on the light chart chip plates) */
-  color: var(--chart-sell, #e8635f);
-  border-color: color-mix(in srgb, var(--chart-sell, #e8635f) 50%, transparent);
+  color: var(--chart-sell);
+  border-color: color-mix(in srgb, var(--chart-sell) 50%, transparent);
 }
 .livectl__dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--chart-sell, #e8635f);
-  box-shadow: 0 0 7px color-mix(in srgb, var(--chart-sell, #e8635f) 70%, transparent);
+  background: var(--chart-sell);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--chart-sell) 70%, transparent);
   animation: livectl-pulse 1.6s ease-in-out 3;
 }
 @keyframes livectl-pulse {
@@ -1266,7 +1272,7 @@ body,
   top: 1px;
   bottom: 1px;
   z-index: 0;
-  border-radius: 1px;
+  border-radius: 0;
 }
 
 /* A nonzero level never renders narrower than a 3px stub (a sub-1% size must
@@ -1314,7 +1320,7 @@ body,
      the glyph back on the chart surface — bid/ask inks clear 4.5:1 in all 7
      themes even over the brightest cap (worst: paper bid 4.60). */
   background: color-mix(in srgb, var(--bg-1) 96%, transparent);
-  border-radius: 2px;
+  border-radius: var(--r-1);
   padding: 0 2px;
   /* Halo in the panel ground so a coloured size stays crisply legible where it
      overlaps its own depth bar (contrast over the bar, not just the row). */
@@ -1639,7 +1645,7 @@ body,
   min-width: 3px;
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   border: 1px solid var(--accent);
-  border-radius: 2px;
+  border-radius: var(--r-1);
   box-shadow: 0 0 8px var(--accent-glow);
   pointer-events: none;
 }
@@ -1676,7 +1682,7 @@ body,
   margin-top: -6px;
   background: var(--warn);
   border: none;
-  border-radius: 1px;
+  border-radius: 0;
   box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 70%, transparent);
 }
 .minimap__scrub:disabled::-webkit-slider-thumb {
@@ -1688,7 +1694,7 @@ body,
   height: 26px;
   background: var(--warn);
   border: none;
-  border-radius: 1px;
+  border-radius: 0;
 }
 .minimap__scrub::-webkit-slider-runnable-track {
   height: 14px;
@@ -1938,7 +1944,7 @@ body,
   height: 4px;
   background: var(--bg-inset);
   border: 1px solid var(--control-line);
-  border-radius: 3px;
+  border-radius: var(--r-1);
   outline: none;
 }
 .range::-webkit-slider-thumb {
@@ -1970,7 +1976,7 @@ body,
 .check__box {
   width: 34px;
   height: 18px;
-  border-radius: 10px;
+  border-radius: 999px;
   background: var(--bg-inset);
   border: 1px solid var(--line-2);
   position: relative;
@@ -2148,6 +2154,7 @@ body,
   }
   .dropdown,
   .drawer,
+  .drawer-scrim,
   .drawer__panel,
   .keyshelp,
   [class$='__menu'] {
@@ -2178,8 +2185,8 @@ body,
   align-items: center;
   gap: 3px;
   padding: var(--sp-1) 3px;
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
   border-radius: var(--r-1);
   pointer-events: none;
   user-select: none;
@@ -2188,26 +2195,26 @@ body,
 .heat-legend__bar {
   width: 8px;
   height: 92px;
-  border-radius: 2px;
+  border-radius: var(--r-1);
   /* The gradient is painted inline by HeatLegend.tsx from the same stop list
      gl/lut.ts rasterizes, so the legend always matches the heatmap ramp. */
 }
 .heat-legend__cap {
   font-size: var(--fs-2xs);
   letter-spacing: 0.04em;
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
 }
 .heat-legend__tier {
   margin-top: 2px;
   font-size: var(--fs-2xs);
   letter-spacing: 0.08em;
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
 }
 /* Depth-channel note ("bid depth" / "ask depth") under the tier tag. */
 .heat-legend__channel {
   font-size: var(--fs-2xs);
   letter-spacing: 0.06em;
-  color: var(--chart-ink, #e6edf3);
+  color: var(--chart-ink);
   white-space: nowrap;
 }
 /* Divergent (imbalance) legend: the side labels are longer than "more"/"less",
@@ -2223,7 +2230,7 @@ body,
 }
 
 .heat-legend--divergent .heat-legend__bar {
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  border: 1px solid var(--chart-chip-border);
 }
 
 /* ==========================================================================
@@ -2397,6 +2404,19 @@ body,
 .keysheet__action {
   color: var(--text-3);
 }
+/* A bare-key row while the single-key switch is off: the binding is dimmed and tagged
+   with the text "(off)", so the state never rests on colour alone. */
+.keysheet__row.is-off .keysheet__keys {
+  color: var(--text-3);
+  border-style: dashed;
+}
+.keysheet__row.is-off .keysheet__action {
+  color: var(--text-4);
+}
+.keysheet__off {
+  color: var(--text-3);
+  white-space: nowrap;
+}
 
 /* ============================================================================
    Ladder change flash, reconnect banner, `?` shortcuts overlay, palette
@@ -2435,7 +2455,9 @@ body,
   top: var(--sp-3);
   left: 50%;
   transform: translateX(-50%);
-  z-index: 6;
+  /* Above the chart startup gate (z-index 20, ui/ChartStartupGate.css): the gate covers the
+     stage while the feed reconnects, and the Retry action must stay reachable. */
+  z-index: 21;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -2505,7 +2527,7 @@ body,
 .reconnect-banner--fatal {
   max-width: min(90%, 72ch);
   padding: 8px 14px;
-  border-radius: var(--r-2, 6px);
+  border-radius: var(--r-2);
   color: var(--text);
   line-height: 1.45;
   pointer-events: auto;
@@ -2530,7 +2552,7 @@ body,
   flex-direction: column;
   background: var(--bg-1);
   border: 1px solid var(--line-2);
-  border-radius: 12px;
+  border-radius: var(--r-dialog);
   box-shadow: var(--shadow-drop);
   overflow: hidden;
   animation: keyshelp-rise 0.13s ease-out;
@@ -2801,7 +2823,7 @@ body,
 }
 *::-webkit-scrollbar-thumb {
   background: var(--line);
-  border-radius: 4px;
+  border-radius: var(--r-1);
   border: 2px solid transparent;
   background-clip: content-box;
 }

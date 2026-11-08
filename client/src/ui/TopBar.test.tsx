@@ -366,7 +366,7 @@ describe('TopBar PNG export', () => {
       setSingleKeyShortcutsEnabled(false);
       const off = render(topbar());
       const title = off.container.querySelector('[data-testid="export-png"]')?.getAttribute('title') ?? '';
-      expect(title).toBe(tFor('en', 'topbar.exportPng'));
+      expect(title).toBe(tFor('en', 'topbar.exportPngHintNoKey'));
       expect(title).not.toContain('(E)');
     } finally {
       setSingleKeyShortcutsEnabled(before);
@@ -464,5 +464,44 @@ describe('TopBar i18n shell', () => {
     expect(ticker?.textContent).toContain('-0.18%');
     expect(ticker?.textContent).toContain('ELEVATED');
     expect(ticker?.textContent).not.toContain('UNAVAILABLE');
+  });
+});
+
+describe('TopBar SIM badge follows the server, not the market name', () => {
+  it('shows no SIM badge for a keyless-equity replay, and shows SYNTH depth', () => {
+    act(() =>
+      useFlowMapStore.setState({
+        subscription: { market: 'equity', symbol: 'AAPL', mode: 'replay', band: 'native' },
+        capability: {
+          playback: { speed: 1 },
+          depth: 'SYNTH',
+          depth_provenance: 'recorded-density',
+          synthetic: false,
+          tape: 'tick',
+        },
+      }),
+    );
+    const { container } = render(topbar());
+    expect(container.querySelector('[data-testid="sim-badge"]')).toBeNull();
+    const caps = container.querySelector('[data-testid="capability-badges"]')!;
+    expect(caps.textContent).toContain('SYNTH');
+    expect(caps.textContent).toContain('RECORDED DENSITY');
+  });
+
+  it('shows the SIM badge for a synthetic capability on any market', () => {
+    act(() =>
+      useFlowMapStore.setState({
+        subscription: { market: 'equity', symbol: 'AAPL', mode: 'replay', band: 'native' },
+        capability: { playback: { speed: 1 }, depth: 'SYNTH', synthetic: true, tape: 'tick' },
+      }),
+    );
+    const { container } = render(topbar());
+    expect(container.querySelector('[data-testid="sim-badge"]')).not.toBeNull();
+  });
+
+  it('falls back to the sim market only before the capability arrives', () => {
+    act(() => useFlowMapStore.setState({ capability: null, subscription: { market: 'sim', symbol: 'SIM-DEMO', mode: 'live', band: 'native' } }));
+    const { container } = render(topbar());
+    expect(container.querySelector('[data-testid="sim-badge"]')).not.toBeNull();
   });
 });

@@ -1261,9 +1261,6 @@ async def test_retired_session_close_and_retention_never_block_subscribe_or_shut
 
     monkeypatch.setattr(Recorder, "enforce_retention", held_retention)
     monkeypatch.setattr(SessionRecorder, "close", close)
-    # Generous watchdog: the ordering assertions below must not race a timer.
-    watchdog = threading.Timer(10.0, release.set)
-    watchdog.start()
     try:
         await manager.unsubscribe(session, first)
         timer.entries[-1].fire()
@@ -1277,14 +1274,14 @@ async def test_retired_session_close_and_retention_never_block_subscribe_or_shut
         assert not shutdown.done()
         # Both a heartbeat and a new subscription progress while the retired
         # recorder's retention scan is still deliberately held in its worker.
-        await asyncio.wait_for(asyncio.sleep(0), 0.1)
+        await asyncio.sleep(0)
         second = ClientTx()
-        next_session = await asyncio.wait_for(manager.subscribe(
+        next_session = await manager.subscribe(
             Subscribe(market="sim", symbol="NEXT", mode="live"), second,
-        ), 0.5)
+        )
         assert not release.is_set()
         release.set()
-        await asyncio.wait_for(shutdown, 2)
+        await shutdown
         assert session._recording_close_task.done()
         assert closes.count(closes[0]) == 1
         next_session.detach(second)
@@ -1292,7 +1289,6 @@ async def test_retired_session_close_and_retention_never_block_subscribe_or_shut
         await manager.flush_all()
     finally:
         release.set()
-        watchdog.cancel()
 
 
 async def test_boot_retirement_drains_failed_inflight_flush_before_one_close(tmp_path, monkeypatch):

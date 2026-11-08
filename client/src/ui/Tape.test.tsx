@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setLocale } from '../i18n';
+import { setLocale, tFor } from '../i18n';
 import { SIDE_BUY, SIDE_SELL, SIDE_UNKNOWN, type EpochParams } from '../proto/types';
 import { flushForTest, ingestForTest, resetForSession, resetForTest, type TapeTrade } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
@@ -480,5 +480,24 @@ describe('Tape side marks (WCAG 1.4.1 — the side is not conveyed by colour alo
     expect(container.querySelector('[data-testid="tape-row"] .tape__sr')?.textContent).toBe('Alış');
     // The decorative mark is a shape, so the Turkish row carries the same glyph as English.
     expect(container.querySelector('[data-testid="tape-row"] .tape__side')?.textContent).toBe('▲');
+  });
+});
+
+describe('Tape wall-clock zone and heading', () => {
+  it('labels the zone of a live venue clock but not the session clock of the sim', () => {
+    useFlowMapStore.setState({ subscription: { market: 'crypto', symbol: 'BTCUSDT', mode: 'live', band: 'native' } });
+    const live = render(<Tape />);
+    expect(live.container.querySelector('[data-testid="tape-zone"]')?.textContent ?? '').not.toBe('');
+    useFlowMapStore.setState({ subscription: { market: 'sim', symbol: 'SIM-DEMO', mode: 'live', band: 'native' } });
+    const sim = render(<Tape />);
+    expect(sim.container.querySelector('[data-testid="tape-zone"]')).toBeNull();
+    expect(sim.container.querySelector('[data-testid="tape-session"]')?.textContent).toBe(tFor('en', 'tape.sessionClock'));
+  });
+
+  it('exposes the panel title as a heading that wraps the collapse control', () => {
+    const { container } = render(<Tape />);
+    const heading = container.querySelector('h2.panel__heading');
+    expect(heading).not.toBeNull();
+    expect(heading!.querySelector('[data-testid="tape-collapse"]')).not.toBeNull();
   });
 });

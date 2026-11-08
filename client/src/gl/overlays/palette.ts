@@ -87,16 +87,20 @@ interface OverlayColor {
   css: string;
 }
 
+/** Mutable view of the palette. `OVERLAY` is `as const`, but the theme bridges
+ *  below rewrite its entries in place (`setColor`, `applyChartInk`). */
+const OVERLAY_RECORD: Record<string, OverlayColor | string> = OVERLAY;
+
+/** A fresh copy of one palette entry: the RGBA tuple is copied, not shared. */
+function copyOverlayEntry(v: OverlayColor | string): OverlayColor | string {
+  return typeof v === 'string' ? v : { gl: [v.gl[0], v.gl[1], v.gl[2], v.gl[3]], css: v.css };
+}
+
 /** Snapshot of the shipped `midnight` values, taken before any bridge call.
  *  DEEP-copied: `setColor` below mutates the live entries in place, so a shallow
  *  snapshot would alias them and lose the originals. */
 const MIDNIGHT: Record<string, OverlayColor | string> = Object.fromEntries(
-  Object.entries(OVERLAY).map(([k, v]) => [
-    k,
-    typeof v === 'string'
-      ? v
-      : { ...v, gl: [...v.gl] as unknown as RGBA },
-  ]),
+  Object.entries(OVERLAY_RECORD).map(([k, v]) => [k, copyOverlayEntry(v)]),
 );
 
 /** Parse a CSS color (#rgb, #rrggbb, rgb(), rgba()) into [r, g, b, a] 0-255 / 0-1. */
@@ -138,11 +142,10 @@ function rgbaStr(r: number, g: number, b: number, a: number): string {
 
 /** Apply theme market channels. Null restores the raw fixture palette. */
 export function applyOverlayPalette(p: OverlayThemePalette | null): void {
-  const rec = OVERLAY as unknown as Record<string, OverlayColor | string>;
+  const rec = OVERLAY_RECORD;
   if (p === null) {
     for (const key of Object.keys(MIDNIGHT)) {
-      const v = MIDNIGHT[key];
-      rec[key] = typeof v === 'string' ? v : { ...v, gl: [...v.gl] as unknown as RGBA };
+      rec[key] = copyOverlayEntry(MIDNIGHT[key]);
     }
     return;
   }
@@ -249,11 +252,10 @@ function midnightAlpha(key: string): { gl: number; css: number } {
  * contrast cannot depend on the density cell underneath; null keeps raw paint.
  */
 export function applyChartInk(p: ChartInkPalette | null): void {
-  const rec = OVERLAY as unknown as Record<string, OverlayColor | string>;
+  const rec = OVERLAY_RECORD;
   if (p === null) {
     for (const key of CHART_INK_KEYS) {
-      const v = MIDNIGHT[key];
-      rec[key] = typeof v === 'string' ? v : { ...v, gl: [...v.gl] as unknown as RGBA };
+      rec[key] = copyOverlayEntry(MIDNIGHT[key]);
     }
     return;
   }

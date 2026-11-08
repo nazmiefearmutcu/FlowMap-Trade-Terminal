@@ -6,6 +6,10 @@ Monitors job board activity across public tech & growth companies:
 - Categorizes openings into R&D / Engineering, Sales & Marketing, and G&A.
 - Counts current openings with an explicitly labelled department heuristic.
   No historical baseline is collected, so hiring velocity remains unknown.
+
+Wiring status: this build starts no producer for this module, so nothing it
+produces reaches a client. Only the tests exercise it. Treat the description above
+as the module's design, not as data this build serves.
 """
 
 from __future__ import annotations

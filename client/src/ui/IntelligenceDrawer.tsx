@@ -21,7 +21,6 @@
  */
 
 import { useRef, useState } from 'react';
-import { formatNumber } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import { DEMO_INTELLIGENCE, useIntelligenceStore } from '../state/intelligenceStore';
 import {
@@ -32,6 +31,7 @@ import {
 } from './IntelligenceDrawerPanes';
 import { IntelMacroBar } from './IntelligenceDrawerMacro';
 import { useIntelDrawerFocus } from './IntelligenceDrawerFocus';
+import { IntelContextBar, IntelDrawerHeader, IntelReceivedEvents } from './IntelligenceDrawerChrome';
 import { IntelTabList } from './IntelligenceDrawerTabs';
 import { marketGroup } from './symbols';
 import './IntelligenceDrawer.css';
@@ -131,48 +131,17 @@ export function IntelligenceDrawer({ activeSymbol, activeMarket = null, onOpenSo
         data-testid="intelligence-drawer"
         onKeyDown={onTrapKeyDown}
       >
-        <div className="drawer__header intel-drawer__header">
-          <div className="intel-drawer__title-group">
-            <span className="intel-drawer__badge">{t('intel.badge')}</span>
-            <h2 className="drawer__title intel-drawer__title">{t('intel.title')}</h2>
-          </div>
-          <button
-            ref={closeRef}
-            type="button"
-            className="drawer__close"
-            onClick={onClose}
-            aria-label={t('intel.closeDrawer')}
-            data-testid="intel-drawer-close"
-          >
-            ✕
-          </button>
-        </div>
+        <IntelDrawerHeader closeRef={closeRef} onClose={onClose} />
 
         <IntelTabList activeTab={activeTab} onSelect={setActiveTab} />
 
         {/* Active Symbol Context & Filter Switch */}
-        <div className="intel-drawer__context-bar">
-          <span className="intel-drawer__target">
-            {t('intel.activeSymbol')} <strong>{sym}</strong>
-          </span>
-          <button
-            type="button"
-            className={`intel-filter-toggle${filterActiveSymbol ? ' is-on' : ''}`}
-            onClick={() => setFilterActiveSymbol(!filterActiveSymbol)}
-          >
-            {filterActiveSymbol ? t('intel.filterOnly', { symbol: sym }) : t('intel.showAll')}
-          </button>
-          {onOpenSources && (
-            <button
-              type="button"
-              className="intel-filter-toggle"
-              onClick={onOpenSources}
-              data-testid="intel-open-sources"
-            >
-              {t('intel.sourceDetails')}
-            </button>
-          )}
-        </div>
+        <IntelContextBar
+          sym={sym}
+          filterActiveSymbol={filterActiveSymbol}
+          onToggleFilter={() => setFilterActiveSymbol(!filterActiveSymbol)}
+          onOpenSources={onOpenSources}
+        />
 
         <div className="drawer__body intel-drawer__body">
           {demo && (
@@ -183,25 +152,7 @@ export function IntelligenceDrawer({ activeSymbol, activeMarket = null, onOpenSo
           {equityOnly && (
             <p className="intel-hidden" data-testid="intel-equity-only">{t('intel.equityOnly')}</p>
           )}
-          {!demo && filteredEvents.length > 0 && (
-            <section className="intel-section" data-testid="intel-received-events">
-              <h3 className="intel-section__title">{t('intel.receivedTitle')}</h3>
-              {filteredEvents.map((event) => (
-                <article key={event.id} className="intel-card">
-                  <div className="intel-card__top">
-                    <span className="intel-card__sym">{event.symbol}</span>
-                    <span>{event.kind}</span>
-                    <span>{event.source || t('intel.sourceMissing')}</span>
-                  </div>
-                  <div className="intel-card__heading">{event.headline}</div>
-                  <div className="intel-card__desc">{event.detail}</div>
-                  {event.amountUsd !== undefined && (
-                    <div>{t('intel.amount', { amount: `$${formatNumber(event.amountUsd)}` })}</div>
-                  )}
-                </article>
-              ))}
-            </section>
-          )}
+          {!demo && filteredEvents.length > 0 && <IntelReceivedEvents events={filteredEvents} />}
 
           {/* TAB 1: DOCS */}
           {activeTab === 'DOCS' && (

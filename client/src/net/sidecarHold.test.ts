@@ -79,16 +79,34 @@ describe('holdWhileSidecarDown', () => {
     stop();
   });
 
-  it('does not hold a failed engine, so its connect attempts and notice keep running', async () => {
+  it('holds a failed engine too, and releases only once the shell reports it live', async () => {
     const shell = installShell({ state: 'failed' });
     const target = recordingTarget();
     const stop = holdWhileSidecarDown(target);
     await settle();
-    expect(target.calls).toEqual([false]);
+    expect(target.calls).toEqual([true]);
 
     shell.emit({ state: 'restarting' });
     shell.emit({ state: 'failed' });
-    expect(target.calls).toEqual([false, true, false]);
+    shell.emit({ state: 'live' });
+    expect(target.calls).toEqual([true, true, true, false]);
+    stop();
+  });
+
+  it('parks REST calls while the shell reports the engine failed', async () => {
+    const shell = installShell({ state: 'failed' });
+    const fetchMock = vi.fn(async () => new Response('{}'));
+    vi.stubGlobal('fetch', fetchMock);
+    const stop = holdWhileSidecarDown(recordingTarget());
+    await settle();
+
+    const pending = sidecarFetch('/api/symbols');
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    shell.emit({ state: 'live' });
+    await pending;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     stop();
   });
 

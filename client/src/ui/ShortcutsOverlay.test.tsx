@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setLocale, t } from '../i18n';
 import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import { isHelpToggle, KEYSHEET } from './keysheet';
+import { isBareKeyRow } from './SettingsDrawerKeys';
 import { resetOverlays } from './overlayStack';
 import { SettingsDrawer } from './SettingsDrawer';
 import { DEFAULT_SETTINGS } from './settings';
@@ -100,21 +101,25 @@ describe('ShortcutsOverlay', () => {
       .toContain('Kapatırsanız');
   });
 
-  it('lists no bare-key row as working while single-key shortcuts are off', () => {
+  it('keeps every row listed and marks the bare-key rows off while single-key shortcuts are off', () => {
     render();
     const rowKeys = (): string[] => [...document.body.querySelectorAll('[data-testid="shortcuts-list"] .keysheet__keys')]
       .map((el) => el.textContent ?? '');
+    const offKeys = (): string[] => [...document.body.querySelectorAll('[data-testid="shortcuts-list"] .keysheet__row.is-off .keysheet__keys')]
+      .map((el) => el.textContent ?? '');
     expect(rowKeys()).toEqual(KEYSHEET.map((entry) => entry.keys));
+    expect(offKeys()).toEqual([]);
     act(() => setSingleKeyShortcutsEnabled(false));
-    const bare = KEYSHEET.filter((entry) => entry.singleKey === true).map((entry) => entry.keys);
-    for (const key of bare) expect(rowKeys(), key).not.toContain(key);
-    expect(rowKeys()).toContain('⌘K / Ctrl+K');
-    // The note says the bare keys are off and where to turn them back on.
+    expect(rowKeys()).toEqual(KEYSHEET.map((entry) => entry.keys));
+    expect(offKeys()).toEqual(KEYSHEET.filter((entry) => isBareKeyRow(entry.keys)).map((entry) => entry.keys));
+    expect(offKeys()).toContain('Space');
+    expect(offKeys()).not.toContain('⌘K / Ctrl+K');
+    // The note says the marked keys do nothing and where to turn them back on.
     const note = document.body.querySelector('[data-testid="shortcuts-single-key-note"]');
-    expect(note?.textContent).toBe(t('shortcuts.singleKeysOff'));
+    expect(note?.textContent).toBe(t('shortcuts.singleKeysOffHint'));
     expect(note?.textContent).not.toBe(t('shortcuts.singleKeysHint'));
     act(() => setSingleKeyShortcutsEnabled(true));
-    expect(rowKeys()).toEqual(KEYSHEET.map((entry) => entry.keys));
+    expect(offKeys()).toEqual([]);
     expect(document.body.querySelector('[data-testid="shortcuts-single-key-note"]')?.textContent)
       .toBe(t('shortcuts.singleKeysHint'));
   });

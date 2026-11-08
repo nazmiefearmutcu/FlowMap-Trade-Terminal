@@ -248,6 +248,8 @@ export function MeasureTool({ containerRef, map }: MeasureToolProps): JSX.Elemen
       const action = routeGlobalKey(e.key, classifyTarget(e.target));
       if (action?.type === 'toggle-measure') {
         e.preventDefault();
+        // A held M must not flip the tool on and off on every auto-repeat.
+        if (e.repeat) return;
         const next = !armedRef.current;
         armedRef.current = next;
         setArmed(next);
@@ -282,7 +284,8 @@ export function MeasureTool({ containerRef, map }: MeasureToolProps): JSX.Elemen
       // A supplied mapping is authoritative: its null ("cannot be placed yet",
       // e.g. no renderer) means no point, never a fallback to raw CSS pixels read
       // as grid coordinates. Only an ABSENT mapping uses the identity.
-      const p = map?.fromChart ? map.fromChart(x, y) : IDENTITY.fromChart(x, y);
+      // A map without fromChart cannot place a point either: it is not the identity.
+      const p = map === undefined ? IDENTITY.fromChart(x, y) : map.fromChart?.(x, y) ?? null;
       if (p === null || !Number.isFinite(p.col) || !Number.isFinite(p.row)) return null;
       const px = map?.toChart ? map.toChart(p.col, p.row) : IDENTITY.toChart(p.col, p.row);
       return { col: p.col, row: p.row, px };

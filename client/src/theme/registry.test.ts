@@ -388,7 +388,7 @@ describe('overlay halo', () => {
 
   it.each(THEME_IDS)('%s halo clears 3:1 against the hot end of the density ramp', (id) => {
     const halo = overlayHalo(id);
-    for (const stop of THEMES[id].chart.density.filter((s) => s.t >= 0.6)) {
+    for (const stop of THEMES[id].chart.density.filter((s) => s.t >= 0.5)) {
       const rgb = `rgb(${stop.rgb.join(', ')})`;
       expect(contrast(halo, rgb), `${id} halo vs density t${stop.t}`).toBeGreaterThanOrEqual(3);
     }

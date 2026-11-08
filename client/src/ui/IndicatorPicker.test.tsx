@@ -4,6 +4,10 @@
  * `I`/Esc key behaviour with the same guards the app router uses.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
@@ -15,6 +19,8 @@ import { setTimeframe, getSnapshot as getCandleSnapshot, resetForTest as resetCa
 import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import { pushOverlay, resetOverlays } from './overlayStack';
 import { setLocale, t } from '../i18n';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -143,6 +149,31 @@ describe('IndicatorPicker — open/close', () => {
     expect(useIndicatorStore.getState().pickerOpen).toBe(false);
   });
 
+  it('a held I toggles the picker once, not on every auto-repeat', () => {
+    const { container } = renderPicker();
+    fireKey('i');
+    expect(q(container, '[data-testid="indi-picker"]')).not.toBeNull();
+    fireKey('i', window, { repeat: true });
+    expect(q(container, '[data-testid="indi-picker"]')).not.toBeNull();
+    expect(useIndicatorStore.getState().pickerOpen).toBe(true);
+  });
+
+  it('Esc is left alone when another surface already consumed the keystroke', () => {
+    const consume = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') e.preventDefault();
+    };
+    window.addEventListener('keydown', consume);
+    try {
+      const { container } = renderPicker();
+      fireKey('i');
+      fireKey('Escape', window, { cancelable: true });
+      expect(q(container, '[data-testid="indi-picker"]')).not.toBeNull();
+      expect(useIndicatorStore.getState().pickerOpen).toBe(true);
+    } finally {
+      window.removeEventListener('keydown', consume);
+    }
+  });
+
   it('moves focus into the picker on open and returns it to the opener on close', () => {
     const { container } = renderPicker();
     const opener = document.createElement('button');
@@ -167,6 +198,18 @@ describe('IndicatorPicker — open/close', () => {
     fireKey('Escape', window);
     expect(useIndicatorStore.getState().pickerOpen).toBe(false);
     resetOverlays();
+  });
+});
+
+describe('IndicatorPicker — stacking', () => {
+  it('sits above the Settings scrim and drawer, so it is visible when opened from Settings', () => {
+    const css = readFileSync(resolve(here, '../indicators/indicators.css'), 'utf8');
+    const app = readFileSync(resolve(here, '../App.css'), 'utf8');
+    const pickerZ = /:root:has\(\.drawer-scrim\) \.indi-picker\s*\{\s*z-index:\s*(\d+)/.exec(css);
+    const drawerZ = /\n\.drawer \{[^}]*z-index:\s*(\d+)/.exec(app);
+    expect(pickerZ).not.toBeNull();
+    expect(drawerZ).not.toBeNull();
+    expect(Number(pickerZ![1])).toBeGreaterThan(Number(drawerZ![1]));
   });
 });
 

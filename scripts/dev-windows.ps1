@@ -12,9 +12,11 @@
 #   ... -EnableRecording        # opt INTO recording writes (default: off, like e2e)
 #   $env:FLOWMAP_RECORDING_ENABLED = "1"   # the same opt-in, set before the run
 #
-# Port note: client/vite.config.ts hardcodes the proxy target http://127.0.0.1:8720,
-# so the server port is fixed at 8720. Any other -Port is refused up front rather
-# than booting a server that the dev client cannot reach.
+# Port note: client/vite.config.ts takes the proxy target from FLOWMAP_DEV_SERVER_PORT,
+# else FLOWMAP_PORT (set below from -Port), else 8720. The README and the user guide
+# document 8720 as the dev server port, and the page's direct connection defaults to
+# it too. Any other -Port is refused up front rather than booting a server on a port
+# the documented dev setup does not describe.
 #
 # Requires: Node/npm. The server prefers uv (repo standard); without it, any
 # Python 3.13 with the server dependencies installed is used via PYTHONPATH.
@@ -26,7 +28,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ($Port -ne 8720) {
-    throw "-Port $Port is not supported: client/vite.config.ts proxies /api and /ws to 127.0.0.1:8720. Run without -Port."
+    throw "-Port $Port is not supported: the documented dev server port is 8720 (README). Run without -Port."
 }
 
 # Remember the console code page so it can be restored on exit; the launcher

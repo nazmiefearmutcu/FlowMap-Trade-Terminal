@@ -8,6 +8,7 @@ import { fmtSz, priceDecimals } from './DomLadder';
 import type { EpochParams } from '../proto/types';
 import { useT } from '../i18n/useT';
 import { formatFixed, formatNumber, formatPrice } from '../i18n/format';
+import './OrderFlowPanel.css';
 
 export function nearbyDepth(snap: BookSnapshot, params: EpochParams | undefined): { bid: number; ask: number; low: number; high: number } | null {
   if (!params || !snap.book?.instant || snap.book.mode !== MODE_L2 || !snap.book.ask || !snap.bbo) return null;
@@ -85,7 +86,7 @@ export function OrderFlowPanel(): JSX.Element {
   const warming = !flow || flow.coverageMs < seconds * 1000;
   const source = flow?.inferred ? t('desk.inferredSide') : flow?.exchange ? t('desk.exchangeSide') : t('desk.sideUnavailable');
   return <section className="panel flow-panel" data-testid="orderflow-panel">
-    <header className="panel__header"><span className="panel__title">{t('desk.flow')}</span>
+    <header className="panel__header"><h2 className="panel__heading"><span className="panel__title">{t('desk.flow')}</span></h2>
       <div className="desk-window" role="group" aria-label={t('desk.flowWindow')}>
         {[5, 30, 60].map(n => <button type="button" key={n} aria-pressed={seconds === n} onClick={() => {
           setSeconds(n); setFlow(accumulator.current.summary(n * 1000, performance.now(), mode === 'replay'));

@@ -37,13 +37,8 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
-import {
-  MODE_L1_BAND,
-  MODE_L2,
-  MODE_SYNTH_PROFILE,
-  type EpochParams,
-} from '../proto/types';
-import { honestDepthTier } from '../gl/depthTier';
+import { MODE_SYNTH_PROFILE, type EpochParams } from '../proto/types';
+import { depthTier, isRecordedDensity, type DepthTier } from './DomLadderTier';
 import { priceToRow, rowToPrice, scaleFromEpoch, stepAtRow } from '../gl/priceScale';
 import { subscribe, getSnapshot, bookSessionKey, type BookSnapshot } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
@@ -52,20 +47,13 @@ import { useT } from '../i18n/useT';
 import './TradingPanels.css';
 import './DomLadder.css';
 
+export { depthTier, isRecordedDensity, type DepthTier } from './DomLadderTier';
+
 /** Row height in CSS px — must match `.ladder__row` height in App.css. */
 const ROW_H = 17;
 const DEFAULT_LADDER_ROWS = 21;
 /** Density below this is treated as an empty book level (f16 residue floor). */
 const DENSITY_EPS = 1e-6;
-
-/**
- * The depth badge. `L2-SNAPSHOT` is a real but lower-fidelity book (a ccxt
- * venue re-read whole each tick): it never reads as native `L2`.
- */
-export type DepthTier = 'L2' | 'L2-SNAPSHOT' | 'L1' | 'SYNTH';
-
-/** Provenance chip text for a recorded-density replay (same wording as the top bar chip). */
-const RECORDED_DENSITY_CHIP = 'RECORDED DENSITY';
 
 export interface LadderRowVM {
   row: number;
@@ -92,36 +80,6 @@ export interface LadderModel {
   spread: number | null;
 }
 
-/**
- * The honest depth tier (falling back to the book mode) that every surface
- * reads: the rung badge, the heat legend, the crosshair and the measure tool.
- * It reads through {@link honestDepthTier}, the verdict the chart's ramp uses,
- * so a replay without recorded provenance reads `SYNTH` here too. A
- * recorded-density replay keeps its real tier (a keyless equity recording stays
- * `SYNTH`); the provenance is a separate fact, {@link isRecordedDensity}, so the
- * tier never hides a synthetic depth.
- */
-export function depthTier(
-  capability: Record<string, unknown> | null,
-  bookMode: number | null,
-): DepthTier | null {
-  const d = honestDepthTier(capability);
-  if (typeof d === 'string') {
-    if (d === 'L2') return 'L2';
-    if (d === 'L2-snapshot') return 'L2-SNAPSHOT';
-    if (d === 'L1_BAND' || d === 'L1') return 'L1';
-    if (d === 'SYNTH' || d === 'SYNTH_PROFILE') return 'SYNTH';
-  }
-  if (bookMode === MODE_L2) return 'L2';
-  if (bookMode === MODE_L1_BAND) return 'L1';
-  if (bookMode === MODE_SYNTH_PROFILE) return 'SYNTH';
-  return null;
-}
-
-/** True when the density is an interval aggregate from a recording (its own provenance chip). */
-export function isRecordedDensity(capability: Record<string, unknown> | null | undefined): boolean {
-  return capability?.depth_provenance === 'recorded-density';
-}
 
 /**
  * How to LAY OUT the rungs — decoupled from the honesty {@link DepthTier} badge.
@@ -511,16 +469,18 @@ export function DomLadder(): JSX.Element {
       data-testid="dom-ladder"
     >
       <header className="panel__header">
-        <button
-          type="button"
-          className="panel__collapse"
-          aria-expanded={!collapsed}
-          onClick={() => setCollapsed((c) => !c)}
-          data-testid="ladder-collapse"
-        >
-          <span className="panel__chevron">{collapsed ? '▸' : '▾'}</span>
-          <span className="panel__title">DOM</span>
-        </button>
+        <h2 className="panel__heading">
+          <button
+            type="button"
+            className="panel__collapse"
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed((c) => !c)}
+            data-testid="ladder-collapse"
+          >
+            <span className="panel__chevron">{collapsed ? '▸' : '▾'}</span>
+            <span className="panel__title">{t('ladder.title')}</span>
+          </button>
+        </h2>
         <span
           className={`panel__badge panel__badge--${badgeClass}`}
           data-testid="ladder-badge"
@@ -533,7 +493,7 @@ export function DomLadder(): JSX.Element {
             data-testid="ladder-provenance"
             title={t('ladder.recordedTitle')}
           >
-            {RECORDED_DENSITY_CHIP}
+            {t('chip.recordedDensity')}
           </span>
         )}
         {spreadTicks !== null && (

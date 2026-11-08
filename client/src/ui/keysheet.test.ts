@@ -8,7 +8,8 @@ import { en } from '../i18n/en';
 import { tFor, setLocale, t } from '../i18n';
 import { tr } from '../i18n/tr';
 import { THEME_IDS } from '../theme/registry';
-import { KEYSHEET, keysheetRows, themeNamesLine } from './keysheet';
+import { KEYSHEET, themeNamesLine } from './keysheet';
+import { keyCapKey } from './keysheetList';
 
 afterEach(() => {
   setLocale('en');
@@ -59,29 +60,16 @@ describe('KEYSHEET', () => {
     }
   });
 
-  it('marks exactly the bare character keys the single-key switch controls', () => {
-    const bare = KEYSHEET.filter((entry) => entry.singleKey === true).map((entry) => entry.keys);
-    expect(bare).toEqual([
-      'Space', '/', 'E', 'M', 'A', 'H', 'C', 'T', 'D', 'I', 'J', '?',
-      '+ / −', '] / [', 'F', 'P', 'Shift+P', 'R',
-    ]);
-  });
-});
-
-describe('keysheetRows', () => {
-  it('lists every row while the single-key switch is on', () => {
-    expect(keysheetRows(true)).toBe(KEYSHEET);
-  });
-
-  it('drops every bare-key row while the switch is off, and keeps the chords and gestures', () => {
-    const rows = keysheetRows(false).map((entry) => entry.keys);
-    for (const entry of KEYSHEET.filter((row) => row.singleKey === true)) {
-      expect(rows, `bare key ${entry.keys} must not be advertised`).not.toContain(entry.keys);
+  it('translates the key names Turkish reads differently and keeps the rest', () => {
+    const labelled = KEYSHEET.map((entry) => entry.keys).filter((keys) => keyCapKey(keys) !== null);
+    expect(labelled).toEqual(['Space', 'Del', 'axis wheel / drag']);
+    for (const keys of labelled) {
+      const key = keyCapKey(keys)!;
+      expect(en[key], `en ${key}`).toBeDefined();
+      expect(tr[key], `tr ${key}`).toBeDefined();
+      expect(tFor('tr', key), `tr label for ${keys}`).not.toBe(keys);
     }
-    expect(rows).toEqual(KEYSHEET.filter((row) => row.singleKey !== true).map((row) => row.keys));
-    expect(rows).toContain('⌘K / Ctrl+K');
-    expect(rows).toContain('← → ↑ ↓');
-    expect(rows).toContain('Ctrl+Z');
-    expect(rows).toContain('Esc');
+    expect(tFor('tr', 'keysheet.keyCap.space')).toBe('Boşluk');
+    expect(keyCapKey('Esc')).toBeNull();
   });
 });

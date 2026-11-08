@@ -434,14 +434,18 @@ export class OverlayManager {
     // Text layer: size to the viewport, clear once, draw faint gridlines behind.
     this.text.syncSize(ctx.dims.cssW, ctx.dims.cssH, ctx.dpr);
     this.text.clear();
-    if (this.visibility.axes) drawGridlines(this.text, this.gm);
+    const axisStyle = { pixel: this.pixelStyle };
+    if (this.visibility.axes) drawGridlines(this.text, this.gm, axisStyle);
 
     // A separate, opaque bottom strip prevents changing heatmap/price ink
     // from changing the apparent height or colour of a completed volume bar.
     // Its x transform is the exact same camera; only its local y origin differs.
     // Invert plotH = stageH - clamp(16, stageH * .07, 44), using the
     // ResizeObserver geometry. Reading the parent after drawing forces layout.
-    const stripH = Math.round(volumeStripHeight(ctx.dims.cssH / (1 - VOLBAR_HEIGHT_FRAC)));
+    // Keep the fractional height: the CSS strip is clamp(16px, 7%, 44px), so a
+    // rounded canvas would leave a sub-pixel gap or overlap at the plot's bottom
+    // edge. The opaque fill below covers the last partial device row instead.
+    const stripH = volumeStripHeight(ctx.dims.cssH / (1 - VOLBAR_HEIGHT_FRAC));
     const volumeCanvas = this.volumeText.canvas;
     volumeCanvas.style.display = this.visibility.volume ? '' : 'none';
     const height = `${stripH}px`;
@@ -491,9 +495,9 @@ export class OverlayManager {
     this.syncGutters(ctx.dpr);
     if (this.visibility.axes) {
       if (this.priceAxis) {
-        drawPriceAxis(this.priceAxis, this.gm, this.visibility.price ? priceLine.last() : null);
+        drawPriceAxis(this.priceAxis, this.gm, this.visibility.price ? priceLine.last() : null, axisStyle);
       }
-      if (this.timeAxis) drawTimeAxis(this.timeAxis, this.gm, ctx.timeAxisClock ?? null);
+      if (this.timeAxis) drawTimeAxis(this.timeAxis, this.gm, ctx.timeAxisClock ?? null, axisStyle);
     } else {
       this.priceAxis?.clear();
       this.timeAxis?.clear();

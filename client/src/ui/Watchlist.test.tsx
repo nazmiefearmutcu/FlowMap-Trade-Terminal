@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { subscribeQuotes } from '../state/quoteFeed';
+import { tFor } from '../i18n';
 import { flushForTest, ingestForTest, resetForSession, resetForTest } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
 import { MODE_L2, MsgType, SIDE_UNKNOWN } from '../proto/types';
@@ -218,6 +219,13 @@ describe('Watchlist active stream bridge', () => {
 });
 
 describe('Watchlist panel', () => {
+  it('the panel title is a heading', () => {
+    const { container } = render(<Watchlist activeKey="sim:SIM-DEMO" onSelect={vi.fn()} />);
+    expect(container.querySelector('h2.panel__heading .panel__title')?.textContent).toBe(
+      tFor('en', 'watchlist.title'),
+    );
+  });
+
   it('empty list subscribes to nothing and shows recents as non-favoriting chips', () => {
     window.localStorage.setItem('flowmap.recents', JSON.stringify(['sim:SIM-DEMO', 'crypto:BTCUSDT']));
     const onSelect = vi.fn();

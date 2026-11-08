@@ -122,6 +122,8 @@ export function DrawToolbar({ symbol }: DrawToolbarProps): JSX.Element | null {
     const onKey = (e: globalThis.KeyboardEvent): void => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key !== 'd' && e.key !== 'D') return;
+      // A held key auto-repeats; one press toggles the panel once.
+      if (e.repeat) return;
       if (!isSingleKeyShortcutsEnabled()) return;
       const target = classifyTarget(e.target);
       if (target.editable || target.dialog) return;

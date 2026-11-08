@@ -59,6 +59,14 @@
   gap: 8px;
 }
 
+/* Above the Settings and Intelligence scrims (z 50) and their drawers (z 51). The
+   picker opened from Settings is a dialog of its own (the drawer is not modal while
+   it is open), so it must stay visible and reachable instead of sitting under the
+   scrim. Matched only while a drawer is mounted. */
+:root:has(.drawer-scrim) .indi-picker {
+  z-index: 52;
+}
+
 .indi-picker__head {
   display: flex;
   align-items: center;

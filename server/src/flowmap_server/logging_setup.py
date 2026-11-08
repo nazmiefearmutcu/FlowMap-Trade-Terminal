@@ -41,7 +41,7 @@ def _ensure_utf8(stream: TextIO) -> None:
     if callable(reconfigure):
         try:
             reconfigure(encoding="utf-8", errors="backslashreplace")
-        except (ValueError, OSError):
+        except (ValueError, OSError):  # stream cannot be reconfigured: keep its encoding
             pass
 
 

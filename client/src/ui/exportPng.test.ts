@@ -17,6 +17,7 @@ import {
   downloadPng,
   exportProvenanceNotes,
   exportRampStops,
+  exportRampVerdict,
   pngDisplayStamp,
   pngFilename,
   pngStamp,
@@ -148,9 +149,25 @@ describe('exportProvenanceNotes', () => {
       exportProvenanceNotes({
         following: false,
         mode: 'replay',
-        capability: { depth: 'SYNTH_CL', tape: 'agg', history: 'reconstructed' },
+        capability: { depth: 'SYNTH_PROFILE', tape: 'agg', history: 'reconstructed' },
       }),
     ).toEqual(['replay', 'scrolled back', 'history ≈ reconstructed', 'synthetic depth', 'tape agg']);
+  });
+
+  it('calls a replay without recorded-density provenance synthetic, as the screen does', () => {
+    expect(exportProvenanceNotes({ following: true, mode: 'replay', capability: { depth: 'L2', playback: {} } })).toEqual([
+      'replay',
+      'synthetic depth',
+    ]);
+  });
+});
+
+describe('exportRampVerdict', () => {
+  it('reads the ramp chip verdict through the on-screen depth helpers', () => {
+    expect(exportRampVerdict({ depth: 'SYNTH', playback: {} })).toEqual({ synth: true, tier: 'SYNTH' });
+    expect(exportRampVerdict({ depth: 'L2' })).toEqual({ synth: false, tier: 'L2' });
+    expect(exportRampVerdict({ depth: 'L2-snapshot' })).toEqual({ synth: false, tier: 'L2-SNAPSHOT' });
+    expect(exportRampVerdict(null)).toEqual({ synth: false, tier: null });
   });
 });
 

@@ -71,6 +71,13 @@ class RatchetTests(unittest.TestCase):
         counts = checker.scan(checker.ROOT)
         self.assertEqual(checker.problems(counts), [])
 
+    def test_every_budget_is_tight_to_the_real_tree(self):
+        # A budget above the live count lets a later regression hide in the slack.
+        counts = checker.scan(checker.ROOT)
+        for path, allowed in checker.BUDGETS.items():
+            with self.subTest(path=path):
+                self.assertEqual(counts.get(path, 0), allowed)
+
 
 if __name__ == "__main__":
     unittest.main()

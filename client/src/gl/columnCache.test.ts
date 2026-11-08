@@ -1,6 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { COLUMN_CACHE_PAGE_SLOTS, ColumnCache } from './columnCache';
+import { COLUMN_CACHE_PAGE_SLOTS, ColumnCache, columnCacheFullPoolBytes, columnCachePageBytes } from './columnCache';
+
+describe('CPU memory budget (pool pages)', () => {
+  const MiB = 1024 * 1024;
+
+  it('prices one page as 256 slots x rows x 2 channels x 4 bytes', () => {
+    expect(columnCachePageBytes(2048)).toBe(4 * MiB);
+    expect(columnCachePageBytes(4096)).toBe(8 * MiB);
+  });
+
+  it('gives the production CPU footprint: 6144 columns at 4096 rows is 192 MiB', () => {
+    expect(columnCacheFullPoolBytes(6144, 4096) / MiB).toBe(192);
+  });
+
+  it('rounds a partial last page up to a whole page', () => {
+    expect(columnCacheFullPoolBytes(COLUMN_CACHE_PAGE_SLOTS + 1, 2048)).toBe(2 * 4 * MiB);
+  });
+
+  it('reports a resident page in byteLength at the priced size', () => {
+    const rows = 4096;
+    const c = new ColumnCache({ capacity: 512 });
+    c.put(0, new Float32Array(rows), new Float32Array(rows), 0n);
+    expect(c.residentPageCount).toBe(1);
+    expect(c.byteLength).toBeGreaterThanOrEqual(columnCachePageBytes(rows));
+  });
+});
 
 /** A column whose bid[r]=r and ask[r]=10*r, for easy exact-sum assertions. */
 function ramp(rows: number): { bid: Float32Array; ask: Float32Array } {

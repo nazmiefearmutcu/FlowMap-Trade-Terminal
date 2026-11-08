@@ -7,6 +7,10 @@ Pulls the daily FINRA Reg SHO consolidated short-sale file:
   print volume, so it says nothing about institutional accumulation or
   distribution, and no such label is produced.
 - Stores observations in DuckWarehouse for live query and historical analysis.
+
+Wiring status: this build starts no producer for this module, so nothing it
+produces reaches a client. Only the tests exercise it. Treat the description above
+as the module's design, not as data this build serves.
 """
 
 from __future__ import annotations

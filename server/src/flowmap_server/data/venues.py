@@ -34,7 +34,7 @@ import asyncio
 import logging
 import math
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 from flowmap_server.feeds.crypto import (
     CRYPTO_EXCHANGES,
@@ -46,6 +46,7 @@ from flowmap_server.feeds.equity import EQUITY_MARKET
 
 __all__ = [
     "SYMBOL_TTL_NS",
+    "UnlistedSymbolError",
     "VenueInfo",
     "ccxt_knows",
     "resolve_symbol",
@@ -162,9 +163,32 @@ def venue_catalog() -> list[VenueInfo]:
     return out
 
 
+class UnlistedSymbolError(ValueError):
+    """The venue's own market table loaded and does not list this symbol.
+
+    Raised before any connector is built for the symbol, so a mistyped symbol
+    costs one cached table lookup, not a subscribe to the venue.
+    """
+
+
+class _VenueTables(NamedTuple):
+    """One venue's loaded ccxt market table, as ``CCXTConnector`` reads it."""
+
+    markets: dict[str, Any]
+    markets_by_id: dict[str, Any]
+
+
 _cache: dict[str, tuple[int, list[str]]] = {}
 _locks: dict[str, asyncio.Lock] = {}
 _price_ticks: dict[str, dict[str, float]] = {}
+# Loaded market tables, keyed by (exchange, default market type): that type decides
+# which market a bare id resolves to. A table that failed to load is kept as None
+# for EMPTY_TTL_NS only, so an outage is not re-downloaded on every subscribe.
+_tables: dict[tuple[str, str], tuple[int, _VenueTables | None]] = {}
+_table_locks: dict[tuple[str, str], asyncio.Lock] = {}
+# Exchanges whose table is currently unavailable: the failure is logged once per
+# outage, not once per subscribe.
+_tables_unavailable: set[str] = set()
 
 
 async def venue_price_tick(market: str, symbol: str) -> float | None:
@@ -217,6 +241,60 @@ async def venue_symbols(market: str, *, now_ns: int | None = None) -> list[str]:
         # Nothing good to fall back on: remember the emptiness only briefly.
         _cache[market] = (done - SYMBOL_TTL_NS + EMPTY_TTL_NS, [])
         return []
+
+
+def _table_ttl(tables: _VenueTables | None) -> int:
+    return SYMBOL_TTL_NS if tables is not None else EMPTY_TTL_NS
+
+
+async def _venue_tables(
+    exchange: str, segment: str, *, now_ns: int | None = None
+) -> _VenueTables | None:
+    """The venue's loaded ccxt market table, or ``None`` when it cannot be loaded.
+
+    Concurrent callers share one load, under the same bound as a listing. A
+    failure never raises here: the caller fails open, and the outage is logged
+    once until the venue loads again.
+    """
+    key = (exchange, "swap" if segment in _SWAP_SEGMENTS else "spot")
+    now = time.time_ns() if now_ns is None else now_ns
+    hit = _tables.get(key)
+    if hit is not None and now - hit[0] < _table_ttl(hit[1]):
+        return hit[1]
+    lock = _table_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        # Re-check: a caller that queued on the lock wants the load its holder just did.
+        hit = _tables.get(key)
+        if hit is not None and now - hit[0] < _table_ttl(hit[1]):
+            return hit[1]
+        tables: _VenueTables | None
+        try:
+            async with asyncio.timeout(LIST_TIMEOUT_S):
+                tables = await _load_tables(exchange, key[1] == "swap")
+        except Exception:  # a table outage must not fail a subscribe; timeouts included
+            tables = None
+            if exchange not in _tables_unavailable:
+                _tables_unavailable.add(exchange)
+                logger.warning(
+                    "market table unavailable for %r; symbols are not pre-checked",
+                    exchange, exc_info=True,
+                )
+        else:
+            _tables_unavailable.discard(exchange)
+        _tables[key] = (time.time_ns() if now_ns is None else now_ns, tables)
+        return tables
+
+
+async def _load_tables(exchange: str, swap: bool) -> _VenueTables:
+    import ccxt.async_support as ccxt_async
+
+    options = {"defaultType": "swap" if swap else "spot"}
+    ex = getattr(ccxt_async, exchange)({"enableRateLimit": True, "options": options})
+    try:
+        await ex.load_markets()
+        return _VenueTables(markets=ex.markets, markets_by_id=ex.markets_by_id)
+    finally:
+        await ex.close()
 
 
 async def _list_symbols(market: str) -> list[str]:
@@ -349,61 +427,47 @@ async def resolve_symbol(market: str, symbol: str) -> str:
     """Return *symbol* in the spelling *market*'s connector expects.
 
     A native venue is given its own id; a ccxt venue is given the unified id.
-    Cross-spelling input is translated through ccxt's market table, which
-    carries both (``markets[unified]["id"]`` IS the venue-native symbol). When
-    nothing matches, the input is returned untouched — the connector's own
-    error is a better message than a guess.
+    Cross-spelling input is translated through the venue's ccxt market table,
+    which carries both (``markets[unified]["id"]`` IS the venue-native symbol).
+
+    A symbol that the loaded table does not list raises :class:`UnlistedSymbolError`
+    before any connector is built for it. When the table cannot be loaded, the
+    input is returned untouched: the connector's own error is a better message
+    than a guess, and a venue outage must not block a subscribe.
     """
     exchange, segment = split_market(market)
     native = exchange in NATIVE_EXCHANGES
     already_native = (('/' in symbol and ':' not in symbol) if exchange == 'kraken'
                       else symbol.startswith('t') if exchange == 'bitfinex'
                       else '/' not in symbol)
-    if (native and already_native) or (not native and '/' in symbol):
-        # Native venue with a native-looking symbol, or ccxt venue with a
-        # unified one: already the right shape.
-        return symbol
+    # Native venue with a native-looking symbol, or ccxt venue with a unified one:
+    # already the right shape, so no translation is needed.
+    shaped = (native and already_native) or (not native and '/' in symbol)
     if not ccxt_knows(exchange):
         return symbol
+    tables = await _venue_tables(exchange, segment)
+    if tables is None:
+        return symbol
     try:
-        import ccxt.async_support as ccxt_async
-
         from crocodile.crypto.exchanges.ccxt_universal.connector import CCXTConnector
 
-        # `defaultType` decides which market a bare, ambiguous id resolves to.
-        # ccxt lists spot first, so without this a `binance-usdm` subscribe for
-        # "BTCUSDT" would come back as the SPOT pair — the wrong instrument
-        # under the right label, which is worse than an error.
-        ex = getattr(ccxt_async, exchange)(
-            {
-                "enableRateLimit": True,
-                "options": {"defaultType": "swap" if segment in _SWAP_SEGMENTS else "spot"},
-            }
-        )
-        try:
-            # Bounded like the listing path: a hung venue must delay a
-            # subscribe by seconds, not by ccxt's per-request defaults stacked
-            # across pages. Timing out resolves to the input spelling (the
-            # connector's own error beats a guess), same as any failure here.
-            async with asyncio.timeout(LIST_TIMEOUT_S):
-                markets = await ex.load_markets()
-                unified = CCXTConnector._resolve_symbol(symbol, markets, ex.markets_by_id)
-            if unified is None:
-                return symbol
-            if not native:
-                return unified
-            if exchange == 'kraken':
-                # Spot WebSocket v2 takes BTC/USD, unlike REST's XXBTZUSD.
-                return unified.split(':', 1)[0].replace('XBT', 'BTC')
-            venue_id = (markets.get(unified) or {}).get("id")
-            if exchange == 'bitfinex' and venue_id:
-                return str(venue_id) if str(venue_id).startswith('t') else 't' + str(venue_id)
-            return str(venue_id) if venue_id else symbol
-        finally:
-            await ex.close()
+        unified = CCXTConnector._resolve_symbol(symbol, tables.markets, tables.markets_by_id)
     except Exception:  # a failed translation must not block a subscribe
         logger.warning("symbol translation failed for %s:%s", market, symbol, exc_info=True)
         return symbol
+    if unified is None and symbol not in tables.markets and symbol not in tables.markets_by_id:
+        raise UnlistedSymbolError(f"{symbol!r} is not listed on {market!r}")
+    if shaped or unified is None:
+        return symbol
+    if not native:
+        return unified
+    if exchange == 'kraken':
+        # Spot WebSocket v2 takes BTC/USD, unlike REST's XXBTZUSD.
+        return unified.split(':', 1)[0].replace('XBT', 'BTC')
+    venue_id = (tables.markets.get(unified) or {}).get("id")
+    if exchange == 'bitfinex' and venue_id:
+        return str(venue_id) if str(venue_id).startswith('t') else 't' + str(venue_id)
+    return str(venue_id) if venue_id else symbol
 
 
 async def _close_quietly(conn: object) -> None:

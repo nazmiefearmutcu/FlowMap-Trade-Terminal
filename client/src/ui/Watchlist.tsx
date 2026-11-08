@@ -9,8 +9,8 @@
  * Honesty rules:
  *   - a quote that never arrived renders em-dashes, never a made-up price;
  *   - `reachable === false` renders em-dashes + a `no data` chip;
- *   - `stale === true` dims the row and shows a `stale` chip while keeping the
- *     LAST KNOWN price visible (dimmed data is labelled, not hidden);
+ *   - `stale === true` mutes the row's text to the secondary ink and shows a `stale`
+ *     chip while keeping the LAST KNOWN price visible (stale data is labelled, not hidden);
  *   - the sparkline is an inline SVG path (`ui/spark.ts`) — no canvas element,
  *     so the global `canvas { position: absolute }` rule is a non-issue.
  *
@@ -223,7 +223,7 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
   return (
     <section className="panel watchlist" data-testid="watchlist" aria-label={t('watchlist.title')}>
       <header className="panel__header watchlist__header">
-        <span className="panel__title">{t('watchlist.title')}</span>
+        <h2 className="panel__heading"><span className="panel__title">{t('watchlist.title')}</span></h2>
         <span className="panel__badge watchlist__count" data-testid="watchlist-count">
           {watchKeys.length}
         </span>

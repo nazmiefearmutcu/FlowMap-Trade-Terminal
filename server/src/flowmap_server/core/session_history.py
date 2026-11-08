@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 
-from flowmap_server.core.grid import FinalizedColumn
+from flowmap_server.core.grid import EpochParams, FinalizedColumn
 from flowmap_server.core.overview import (
     SOURCE_BATCH_COLS,
     OverviewBuilder,
@@ -140,9 +140,13 @@ class HistoryMixin:
         overruns is abandoned, not waited on: it is counted as orphaned work,
         the session reports ``overview_degraded``, and the request fails with
         :class:`OverviewUnavailableError`. The thread itself cannot be stopped,
-        so later steps queue behind it on the same worker and time out too
-        until it finishes.
+        and it holds the only worker, so until it returns every later step
+        fails at once with the same error instead of queuing behind it for
+        another full deadline each.
         """
+        wedged = self._overview_wedged
+        if wedged is not None and not wedged.done():
+            raise OverviewUnavailableError("overview worker is busy with a step that overran its deadline")
         future = asyncio.get_running_loop().run_in_executor(self._overview_executor, fn, *args)
         try:
             async with asyncio.timeout(OVERVIEW_STEP_TIMEOUT_S):
@@ -150,19 +154,23 @@ class HistoryMixin:
                 # the thread's future, which is what keeps the cache consistent.
                 result = await asyncio.shield(future)
         except TimeoutError:
-            self._abandon_overview_step(future, "overran its deadline")
+            self._abandon_overview_step(future, "overran its deadline", wedged=True)
             raise OverviewUnavailableError(
                 f"overview step exceeded {OVERVIEW_STEP_TIMEOUT_S:.0f}s"
             ) from None
         except asyncio.CancelledError:
             if not future.done():
-                self._abandon_overview_step(future, "was cancelled")
+                self._abandon_overview_step(future, "was cancelled", wedged=False)
             raise
         self._set_overview_degraded(False)
         return result
 
-    def _abandon_overview_step(self, future: asyncio.Future, why: str) -> None:
-        """Count and surface an overview step whose request gave up on it."""
+    def _abandon_overview_step(self, future: asyncio.Future, why: str, *, wedged: bool) -> None:
+        """Count and surface an overview step whose request gave up on it.
+
+        ``wedged`` marks a step that overran its deadline: its worker is still
+        running, so later steps fail fast until it lands (see _overview_call).
+        """
         logger.error(
             "overview step %s for session %s; the worker thread keeps running",
             why,
@@ -171,8 +179,16 @@ class HistoryMixin:
         if self._stats is not None:
             self._stats.inc_orphaned_work()
         self._set_overview_degraded(True)
-        # Retrieve the eventual result or error so the loop never logs it.
-        future.add_done_callback(lambda f: f.cancelled() or f.exception())
+        if wedged:
+            self._overview_wedged = future
+        future.add_done_callback(self._overview_step_settled)
+
+    def _overview_step_settled(self, future: asyncio.Future) -> None:
+        """An abandoned step returned: free the worker and retrieve its outcome."""
+        if self._overview_wedged is future:
+            self._overview_wedged = None
+        if not future.cancelled():
+            future.exception()  # retrieved so the loop never logs it
 
     def _set_overview_degraded(self, degraded: bool) -> None:
         """Publish ``overview_degraded`` to attached clients on each change."""
@@ -208,37 +224,8 @@ class HistoryMixin:
             if end < start:
                 return self._history_frame(req, [], 0)
             epochs = dict(self._grid._epoch_params)
-            # Scalar metadata only: select the source frame near each time
-            # group's middle before streaming its density. A global current
-            # core would collapse old precise levels back into broad wings.
-            ram_refs = [
-                (
-                    seq,
-                    int(self._grid._ring_t0[seq % self._grid.cfg.ring_columns]),
-                    int(self._grid._ring_epoch[seq % self._grid.cfg.ring_columns]),
-                )
-                for seq in range(max(start, retained[0]), min(end, retained[1]) + 1)
-            ]
-            # Validate immutable part stamps once for this request. The scalar
-            # representative and density passes reuse this same snapshot;
-            # complete aggregate cache hits leave it empty and do no scan.
-            parts = []
-            if self._recorder_root is not None:
-                store = await self._overview_call(
-                    pyramid_for,
-                    self._recorder_root,
-                    self._feed.market,
-                    self._feed.symbol,
-                    self._recording_identity,
-                )
-                parts = await self._overview_call(store.parts, start, end)
-                generation = await self._overview_call(store.generation, parts, start, end, epochs)
-                if (
-                    self._overview_source_generation is not None
-                    and generation != self._overview_source_generation
-                ):
-                    self._overview_cache = OverviewCache()
-                self._overview_source_generation = generation
+            ram_refs = self._overview_ram_refs(start, end, retained)
+            parts = await self._overview_source_parts(start, end, epochs)
             group_targets = await self._overview_call(
                 native_group_epochs,
                 target,
@@ -266,90 +253,150 @@ class HistoryMixin:
                 self._overview_cache,
                 group_targets=group_targets,
             )
-            # RAM wins over any already-flushed duplicate. Its copies are
-            # bounded at 2 MiB on the production grid, with a yield after each.
-            batch_size = max(1, min(SOURCE_BATCH_COLS, (2 * 1024 * 1024) // (target.rows * 8)))
-            for low, high in builder.missing_ranges():
-                cursor = max(low, retained[0])
-                stop = min(high, retained[1])
-                while cursor <= stop:
-                    last = min(stop, cursor + batch_size - 1)
-                    columns = self._grid.history_sequence_batch(cursor, last, batch_size)
-                    await self._overview_call(builder.add, columns, epochs)
-                    cursor = last + 1
-                    await asyncio.sleep(0)
+            await self._overview_fill_ram(builder, target, retained, epochs)
             if self._recorder_root is not None and builder.missing_source_ranges():
-                try:
-                    await self._overview_call(
-                        add_recording,
-                        builder,
-                        self._recorder_root,
-                        self._feed.market,
-                        self._feed.symbol,
-                        self._recording_identity,
-                        epochs,
-                        list(self._legacy_history_segments),
-                        parts,
-                    )
-                except Exception:
-                    logger.exception(
-                        "recorded overview read failed for session %s", self.session_id
-                    )
-                    # Do not silently render a recent-tail-only picture as a
-                    # completed overview. The client retries a failed request.
-                    raise
+                await self._overview_fill_recording(builder, epochs, parts)
             markers = list(self._markers)
             mode = self._grid.cfg.mode
+            return await self._overview_call(
+                self._overview_frame, req, target, builder, markers, mode
+            )
 
-            def finish_frame() -> bytes:
-                columns = builder.finish()
-                low_time = builder.first_time
-                high_time = builder.last_time
-                visible_markers = (
-                    []
-                    if low_time is None or high_time is None
-                    else [m for m in markers if low_time <= m.ts_ns < high_time + target.dt_ns]
-                )
-                visible_markers.extend(builder.gap_markers())
-                visible_markers.extend(builder.resolution_markers())
-                visible_markers.sort(key=lambda marker: marker.ts_ns)
-                visible_markers = metadata_page(
-                    visible_markers, req, self._overview_source_generation or ""
-                )
-                response = events.HistoryResponse(
-                    req_id=req.req_id,
-                    epoch=target.epoch,
-                    oldest_available_t_ns=0,
-                    depth_cols=[
-                        events.DepthColumn(
-                            epoch=c.epoch,
-                            col_seq=c.col_seq,
-                            t0_ns=c.t0_ns,
-                            mode=mode,
-                            final=True,
-                            bid=c.bid,
-                            ask=None if mode == events.MODE_SYNTH_PROFILE else c.ask,
-                        )
-                        for c in columns
-                    ]
-                    if req.metadata_cursor is None
-                    else [],
-                    bar_cols=[c.bar for c in columns] if req.metadata_cursor is None else [],
-                    markers=visible_markers,
-                    big_trades=[],
-                )
-                # Existing wire format already carries per-column epochs.
-                # Publish every used historical map, then the current map.
-                # Historical IDs are older; the client's monotone live epoch
-                # cannot move backwards when these params are registered.
-                announcements = dict(builder.output_epochs)
-                announcements[target.epoch] = target
-                return b"".join(
-                    wire.encode(events.EpochStart(epoch=epoch, epoch_params=params))
-                    for epoch, params in sorted(announcements.items())
-                ) + wire.encode(response)
+    def _overview_ram_refs(
+        self, start: int, end: int, retained: tuple[int, int]
+    ) -> list[tuple[int, int, int]]:
+        """Scalar (seq, t0, epoch) of each retained column in range, read on-loop."""
+        return [
+            (
+                seq,
+                int(self._grid._ring_t0[seq % self._grid.cfg.ring_columns]),
+                int(self._grid._ring_epoch[seq % self._grid.cfg.ring_columns]),
+            )
+            for seq in range(max(start, retained[0]), min(end, retained[1]) + 1)
+        ]
 
-            return await self._overview_call(finish_frame)
+    async def _overview_source_parts(self, start: int, end: int, epochs: dict) -> list:
+        """Validate immutable part stamps once for this request.
+
+        The scalar representative and density passes reuse this same snapshot;
+        complete aggregate cache hits leave it empty and do no scan. A changed
+        source generation drops the aggregate cache.
+        """
+        parts: list = []
+        if self._recorder_root is not None:
+            store = await self._overview_call(
+                pyramid_for,
+                self._recorder_root,
+                self._feed.market,
+                self._feed.symbol,
+                self._recording_identity,
+            )
+            parts = await self._overview_call(store.parts, start, end)
+            generation = await self._overview_call(store.generation, parts, start, end, epochs)
+            if (
+                self._overview_source_generation is not None
+                and generation != self._overview_source_generation
+            ):
+                self._overview_cache = OverviewCache()
+            self._overview_source_generation = generation
+        return parts
+
+    async def _overview_fill_ram(
+        self,
+        builder: OverviewBuilder,
+        target: EpochParams,
+        retained: tuple[int, int],
+        epochs: dict,
+    ) -> None:
+        """Add the retained RAM columns the aggregate cache is still missing."""
+        # RAM wins over any already-flushed duplicate. Its copies are
+        # bounded at 2 MiB on the production grid, with a yield after each.
+        batch_size = max(1, min(SOURCE_BATCH_COLS, (2 * 1024 * 1024) // (target.rows * 8)))
+        for low, high in builder.missing_ranges():
+            cursor = max(low, retained[0])
+            stop = min(high, retained[1])
+            while cursor <= stop:
+                last = min(stop, cursor + batch_size - 1)
+                columns = self._grid.history_sequence_batch(cursor, last, batch_size)
+                await self._overview_call(builder.add, columns, epochs)
+                cursor = last + 1
+                await asyncio.sleep(0)
+
+    async def _overview_fill_recording(
+        self, builder: OverviewBuilder, epochs: dict, parts: list
+    ) -> None:
+        """Add the recorded columns the aggregate cache is still missing."""
+        try:
+            await self._overview_call(
+                add_recording,
+                builder,
+                self._recorder_root,
+                self._feed.market,
+                self._feed.symbol,
+                self._recording_identity,
+                epochs,
+                list(self._legacy_history_segments),
+                parts,
+            )
+        except Exception:
+            logger.exception("recorded overview read failed for session %s", self.session_id)
+            # Do not silently render a recent-tail-only picture as a
+            # completed overview. The client retries a failed request.
+            raise
+
+    def _overview_frame(
+        self,
+        req: events.HistoryRequest,
+        target: EpochParams,
+        builder: OverviewBuilder,
+        markers: list[events.Marker],
+        mode: int,
+    ) -> bytes:
+        """Encode one overview response. Runs on the overview worker."""
+        columns = builder.finish()
+        low_time = builder.first_time
+        high_time = builder.last_time
+        visible_markers = (
+            []
+            if low_time is None or high_time is None
+            else [m for m in markers if low_time <= m.ts_ns < high_time + target.dt_ns]
+        )
+        visible_markers.extend(builder.gap_markers())
+        visible_markers.extend(builder.resolution_markers())
+        visible_markers.sort(key=lambda marker: marker.ts_ns)
+        visible_markers = metadata_page(visible_markers, req, self._overview_source_generation or "")
+        response = events.HistoryResponse(
+            req_id=req.req_id,
+            epoch=target.epoch,
+            oldest_available_t_ns=0,
+            depth_cols=[
+                events.DepthColumn(
+                    epoch=c.epoch,
+                    col_seq=c.col_seq,
+                    t0_ns=c.t0_ns,
+                    mode=mode,
+                    final=True,
+                    bid=c.bid,
+                    ask=None if mode == events.MODE_SYNTH_PROFILE else c.ask,
+                )
+                for c in columns
+            ]
+            if req.metadata_cursor is None
+            else [],
+            bar_cols=[c.bar for c in columns] if req.metadata_cursor is None else [],
+            markers=visible_markers,
+            big_trades=[],
+        )
+        # Existing wire format already carries per-column epochs.
+        # Publish every used historical map, then the current map.
+        # Historical IDs are older; the client's monotone live epoch
+        # cannot move backwards when these params are registered.
+        announcements = dict(builder.output_epochs)
+        announcements[target.epoch] = target
+        return b"".join(
+            wire.encode(events.EpochStart(epoch=epoch, epoch_params=params))
+            for epoch, params in sorted(announcements.items())
+        ) + wire.encode(response)
 
     def _legacy_segment_before(self, upper: int, upper_seq: int) -> tuple[int, int, int] | None:
         dt = self._grid.cfg.dt_ns

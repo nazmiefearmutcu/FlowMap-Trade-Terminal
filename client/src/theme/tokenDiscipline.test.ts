@@ -58,11 +58,11 @@ export const FONT_FLOOR_PX = 11;
  * carry. Counts only go down. Each remaining site is a candidate for a token.
  */
 export const LITERAL_RATCHET: Readonly<Record<string, { fontPx: number; colours: number }>> = {
-  'App.css': { fontPx: 0, colours: 55 },
+  'App.css': { fontPx: 0, colours: 37 },
   'ui/features.css': { fontPx: 0, colours: 0 },
   'ui/Crosshair.css': { fontPx: 0, colours: 0 },
-  'ui/Desk.css': { fontPx: 1, colours: 0 },
-  'ui/MarketStrip.css': { fontPx: 1, colours: 0 },
+  'ui/Desk.css': { fontPx: 0, colours: 0 },
+  'ui/MarketStrip.css': { fontPx: 0, colours: 0 },
   'ui/TradingPanels.css': { fontPx: 0, colours: 0 },
   'watchlist/watchlist.css': { fontPx: 0, colours: 0 },
   'theme/shell.css': { fontPx: 0, colours: 0 },
@@ -120,6 +120,38 @@ export function literalFontFamilies(css: string): string[] {
     .filter((value) => !/^(inherit|var\(--font-(ui|mono)\))$/.test(value));
 }
 
+/**
+ * Literal px corner radii. `var(...)` fallbacks are stripped first, and a `999px` pill
+ * is a shape rather than a step of the radius scale, so it is not counted.
+ */
+export function literalRadiiPx(css: string): number[] {
+  const radii: number[] = [];
+  const stripped = code(css).replace(/var\([^)]*\)/g, 'var()');
+  for (const match of stripped.matchAll(/\bborder(?:-[a-z]+)*-radius\s*:\s*([^;}]*)/g)) {
+    for (const px of match[1].matchAll(/(?<![\d.])(\d+(?:\.\d+)?)px\b/g)) {
+      if (Number(px[1]) !== 999) radii.push(Number(px[1]));
+    }
+  }
+  return radii;
+}
+
+/** Stylesheets whose corner radii come from the radius tokens (--r-1..3, --r-dialog) or a pill. */
+const RADIUS_CSS = [
+  'App.css',
+  'ui/features.css',
+  'ui/Crosshair.css',
+  'ui/Desk.css',
+  'ui/MarketStrip.css',
+  'ui/TradingPanels.css',
+  'theme/shell.css',
+  'drawings/drawings.css',
+  'ui/AppNotices.css',
+  'ui/ChartLegend.css',
+  'ui/ChartStartupGate.css',
+  'ui/IntelligenceDrawer.css',
+  'ui/ReplayPicker.css',
+] as const;
+
 describe('owned stylesheets stay on theme tokens', () => {
   it.each(OWNED_CSS)('%s sets no literal font size below the 11px floor', (file) => {
     const text = readFileSync(join(SRC_ROOT, file), 'utf8');
@@ -165,6 +197,29 @@ describe('owned stylesheets stay on theme tokens', () => {
     expect(literalSurfaceColours('.d{background: var(--chart-chip-bg, rgba(10, 12, 16, 0.92))}')).toEqual([]);
     expect(literalSurfaceColours('.e{box-shadow: 0 0 7px color-mix(in srgb, var(--sell, #e8635f) 70%, transparent)}')).toEqual([]);
     expect(literalSurfaceColours('.f{box-shadow: var(--shadow-pop)} /* box-shadow: 0 0 #000 */')).toEqual([]);
+  });
+
+  it.each(FONT_RULE_CSS)('%s sets no literal px font size at all', (file) => {
+    const text = readFileSync(join(SRC_ROOT, file), 'utf8');
+    expect(literalFontSizesPx(text), `${file} literal px font sizes`).toEqual([]);
+  });
+
+  it.each(RADIUS_CSS)('%s corner radii come from the radius tokens', (file) => {
+    const text = readFileSync(join(SRC_ROOT, file), 'utf8');
+    expect(literalRadiiPx(text), `${file} literal px corner radii`).toEqual([]);
+  });
+
+  it('every theme block defines the dialog radius token', () => {
+    const themes = readFileSync(join(SRC_ROOT, 'theme/themes.css'), 'utf8');
+    const blocks = [...themes.matchAll(/:root\[data-theme='[a-z-]+'\]\s*\{([^}]*)\}/g)].map((m) => m[1]);
+    expect(blocks).toHaveLength(7);
+    for (const block of blocks) expect(block).toMatch(/--r-dialog:\s*12px;/);
+  });
+
+  it('reads the px corner radii it must catch, and not the tokens or pills', () => {
+    expect(
+      literalRadiiPx('.a{border-radius: 6px} .b{border-radius: 999px} .c{border-top-left-radius: var(--r-1, 4px)} .d{border-radius: 3px 0}'),
+    ).toEqual([6, 3]);
   });
 
   it('reads the literal font stacks it must catch', () => {

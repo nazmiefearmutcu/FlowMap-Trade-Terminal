@@ -910,6 +910,30 @@ describe('FlowMap store — recording degraded flag (Status capability)', () => 
     store.getState().connectAndSubscribe('crypto', 'ETHUSDT');
     expect(store.getState().recordingDegraded).toBe(false);
   });
+
+  it('tracks the overview_degraded flag from every Status and clears it with the session', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    const sock = sockets[0];
+    sock.open();
+    const status = (capability: Record<string, unknown>) =>
+      coldFrameBytes(MsgType.STATUS, {
+        feed_state: 'live',
+        capability,
+        latency_ms: 0,
+        clock_skew_ms: 0,
+        next_open_ts: null,
+      });
+    expect(store.getState().overviewDegraded).toBe(false);
+    sock.deliver(status({ overview_degraded: true }));
+    expect(store.getState().overviewDegraded).toBe(true);
+    sock.deliver(status({}));
+    expect(store.getState().overviewDegraded).toBe(false);
+    sock.deliver(status({ overview_degraded: true }));
+    store.getState().connectAndSubscribe('crypto', 'ETHUSDT');
+    expect(store.getState().overviewDegraded).toBe(false);
+  });
 });
 
 describe('FlowMap store — attach epoch and reconnect re-attach', () => {

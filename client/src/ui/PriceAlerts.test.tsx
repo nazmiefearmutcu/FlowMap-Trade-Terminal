@@ -209,7 +209,7 @@ describe('PriceAlerts', () => {
   });
 
   it('`A` creates an alert at the recorded crosshair price', async () => {
-    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
     const { container } = render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
     fireKey('a');
     expect(alertsFor('sim:SIM-DEMO')).toHaveLength(1);
@@ -221,7 +221,7 @@ describe('PriceAlerts', () => {
   it('`A` refuses with a reason when no live price exists, rather than guessing the direction', () => {
     const toasts: string[] = [];
     (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
-    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
     bookStore.resetForTest(); // no BBO or trade: there is no live reference
     const before = alertsFor('sim:SIM-DEMO').length;
     render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
@@ -235,7 +235,7 @@ describe('PriceAlerts', () => {
     document.body.appendChild(stage);
     const toasts: string[] = [];
     (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
-    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
     render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} containerRef={{ current: stage }} />);
     act(() => {
       stage.dispatchEvent(new Event('pointerleave'));
@@ -246,9 +246,30 @@ describe('PriceAlerts', () => {
     stage.remove();
   });
 
+  it('`A` ignores a probe read on another symbol, so a symbol switch cannot leak a level', () => {
+    const toasts: string[] = [];
+    (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
+    recordProbeSpot({ key: 'binance:BTCUSDT', price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+    fireKey('a');
+    expect(alertsFor('sim:SIM-DEMO')).toHaveLength(0);
+    expect(toasts).toHaveLength(1); // told how to create one, not silently dropped
+  });
+
+  it('`A` creates one alert per press, never one per auto-repeat of a held key', () => {
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', repeat: true, bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', repeat: true, bubbles: true }));
+    });
+    expect(alertsFor('sim:SIM-DEMO')).toHaveLength(1);
+  });
+
   it('`A` ignores a probe older than the freshness window (the cursor has moved on)', () => {
     vi.useFakeTimers();
-    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
     render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
     vi.advanceTimersByTime(2_500); // older than the 2 s probe freshness
     const toasts: string[] = [];
@@ -260,7 +281,7 @@ describe('PriceAlerts', () => {
 
   it('`A` refuses a level exactly at the market price (it would fire at once)', () => {
     // Book mid is 101 (see installBook); the crosshair sits exactly on it.
-    recordProbeSpot({ price: 101, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 101, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
     const toasts: string[] = [];
     (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
     render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
@@ -273,13 +294,13 @@ describe('PriceAlerts', () => {
     render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
     fireKey('a');
     expect(alertsFor('sim:SIM-DEMO')).toHaveLength(0);
-    recordProbeSpot({ price: null, priceDecimals: 2, x: 0, y: 0, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: null, priceDecimals: 2, x: 0, y: 0, at: Date.now() });
     fireKey('a');
     expect(alertsFor('sim:SIM-DEMO')).toHaveLength(0);
   });
 
   it('`A` is ignored while typing in an input', () => {
-    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
     render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
     const input = document.createElement('input');
     document.body.appendChild(input);
@@ -417,7 +438,7 @@ describe('PriceAlerts', () => {
       subscription: { market: 'sim', symbol: 'SIM-DEMO', mode: 'replay', band: 'native' },
     });
     // 105 sits above the book mid (101): the level a historical print could carry.
-    recordProbeSpot({ price: 105, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 105, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
     const { container } = render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
     fireKey('a');
     expect(alertsFor('sim:SIM-DEMO')).toHaveLength(0);
@@ -460,7 +481,7 @@ describe('PriceAlerts A key follows the single-key preference', () => {
   it('does nothing and says nothing while single-key shortcuts are off', () => {
     const toasts: string[] = [];
     (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
-    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    recordProbeSpot({ key: 'sim:SIM-DEMO', price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
     setSingleKeyShortcutsEnabled(false);
     const before = alertsFor('sim:SIM-DEMO').length;
     render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);

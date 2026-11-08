@@ -51,4 +51,8 @@ describe('depthReadoutTier', () => {
   it('is null when nothing names a tier', () => {
     expect(depthReadoutTier(null, null)).toBeNull();
   });
+
+  it('names no tier for a depth string it does not know, even inside an L2 book', () => {
+    expect(depthReadoutTier({ depth: 'L3-unknown' }, MODE_L2)).toBeNull();
+  });
 });

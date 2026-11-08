@@ -5,8 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <!-- No static color-scheme / theme-color: the active theme sets color-scheme
          (theme/themes.css) and no code writes theme-color, so a static value was stale. -->
-    <!-- First paint uses the midnight --bg (the default theme) before the theme loads. -->
-    <style>html,body{background:#081B37}</style>
+    <!-- First paint: theme-boot.js stamps the saved theme onto <html data-theme> before the
+         stylesheet loads, and each theme's ground is keyed on that attribute here. The script
+         is same-origin, not inline, because the desktop shell's CSP forbids inline scripts.
+         firstPaint.test.ts holds these grounds to the --bg tokens in theme/themes.css. -->
+    <style>
+      html{background:#081B37}
+      html[data-theme='midnight']{background:#081B37}
+      html[data-theme='paper']{background:#FFF4DC}
+      html[data-theme='swiss']{background:#FFFFFF}
+      html[data-theme='amber']{background:#291207}
+      html[data-theme='sea']{background:#00251E}
+      html[data-theme='paper-deut']{background:#E5F1FF}
+      html[data-theme='contrast']{background:#000000}
+    </style>
+    <script src="/theme-boot.js"></script>
     <meta
       name="description"
       content="FlowMap — dual-market order-flow visualizer: real-time WebGL2 liquidity heatmap, DOM ladder, and time & sales for crypto and US equities."

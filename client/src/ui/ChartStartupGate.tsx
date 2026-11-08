@@ -26,6 +26,12 @@ interface ChartStartupGateProps {
   onResubscribe?: (market: string, symbol: string) => void;
   /** Open the symbol search, so the user can pick another instrument. */
   onSearchSymbols?: () => void;
+  /**
+   * The desktop engine has stopped and did not restart. The failed-engine notice
+   * above the gate carries the Retry, so the gate names the state rather than
+   * saying the chart is still connecting.
+   */
+  engineFailed?: boolean;
 }
 
 export interface ChartDiagnosticsInput {
@@ -86,7 +92,7 @@ const FAILURE_HOLD_MS = 1500;
  * state (Retry and Copy diagnostics) instead of "Preparing chart" forever.
  */
 export function ChartStartupGate({
-  rendererRef, disabled = false, onRetry, onResubscribe, onSearchSymbols,
+  rendererRef, disabled = false, onRetry, onResubscribe, onSearchSymbols, engineFailed = false,
 }: ChartStartupGateProps): JSX.Element | null {
   const t = useT();
   const sub = useFlowMapStore(s => s.subscription);
@@ -95,6 +101,7 @@ export function ChartStartupGate({
   const status = useFlowMapStore(s => s.status);
   const feedState = useFlowMapStore(s => s.feedState);
   const noFeed = useFlowMapStore(s => s.noFeed);
+  const retryConnection = useFlowMapStore(s => s.retryNow);
   const identity = `${sessionResetKey(sub)}:${sub?.mode ?? ''}:${sessionId ?? ''}:${revision}`;
   const [revealedIdentity, setRevealedIdentity] = useState<string | null>(null);
   const [emptyHistoryIdentity, setEmptyHistoryIdentity] = useState<string | null>(null);
@@ -178,21 +185,26 @@ export function ChartStartupGate({
   const historyUnavailable = emptyHistoryIdentity === identity;
   // The no-feed sentence itself is shown once, by the closed banner; the gate
   // names the state and offers the way out.
-  const label = noFeed ? t('banner.noFeed')
+  const label = engineFailed ? t('sidecar.failedTitle')
+    : noFeed ? t('banner.noFeed')
     : historyUnavailable ? t('chartStartup.historyUnavailable') : feedState === 'closed' ? t('banner.closed')
     : status === 'reconnecting' || feedState === 'reconnecting' ? t('banner.reconnecting')
     : status === 'closed' ? t('chartStartup.disconnected')
     : status !== 'live' ? t('chartStartup.connecting') : t('chartStartup.preparing');
   const retryable = historyUnavailable && sub !== null && onResubscribe !== undefined;
   const offersSearch = (historyUnavailable || noFeed) && onSearchSymbols !== undefined;
+  // The reconnect banner sits beneath this gate, so the gate carries the same
+  // retry-now action while the socket is reconnecting.
+  const offersReconnect = status === 'reconnecting' && !engineFailed;
   return (
     <div className="chart-startup" role="status" aria-live="polite" data-testid="chart-startup-gate">
       <div className="chart-startup__message">
         {!historyUnavailable && <span className="chart-startup__mark" aria-hidden="true" />}
         <strong>{label}</strong>
         {historyUnavailable && <span className="chart-startup__detail">{t('chartStartup.historyUnavailableDetail')}</span>}
+        {noFeed && <span className="chart-startup__detail">{t('chartStartup.noFeedHint')}</span>}
         {sub && <span className="chart-startup__instrument">{sub.symbol} <span>{sub.market}</span></span>}
-        {(retryable || offersSearch) && (
+        {(retryable || offersSearch || offersReconnect) && (
           <div className="chart-startup__actions">
             {retryable && (
               <button
@@ -202,6 +214,16 @@ export function ChartStartupGate({
                 data-testid="chart-startup-resubscribe"
               >
                 {t('chartStartup.retry')}
+              </button>
+            )}
+            {offersReconnect && (
+              <button
+                type="button"
+                className="chart-startup__button"
+                onClick={() => retryConnection()}
+                data-testid="chart-startup-reconnect"
+              >
+                {t('banner.retryNow')}
               </button>
             )}
             {offersSearch && (

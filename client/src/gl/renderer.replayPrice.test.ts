@@ -72,7 +72,7 @@ class Socket implements SocketLike {
   deliver(frame: Uint8Array): void { this.onmessage?.({ data: frame }); }
 }
 
-type FitRenderer = { applyPriceFitFrame(): boolean; makeController(): CameraController };
+type FitRenderer = { applyPriceFitFrame(): boolean; viewport: { makeController(): CameraController } };
 
 describe('recorded paused price presentation through real Hello/stream routing', () => {
   let r: Renderer, socket: Socket, sockets: Socket[];
@@ -165,7 +165,7 @@ describe('recorded paused price presentation through real Hello/stream routing',
     socket.deliver(hello('recorded-manual')); socket.deliver(depth()); pump();
     socket.deliver(bar());
     if (policy === 'off') r.setPriceFollow('off');
-    else (r as unknown as FitRenderer).makeController().panPriceSteps(1);
+    else (r as unknown as FitRenderer).viewport.makeController().panPriceSteps(1);
     const manual = r.viewSnapshot;
     for (let i = 0; i < 5; i++) pump();
     expect(r.viewSnapshot.rowOffset).toBe(manual.rowOffset);

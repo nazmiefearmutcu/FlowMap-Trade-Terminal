@@ -455,9 +455,9 @@ async function assertEquityCells(page: Page, cap: Captured): Promise<void> {
 
   // CVD / side: explicit N/A (keyless has no aggressor side).
   const caps = page.locator('[data-testid="capability-badges"]');
-  await expect(caps).toContainText('SYNTH_PROFILE');
+  await expect(caps).toContainText('SYNTH');
   await expect(caps).toContainText('TAPE POLL');
-  await expect(caps).toContainText('SIDE NA');
+  await expect(caps).toContainText('SIDE N/A');
   expect(cap.cap?.trade_side, 'equity side is na').toBe('na');
 
   // BBO overlay: NOT fabricated — null for keyless (honesty constraint).

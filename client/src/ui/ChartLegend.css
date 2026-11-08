@@ -13,9 +13,9 @@
   align-items: center;
   gap: 10px;
   padding: 3px 8px;
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
-  border-radius: var(--r-1, 4px);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
+  border-radius: var(--r-1);
   pointer-events: none;
   user-select: none;
   white-space: nowrap;
@@ -28,16 +28,16 @@
 }
 
 .chart-legend__label {
-  font-size: var(--fs-2xs, 11px);
+  font-size: var(--fs-2xs);
   letter-spacing: 0.04em;
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
 }
 
 .chart-legend__line {
   display: inline-block;
   width: 14px;
   height: 2px;
-  border-radius: 1px;
+  border-radius: 0;
 }
 
 .chart-legend__pair {

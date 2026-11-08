@@ -31,14 +31,30 @@ import {
   type BarColumn,
   type BBO,
   type DepthColumn,
+  type EpochParams,
+  type EpochStart,
   type GexLevelUpdate,
+  type Hello,
+  type HistoryRequest,
   type HistoryResponse,
+  type MacroStressUpdate,
+  type MarketIntelligence,
   type Marker,
   type Msg,
   type Ping,
   type Pong,
+  type Seek,
+  type SetSpeed,
+  type Status,
+  type Subscribe,
   type Trade,
 } from './types';
+
+/** A parsed cold JSON payload: a JSON object whose keys are the wire fields. */
+type JsonObject = Record<string, unknown>;
+
+/** The wire fields of a cold message: the message without its `type` tag. */
+type ColdBody<T extends Msg> = Omit<T, 'type'>;
 
 /** Thrown for every malformed wire input (mirrors wire.py's ValueError taxonomy). */
 export class WireError extends Error {
@@ -392,72 +408,162 @@ const COLD_IDS = new Set<number>([
 ]);
 
 /** A parsed JSON value that is an object (not null, not an array). */
-function isJsonObject(v: unknown): v is Record<string, unknown> {
+function isJsonObject(v: unknown): v is JsonObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/** A JSON number, or an optional field the server leaves null or absent. */
+function isOptionalNumber(v: unknown): v is number | null | undefined {
+  return v === undefined || v === null || typeof v === 'number';
+}
+
+/** A nanosecond integer (promoted to bigint by the lossless parse), or an optional one left null or absent. */
+function isOptionalBigint(v: unknown): v is bigint | null | undefined {
+  return v === undefined || v === null || typeof v === 'bigint';
+}
+
 /** The epoch geometry carried by Hello and EpochStart (see EpochParams). */
-function isEpochParamsShape(v: unknown): boolean {
+function isEpochParams(v: unknown): v is EpochParams {
   if (!isJsonObject(v)) return false;
   return ['epoch', 'tick', 'tick_multiple', 'dt_ns', 'p0', 'rows'].every((k) => typeof v[k] === 'number');
 }
 
-/** A JSON number, or an optional field the server leaves null or absent. */
-function isOptionalNumber(v: unknown): boolean {
-  return v === undefined || v === null || typeof v === 'number';
+// Body guards: each checks the wire fields of one message type and, by its
+// predicate, types the parsed object as that message's body. The checks cover the
+// required fields. Enumerated strings (MarkerKind, FeedState) are checked as
+// strings, so a kind a newer server adds is still routed. The Subscribe mode is
+// the one closed set: live or replay.
+
+function isHelloBody(o: JsonObject): o is JsonObject & ColdBody<Hello> {
+  return (
+    typeof o.protocol_version === 'number' &&
+    typeof o.session_id === 'string' &&
+    typeof o.grid_epoch === 'number' &&
+    typeof o.norm_seed === 'number' &&
+    isJsonObject(o.capability) &&
+    isEpochParams(o.epoch_params)
+  );
+}
+
+function isEpochStartBody(o: JsonObject): o is JsonObject & ColdBody<EpochStart> {
+  return typeof o.epoch === 'number' && isEpochParams(o.epoch_params);
+}
+
+function isStatusBody(o: JsonObject): o is JsonObject & ColdBody<Status> {
+  return (
+    typeof o.feed_state === 'string' &&
+    isJsonObject(o.capability) &&
+    typeof o.latency_ms === 'number' &&
+    typeof o.clock_skew_ms === 'number' &&
+    isOptionalBigint(o.next_open_ts)
+  );
+}
+
+function isMarkerBody(o: JsonObject): o is JsonObject & ColdBody<Marker> {
+  return (
+    typeof o.ts_ns === 'bigint' &&
+    typeof o.kind === 'string' &&
+    typeof o.text === 'string' &&
+    isOptionalNumber(o.price) &&
+    isOptionalNumber(o.size)
+  );
+}
+
+function isMarketIntelligenceBody(o: JsonObject): o is JsonObject & ColdBody<MarketIntelligence> {
+  return (
+    typeof o.ts_ns === 'bigint' &&
+    ['kind', 'symbol', 'headline', 'detail', 'source'].every((k) => typeof o[k] === 'string') &&
+    isOptionalNumber(o.amount_usd)
+  );
+}
+
+function isMacroStressBody(o: JsonObject): o is JsonObject & ColdBody<MacroStressUpdate> {
+  return (
+    typeof o.ts_ns === 'bigint' &&
+    ['sofr', 'hy_spread', 'yield_10y2y', 'stress_score'].every((k) => typeof o[k] === 'number') &&
+    typeof o.status === 'string'
+  );
+}
+
+function isSubscribeBody(o: JsonObject): o is JsonObject & ColdBody<Subscribe> {
+  return (
+    typeof o.market === 'string' &&
+    typeof o.symbol === 'string' &&
+    (o.mode === 'live' || o.mode === 'replay') &&
+    (o.source === null || typeof o.source === 'string') &&
+    (o.start_t === null || typeof o.start_t === 'bigint') &&
+    (o.band === null || typeof o.band === 'string') &&
+    (o.end_t === undefined || o.end_t === null || typeof o.end_t === 'bigint')
+  );
+}
+
+function isSeekBody(o: JsonObject): o is JsonObject & ColdBody<Seek> {
+  return typeof o.t === 'bigint';
+}
+
+function isSetSpeedBody(o: JsonObject): o is JsonObject & ColdBody<SetSpeed> {
+  return typeof o.x === 'number';
+}
+
+function isHistoryRequestBody(o: JsonObject): o is JsonObject & ColdBody<HistoryRequest> {
+  return (
+    typeof o.req_id === 'number' &&
+    typeof o.before_t === 'bigint' &&
+    typeof o.n_cols === 'number' &&
+    (o.start_col === undefined || typeof o.start_col === 'number') &&
+    (o.end_col === undefined || typeof o.end_col === 'number') &&
+    (o.stride === undefined || typeof o.stride === 'number')
+  );
 }
 
 /**
- * Field-level check for the cold messages the client routes by field, so a
- * malformed payload fails here instead of deep in the store. The lossless parse
- * turns every integer `_ns` field into a bigint, so timestamps are checked as
- * bigint. Other cold types are checked only for being a JSON object (see
- * {@link decode}).
+ * The typed message for a cold JSON payload, after its wire fields are checked.
+ * Each case narrows the parsed object with its body guard, so the result needs no
+ * cast. A payload that fails its guard throws the field-shape WireError. The
+ * cases are the same set COLD_IDS admits.
  */
-function hasColdPayloadShape(msgType: number, o: Record<string, unknown>): boolean {
+function coldMessage(msgType: number, o: JsonObject): Msg {
   switch (msgType) {
     case MsgType.HELLO:
-      return (
-        typeof o.protocol_version === 'number' &&
-        typeof o.session_id === 'string' &&
-        typeof o.grid_epoch === 'number' &&
-        typeof o.norm_seed === 'number' &&
-        isJsonObject(o.capability) &&
-        isEpochParamsShape(o.epoch_params)
-      );
+      if (isHelloBody(o)) return { ...o, type: MsgType.HELLO };
+      break;
     case MsgType.EPOCH_START:
-      return typeof o.epoch === 'number' && isEpochParamsShape(o.epoch_params);
+      if (isEpochStartBody(o)) return { ...o, type: MsgType.EPOCH_START };
+      break;
     case MsgType.STATUS:
-      return (
-        typeof o.feed_state === 'string' &&
-        isJsonObject(o.capability) &&
-        typeof o.latency_ms === 'number' &&
-        typeof o.clock_skew_ms === 'number' &&
-        (o.next_open_ts === undefined || o.next_open_ts === null || typeof o.next_open_ts === 'bigint')
-      );
+      if (isStatusBody(o)) return { ...o, type: MsgType.STATUS, next_open_ts: o.next_open_ts ?? null };
+      break;
     case MsgType.MARKER:
-      return (
-        typeof o.ts_ns === 'bigint' &&
-        typeof o.kind === 'string' &&
-        typeof o.text === 'string' &&
-        isOptionalNumber(o.price) &&
-        isOptionalNumber(o.size)
-      );
+      if (isMarkerBody(o)) return { ...o, type: MsgType.MARKER, price: o.price ?? null, size: o.size ?? null };
+      break;
     case MsgType.MARKET_INTELLIGENCE:
-      return (
-        typeof o.ts_ns === 'bigint' &&
-        ['kind', 'symbol', 'headline', 'detail', 'source'].every((k) => typeof o[k] === 'string') &&
-        isOptionalNumber(o.amount_usd)
-      );
+      if (isMarketIntelligenceBody(o)) return { ...o, type: MsgType.MARKET_INTELLIGENCE };
+      break;
     case MsgType.MACRO_STRESS:
-      return (
-        typeof o.ts_ns === 'bigint' &&
-        ['sofr', 'hy_spread', 'yield_10y2y', 'stress_score'].every((k) => typeof o[k] === 'number') &&
-        typeof o.status === 'string'
-      );
+      if (isMacroStressBody(o)) return { ...o, type: MsgType.MACRO_STRESS };
+      break;
+    case MsgType.SUBSCRIBE:
+      if (isSubscribeBody(o)) return { ...o, type: MsgType.SUBSCRIBE };
+      break;
+    case MsgType.UNSUBSCRIBE:
+      return { type: MsgType.UNSUBSCRIBE };
+    case MsgType.SEEK:
+      if (isSeekBody(o)) return { ...o, type: MsgType.SEEK };
+      break;
+    case MsgType.SET_SPEED:
+      if (isSetSpeedBody(o)) return { ...o, type: MsgType.SET_SPEED };
+      break;
+    case MsgType.PAUSE:
+      return { type: MsgType.PAUSE };
+    case MsgType.RESUME:
+      return { type: MsgType.RESUME };
+    case MsgType.HISTORY_REQ:
+      if (isHistoryRequestBody(o)) return { ...o, type: MsgType.HISTORY_REQ };
+      break;
     default:
-      return true;
+      break;
   }
+  throw new WireError(`malformed 0x${msgType.toString(16)} JSON payload: field shape`);
 }
 
 // --- public API ----------------------------------------------------------------
@@ -497,13 +603,7 @@ export function decode(view: DataView, offset = 0): DecodeResult {
     if (!isJsonObject(parsed)) {
       throw new WireError(`malformed 0x${msgType.toString(16)} JSON payload: not an object`);
     }
-    if (!hasColdPayloadShape(msgType, parsed)) {
-      throw new WireError(`malformed 0x${msgType.toString(16)} JSON payload: field shape`);
-    }
-    // The JSON keys are the wire fields; the shape was checked above for the
-    // types the client routes by field, and the rest are trusted by type only.
-    const msg = { type: msgType, ...parsed } as unknown as Msg;
-    return { msg, next };
+    return { msg: coldMessage(msgType, parsed), next };
   }
 
   const dec = HOT_DECODERS[msgType];

@@ -95,15 +95,16 @@ export function routeGlobalKey(
   // Follow keys: F = toggle time follow, P = toggle price follow, Shift+P = price
   // auto-fit, R = go live. Global like Space, but never inside an input/dialog
   // (guarded above) and never over the chart canvas, where input/gestures.ts owns
-  // them — a double-handled toggle would cancel itself out. Shift is consulted so
-  // CapsLock's 'P' cannot masquerade as Shift+P.
+  // them — a double-handled toggle would cancel itself out. The Shift MODIFIER
+  // decides, not the reported character: CapsLock reports 'P' without Shift and
+  // Shift+P under CapsLock reports 'p', so only the flag tells the two apart.
   if (key === 'f' || key === 'F' || key === 'p' || key === 'P' || key === 'r' || key === 'R') {
     if (ctx.canvas) return null;
     if (key === 'f' || key === 'F') return { type: 'toggle-follow' };
-    if (key === 'p') return { type: 'toggle-price-follow' };
-    if (key === 'P' && mods.shift) return { type: 'price-auto-fit' };
-    if (key === 'r' || key === 'R') return { type: 'go-live' };
-    return { type: 'toggle-price-follow' }; // bare 'P' (e.g. CapsLock) toggles
+    if (key === 'p' || key === 'P') {
+      return mods.shift ? { type: 'price-auto-fit' } : { type: 'toggle-price-follow' };
+    }
+    return { type: 'go-live' };
   }
   // `E` exports the chart as a PNG download. `e` carries no native control
   // semantics (unlike Space on a button), so it is safe to take everywhere the

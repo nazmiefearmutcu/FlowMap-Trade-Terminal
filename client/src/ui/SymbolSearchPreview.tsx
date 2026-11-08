@@ -9,7 +9,7 @@ import { useT } from '../i18n/useT';
 import type { PreviewQuote } from './previewQuotes';
 import { capabilityChipClass, capabilityChipTitle, capabilityChips, marketGroup, ALL_VENUES, type VenueOption } from './symbols';
 import { fmtPct, fmtPrice, sparkDirection, sparkPath } from './spark';
-import { groupText, venueText, type Row } from './SymbolSearchModel';
+import { capabilityChipLabel, groupText, venueText, type Row } from './SymbolSearchModel';
 
 interface PreviewPaneProps {
   pickingVenue: boolean;
@@ -110,7 +110,7 @@ function SymbolPreview({ row, shown }: SymbolPreviewProps): JSX.Element {
       <div className="sympal__pv-caps">
         {capabilityChips(row.entry.capability).map((c) => (
           <span key={c} className={capabilityChipClass(c)} title={capabilityChipTitle(c, t)}>
-            {c}
+            {capabilityChipLabel(c, t)}
           </span>
         ))}
       </div>

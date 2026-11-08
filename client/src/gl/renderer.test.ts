@@ -11,8 +11,10 @@ import { MsgType, MODE_L2, type BarColumn, type DepthColumn, type HistoryOvervie
 import { OverlayManager } from './overlays/manager';
 import type { StreamMsg } from '../net/connection';
 import { makeHybrid, priceToRow, rowToPrice, type PriceScale } from './priceScale';
+import { overviewPlan } from '../net/overviewHistory';
 import { accumulateProfile } from './overlays/profile';
 import { THEMES, THEME_IDS } from '../theme';
+import type { CameraController } from '../input/gestures';
 
 /**
  * Renderer unit tests over a RECORDING fake GL (see mockGL.ts). Pixels are the
@@ -393,6 +395,33 @@ describe('Renderer (fake GL harness)', () => {
     r.dispose();
   });
 
+  it('a shader that never links is not recompiled once per arriving depth column', () => {
+    const { r, store } = makeRenderer();
+    // Drop the compiled heatmap program, then make every new link fail.
+    releaseHeatmapProgram(gl);
+    const linkFail = vi.spyOn(gl, 'getProgramParameter').mockImplementation((_p, key) => key !== gl.LINK_STATUS);
+    vi.spyOn(gl, 'getProgramInfoLog').mockReturnValue('0:1: syntax error');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Two depth columns fail their readiness checks: the second holds the loop.
+    store.emit(makeCol(0, true));
+    store.emit(makeCol(1, true));
+    const links = gl.callsOf('linkProgram').length;
+    for (let seq = 2; seq < 40; seq++) store.emit(makeCol(seq, true));
+    // Held: the arriving columns stage without touching GL, instead of a relink per column.
+    expect(gl.callsOf('linkProgram')).toHaveLength(links);
+    expect(priv(r).ingest.pendingDepth.length).toBeGreaterThan(0);
+
+    linkFail.mockRestore();
+    warn.mockRestore();
+    r.retryRender();
+    // The frame loop drains at most eight staged columns per frame.
+    for (let i = 0; i < 8 && priv(r).ingest.pendingDepth.length > 0; i++) pump(16 + i);
+    expect(r.getRenderFailure()).toBeNull();
+    expect(priv(r).ingest.pendingDepth).toHaveLength(0);
+    expect(r.residentRange()?.count ?? 0).toBeGreaterThan(0);
+    r.dispose();
+  });
+
   it('a lost GL context is a render failure until the context is restored', () => {
     const { r, canvas } = makeRenderer();
     expect(r.getRenderFailure()).toBeNull();
@@ -512,7 +541,7 @@ describe('Renderer (fake GL harness)', () => {
     r.setPriceFollow('off');
     r.zoomPriceForTest(5);
     const price = r.viewSnapshot;
-    const ctrl = r.makeController();
+    const ctrl = priv(r).viewport.makeController();
     for (let step = 0; step < 3; step++) {
       if (input === 'wheel') ctrl.zoomTimeAtFraction(1e6, 0.75);
       else if (input === 'keyboard') ctrl.zoomTimeCentered(1e6);
@@ -536,7 +565,7 @@ describe('Renderer (fake GL harness)', () => {
     r.dispose();
   });
 
-  it('forwards the overview page AbortSignal to the request (state-08)', () => {
+  it('forwards the overview page AbortSignal to the request', () => {
     const { r, store } = makeRenderer();
     const scale = makeHybrid({ mid: 100, rows: 256, coreRows: 128, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;
     store.state.epochs = new Map([[0, { epoch: 0, tick: 0.01, tick_multiple: 1, dt_ns: DT_NS, p0: scale.coreP0, rows: scale.rows,
@@ -571,7 +600,9 @@ describe('Renderer (fake GL harness)', () => {
     r.setTimeWindowMs(null);
     pump(16);
     expect(r.overviewStats()?.inFlight).toBe(true);
-    const ctrl = r.makeController();
+    // The last frame planned the overview for this view; the manual move below is not yet framed.
+    const framed = r.viewSnapshot;
+    const ctrl = priv(r).viewport.makeController();
     if (input === 'wheel') ctrl.zoomTimeAtFraction(1.05, 0.5);
     else if (input === 'keyboard') ctrl.zoomTimeCentered(1.05);
     else ctrl.panTimeSteps(-1);
@@ -583,6 +614,8 @@ describe('Renderer (fake GL harness)', () => {
     await Promise.resolve();
     expect(r.overviewStats()?.inFlight).toBe(false);
     expect(r.overviewStats()?.progress.loaded).toBe(r.overviewStats()?.progress.total);
+    expect(r.overviewStats()?.plan).toEqual(overviewPlan(framed, r.newestColSeq));
+    expect(r.overviewSurface?.stride).toBe(r.overviewStats()?.stride);
     expect(r.viewSnapshot).toEqual(before);
     expect(r.priceFollow).toBe('off');
     r.dispose();
@@ -720,9 +753,9 @@ describe('Renderer (fake GL harness)', () => {
     r.setViewForTest(0, 1, 0, ROWS);
     const probe = r.probeAt(0, 600 * (1 - 1.5 / ROWS))!; // current row 1 = old row 3.
     const currentBbo = r.overlayEffectiveBboForTest()!;
-    const internal = r as unknown as { rawColumnScale(col: number): PriceScale | null; overlayPriceMap(): { scale: PriceScale } };
+    const internal = r as unknown as { rawColumnScale(col: number): PriceScale | null; axis: { overlayPriceMap(): { scale: PriceScale } } };
     const profile = accumulateProfile(0, 0, 0, ROWS - 1, col => r.columnCacheForTest.arrays(col),
-      undefined, undefined, 1, { target: internal.overlayPriceMap().scale, source: internal.rawColumnScale });
+      undefined, undefined, 1, { target: internal.axis.overlayPriceMap().scale, source: internal.rawColumnScale });
     expect(internal.rawColumnScale(0)).toBe(native.scale);
     expect(Object.isFrozen(native)).toBe(true);
     expect(Object.isFrozen(native.scale)).toBe(true);
@@ -744,7 +777,7 @@ describe('Renderer (fake GL harness)', () => {
     const { r, store } = makeRenderer();
     for (let s = 0; s < 4; s++) store.emit(makeCol(s, true));
     const oldRing = (r as unknown as { ring: unknown }).ring;
-    r.overlayPriceMap();
+    priv(r).axis.overlayPriceMap();
     store.state.sessionId = 'sess-2';
     (store.state.epochs as Map<number, Record<string, unknown>>).set(0,
       { epoch: 0, tick: .5, tick_multiple: 1, dt_ns: DT_NS, p0: 300, rows: ROWS });
@@ -893,7 +926,7 @@ describe('Renderer (fake GL harness)', () => {
     column.bid.fill(0); column.ask!.fill(0); column.bid[0] = .01; column.bid[1] = 1e6;
     store.emit(column);
     r.setViewForTest(0, 1, 0, 1);
-    r.updateNormalization();
+    priv(r).shading.updateNormalization();
     expect(r.currentNorm).toBeGreaterThan(.009);
     expect(r.currentNorm).toBeLessThan(.012);
     r.dispose();
@@ -1357,19 +1390,19 @@ describe('Renderer (fake GL harness)', () => {
   it('the time axis reads the Time zone choice, keeps sim on T+, and redraws on a change', () => {
     const { r, store } = makeRenderer();
     const internal = r as unknown as {
-      timeAxisClockFor(): { pref: string; exchangeZone: string } | null;
+      overlayLayer: { timeAxisClockFor(): { pref: string; exchangeZone: string } | null };
       frameState: { dirty: boolean };
     };
     const sub = (market: string): unknown => ({ market, symbol: 'BTC-USD', mode: 'live', band: null });
     try {
       store.state.subscription = sub('binance-spot');
       setTimeZonePref('utc');
-      expect(internal.timeAxisClockFor()).toEqual({ pref: 'utc', exchangeZone: 'UTC' });
+      expect(internal.overlayLayer.timeAxisClockFor()).toEqual({ pref: 'utc', exchangeZone: 'UTC' });
       setTimeZonePref('exchange');
       store.state.subscription = sub('equity');
-      expect(internal.timeAxisClockFor()).toEqual({ pref: 'exchange', exchangeZone: 'America/New_York' });
+      expect(internal.overlayLayer.timeAxisClockFor()).toEqual({ pref: 'exchange', exchangeZone: 'America/New_York' });
       store.state.subscription = sub('sim');
-      expect(internal.timeAxisClockFor()).toBeNull();
+      expect(internal.overlayLayer.timeAxisClockFor()).toBeNull();
       // A preference change re-arms the frame so the axis labels are redrawn.
       internal.frameState.dirty = false;
       setTimeZonePref('local');
@@ -1614,7 +1647,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.priceFollow).toBe('track'); // time release promotes fit → track
 
     // The webglcontextrestored handler (private; e2e drives it via loseContextForTest).
-    r.onContextRestored();
+    priv(r).gpu.onContextRestored();
     expect(r.contextRestoredCount).toBe(1);
     // Before the fix this was silently true again while the UI showed OFF.
     expect(r.following).toBe(false);
@@ -1629,7 +1662,7 @@ describe('Renderer (fake GL harness)', () => {
     r.setPriceFollow('off');
     r.setTolerance(50);
     const view = r.viewSnapshot;
-    r.onContextRestored();
+    priv(r).gpu.onContextRestored();
     expect(r.viewSnapshot).toEqual(view);
     expect(r.priceFollow).toBe('off');
     expect((r as unknown as { heatmap: { toleranceValue: number } }).heatmap.toleranceValue).toBe(50);
@@ -1741,15 +1774,26 @@ describe('Renderer (fake GL harness)', () => {
 
   // --- renderer and follow regressions ---------------
 
+  /** The owner-module surface the tests reach; Renderer itself exposes none of these. */
   interface PrivRenderer {
+    ingest: { pendingDepth: unknown[] };
     follow: {
       trackedRowN: number | null;
       trackedEpoch: number | null;
       priceEpoch: number | null;
       forcedRemapFrom: unknown;
+      remapPriceEpoch(epoch: number): void;
     };
-    axis: { lastPriceMapCache: unknown };
-    overlayPriceMap(): unknown;
+    axis: {
+      lastPriceMapCache: unknown;
+      overlayPriceMap(): unknown;
+      overlayTimeMap(): { slots?: { startSeq: number; t0: Float64Array } } | null;
+      overlaySlotsFor(): unknown;
+    };
+    shading: { updateNormalization(): void };
+    gpu: { recreateRingForRows(rows: number): void; onContextRestored(): void };
+    overlayLayer: { drawOverlays(): void };
+    viewport: { makeController(): CameraController };
     camera: { remapPrice(rowCenter: number, rowSpan: number): void };
   }
 
@@ -1874,7 +1918,7 @@ describe('Renderer (fake GL harness)', () => {
     const { r, store } = makeRenderer();
     store.emit(makeCol(0, true));
     const clears = gl.callsOf('clear').length;
-    r.recreateRingForRows(64);
+    priv(r).gpu.recreateRingForRows(64);
     expect(gl.callsOf('clear').length).toBeGreaterThan(clears);
   });
 
@@ -1895,7 +1939,7 @@ describe('Renderer (fake GL harness)', () => {
       volume: false, // the volume strip: an explicit off, or anyVisible stays true
       gex: false,
     });
-    r.drawOverlays();
+    priv(r).overlayLayer.drawOverlays();
     expect(inkSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -1905,7 +1949,7 @@ describe('Renderer (fake GL harness)', () => {
     const inkSpy = vi.fn();
     overlays.clearInk = inkSpy;
     (store.state as unknown as { gridEpoch: number | null }).gridEpoch = null; // no price affine
-    r.drawOverlays();
+    priv(r).overlayLayer.drawOverlays();
     expect(inkSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -1955,7 +1999,7 @@ describe('Renderer (fake GL harness)', () => {
       p0: 100,
       rows: 64,
     });
-    r.remapPriceEpoch(1);
+    priv(r).follow.remapPriceEpoch(1);
     expect(priv(r).follow.trackedRowN).toBeNull();
     expect(priv(r).follow.trackedEpoch).toBeNull();
   });
@@ -1972,7 +2016,7 @@ describe('Renderer (fake GL harness)', () => {
       p0: -924,
       rows: 64,
     });
-    r.remapPriceEpoch(1);
+    priv(r).follow.remapPriceEpoch(1);
     // The old code clamped row 2052 → 64 (an off-grid wing); the fix drops it.
     expect(priv(r).follow.trackedRowN).toBeNull();
   });
@@ -2016,11 +2060,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.colToTsForTest(3)).toBe(3n * candleNs);
     expect(r.colForTsForTest(2n * candleNs)).toBeCloseTo(2, 6);
     expect(r.colForTsForTest((3n * candleNs) / 2n)).toBeCloseTo(1.5, 6);
-    const tm = (
-      r as unknown as {
-        overlayTimeMap(): { slots?: { startSeq: number; t0: Float64Array } } | null;
-      }
-    ).overlayTimeMap();
+    const tm = priv(r).axis.overlayTimeMap();
     expect(tm?.slots).toBeDefined();
     expect(tm!.slots!.startSeq).toBe(0);
     expect(tm!.slots!.t0[3]).toBe(180_000_000_000);
@@ -2034,7 +2074,7 @@ describe('Renderer (fake GL harness)', () => {
       col.t0_ns = BigInt(s) * BigInt(DT_NS) + (s >= seam ? 10_000_000_000n : 0n);
       store.emit(col);
     }
-    const p = r as unknown as { overlaySlotsFor(): unknown };
+    const p = priv(r).axis;
     const table = p.overlaySlotsFor();
     expect(table).not.toBeNull();
     expect(p.overlaySlotsFor()).toBe(table);
@@ -2056,11 +2096,7 @@ describe('Renderer (fake GL harness)', () => {
       store.emit(makeColAt(s, 0, 3, 4, ROWS, BigInt(s) * candleNs));
     }
     expect(r.colToTsForTest(510)).toBe(510n * candleNs);
-    const tm = (
-      priv(r) as unknown as {
-        overlayTimeMap(): { slots?: { startSeq: number; t0: Float64Array } } | null;
-      }
-    ).overlayTimeMap();
+    const tm = priv(r).axis.overlayTimeMap();
     expect(tm?.slots, 'warm attach must serve the slot table').toBeDefined();
     expect(tm!.slots!.startSeq).toBe(502);
   });
@@ -2068,7 +2104,7 @@ describe('Renderer (fake GL harness)', () => {
   it('same-numbered session replacement forces a price-preserving remap', () => {
     const { r, store } = makeRenderer();
     for (let s = 0; s < 4; s++) store.emit(makeCol(s, true));
-    priv(r).overlayPriceMap(); // populate lastPriceMapCache (as a draw would)
+    priv(r).axis.overlayPriceMap(); // populate lastPriceMapCache (as a draw would)
     expect(priv(r).axis.lastPriceMapCache).not.toBeNull();
 
     const cam = priv(r).camera;

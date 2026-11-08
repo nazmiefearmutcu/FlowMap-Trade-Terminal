@@ -13,8 +13,8 @@ name: CI
 #     Python graph and cargo audit on the locked Rust graph (ubuntu)
 #   - Tauri shell `cargo test` and clippy (ubuntu, windows and macos) and
 #     fmt (ubuntu only), with the Tauri 2 Linux system deps on ubuntu
-#   - full browser e2e (ubuntu, Playwright chromium via SwiftShader), with a
-#     skip/flake budget that fails the job when it is exceeded
+#   - full browser e2e (ubuntu and windows, Playwright chromium via SwiftShader),
+#     with a skip/flake budget that fails the job when it is exceeded
 #
 # Runs on pushes to any branch (so the release branch is verified before it is
 # merged), on pull requests to main, on demand, and as a reusable workflow: the
@@ -181,9 +181,10 @@ jobs:
         run: uv run ruff check .
 
       # Static type gate: [tool.mypy] in server/pyproject.toml scopes it to the
-      # feeds, data, nlp and proto packages and api/ws.py. mypy is in the locked dev
-      # group, so the sync above installed it. ubuntu only, like ruff: one
-      # interpreter is enough.
+      # feeds, data, nlp, proto and api packages and the config, logging, compat
+      # and provenance modules. The session core is not in that scope yet. mypy is
+      # in the locked dev group, so the sync above installed it. ubuntu only, like
+      # ruff: one interpreter is enough.
       - name: Type check (mypy)
         working-directory: server
         run: uv run mypy
@@ -292,6 +293,7 @@ jobs:
       # server/uv.lock both name. A second wheel left in server/vendor would be
       # bundled without being used, so exactly one must be present.
       - name: Exactly one vendored crocodile wheel
+        if: always()
         run: |
           set -euo pipefail
           count="$(ls server/vendor/crocodile-*.whl 2>/dev/null | wc -l | tr -d ' ')"
@@ -303,13 +305,21 @@ jobs:
 
       # Every Markdown link to a local file or heading must resolve.
       - name: Documentation links resolve
+        if: always()
         run: python3 scripts/check_doc_links.py
 
       # stdlib unittest, no dependency install. The validator tests execute the
       # real publish-step shell block with a fake `gh`, so the step must run
       # where bash is available (ubuntu).
       - name: Release and documentation tooling tests
+        if: always()
         run: python3 -m unittest discover -s scripts -p "test_*.py" -v
+
+      # The desktop shell's release helpers (release text, bundling pins) are
+      # stdlib unittest modules under app/scripts/tests.
+      - name: Desktop release helper tests
+        if: always()
+        run: python3 -m unittest discover -s app/scripts/tests -p "test_*.py" -v
 
       # The bundling pins guard the release runtime: app/scripts/requirements_pins.py
       # refuses an unhashed or drifted requirement, and bundle-python.sh runs it on
@@ -317,6 +327,7 @@ jobs:
       # the pytest version the server lock uses (server/uv.lock) and never touch the
       # runner's Python.
       - name: Bundling pin tests
+        if: always()
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/pins-venv"
@@ -492,6 +503,8 @@ jobs:
   # (flags in client/playwright.config.ts) — software GL is slow. The perf spec's
   # absolute fps numbers are advisory (annotated, not asserted); its same-run
   # history-independence ratio and ring memory bound are the blocking gates.
+  # The suite runs on ubuntu and on windows (the product's platform); the two legs
+  # share the budget file and the replay-picker project.
   e2e:
     name: e2e (playwright chromium, ubuntu)
     runs-on: ubuntu-latest
@@ -545,6 +558,66 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: browser-test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            client/test-results/
+            client/tests/e2e/__artifacts__/
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+  e2e-windows:
+    name: e2e (playwright chromium, windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client deps
+        working-directory: client
+        run: npm ci
+
+      - name: Install Playwright chromium (+ system deps)
+        working-directory: client
+        run: npx playwright install --with-deps chromium
+
+      # The webServer in playwright.config.ts runs `uv run python -m
+      # flowmap_server` from ../server, so the frozen env must exist first.
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Sync server deps
+        working-directory: server
+        run: uv sync --frozen
+
+      - name: Run e2e suite
+        working-directory: client
+        env:
+          CI: "1"
+          PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/results.json
+        run: npx playwright test --reporter=line,json,./tests/reporters/ciFailureReporter.ts
+
+      # Skipped and flaky tests are counted, not hidden: the job fails when they
+      # exceed the committed budget (client/tests/reporters/e2e-budget.json).
+      - name: Enforce the e2e skip and flake budget
+        working-directory: client
+        run: node tests/reporters/checkBudget.mjs test-results/results.json tests/reporters/e2e-budget.json
+
+      - name: Retain browser test evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: browser-test-evidence-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             client/test-results/
             client/tests/e2e/__artifacts__/

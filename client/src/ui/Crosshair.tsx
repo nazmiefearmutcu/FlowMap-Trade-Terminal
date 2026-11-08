@@ -21,7 +21,7 @@ import { useEffect, useRef, useState, type MutableRefObject, type RefObject } fr
 import type { CrosshairReadout, Renderer } from '../gl/renderer';
 import { getSnapshot } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
-import { exchangeZoneFor, formatClock, formatFixed, formatPrice, formatSizeReadout, useTimeZone, zoneLabel, type TimeZonePref } from '../i18n/format';
+import { exchangeZoneFor, formatClock, formatFixed, formatNumber, formatPrice, formatSizeReadout, useTimeZone, zoneLabel, type TimeZonePref } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import { clearProbeSpot, recordProbeSpot } from './lastProbe';
 import { depthIsSynthetic, depthReadoutTier } from './heatLegendModel';
@@ -40,7 +40,7 @@ interface HoverState {
   readout: CrosshairReadout | null;
 }
 
-const READOUT_KEYS: (keyof CrosshairReadout)[] = ['colSeq', 'row', 'group', 'price', 'priceLo', 'priceHi', 'priceDecimals', 'bid', 'ask', 'timeNs', 'averageMs', 'inRange'];
+const READOUT_KEYS: (keyof CrosshairReadout)[] = ['colSeq', 'row', 'group', 'price', 'priceLo', 'priceHi', 'priceDecimals', 'bid', 'ask', 'timeNs', 'averageMs', 'sessionClock', 'inRange'];
 function sameReadout(a: CrosshairReadout | null, b: CrosshairReadout | null): boolean {
   return a === b || (a !== null && b !== null && READOUT_KEYS.every(key => Object.is(a[key], b[key])));
 }
@@ -84,11 +84,18 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   const [hover, setHover] = useState<HoverState | null>(null);
   const capability = useFlowMapStore((s) => s.capability);
   const market = useFlowMapStore((s) => s.subscription?.market ?? '');
+  const symbol = useFlowMapStore((s) => s.subscription?.symbol ?? '');
   const zonePref = useTimeZone();
   const t = useT();
   const group = marketGroup(market);
   const exchangeZone = exchangeZoneFor(group);
   const rafRef = useRef(0);
+  // The market:symbol the probe is read on, in the same form PriceAlerts keys its
+  // alerts by. Held in a ref so the pointer loop never re-subscribes for a switch.
+  const probeKeyRef = useRef('');
+  useEffect(() => {
+    probeKeyRef.current = `${market}:${symbol}`;
+  }, [market, symbol]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -113,6 +120,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
         // Share the probe (price under the cursor) with feature components —
         // the `A` alert key anchors at exactly this price. Cheap, off-render.
         recordProbeSpot({
+          key: probeKeyRef.current,
           price: readout?.price ?? null,
           priceDecimals: readout?.priceDecimals ?? 2,
           x,
@@ -160,6 +168,9 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
 
   if (!hover) return null;
   const { x, y, readout } = hover;
+  // A session-relative (sim) timestamp is elapsed time from the session start, not
+  // wall time: it reads the same T+ clock as the time axis, with no zone label.
+  const sessionRelative = readout?.sessionClock === true || group === 'sim';
 
   // Depth-source provenance for the readout header. SYNTH must never read as real:
   // its size values are marked amber alongside the SYNTH tag. The verdict matches
@@ -169,6 +180,8 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   const tier = depthReadoutTier(capability, bookMode);
   const recorded = capability?.depth_provenance === 'recorded-density';
   const sizeSynthCls = isSynth ? ' crosshair__val--synth' : '';
+  // A snapshot book (ccxt polling) is not a native L2 feed: its tag takes the caution tone.
+  const tierCaution = tier === 'L2-SNAPSHOT' && !isSynth;
 
   // Place the readout box near the cursor, flipping away from the near edge.
   const canvas = canvasRef.current;
@@ -193,7 +206,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
             <div className="crosshair__line crosshair__line--head">
               <span className="crosshair__key">{t('crosshair.src')}</span>
               <span
-                className={`crosshair__tag${isSynth ? ' crosshair__tag--synth' : ''}`}
+                className={`crosshair__tag${isSynth ? ' crosshair__tag--synth' : ''}${tierCaution ? ' crosshair__tag--caution' : ''}`}
                 data-testid="crosshair-src"
                 title={isSynth && recorded ? t('depthChip.recorded') : undefined}
               >
@@ -204,7 +217,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
           <div className="crosshair__line">
             <span className="crosshair__key">{t('crosshair.time')}</span>
             <span className="crosshair__val" data-testid="crosshair-time">
-              {fmtTime(readout.timeNs, zonePref, exchangeZone, group === 'sim')}
+              {fmtTime(readout.timeNs, zonePref, exchangeZone, sessionRelative)}
             </span>
           </div>
           <div className="crosshair__line">
@@ -235,7 +248,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
             <div className="crosshair__line crosshair__line--dim">
               <span className="crosshair__key">{t('crosshair.group')}</span>
               <span className="crosshair__val" data-testid="crosshair-group">
-                {readout.group}×{fmtBand(readout)}
+                {formatNumber(readout.group)}×{fmtBand(readout)}
               </span>
             </div>
           )}

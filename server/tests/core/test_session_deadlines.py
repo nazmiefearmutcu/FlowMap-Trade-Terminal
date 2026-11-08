@@ -129,12 +129,42 @@ async def test_overview_degraded_clears_once_a_step_completes(monkeypatch):
     with pytest.raises(OverviewUnavailableError):
         await session._overview_call(stuck)
     assert session._overview_degraded is True
-    # The abandoned step finishes first; the next step runs behind it and clears the flag.
+    # The abandoned step finishes first; the next step runs once the worker is free and clears the flag.
     release.set()
+    async with asyncio.timeout(3):
+        while session._overview_wedged is not None:
+            await asyncio.sleep(0.01)
     monkeypatch.setattr(history_mod, "OVERVIEW_STEP_TIMEOUT_S", 5.0)
     assert await session._overview_call(lambda: 41 + 1) == 42
     assert session._overview_degraded is False
     assert "overview_degraded" not in session._capability()
+
+
+async def test_wedged_overview_worker_fails_later_steps_fast(monkeypatch):
+    """A stuck step holds the only overview worker. A later step must not queue
+    behind it for another full deadline, and must not reach the worker at all."""
+    monkeypatch.setattr(history_mod, "OVERVIEW_STEP_TIMEOUT_S", 0.05)
+    session = _session(SessionStats())
+    release = threading.Event()
+    later_ran = threading.Event()
+
+    def stuck():
+        assert release.wait(5)
+
+    def later():
+        later_ran.set()
+        return "late"
+
+    try:
+        with pytest.raises(OverviewUnavailableError):
+            await session._overview_call(stuck)
+        async with asyncio.timeout(1.0):  # far below the 50 ms deadline x retries
+            with pytest.raises(OverviewUnavailableError):
+                await session._overview_call(later)
+        assert not later_ran.is_set(), "a step was submitted behind a wedged worker"
+        assert session._overview_degraded is True
+    finally:
+        release.set()
 
 
 async def test_orphaned_work_stays_zero_for_steps_that_finish_in_time():

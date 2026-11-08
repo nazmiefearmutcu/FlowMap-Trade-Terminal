@@ -25,15 +25,22 @@ use crate::redact::RedactingSink;
 use crate::server_log::{open_sidecar_log, pump_output};
 use crate::shell_log;
 
-/// The longest the server's shutdown waits for its recording drain (`_REC_DRAIN_TIMEOUT_S`
-/// in server/src/flowmap_server/core/session_common.py), in whole seconds.
-const SERVER_DRAIN_BOUND_SECS: u64 = 10;
-/// Time the sidecar gets to flush and exit after its stdin closes. It covers the server's
-/// drain bound with a margin for the rest of its shutdown, so a slow final flush is not
-/// cut short. The trade-off: closing the window can take this long when the disk is
-/// wedged. A sidecar still running when it ends is killed, and the kill is logged.
-pub(crate) const GRACEFUL_STOP: Duration = Duration::from_secs(SERVER_DRAIN_BOUND_SECS + 2);
-const _: () = assert!(GRACEFUL_STOP.as_secs() > SERVER_DRAIN_BOUND_SECS);
+/// The server's whole shutdown flush budget, in whole seconds: `SHUTDOWN_FLUSH_DEADLINE_S`
+/// in server/src/flowmap_server/core/session_common.py. Its recording drain is bounded
+/// inside this budget.
+const SERVER_FLUSH_DEADLINE_SECS: u64 = 11;
+/// Time a quit gives the sidecar to flush and exit after its stdin closes. It is the
+/// server's flush budget plus a margin, so a slow final flush is not cut short. The
+/// trade-off: closing the window can take this long when the disk is wedged. A sidecar
+/// still running when it ends is killed, and the kill is logged.
+pub(crate) const GRACEFUL_STOP: Duration = Duration::from_secs(SERVER_FLUSH_DEADLINE_SECS + 1);
+/// Time an automatic restart gives a sidecar that crashed or stopped answering before it
+/// is killed. Such a sidecar is not flushing a recorder the user asked to stop, so the
+/// restart does not wait out the whole flush budget. A sidecar that already exited needs
+/// no wait at all.
+pub(crate) const RESTART_STOP: Duration = Duration::from_secs(3);
+const _: () = assert!(GRACEFUL_STOP.as_secs() > SERVER_FLUSH_DEADLINE_SECS);
+const _: () = assert!(RESTART_STOP.as_secs() < GRACEFUL_STOP.as_secs());
 
 /// Environment variable carrying the session token to the sidecar.
 const SESSION_TOKEN_ENV: &str = "FLOWMAP_SESSION_TOKEN";
@@ -264,13 +271,13 @@ pub(crate) fn stop_child(child: &mut Child, grace: Duration) {
     let _ = child.wait();
 }
 
-/// Stop the managed sidecar, if one is running. The state lock is held for the
-/// whole stop, so a concurrent exit handler waits for the flush instead of
-/// killing the process underneath it.
-pub(crate) fn kill_sidecar(state: &SidecarState) {
+/// Stop the managed sidecar, if one is running, waiting up to `grace` before the kill.
+/// The state lock is held for the whole stop, so a concurrent exit handler waits for
+/// the flush instead of killing the process underneath it.
+pub(crate) fn kill_sidecar(state: &SidecarState, grace: Duration) {
     let mut guard = lock_or_recover(&state.0);
     if let Some(mut child) = guard.take() {
-        stop_child(&mut child, GRACEFUL_STOP);
+        stop_child(&mut child, grace);
     }
 }
 
@@ -504,7 +511,8 @@ mod tests {
     #[test]
     fn the_provider_keys_the_security_notes_name_reach_the_sidecar() {
         // SECURITY.md says these are read from the environment when present. The server
-        // reads them from the child's environment, so the allowlist must carry them.
+        // reads them from the child's environment (config.py), so the allowlist must carry
+        // them under the exact names it reads.
         for name in ["ALPACA_API_KEY", "ALPACA_API_SECRET", "FINNHUB_API_KEY"] {
             assert!(
                 CHILD_ENV_ALLOWLIST.contains(&name),

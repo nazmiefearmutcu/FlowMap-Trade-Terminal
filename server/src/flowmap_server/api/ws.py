@@ -83,8 +83,9 @@ SEND_TIMEOUT_S = 10.0
 LIVENESS_TIMEOUT_S = 30.0
 # Inbound flow control. A legitimate client sends a few control
 # messages a second (Pong, Subscribe, HistoryRequest bursts while scrolling).
-# Frames beyond this burst, refilled at the sustained rate, mean a flood: the
-# socket is closed rather than letting it burn CPU on decode.
+# Each frame costs one token and each further message batched in it costs one
+# more. Work beyond this burst, refilled at the sustained rate, means a flood:
+# the socket is closed rather than letting it burn CPU on decode.
 INBOUND_BURST_FRAMES = 256
 INBOUND_FRAMES_PER_S = 100.0
 # Pings whose Pong may still arrive. Only an echo of one of these is a sample.
@@ -191,7 +192,7 @@ async def _reject(ws: WebSocket, feed_state: events.FeedState, code: int, reason
         pass
     try:
         await ws.close(code=code, reason=reason)
-    except Exception:
+    except Exception:  # already closed by the peer or the transport
         pass
 
 
@@ -403,13 +404,7 @@ class _Connection:
             if message["type"] == "websocket.disconnect":
                 return
             self._last_recv_ns = self._clock()
-            if not self._inbound.take():
-                logger.warning(
-                    "ws inbound flood (burst %d, sustained %.0f frames/s): closing with 1008",
-                    INBOUND_BURST_FRAMES,
-                    INBOUND_FRAMES_PER_S,
-                )
-                await self._close_flood()
+            if not await self._charge_inbound():
                 return
             data = message.get("bytes")
             if data is None:  # text frame on a binary-only protocol
@@ -516,6 +511,18 @@ class _Connection:
 
     # -- dispatch --------------------------------------------------------------
 
+    async def _charge_inbound(self) -> bool:
+        """Spend one inbound token; on a flood, close with 1008 and return False."""
+        if self._inbound.take():
+            return True
+        logger.warning(
+            "ws inbound flood (burst %d, sustained %.0f frames/s): closing with 1008",
+            INBOUND_BURST_FRAMES,
+            INBOUND_FRAMES_PER_S,
+        )
+        await self._close_flood()
+        return False
+
     async def _handle_frame(self, data: bytes) -> bool:
         """Dispatch every message batched in one frame; False = closed.
 
@@ -524,8 +531,16 @@ class _Connection:
         resyncs on the next frame boundary. The connection stays up — a
         single corrupt frame (or a hostile burst) must not take a healthy
         subscription down.
+
+        The frame already cost one token in the receive loop. Each further
+        message in it costs one more, so a batch cannot carry more work than
+        the same messages sent as separate frames. Consecutive Subscribe
+        messages coalesce: each one replaces the subscription before it, so
+        only the last of a run is dispatched.
         """
         offset = 0
+        decoded = 0
+        held: events.Subscribe | None = None  # a Subscribe awaiting its successor
         while offset < len(data):
             try:
                 ev, offset = wire.decode(data, offset)
@@ -538,19 +553,38 @@ class _Connection:
                     "frame, connection kept",
                     exc,
                 )
-                return True
+                break
             if ev is None:
                 continue  # unknown msg_type: skipped via payload_len
-            try:
-                if not await self._dispatch(ev):
+            decoded += 1
+            if decoded > 1 and not await self._charge_inbound():
+                return False
+            if isinstance(ev, events.Subscribe):
+                if held is not None:
+                    logger.debug("subscribe superseded inside one frame: dropped")
+                held = ev
+                continue
+            if held is not None:
+                pending, held = held, None
+                if not await self._dispatch_message(pending):
                     return False
-            except Exception:  # one bad message never kills the loop
-                logger.warning(
-                    "dispatch error on %s: message dropped, connection kept",
-                    type(ev).__name__,
-                    exc_info=True,
-                )
+            if not await self._dispatch_message(ev):
+                return False
+        if held is not None:
+            return await self._dispatch_message(held)
         return True
+
+    async def _dispatch_message(self, ev: object) -> bool:
+        """Dispatch one decoded message; False = the connection is closed."""
+        try:
+            return await self._dispatch(ev)
+        except Exception:  # one bad message never kills the loop
+            logger.warning(
+                "dispatch error on %s: message dropped, connection kept",
+                type(ev).__name__,
+                exc_info=True,
+            )
+            return True
 
     async def _dispatch(self, ev: object) -> bool:
         if isinstance(ev, events.Subscribe):

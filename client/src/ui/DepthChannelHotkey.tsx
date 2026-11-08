@@ -23,6 +23,8 @@ export function DepthChannelHotkey({ onCycle }: DepthChannelHotkeyProps): null {
       const action = routeGlobalKey(e.key, classifyTarget(e.target));
       if (action?.type !== 'cycle-depth-channel') return;
       e.preventDefault();
+      // A held C would otherwise cycle the channel on every OS auto-repeat keydown.
+      if (e.repeat) return;
       onCycle();
     };
     window.addEventListener('keydown', onKey);

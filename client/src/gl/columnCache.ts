@@ -71,6 +71,21 @@ export const COLUMN_CACHE_PAGE_SLOTS = 256;
 const PAGE_SHIFT = 8;
 const PAGE_MASK = COLUMN_CACHE_PAGE_SLOTS - 1;
 
+/** Bytes of one pool page at `rows` rows: 256 slots × rows × 2 channels × 4 B. */
+export function columnCachePageBytes(rows: number): number {
+  return COLUMN_CACHE_PAGE_SLOTS * rows * 2 * Float32Array.BYTES_PER_ELEMENT;
+}
+
+/**
+ * Pool bytes of a cache with `slots` column slots, all pages resident, at `rows`
+ * rows. This is the CPU side of the memory budget: the GPU ring is sized by
+ * `TileRing.fullResBytes()`. At the production geometry (6144 columns, 4096 rows)
+ * it is 24 pages × 8 MiB = 192 MiB.
+ */
+export function columnCacheFullPoolBytes(slots: number, rows: number): number {
+  return Math.ceil(slots / COLUMN_CACHE_PAGE_SLOTS) * columnCachePageBytes(rows);
+}
+
 const FLAG_PRESENT = 1;
 const FLAG_ASK = 2;
 

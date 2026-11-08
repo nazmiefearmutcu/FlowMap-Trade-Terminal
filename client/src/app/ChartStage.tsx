@@ -48,6 +48,8 @@ export interface ChartStageProps {
   /** The chart shows the simulated feed. */
   simActive: boolean;
   recordingDegraded: boolean;
+  /** The server's market overview is running behind its deadline. */
+  overviewDegraded: boolean;
   engine: EngineStatus;
   /** Set while the WebGL2 fallback replaces the chart. */
   glError: string | null;
@@ -78,7 +80,7 @@ export interface ChartStageProps {
  */
 export function ChartStage({
   rendererRef, canvasRef, priceAxisRef, timeAxisRef, viewportRef, settings, desk, setDesk,
-  activeMarket, activeSymbol, mode, simActive, recordingDegraded, engine, glError, glFailure,
+  activeMarket, activeSymbol, mode, simActive, recordingDegraded, overviewDegraded, engine, glError, glFailure,
   graphics, onRetryRenderer, offlineHarness, onGoLive, onTrackPrice, onSetPriceFollow,
   onToggleHud, onCycleDepthChannel, onSelectSymbol, onSearchSymbols,
 }: ChartStageProps): JSX.Element {
@@ -108,7 +110,8 @@ export function ChartStage({
           <GlFallback failure={glFailure} onRetry={onRetryRenderer} copyState={graphics.copyState}
             onCopyDiagnostics={graphics.copyDiagnostics} />
         )}
-        <AppNoticeStack engine={engine} recordingDegraded={recordingDegraded} simActive={simActive} />
+        <AppNoticeStack engine={engine} recordingDegraded={recordingDegraded} overviewDegraded={overviewDegraded}
+          simActive={simActive} />
         <IndicatorOverlayCanvas chartMap={chartMap} getTimeBase={getTimeBase} />
         <DrawingLayer
           containerRef={viewportRef}
@@ -142,7 +145,8 @@ export function ChartStage({
       <TimeAxis canvasRef={timeAxisRef} />
       <div className="stage__corner" aria-hidden="true" />
       <ChartStartupGate rendererRef={rendererRef} disabled={glFailure !== null || offlineHarness}
-        onRetry={onRetryRenderer} onResubscribe={onSelectSymbol} onSearchSymbols={onSearchSymbols} />
+        onRetry={onRetryRenderer} onResubscribe={onSelectSymbol} onSearchSymbols={onSearchSymbols}
+        engineFailed={engine.sidecar?.state === 'failed'} />
     </div>
   );
 }

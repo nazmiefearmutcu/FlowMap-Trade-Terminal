@@ -325,7 +325,7 @@ class PersistentPyramid:
                     ):
                         stat = entry.stat(follow_symlinks=False)
                         stamps.append([entry.name, stat.st_size, stat.st_mtime_ns])
-        except OSError:
+        except OSError:  # unreadable directory: the stamps gathered so far stand
             pass
         return sorted(stamps)
 
@@ -351,7 +351,7 @@ class PersistentPyramid:
                         ):
                             mapping.pop(i)
                 return maps
-            except (KeyError, TypeError, ValueError, msgspec.DecodeError):
+            except (AttributeError, KeyError, TypeError, ValueError, msgspec.DecodeError):
                 # A malformed or partially written epoch_index must fall back to
                 # the raw epoch scan; msgspec.ValidationError is not a ValueError.
                 pass
@@ -405,7 +405,7 @@ class PersistentPyramid:
                     stat = path.stat()
                     stamp = stat.st_size, stat.st_mtime_ns
                 stamps.append((path.name, *stamp))
-            except OSError:
+            except OSError:  # a part removed mid-read has no stamp, so the key misses
                 pass
         epoch_stamps = getattr(parts, "epoch_stamps", None)
         if epoch_stamps is None:
@@ -681,7 +681,7 @@ class PersistentPyramid:
                 continue
             try:
                 owned[candidate.name] = (candidate, candidate.stat().st_size)
-            except OSError:
+            except OSError:  # vanished since it was listed: not owned
                 continue
 
         def references():
@@ -742,8 +742,6 @@ class PersistentPyramid:
         Cancellation checks bracket every batch/part. A published source entry
         is complete and checksummed; orphan .tmp/.bin files are harmless.
         """
-        from flowmap_server.core.overview import recorded_batches
-
         stats = Counter(
             {"source_columns": 0, "max_source_batch": 0, "converted_parts": 0, "reused_parts": 0}
         )
@@ -770,126 +768,17 @@ class PersistentPyramid:
                     continue
                 valid = self._valid(path, mapping, doc=self._doc)
                 wanted_range = [max(start, bounds[0]), min(end, bounds[1])]
-                if (
-                    valid is not None
-                    and valid.get("prepared_range", [bounds[0], bounds[1]])[0] <= wanted_range[0]
-                    and valid.get("prepared_range", [bounds[0], bounds[1]])[1] >= wanted_range[1]
-                    and all(
-                        (self.directory / f["file"]).is_file()
-                        and f["file"] not in self._bad_fragments
-                        for f in valid["fragments"]
-                    )
-                ):
+                if self._part_reusable(valid, bounds, wanted_range):
                     stats["reused_parts"] += 1
                     continue
-                before = path.stat()
-                digest = hashlib.sha256()
-                with path.open("rb") as stream:
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                fragments, geometry, integrals = [], {}, {}
-                batches = recorded_batches(
-                    self.root,
-                    self.market,
-                    self.symbol,
-                    [(bounds[0], bounds[1])],
-                    self.recording_id,
-                    mapping,
-                    list(legacy_segments),
-                    [(path, bounds)],
-                    epoch_maps=epochs,
+                source = self._convert_part(
+                    path, bounds, mapping, epochs, legacy_segments, wanted_range, start, end, stop, stats
                 )
-                for batch, maps in batches:
-                    if stop and stop():
-                        stats["cancelled"] = 1
-                        break
-                    stats["source_columns"] += len(batch)
-                    stats["max_source_batch"] = max(stats["max_source_batch"], len(batch))
-                    grouped = {}
-                    for col in batch:
-                        if not start <= col.col_seq <= end:
-                            continue
-                        grouped.setdefault(col.col_seq // LEAF_COLUMNS, []).append(col)
-                    for group, cols in grouped.items():
-                        cols.sort(key=lambda c: c.col_seq)
-                        components, runs, samples = {}, [], []
-                        for col in cols:
-                            params = maps[col.epoch]
-                            fingerprint = geometry_fingerprint(params)
-                            geometry[str(col.epoch)] = fingerprint
-                            integrals[str(col.epoch)] = integral_fingerprint(params)
-                            item = components.setdefault(
-                                fingerprint,
-                                {
-                                    "params": msgspec.to_builtins(params),
-                                    "fingerprint": fingerprint,
-                                    "weight": 0,
-                                    "bid": np.zeros(params.rows, np.float64),
-                                    "ask": np.zeros(params.rows, np.float64),
-                                },
-                            )
-                            duration = max(1, params.dt_ns)
-                            item["weight"] += duration
-                            item["bid"] += col.bid.astype(np.float64) * duration
-                            item["ask"] += col.ask.astype(np.float64) * duration
-                            samples.append([col.col_seq, col.t0_ns, duration])
-                            if runs and runs[-1][1] + 1 == col.col_seq and runs[-1][2] == col.epoch:
-                                runs[-1][1] = col.col_seq
-                            else:
-                                runs.append([col.col_seq, col.col_seq, col.epoch])
-                        packed = []
-                        for item in components.values():
-                            packed.append(
-                                {
-                                    **item,
-                                    "bid": item["bid"].astype("<f8").tobytes(),
-                                    "ask": item["ask"].astype("<f8").tobytes(),
-                                }
-                            )
-                        payload = msgspec.msgpack.encode(
-                            {
-                                "schema": SCHEMA,
-                                "algorithm": ALGORITHM,
-                                "recording_id": self.recording_id,
-                                "components": packed,
-                                "samples": samples,
-                                "first": msgspec.to_builtins(cols[0].bar),
-                                "last": msgspec.to_builtins(cols[-1].bar),
-                                "high": max(c.bar.h for c in cols),
-                                "low": min(c.bar.l for c in cols),
-                                "buy": sum(c.bar.vol_buy for c in cols),
-                                "sell": sum(c.bar.vol_sell for c in cols),
-                            }
-                        )
-                        checksum = hashlib.sha256(payload).hexdigest()
-                        filename = checksum + ".bin"
-                        _atomic(self.directory / filename, payload)
-                        self._bad_fragments.discard(filename)
-                        fragments.append(
-                            {
-                                "file": filename,
-                                "sha256": checksum,
-                                "low": cols[0].col_seq,
-                                "high": cols[-1].col_seq,
-                                "min_t": min(c.t0_ns for c in cols),
-                                "max_t": max(c.t0_ns for c in cols),
-                                "runs": runs,
-                                "group": group * LEAF_COLUMNS,
-                            }
-                        )
                 if stats["cancelled"]:
                     break
-                after = path.stat()
-                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                if source is None:
                     continue  # a concurrently replaced part is never published
-                self._doc["sources"][path.name] = {
-                    "stamp": [after.st_size, after.st_mtime_ns],
-                    "sha256": digest.hexdigest(),
-                    "geometry": geometry,
-                    "integral_geometry": integrals,
-                    "fragments": fragments,
-                    "prepared_range": wanted_range,
-                }
+                self._doc["sources"][path.name] = source
                 changes += 1
                 stats["converted_parts"] += 1
                 if changes % 256 == 0:
@@ -903,6 +792,156 @@ class PersistentPyramid:
             with self._prepare_lock:
                 stats.update(self._collect_cache_locked())
         return dict(stats)
+
+    def _part_reusable(self, valid, bounds, wanted_range) -> bool:
+        """True when the published source entry already covers the wanted range."""
+        if valid is None:
+            return False
+        prepared = valid.get("prepared_range", [bounds[0], bounds[1]])
+        return (
+            prepared[0] <= wanted_range[0]
+            and prepared[1] >= wanted_range[1]
+            and all(
+                (self.directory / f["file"]).is_file() and f["file"] not in self._bad_fragments
+                for f in valid["fragments"]
+            )
+        )
+
+    def _convert_part(
+        self,
+        path,
+        bounds,
+        mapping,
+        epochs,
+        legacy_segments,
+        wanted_range,
+        start,
+        end,
+        stop,
+        stats,
+    ) -> dict | None:
+        """Write the fragments of one raw part and return its source entry.
+
+        None when the part was replaced while it was read (it is then never
+        published) or when ``stop`` cancelled the work; ``stats["cancelled"]``
+        tells the two apart.
+        """
+        from flowmap_server.core.overview import recorded_batches
+
+        before = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        fragments, geometry, integrals = [], {}, {}
+        batches = recorded_batches(
+            self.root,
+            self.market,
+            self.symbol,
+            [(bounds[0], bounds[1])],
+            self.recording_id,
+            mapping,
+            list(legacy_segments),
+            [(path, bounds)],
+            epoch_maps=epochs,
+        )
+        for batch, maps in batches:
+            if stop and stop():
+                stats["cancelled"] = 1
+                break
+            stats["source_columns"] += len(batch)
+            stats["max_source_batch"] = max(stats["max_source_batch"], len(batch))
+            grouped = {}
+            for col in batch:
+                if not start <= col.col_seq <= end:
+                    continue
+                grouped.setdefault(col.col_seq // LEAF_COLUMNS, []).append(col)
+            for group, cols in grouped.items():
+                fragments.append(self._write_fragment(group, cols, maps, geometry, integrals))
+        if stats["cancelled"]:
+            return None
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            return None
+        return {
+            "stamp": [after.st_size, after.st_mtime_ns],
+            "sha256": digest.hexdigest(),
+            "geometry": geometry,
+            "integral_geometry": integrals,
+            "fragments": fragments,
+            "prepared_range": wanted_range,
+        }
+
+    def _write_fragment(self, group, cols, maps, geometry, integrals) -> dict:
+        """Encode one leaf group's columns as a checksummed fragment file.
+
+        ``geometry`` and ``integrals`` are the part-wide epoch fingerprints;
+        this call records the fingerprints of the epochs its columns use.
+        """
+        cols.sort(key=lambda c: c.col_seq)
+        components, runs, samples = {}, [], []
+        for col in cols:
+            params = maps[col.epoch]
+            fingerprint = geometry_fingerprint(params)
+            geometry[str(col.epoch)] = fingerprint
+            integrals[str(col.epoch)] = integral_fingerprint(params)
+            item = components.setdefault(
+                fingerprint,
+                {
+                    "params": msgspec.to_builtins(params),
+                    "fingerprint": fingerprint,
+                    "weight": 0,
+                    "bid": np.zeros(params.rows, np.float64),
+                    "ask": np.zeros(params.rows, np.float64),
+                },
+            )
+            duration = max(1, params.dt_ns)
+            item["weight"] += duration
+            item["bid"] += col.bid.astype(np.float64) * duration
+            item["ask"] += col.ask.astype(np.float64) * duration
+            samples.append([col.col_seq, col.t0_ns, duration])
+            if runs and runs[-1][1] + 1 == col.col_seq and runs[-1][2] == col.epoch:
+                runs[-1][1] = col.col_seq
+            else:
+                runs.append([col.col_seq, col.col_seq, col.epoch])
+        packed = []
+        for item in components.values():
+            packed.append(
+                {
+                    **item,
+                    "bid": item["bid"].astype("<f8").tobytes(),
+                    "ask": item["ask"].astype("<f8").tobytes(),
+                }
+            )
+        payload = msgspec.msgpack.encode(
+            {
+                "schema": SCHEMA,
+                "algorithm": ALGORITHM,
+                "recording_id": self.recording_id,
+                "components": packed,
+                "samples": samples,
+                "first": msgspec.to_builtins(cols[0].bar),
+                "last": msgspec.to_builtins(cols[-1].bar),
+                "high": max(c.bar.h for c in cols),
+                "low": min(c.bar.l for c in cols),
+                "buy": sum(c.bar.vol_buy for c in cols),
+                "sell": sum(c.bar.vol_sell for c in cols),
+            }
+        )
+        checksum = hashlib.sha256(payload).hexdigest()
+        filename = checksum + ".bin"
+        _atomic(self.directory / filename, payload)
+        self._bad_fragments.discard(filename)
+        return {
+            "file": filename,
+            "sha256": checksum,
+            "low": cols[0].col_seq,
+            "high": cols[-1].col_seq,
+            "min_t": min(c.t0_ns for c in cols),
+            "max_t": max(c.t0_ns for c in cols),
+            "runs": runs,
+            "group": group * LEAF_COLUMNS,
+        }
 
     def _read_fragment(self, entry):
         try:

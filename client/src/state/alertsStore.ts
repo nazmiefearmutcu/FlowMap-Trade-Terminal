@@ -26,7 +26,7 @@
 
 import { t } from '../i18n';
 import { alertPriceText } from '../ui/alertPrice';
-import { safeLocalStorage } from './safeStorage';
+import { lazyLocalStorage } from './safeStorage';
 
 /** One user price alert. */
 export interface PriceAlert {
@@ -112,7 +112,8 @@ let version = 0;
 let idCounter = 0;
 let cachedSnapshot: AlertsSnapshot | null = null;
 
-let storage: StorageLike | null | undefined;
+/** A test double injected through {@link setAlertsStorage}; undefined means the browser's storage. */
+let injectedStorage: StorageLike | null | undefined;
 /** Set once the "alerts not saved" notice has been shown in this page session. */
 let saveFailureNotified = false;
 const listeners = new Set<() => void>();
@@ -125,13 +126,11 @@ export interface StorageLike {
 }
 
 /**
- * The browser localStorage, resolved lazily through the one guarded accessor
- * shared with the other boot-time readers. A denied profile reads as null, so
- * alerts simply stay session-local.
+ * The browser localStorage, through the shared memoised accessor (never throws).
+ * A denied profile reads as null, so alerts simply stay session-local.
  */
 function getStorage(): StorageLike | null {
-  if (storage === undefined) storage = safeLocalStorage();
-  return storage;
+  return injectedStorage !== undefined ? injectedStorage : lazyLocalStorage();
 }
 
 /**
@@ -163,7 +162,7 @@ function storageKeys(s: StorageLike): string[] {
 
 /** Test seam: inject a storage double (or null to disable persistence). */
 export function setAlertsStorage(s: StorageLike | null): void {
-  storage = s;
+  injectedStorage = s;
 }
 
 function nextId(): string {
