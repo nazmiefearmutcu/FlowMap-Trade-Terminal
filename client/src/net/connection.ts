@@ -17,6 +17,15 @@
  *   resets once a Hello handshake lands (a completed session attach, not merely
  *   a TCP/WS open); a clean server close (1000/1001) and an abnormal transport
  *   death are both recorded on `lastClose` and both reconnect with backoff.
+ * - A WATCHDOG abandons a socket that has not delivered its Hello within its
+ *   handshake window ({@link SUBSCRIBE_HANDSHAKE_TIMEOUT_MS} when the socket
+ *   carries a subscribe, {@link HANDSHAKE_TIMEOUT_MS} otherwise), or that stays
+ *   silent past {@link LIVENESS_TIMEOUT_MS} once live (the server pings about
+ *   once a second).
+ *   It does not wait for a close event: a half-open socket never delivers one.
+ * - Terminal states are PARKED, not retried: a 1003 refusal of a live
+ *   subscription (`onRefused`), a no-feed refusal (`onNoFeed`) and a protocol
+ *   version mismatch (`onProtocolMismatch`, fatal).
  *
  * Everything the renderer needs at frame rate (the columns/trades/BBO stream)
  * flows through `onStream`, deliberately NOT through React state, so a live feed
@@ -27,9 +36,9 @@
  * a FakeWebSocket and a deterministic clock without real sockets or wall time.
  */
 
-import { decodeFrame } from '../proto/decode';
+import { decodeFramePartial, ProtocolVersionError } from '../proto/decode';
 import { seamGapMarker, SeamTracker } from './seam';
-import { wsUrl } from './serverBase';
+import { wsProtocols, wsUrl } from './serverBase';
 import {
   encodeHistoryRequest,
   encodePause,
@@ -59,7 +68,71 @@ import {
   type GexLevelUpdate,
   type MarketIntelligence,
   type MacroStressUpdate,
+  PROTO_VER,
 } from '../proto/types';
+
+/** WebSocket `readyState` of an open socket (the DOM constant `WebSocket.OPEN`). */
+const WS_OPEN = 1;
+
+/**
+ * Handshake window for a bare socket (no subscribe): a socket that has not
+ * delivered its Hello this long after opening is wedged (the sidecar accepted TCP
+ * but its loop is stuck) and is torn down so the reconnect ladder runs instead of
+ * an endless "connecting". Each Status received before the Hello buys one more
+ * window from that frame, up to {@link HANDSHAKE_MAX_MS}.
+ */
+export const HANDSHAKE_TIMEOUT_MS = 8_000;
+/**
+ * First handshake window for a socket that carries a subscribe (the normal case:
+ * the subscribe is sent on open). The sidecar prepares the stream before it can
+ * say Hello, and a cold venue symbol and tick listing alone may take up to 25 s.
+ * Until the Hello it sends only progress Status frames (about every 2 s), which
+ * extend the window but never shorten it. The bare window would abandon a healthy
+ * subscribe that is still preparing and make the server repeat that work.
+ */
+export const SUBSCRIBE_HANDSHAKE_TIMEOUT_MS = 30_000;
+/**
+ * Hard ceiling on a bare socket's handshake, however many early Status frames
+ * extend it. An early Status buys one more {@link HANDSHAKE_TIMEOUT_MS} window
+ * past the frame (never a shorter one); a wedged server that keeps talking
+ * without ever sending Hello is still abandoned at this total.
+ */
+export const HANDSHAKE_MAX_MS = 30_000;
+/** Ceiling on a subscribe-bearing socket's handshake (see {@link SUBSCRIBE_HANDSHAKE_TIMEOUT_MS}). */
+export const SUBSCRIBE_HANDSHAKE_MAX_MS = 60_000;
+/**
+ * Liveness deadline once live: the server pings about once per second, so this
+ * much silence means the socket is half-open or the sidecar stopped answering.
+ * The frame stamp, not the browser's close event, decides that the link is dead.
+ */
+export const LIVENESS_TIMEOUT_MS = 5_000;
+/** How often the watchdog re-checks the stamps while a socket exists. */
+export const WATCHDOG_INTERVAL_MS = 1_000;
+/**
+ * Most EpochStart geometries the transport and the store keep. Epochs are
+ * immutable and a re-anchor adds one, so an unbounded session would grow the
+ * maps (and the store's per-re-anchor copy) without limit. The newest epochs
+ * cover every column the resident window can reference.
+ */
+export const MAX_RETAINED_EPOCHS = 256;
+/**
+ * Trade identities kept for the reconnect dedup. The attach snapshot re-sends the
+ * server's tape tail (500 prints) on every same-session reattach, so a window of
+ * this size covers every re-delivered print.
+ */
+export const TRADE_DEDUP_WINDOW = 512;
+
+/**
+ * Drop the OLDEST entries of an epoch-keyed map until it holds at most `cap`,
+ * never dropping `keep` (the grid's current epoch). Map iteration is insertion
+ * order and epochs arrive ascending, so the first keys are the oldest geometry.
+ */
+export function pruneEpochs<V>(map: Map<number, V>, keep: number | null, cap = MAX_RETAINED_EPOCHS): void {
+  for (const epoch of map.keys()) {
+    if (map.size <= cap) break;
+    if (epoch !== keep) map.delete(epoch);
+  }
+}
 
 /** Connection lifecycle state (distinct from the server's Status.feed_state). */
 export type ConnStatus = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'closed';
@@ -89,6 +162,12 @@ export type StreamMsg =
  */
 export interface SocketLike {
   binaryType: string;
+  /**
+   * The browser's `readyState` (0 connecting, 1 open, 2 closing, 3 closed).
+   * Optional so a minimal double need not model it; when absent the socket is
+   * treated as open once the transport has seen its `open` event.
+   */
+  readyState?: number;
   send(data: ArrayBufferLike | ArrayBufferView | string): void;
   close(code?: number, reason?: string): void;
   onopen: ((ev?: unknown) => void) | null;
@@ -121,12 +200,25 @@ export interface ConnectionHandlers {
   onReconnectScheduled?: (attempt: number) => void;
   /**
    * The server refused the current subscription with the unsupported close code
-   * (1003) — today only mode=replay against a session with no recording (§7:
-   * the server refuses honestly instead of steering nothing). The store uses
+   * (1003): today only mode=replay against a session with no recording. The
+   * server refuses honestly instead of steering nothing. The store uses
    * this to surface "replay unavailable" and fall back to live instead of
    * reconnect-looping into the same refusal forever.
    */
   onReplayRefused?: () => void;
+  /**
+   * The server refused a LIVE subscription with a pre-close Status (feed_state
+   * 'degraded') + close 1003 — e.g. an invalid symbol — or failed it
+   * unexpectedly with the same Status + close 1011. Terminal for this
+   * subscription: the transport stops its reconnect timer (the same subscribe is
+   * refused again) and reports the server's own reason text when it sent one.
+   */
+  onRefused?: (reason: string | null) => void;
+  /**
+   * The server speaks a different wire protocol version. Fatal: every frame of
+   * that server fails the same way, so nothing is retried until the user acts.
+   */
+  onProtocolMismatch?: (info: { got: number; expected: number }) => void;
   /**
    * The server refused the subscription with a pre-close Status naming
    * feed_state='closed' (server ws.py: NotImplementedError → Status{closed} +
@@ -140,8 +232,11 @@ export interface ConnectionHandlers {
 export interface ConnectionOptions extends ConnectionHandlers {
   /** Endpoint; defaults to `ws(s)://<host>/ws` derived from window.location. */
   url?: string;
-  /** WebSocket factory; defaults to `(url) => new WebSocket(url)`. */
-  wsFactory?: (url: string) => SocketLike;
+  /**
+   * WebSocket factory. Receives the URL (which carries no credential) and the
+   * subprotocol list from {@link wsProtocols}; defaults to `new WebSocket(url, protocols)`.
+   */
+  wsFactory?: (url: string, protocols: string[]) => SocketLike;
   setTimeout?: SetTimeoutFn;
   clearTimeout?: ClearTimeoutFn;
   /** Wall-clock ms source for Pong.client_recv_ns; defaults to Date.now. */
@@ -157,12 +252,23 @@ export interface ConnectionOptions extends ConnectionHandlers {
    */
   jitter?: () => number;
   historyTimeoutMs?: number;
+  /**
+   * Handshake window for a socket with no subscribe (default
+   * {@link HANDSHAKE_TIMEOUT_MS}), and the window each early Status adds to any
+   * socket. A subscribe-bearing socket's first window is
+   * {@link SUBSCRIBE_HANDSHAKE_TIMEOUT_MS}, which this option does not change.
+   */
+  handshakeTimeoutMs?: number;
+  /** Liveness deadline once live (default {@link LIVENESS_TIMEOUT_MS}). */
+  livenessTimeoutMs?: number;
+  /** Watchdog re-check cadence (default {@link WATCHDOG_INTERVAL_MS}). */
+  watchdogIntervalMs?: number;
 }
 
 /**
- * OPTIONAL replay subscribe window (contract P6; server `Subscribe.start_t` /
+ * OPTIONAL replay subscribe window (server `Subscribe.start_t` /
  * `Subscribe.end_t`). `startNs` is inclusive, `endNs` EXCLUSIVE. Both default to
- * null → the pre-P6 unbounded subscribe (today's behavior, byte-identical on
+ * null → the unbounded subscribe (today's behavior, byte-identical on
  * the wire). The window is part of the stream's IDENTITY: changing it detects
  * as a new server session (Unsubscribe → Subscribe, cursors reset), because the
  * server builds a different recording slice whose grid restarts at epoch 0.
@@ -179,7 +285,7 @@ interface Subscription {
   /** Server price-grid coverage preset — part of the stream's IDENTITY, since
    *  it changes the grid geometry the columns arrive in. */
   band: string;
-  /** Replay window (P6): part of the identity, nullable for "unbounded". */
+  /** Replay window: part of the identity, nullable for "unbounded". */
   startNs: bigint | null;
   endNs: bigint | null;
 }
@@ -196,7 +302,8 @@ function defaultUrl(): string {
   return wsUrl();
 }
 
-const defaultWsFactory = (url: string): SocketLike => new WebSocket(url) as unknown as SocketLike;
+const defaultWsFactory = (url: string, protocols: string[]): SocketLike =>
+  new WebSocket(url, protocols) as unknown as SocketLike;
 const defaultSetTimeout: SetTimeoutFn = (handler, timeoutMs) => globalThis.setTimeout(handler, timeoutMs);
 const defaultClearTimeout: ClearTimeoutFn = (handle) =>
   globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>);
@@ -214,7 +321,7 @@ function sameSub(a: Subscription, b: Subscription): boolean {
 
 export class Connection {
   private readonly url: string;
-  private readonly wsFactory: (url: string) => SocketLike;
+  private readonly wsFactory: (url: string, protocols: string[]) => SocketLike;
   private readonly setTimeoutFn: SetTimeoutFn;
   private readonly clearTimeoutFn: ClearTimeoutFn;
   private readonly now: () => number;
@@ -237,6 +344,14 @@ export class Connection {
   private backoffAttempt = 0;
   private reconnectTimer: unknown = null;
   /**
+   * True while the desktop shell is bringing the engine back (see
+   * {@link setSidecarHold}). No socket opens while it is set, so the session
+   * token is never offered to whatever answers the sidecar port in the meantime.
+   */
+  private sidecarHeld = false;
+  /** A socket open was requested while {@link sidecarHeld} was set; run it on release. */
+  private openDeferred = false;
+  /**
    * feed_state of the last Status frame received on the CURRENT socket. The
    * server's refusal contract (ws.py `_refuse`) sends Status BEFORE closing:
    * 'closed' = no feed for this market (terminal), 'degraded' = no replayable
@@ -251,12 +366,34 @@ export class Connection {
    * "the server said goodbye" from "the wire died" without sniffing events.
    */
   private lastClose: CloseInfo | null = null;
+  /** The server's reason text from the last Status on this socket (refusals carry one). */
+  private lastStatusReason: string | null = null;
+
+  /** True once the current socket delivered its Hello (the handshake completed). */
+  private handshaken = false;
+  /** When the current socket was created (handshake deadline origin). */
+  private openedAtMs = 0;
+  /** Wall-clock instant the current socket's handshake must complete by (pre-Hello). */
+  private handshakeDeadlineMs = 0;
+  /** The latest instant an early Status may extend the current socket's handshake to. */
+  private handshakeCeilingMs = 0;
+  /** When the current socket last delivered any frame (liveness origin). */
+  private lastRxAtMs = 0;
+  private watchdogTimer: unknown = null;
+  private readonly handshakeTimeoutMs: number;
+  private readonly livenessTimeoutMs: number;
+  private readonly watchdogIntervalMs: number;
 
   /** Latest col_seq forwarded per epoch — the (epoch, col_seq) dedup cursor. */
   private readonly lastColSeq = new Map<number, number>();
   private readonly epochMap = new Map<number, EpochParams>();
   /**
-   * Depth-stream seam observer (QA3 C-1): a session reattach can append a
+   * `ts_ns:seq` of the recent trades forwarded on this session, for
+   * {@link isDuplicateTrade}. Insertion-ordered and bounded by TRADE_DEDUP_WINDOW.
+   */
+  private readonly seenTrades = new Set<string>();
+  /**
+   * Depth-stream seam observer: a session reattach can append a
    * reconstructed block from another grid onto the old session's live columns
    * with a seq→time break and no marker. The tracker spots the boundary and
    * {@link noteDepthSeam} surfaces it as a synthetic `gap` Marker on the same
@@ -280,6 +417,9 @@ export class Connection {
     this.backoffCapMs = options.backoffCapMs ?? 15_000;
     this.jitterFn = options.jitter ?? (() => Math.random());
     this.historyTimeoutMs = options.historyTimeoutMs ?? 10_000;
+    this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+    this.livenessTimeoutMs = options.livenessTimeoutMs ?? LIVENESS_TIMEOUT_MS;
+    this.watchdogIntervalMs = options.watchdogIntervalMs ?? WATCHDOG_INTERVAL_MS;
     this.handlers = {
       onStream: options.onStream,
       onHello: options.onHello,
@@ -289,6 +429,8 @@ export class Connection {
       onCloseInfo: options.onCloseInfo,
       onReconnectScheduled: options.onReconnectScheduled,
       onReplayRefused: options.onReplayRefused,
+      onRefused: options.onRefused,
+      onProtocolMismatch: options.onProtocolMismatch,
       onNoFeed: options.onNoFeed,
     };
   }
@@ -330,7 +472,7 @@ export class Connection {
    * (Unsubscribe → Subscribe when it differs); otherwise it is sent on the next
    * open. Connects automatically when there is no socket yet.
    *
-   * `window` (contract P6) narrows a replay subscription to `[startNs, endNs)`;
+   * `window` narrows a replay subscription to `[startNs, endNs)`;
    * omitted/null keeps the unbounded behavior and the byte-identical wire form.
    */
   subscribe(
@@ -377,6 +519,7 @@ export class Connection {
     this.lastColSeq.clear();
     this.epochMap.clear();
     this.depthSeams.reset();
+    this.seenTrades.clear();
     this.sessionId = null;
     this.lastStatusFeedState = null; // the refused stream's verdict dies with it
     this.failHistoryWaiters(
@@ -397,10 +540,19 @@ export class Connection {
    * Request a page of history. Resolves when the HistoryResponse with the
    * assigned req_id arrives, rejects on timeout (or if not connected).
    */
-  requestHistory(before_t: bigint, n: number, overview?: import('../proto/types').HistoryOverviewRequest): Promise<HistoryResponse> {
+  requestHistory(
+    before_t: bigint,
+    n: number,
+    overview?: import('../proto/types').HistoryOverviewRequest,
+    signal?: AbortSignal,
+  ): Promise<HistoryResponse> {
     return new Promise<HistoryResponse>((resolve, reject) => {
-      if (this.socket === null || !this.socketOpen) {
+      if (!this.isSendable()) {
         reject(new Error('flowmap: cannot request history — not connected'));
+        return;
+      }
+      if (signal?.aborted) {
+        reject(new Error('flowmap: history request aborted'));
         return;
       }
       const reqId = this.nextReqId;
@@ -408,21 +560,42 @@ export class Connection {
 
       const timer = this.setTimeoutFn(() => {
         this.historyWaiters.delete(reqId);
+        detach();
         reject(new Error(`flowmap: history request ${reqId} timed out`));
       }, overview ? Math.max(this.historyTimeoutMs, 60_000) : this.historyTimeoutMs);
-      this.historyWaiters.set(reqId, { resolve, reject, timer });
+      // A caller that no longer wants the page (a zoom superseded it) aborts it:
+      // the waiter is dropped so the late response is discarded as unmatched.
+      const onAbort = (): void => {
+        this.clearTimeoutFn(timer);
+        this.historyWaiters.delete(reqId);
+        reject(new Error(`flowmap: history request ${reqId} aborted`));
+      };
+      const detach = (): void => signal?.removeEventListener('abort', onAbort);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.historyWaiters.set(reqId, {
+        resolve: (resp) => {
+          detach();
+          resolve(resp);
+        },
+        reject: (err) => {
+          detach();
+          reject(err);
+        },
+        timer,
+      });
 
       try {
         this.rawSend(encodeHistoryRequest({ req_id: reqId, before_t, n_cols: n, ...overview }));
       } catch (err) {
         this.clearTimeoutFn(timer);
         this.historyWaiters.delete(reqId);
+        detach();
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
   }
 
-  // --- replay transport control (§9 / §11) -------------------------------------
+  // --- replay transport control ------------------------------------------------
   // Cold control messages for a replay session: the server owns the replay clock
   // and honours these live. Each returns whether the frame ACTUALLY went out —
   // a closed socket silently drops the send, and the UI must not claim a state
@@ -449,8 +622,18 @@ export class Connection {
     return this.sendControl(encodeResume());
   }
 
-  private sendControl(bytes: Uint8Array): boolean {
+  /**
+   * True only when a frame can actually leave: the socket exists, its open event
+   * fired, and the browser reports it OPEN. A CLOSING socket silently discards
+   * `send()`, so the flag alone would report success for a frame never sent.
+   */
+  private isSendable(): boolean {
     if (this.socket === null || !this.socketOpen) return false;
+    return this.socket.readyState === undefined || this.socket.readyState === WS_OPEN;
+  }
+
+  private sendControl(bytes: Uint8Array): boolean {
+    if (!this.isSendable()) return false;
     try {
       this.rawSend(bytes);
       return true;
@@ -466,6 +649,34 @@ export class Connection {
    * never double-track with a scheduled tick — exactly one replacement socket.
    */
   reconnectNow(): void {
+    if (this.intentionalClose) return;
+    if (this.socket !== null) {
+      // A socket that already completed its handshake is a live session with
+      // nothing to retry. A pending or wedged one (black-holed connect, a server
+      // that accepts TCP but never sends Hello) must be replaced, not waited on:
+      // a no-op here left the banner's "retry now" dead until the OS gave up.
+      if (this.handshaken) return;
+      this.failHistoryWaiters(new Error('flowmap: history request abandoned — connection lost'));
+      this.detachAndClose(this.socket);
+    }
+    this.openSocket('reconnecting');
+  }
+
+  /**
+   * Hold or release socket opens while the desktop engine is restarting. Held,
+   * the armed reconnect ticks and the retry button still run, but no socket opens
+   * (no WebSocket, so no token). Released, a deferred open runs at once. Only
+   * the shell's own status drives this; a plain browser never calls it.
+   */
+  setSidecarHold(held: boolean): void {
+    if (held) {
+      this.sidecarHeld = true;
+      return;
+    }
+    if (!this.sidecarHeld) return;
+    this.sidecarHeld = false;
+    if (!this.openDeferred) return;
+    this.openDeferred = false;
     if (this.intentionalClose || this.socket !== null) return;
     this.openSocket('reconnecting');
   }
@@ -480,17 +691,107 @@ export class Connection {
     this.failHistoryWaiters(new Error('flowmap: connection closed'));
 
     const sock = this.socket;
+    if (sock !== null) {
+      this.detachAndClose(sock);
+    } else {
+      this.stopWatchdog();
+    }
+    this.setConnStatus('closed');
+  }
+
+  /**
+   * Forget a socket and close it WITHOUT letting its late events reach the
+   * transport: the handlers are detached first, so a close event that arrives
+   * after a replacement socket exists cannot tear that replacement down. A
+   * half-open socket never fires its close event at all, which is why callers
+   * must not wait for one.
+   */
+  private detachAndClose(sock: SocketLike): void {
+    this.stopWatchdog();
     this.socket = null;
     this.socketOpen = false;
     this.activeSub = null;
-    if (sock !== null) {
-      try {
-        sock.close();
-      } catch {
-        /* already closing */
-      }
+    this.lastStatusFeedState = null;
+    this.handshaken = false;
+    sock.onopen = null;
+    sock.onmessage = null;
+    sock.onclose = null;
+    sock.onerror = null;
+    try {
+      sock.close();
+    } catch {
+      /* already closing or already dead */
     }
-    this.setConnStatus('closed');
+  }
+
+  // --- liveness / handshake watchdog -------------------------------------------
+
+  private startWatchdog(): void {
+    this.stopWatchdog();
+    this.watchdogTimer = this.setTimeoutFn(() => this.watchdogTick(), this.watchdogIntervalMs);
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer !== null) {
+      this.clearTimeoutFn(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  /**
+   * One watchdog check: a socket that has not handshaken within the deadline, or
+   * that has been silent past the liveness deadline once live, is abandoned and
+   * the reconnect ladder takes over. The browser's close event is not required:
+   * a half-open socket never delivers one.
+   */
+  private watchdogTick(): void {
+    this.watchdogTimer = null;
+    if (this.socket === null) return;
+    const now = this.now();
+    const stalled = this.handshaken
+      ? now - this.lastRxAtMs > this.livenessTimeoutMs
+      : now > this.handshakeDeadlineMs;
+    if (stalled) {
+      this.dropStalledSocket();
+      return;
+    }
+    this.startWatchdog();
+  }
+
+  /** Abandon a socket the watchdog declared dead and schedule the reconnect. */
+  private dropStalledSocket(): void {
+    const sock = this.socket;
+    if (sock === null) return;
+    this.lastClose = { code: null, wasClean: false };
+    this.detachAndClose(sock);
+    this.failHistoryWaiters(new Error('flowmap: history request abandoned — connection stalled'));
+    if (this.intentionalClose) {
+      this.setConnStatus('closed');
+      return;
+    }
+    this.handlers.onCloseInfo?.(this.lastClose);
+    this.scheduleReconnect();
+  }
+
+  /**
+   * Push the pre-Hello deadline one handshake window past this frame, but never
+   * past the socket's ceiling and never earlier than it already
+   * is: a subscribe-bearing socket starts with the longer window, and a frame
+   * must not shorten that.
+   */
+  private extendHandshakeDeadline(): void {
+    const windowEnd = this.now() + this.handshakeTimeoutMs;
+    this.handshakeDeadlineMs = Math.min(this.handshakeCeilingMs, Math.max(this.handshakeDeadlineMs, windowEnd));
+  }
+
+  /**
+   * A protocol version this build does not speak: fatal. No reconnect (every
+   * later frame fails the same way), the store is told which versions met, and
+   * the connection parks as closed until the user asks for a new subscription.
+   */
+  private failProtocolMismatch(got: number, expected: number): void {
+    this.handlers.onProtocolMismatch?.({ got, expected });
+    this.close();
   }
 
   // --- socket lifecycle --------------------------------------------------------
@@ -505,31 +806,75 @@ export class Connection {
       this.clearTimeoutFn(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.sidecarHeld) {
+      // The shell says the engine is restarting: the token must not reach whatever
+      // answers that port now. Park the open until setSidecarHold(false).
+      this.openDeferred = true;
+      this.setConnStatus('reconnecting');
+      return;
+    }
     this.setConnStatus(status);
-    const sock = this.wsFactory(this.url);
+    let sock: SocketLike;
+    try {
+      sock = this.wsFactory(this.url, wsProtocols());
+    } catch (err) {
+      // A constructor that throws (malformed URL, blocked port, insecure-context
+      // error in the webview) yields no socket and therefore no close event. The
+      // retry loop must still run, or the status sticks at 'reconnecting' forever.
+      console.warn('[flowmap] websocket construction failed', err);
+      this.socket = null;
+      this.socketOpen = false;
+      this.lastClose = { code: null, wasClean: false };
+      this.handlers.onCloseInfo?.(this.lastClose);
+      this.scheduleReconnect();
+      return;
+    }
     sock.binaryType = 'arraybuffer';
-    sock.onopen = () => this.onSocketOpen();
-    sock.onmessage = (ev) => this.onSocketMessage(ev);
-    sock.onclose = (ev) =>
-      this.onSocketClose(ev as { code?: number } | undefined);
+    // Every handler is bound to THIS socket: an event from a socket the
+    // transport already abandoned (replaced, closed, or stalled) is ignored, so
+    // a late close can never null out or reconnect a live replacement.
+    const current = (): boolean => this.socket === sock;
+    sock.onopen = () => {
+      if (current()) this.onSocketOpen();
+    };
+    sock.onmessage = (ev) => {
+      if (current()) this.onSocketMessage(ev);
+    };
+    sock.onclose = (ev) => {
+      if (current()) this.onSocketClose(ev as { code?: number } | undefined);
+    };
     sock.onerror = () => {
       // WebSocket errors arrive just before close; the close handler drives
       // reconnect. Nothing actionable here beyond a breadcrumb.
-      console.warn('[flowmap] websocket error');
+      if (current()) console.warn('[flowmap] websocket error');
     };
     this.socket = sock;
     this.socketOpen = false;
+    this.handshaken = false;
+    this.lastStatusReason = null;
+    this.openedAtMs = this.now();
+    this.lastRxAtMs = this.openedAtMs;
+    // The subscribe is sent on open, so a subscribe-bearing socket gets the longer
+    // first window the server needs to prepare it (see SUBSCRIBE_HANDSHAKE_TIMEOUT_MS).
+    const subscribing = this.desiredSub !== null;
+    this.handshakeDeadlineMs = this.openedAtMs + (subscribing ? SUBSCRIBE_HANDSHAKE_TIMEOUT_MS : this.handshakeTimeoutMs);
+    this.handshakeCeilingMs = this.openedAtMs + (subscribing ? SUBSCRIBE_HANDSHAKE_MAX_MS : HANDSHAKE_MAX_MS);
+    this.startWatchdog();
   }
 
   private onSocketOpen(): void {
     this.socketOpen = true;
     this.activeSub = null; // fresh socket: nothing subscribed yet
     this.lastStatusFeedState = null; // …and no Status has arrived on it yet
+    this.lastRxAtMs = this.now();
     this.sendSubscribe();
   }
 
   /** Browser close code the server uses for "subscription not supported here". */
   private static readonly CLOSE_UNSUPPORTED = 1003;
+
+  /** Browser close code the server uses when a subscribe fails unexpectedly (ws.py). */
+  private static readonly CLOSE_INTERNAL_ERROR = 1011;
 
   /** Browser close code for "the server said goodbye cleanly". */
   private static readonly CLEAN_CLOSE_CODES = new Set([1000, 1001]);
@@ -546,16 +891,29 @@ export class Connection {
     // frame: feed_state 'closed' = NO FEED EXISTS for this market at all — a
     // terminal refusal no reconnect can cure. 'degraded' (no replay recording)
     // stays the recoverable `refusedReplay` path above.
-    const noFeed =
-      code === Connection.CLOSE_UNSUPPORTED && this.lastStatusFeedState === 'closed';
+    const refusal = code === Connection.CLOSE_UNSUPPORTED ? this.lastStatusFeedState : null;
+    const noFeed = refusal === 'closed';
+    // A 1003 + degraded Status on a LIVE subscription is a refusal the same
+    // subscribe cannot cure (an invalid symbol, for one): terminal, not a retry.
+    const refusedLive = refusal === 'degraded' && !refusedReplay;
+    // A 1011 after a degraded Status is the server failing the subscribe itself
+    // (ws.py: an unexpected subscribe error). Re-sending the same subscribe would
+    // fail the same way, so it is terminal like a 1003 refusal: surface the
+    // server's reason and stop, instead of reconnecting into the same failure.
+    const failedSubscribe = code === Connection.CLOSE_INTERNAL_ERROR
+      && this.lastStatusFeedState === 'degraded';
+    const reason = this.lastStatusReason;
     this.lastClose = {
       code: code ?? null,
       wasClean: code !== undefined && Connection.CLEAN_CLOSE_CODES.has(code),
     };
+    this.stopWatchdog();
     this.socketOpen = false;
     this.activeSub = null;
     this.socket = null;
     this.lastStatusFeedState = null;
+    this.lastStatusReason = null;
+    this.handshaken = false;
     // The socket is gone either way: fail in-flight history requests NOW rather
     // than letting them coast to their 10 s timeout, so the HistoryLoader's next
     // pan retries on the replacement socket instead of stalling through the
@@ -579,6 +937,11 @@ export class Connection {
       // STILL schedule the reconnect — the store is expected to have
       // re-subscribed live; the transport must not silently swallow the socket.
       this.scheduleReconnect();
+      return;
+    }
+    if (refusedLive || failedSubscribe) {
+      this.handlers.onRefused?.(reason);
+      this.setConnStatus('closed');
       return;
     }
     // Clean (server shutdown) and abnormal (wire death) closes both reconnect:
@@ -637,6 +1000,9 @@ export class Connection {
   // --- inbound frames ----------------------------------------------------------
 
   private onSocketMessage(ev: { data: unknown }): void {
+    // Any inbound frame proves the link is alive (the server pings ~1/s), so it
+    // stamps the liveness clock before the payload is even inspected.
+    this.lastRxAtMs = this.now();
     const { data } = ev;
     let frame: ArrayBuffer | Uint8Array;
     if (data instanceof ArrayBuffer) {
@@ -648,17 +1014,24 @@ export class Connection {
       return;
     }
 
-    let msgs: Msg[];
-    try {
-      msgs = decodeFrame(frame);
-    } catch (err) {
-      // A malformed frame is dropped — it must never tear down the connection.
-      console.warn('[flowmap] dropping malformed frame', err);
-      return;
-    }
+    // Route the valid prefix even when a later message is malformed: those are
+    // real columns/trades, and dropping them would open a gap in the stream.
+    const { msgs, error } = decodeFramePartial(frame);
     for (const msg of msgs) {
+      // A handler may have torn the connection down mid-frame (a protocol
+      // mismatch in a Hello, say): nothing else from this socket is routed.
+      if (this.intentionalClose || this.socket === null) break;
       this.route(msg);
     }
+    if (error === null) return;
+    if (error instanceof ProtocolVersionError) {
+      // Every frame of a server on another protocol version fails here, Hello
+      // included: this is fatal, not a glitch to log and carry on past.
+      this.failProtocolMismatch(error.got, error.expected);
+      return;
+    }
+    // A malformed tail is dropped — it must never tear down the connection.
+    console.warn('[flowmap] dropping malformed frame tail', error);
   }
 
   private route(msg: Msg): void {
@@ -671,17 +1044,21 @@ export class Connection {
         this.handleHello(msg);
         return;
       case MsgType.EPOCH_START:
-        this.epochMap.set(msg.epoch, msg.epoch_params);
+        this.rememberEpoch(msg.epoch, msg.epoch_params);
         this.handlers.onEpochStart?.(msg);
         return;
       case MsgType.PING:
         this.sendPong(msg);
         return;
       case MsgType.STATUS:
+        // A Status before the Hello is the server saying it is alive and still
+        // preparing the subscribe: give it one more handshake window (capped).
+        if (!this.handshaken) this.extendHandshakeDeadline();
         // Remember the feed_state on THIS socket: the refusal contract sends a
         // Status immediately before closing, and the close handler needs it to
         // tell a terminal no-feed refusal from a recoverable one.
         this.lastStatusFeedState = msg.feed_state;
+        this.lastStatusReason = typeof msg.capability?.reason === 'string' ? msg.capability.reason : null;
         this.handlers.onStatus?.(msg);
         return;
       case MsgType.HISTORY_RESP:
@@ -703,8 +1080,11 @@ export class Connection {
         // forming bars carry the live CVD/VWAP edge — forward unconditionally.
         this.handlers.onStream?.(msg);
         return;
-      case MsgType.BOOK_UPDATE:
       case MsgType.TRADE:
+        if (this.isDuplicateTrade(msg)) return;
+        this.handlers.onStream?.(msg);
+        return;
+      case MsgType.BOOK_UPDATE:
       case MsgType.BBO:
       case MsgType.MARKER:
       case MsgType.GEX_UPDATE:
@@ -719,13 +1099,20 @@ export class Connection {
   }
 
   private handleHello(hello: Hello): void {
+    // The envelope version was already checked per frame; the payload field is
+    // the server's own statement of the same thing, and a disagreement is just
+    // as fatal.
+    if (hello.protocol_version !== PROTO_VER) {
+      this.failProtocolMismatch(hello.protocol_version, PROTO_VER);
+      return;
+    }
     // A Hello carrying a DIFFERENT session_id than the one we already
     // attached to means the process behind the socket was replaced (sidecar
     // crash + respawn keeps this webview — and this Connection — alive). The
     // replacement session's column sequence restarts at col_seq 0, so a
     // surviving lastColSeq cursor would swallow every finalized column of the
     // new session as a "reconnect re-send" until col_seq crawls past the old
-    // cursor — heatmap/DOM dead for minutes (survey-4 H-1). Per-session dedup
+    // cursor — heatmap/DOM dead for minutes. Per-session dedup
     // state dies with the session; the attach snapshot re-asserts an
     // EpochStart for EVERY epoch its columns reference before any column
     // flows (session.py `_snapshot_frames`/`_epoch_start_msgs`), and history
@@ -736,15 +1123,37 @@ export class Connection {
       this.lastColSeq.clear();
       this.epochMap.clear();
       this.depthSeams.reset();
+      this.seenTrades.clear();
       this.failHistoryWaiters(
         new Error('flowmap: history request abandoned — server session changed'),
       );
     }
     this.backoffAttempt = 0; // a completed handshake resets the backoff
+    this.handshaken = true; // the handshake deadline is met; liveness takes over
     this.sessionId = hello.session_id;
-    this.epochMap.set(hello.epoch_params.epoch, hello.epoch_params);
+    this.rememberEpoch(hello.epoch_params.epoch, hello.epoch_params);
     this.setConnStatus('live');
     this.handlers.onHello?.(hello);
+  }
+
+  /**
+   * Record an epoch's geometry, bounded to the newest {@link MAX_RETAINED_EPOCHS}.
+   * The dedup cursor of a pruned epoch goes with it: that epoch's columns can no
+   * longer be resident, so nothing can re-send them into the ring.
+   */
+  private rememberEpoch(epoch: number, params: EpochParams): void {
+    this.epochMap.set(epoch, params);
+    pruneEpochs(this.epochMap, this.sessionGridEpoch());
+    for (const known of this.lastColSeq.keys()) {
+      if (!this.epochMap.has(known)) this.lastColSeq.delete(known);
+    }
+  }
+
+  /** The newest epoch this transport has seen (the grid's current one). */
+  private sessionGridEpoch(): number | null {
+    let newest: number | null = null;
+    for (const epoch of this.epochMap.keys()) newest = epoch;
+    return newest;
   }
 
   private isDuplicateFinalizedDepth(msg: DepthColumn): boolean {
@@ -756,7 +1165,24 @@ export class Connection {
   }
 
   /**
-   * QA3 C-1 honesty: after forwarding an accepted depth column, check the step
+   * A trade the attach snapshot re-sends after a same-session reconnect. Each print
+   * keeps the per-session `seq` it got at ingest, so `ts_ns` plus `seq` identifies
+   * it. A print without a seq (0 on the wire) cannot be told apart and always passes.
+   */
+  private isDuplicateTrade(msg: Trade): boolean {
+    if (msg.seq === undefined) return false;
+    const key = `${msg.ts_ns}:${msg.seq}`;
+    if (this.seenTrades.has(key)) return true;
+    this.seenTrades.add(key);
+    if (this.seenTrades.size > TRADE_DEDUP_WINDOW) {
+      const oldest = this.seenTrades.values().next().value;
+      if (oldest !== undefined) this.seenTrades.delete(oldest);
+    }
+    return false;
+  }
+
+  /**
+   * Seam honesty: after forwarding an accepted depth column, check the step
    * against the previous one. A seq→time break (time running BACKWARD, or a
    * cadence that disagrees with the epoch's dt) means the ring is about to hold
    * two grids — surface a synthetic `gap` Marker on the same stream instead of

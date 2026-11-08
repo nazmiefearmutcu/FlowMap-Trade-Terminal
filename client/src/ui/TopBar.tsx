@@ -1,5 +1,5 @@
 /**
- * Top bar (§9, T12) — one tidy row: brand, dual-market symbol search, a
+ * Top bar — one tidy row: brand, dual-market symbol search, a
  * venue/market indicator, honest capability badges, the live/replay toggle, a
  * clock (wall time + the stream's latest ts), the connection status, the PNG
  * export button, and the rail + settings controls.
@@ -13,10 +13,13 @@
 import { forwardRef, useEffect, useState } from 'react';
 
 import { useT } from '../i18n/useT';
+import { exchangeZoneFor, formatClock, formatFixed, useTimeZone, zoneLabel } from '../i18n/format';
 
 import type { StreamMode } from '../proto/types';
+import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 import { useFlowMapStore } from '../state/store';
 import { useIntelligenceStore } from '../state/intelligenceStore';
+import { FEED_KEY } from './MarketStrip';
 import { SymbolSearch, type SymbolSearchHandle } from './SymbolSearch';
 import { Wordmark } from './Wordmark';
 import {
@@ -24,15 +27,18 @@ import {
   capabilityChipTitle,
   capabilityChips,
   marketGroup,
+  venueGroupLabel,
   venueLabel,
 } from './symbols';
+import './TopBar.css';
 
-const STATUS_LABEL: Record<string, string> = {
-  idle: 'idle',
-  connecting: 'connecting',
-  live: 'live',
-  reconnecting: 'reconnecting',
-  closed: 'closed',
+/** Connection state → its translation key (raw transport tokens never reach the screen). */
+export const STATUS_KEY: Record<string, string> = {
+  idle: 'status.idle',
+  connecting: 'status.connecting',
+  live: 'status.live',
+  reconnecting: 'status.reconnecting',
+  closed: 'status.closed',
 };
 
 // Capability chips are classified by the ONE shared `capabilityChipClass`
@@ -40,18 +46,6 @@ const STATUS_LABEL: Record<string, string> = {
 // carry its own copy, and the two drifted: the same `SYNTH_PROFILE` string read
 // as fabricated depth here and as real depth in the palette. One string, one
 // fidelity claim, every surface.
-
-/** The viewer's local time-zone abbreviation (e.g. `GMT+3`, `EST`) for labeling the wall clock. */
-function localZoneAbbrev(d: Date): string {
-  try {
-    const part = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
-      .formatToParts(d)
-      .find((p) => p.type === 'timeZoneName');
-    return part?.value ?? 'local';
-  } catch {
-    return 'local';
-  }
-}
 
 interface TopBarProps {
   onSelectSymbol: (market: string, symbol: string) => void;
@@ -90,31 +84,37 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
   const capability = useFlowMapStore((s) => s.capability);
   const subscription = useFlowMapStore((s) => s.subscription);
   const replayUnavailable = useFlowMapStore((s) => s.replayUnavailable);
+  const recordingDegraded = useFlowMapStore((s) => s.recordingDegraded);
   const macro = useIntelligenceStore((s) => s.macro);
+  // The bare `E` hint only names a key while single-key shortcuts are on.
+  const singleKeys = useSingleKeyShortcuts();
 
   const [wall, setWall] = useState(() => new Date());
   useEffect(() => {
     const id = window.setInterval(() => setWall(new Date()), 1000);
     return () => window.clearInterval(id);
   }, []);
+  // One zone preference (Settings → Time zone) drives every clock on the bar.
+  const zonePref = useTimeZone();
 
   const market = subscription?.market ?? 'sim';
   const symbol = subscription?.symbol ?? 'SIM-DEMO';
   const mode: StreamMode = subscription?.mode ?? 'live';
   const group = marketGroup(market);
   const chips = capabilityChips(capability);
-  const statusText = STATUS_LABEL[status] ?? status;
-  const wallText = wall.toTimeString().slice(0, 8);
-  const zoneAbbrev = localZoneAbbrev(wall);
-  // For equity sessions the reference clock is US-eastern; show it beside the UTC stream ts.
+  const statusKey = STATUS_KEY[status];
+  const statusText = statusKey ? t(statusKey) : status;
+  const exchangeZone = exchangeZoneFor(group);
+  const wallMs = wall.getTime();
+  const wallText = formatClock(wallMs, zonePref, exchangeZone);
+  const zoneAbbrev = zoneLabel(zonePref, exchangeZone, wallMs);
+  // For equity sessions the reference clock is US-eastern; show it beside the stream ts
+  // unless the preference already reads exchange time.
   const etText =
-    group === 'equity'
-      ? wall.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false })
-      : null;
-  const feedSuffix = feedState && feedState !== 'live' ? ` · ${feedState}` : '';
-  // The sim's stream ts is SESSION-RELATIVE (a T+ elapsed clock), so printing
-  // "UTC" next to it would claim a zone the number does not have.
-  const streamZone = group === 'sim' ? '' : ' UTC';
+    group === 'equity' && zonePref !== 'exchange' ? formatClock(wallMs, 'exchange', 'America/New_York') : null;
+  const feedKey = feedState && feedState !== 'live' ? (FEED_KEY[feedState] ?? 'marketStrip.feed.other') : null;
+  const feedLabel = feedKey ? t(feedKey) : '';
+  const feedSuffix = feedLabel ? ` · ${feedLabel}` : '';
 
   return (
     <header className="topbar">
@@ -131,12 +131,22 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
       <span
         className={`venue venue--${group}`}
         data-testid="venue"
-        title={`${market} · ${symbol} · ${group}`}
+        // The fidelity claim travels with the venue name, so it survives the
+        // narrow-window hiding of the chip row: L2 vs SYNTH is never silent.
+        title={`${market} · ${symbol} · ${venueGroupLabel(group, t)}${chips.length > 0 ? ` · ${chips.join(' · ')}` : ''}`}
       >
         <span className="venue__dot" aria-hidden="true" />
-        {venueLabel(market)}
-        <strong style={{ color: 'var(--text)', fontWeight: 600 }}>{symbol}</strong>
+        {venueLabel(market, t)}
+        <strong className="venue__symbol">{symbol}</strong>
       </span>
+
+      {/* Persistent while the simulated feed is the source (the sim market, or any feed that reports
+          itself synthetic), so fixtures are never mistaken for a market. */}
+      {(market === 'sim' || capability?.synthetic === true) && (
+        <span className="topbar__sim" data-testid="sim-badge" title={t('topbar.simBadgeTitle')}>
+          {t('topbar.simBadge')}
+        </span>
+      )}
 
       <span className="caps" data-testid="capability-badges">
         {capability === null ? (
@@ -147,7 +157,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
           <span className="cap cap--na">{t('topbar.noCaps')}</span>
         ) : (
           chips.map((c) => (
-            <span key={c} className={capabilityChipClass(c)} title={capabilityChipTitle(c)}>
+            <span key={c} className={capabilityChipClass(c)} title={capabilityChipTitle(c, t)}>
               {c}
             </span>
           ))
@@ -159,22 +169,22 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         className="macro-ticker"
         data-available={macro !== null}
         data-testid="institutional-stress-ticker"
-        title={macro ? 'Received macro data: SOFR / HY OAS / 10Y-2Y' : 'Unavailable — no connected source supplied macro data.'}
+        title={macro ? t('topbar.macroTitle') : t('topbar.macroUnavailable')}
       >
-        <span className="macro-ticker__lbl">MACRO:</span>
+        <span className="macro-ticker__lbl">{t('topbar.macro')}</span>
         <span className="macro-ticker__item">
-          SOFR <strong>{macro ? `${macro.sofrRate.toFixed(2)}%` : '—'}</strong>
+          SOFR <strong>{macro ? `${formatFixed(macro.sofrRate, 2)}%` : '—'}</strong>
         </span>
         <span className="macro-ticker__div">|</span>
         <span className="macro-ticker__item">
-          HY OAS <strong>{macro ? `${macro.hySpreadBps.toFixed(0)} bps` : '—'}</strong>
+          HY OAS <strong>{macro ? `${formatFixed(macro.hySpreadBps, 0)} ${t('unit.bps')}` : '—'}</strong>
         </span>
         <span className="macro-ticker__div">|</span>
         <span className={`macro-ticker__item ${macro ? (macro.yieldCurve10Y2Y < 0 ? 'is-neg' : 'is-pos') : ''}`}>
-          10Y-2Y <strong>{macro ? `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${macro.yieldCurve10Y2Y.toFixed(2)}%` : '—'}</strong>
+          10Y-2Y <strong>{macro ? `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${formatFixed(macro.yieldCurve10Y2Y, 2)}%` : '—'}</strong>
         </span>
         <span className={`macro-ticker__badge is-${macro?.stressRegime.toLowerCase() ?? 'unavailable'}`} title={macro?.status}>
-          {macro?.stressRegime ?? 'UNAVAILABLE'}
+          {macro?.stressRegime ?? t('topbar.unavailable')}
         </span>
       </div>
 
@@ -213,14 +223,14 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         data-testid="conn-status"
         role="status"
         aria-live="polite"
-        aria-label={`Connection ${statusText}${feedSuffix ? `, feed ${feedState}` : ''}`}
+        aria-label={`${t('topbar.connectionAria', { status: statusText })}${feedLabel ? t('topbar.feedAria', { feed: feedLabel }) : ''}`}
       >
         <span className="status__dot" aria-hidden="true" />
         {statusText}
         {feedSuffix}
       </span>
 
-      {/* §7 honesty: when a Replay toggle was refused (1003 — this symbol has no
+      {/* When a Replay toggle was refused (1003 — this symbol has no
           recording), say exactly that instead of leaving the user to guess why
           the replay never started. Cleared by the live fallback's handshake. */}
       {replayUnavailable && (
@@ -234,21 +244,40 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         </span>
       )}
 
+      {/* The recorder stopped saving new data for this session: a replay of later
+          times would be incomplete, so say so beside the replay toggle. The full
+          sentence is announced once by the app notice stack, so this chip is not a
+          live region. */}
+      {recordingDegraded && (
+        <span
+          className="recording-stalled"
+          data-testid="recording-stalled-chip"
+          title={t('banner.recordingDegraded')}
+        >
+          {t('topbar.recordingStalled')}
+        </span>
+      )}
+
       <span
         className="clock"
         data-testid="clock"
-        aria-label={`Wall clock ${wallText} ${zoneAbbrev}${
-          etText ? `, Eastern ${etText}` : ''
-        }, stream ${streamClock ?? 'none'}${
-          streamClock ? (group === 'sim' ? ', session-relative' : ' UTC') : ''
+        aria-label={`${t('topbar.wallClockAria', { time: wallText, zone: zoneAbbrev })}${
+          etText ? t('topbar.easternAria', { time: etText }) : ''
+        }${t('topbar.streamAria', { stream: streamClock ?? t('topbar.streamNone') })}${
+          streamClock ? (group === 'sim' ? t('topbar.sessionRelative') : t('topbar.utcSuffix')) : ''
         }`}
       >
         <span className="clock__wall">
           {wallText} <span className="clock__zone">{zoneAbbrev}</span>
         </span>
         {etText ? <span className="clock__et">{etText} ET</span> : null}
+        {/* The sim's stream ts is SESSION-RELATIVE (a T+ clock): it never gets a UTC label. */}
         <span className="clock__stream">
-          {streamClock ? `T ${streamClock}${streamZone}` : '—'}
+          {streamClock
+            ? group === 'sim'
+              ? t('topbar.clockStreamRelative', { time: streamClock })
+              : t('topbar.clockStreamUtc', { time: streamClock })
+            : '—'}
         </span>
       </span>
 
@@ -275,7 +304,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         onClick={onExportPng}
         data-testid="export-png"
         aria-label={t('topbar.exportPng')}
-        title={t('topbar.exportPngHint')}
+        title={singleKeys ? t('topbar.exportPngHint') : t('topbar.exportPng')}
       >
         <svg
           className="tbtn__icon"
@@ -312,7 +341,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
           className="tbtn is-intel"
           onClick={onToggleIntel}
           data-testid="intel-toggle"
-          title="Research (J): DOCS, GOV, FLOW, GEO"
+          title={t('topbar.intelTitle')}
         >
           {t('topbar.intelligence')}
         </button>

@@ -1,4 +1,4 @@
-"""CryptoFeed (Crocodile -> canonical) bridge tests (M1 plan Task 9).
+"""CryptoFeed (Crocodile -> canonical) bridge tests.
 
 NO live network. The fixture ``fixtures/binance_btcusdt_sample.jsonl`` holds
 raw Binance USD-M ws frames plus two REST-style depth snapshots (wrapper
@@ -129,7 +129,7 @@ def test_capability_shape() -> None:
         "depth": "L2",
         "tape": "tick",
         "trade_side": "exchange",
-        "cvd": "exchange",  # GOAL 3: exchange-true aggressor -> honest CVD
+        "cvd": "exchange",  # exchange-true aggressor -> honest CVD
         "markers": ["liquidation", "gap"],
         "book_top_n": feed._cfg.book_top_n,
         "raw_capture": False,

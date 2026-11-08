@@ -1,16 +1,16 @@
 /**
- * Axis draw-glue tests (W5 AXES, swarm2).
+ * Axis draw-glue tests.
  *
  * Pins the surgical Bookmap-class tunings plus the pre-existing contracts the
  * tunings must not disturb:
- *   - label fit at LARGE prices (review R2-M2): the global decimal reduction
- *     keeps every label inside the frozen 62 px gutter, and the width-free path
- *     stays byte-identical (`toFixed(step decimals)`);
+ * - label precision at LARGE prices: labels keep the venue tick's decimals and
+ *     are never rounded to fit the gutter, so ticks stay distinct; the
+ *     width-free path stays byte-identical (`toFixed(step decimals)`);
  *   - tick marks: 6 px majors at AXIS_TICK_ALPHA for BOTH axes (subtle guides,
  *     dimmer than the labels they serve);
  *   - time-axis typography: AXIS_TIME_LABEL_SIZE / AXIS_LABEL_WEIGHT, ms-precision
  *     strings, first/last labels clamped inward so they can never be half-clipped;
- *   - gridline-coverage contract: the string-free position helpers return EXACTLY
+ * - gridline-coverage contract: the string-free position helpers return EXACTLY
  *     the labeled ticks (no minor tick may draw a line the axis does not label).
  */
 
@@ -26,6 +26,7 @@ import {
   drawTimeAxis,
   priceAxisModel,
   priceTickPositions,
+  timeAxisLabelFormatter,
   timeAxisModel,
   timeTickPositions,
 } from './axes';
@@ -69,7 +70,7 @@ function stubLayer(width: number, height: number): { layer: TextLayer; lines: Li
   return { layer, lines, texts };
 }
 
-describe('priceAxisModel — label fit at large prices (R2-M2)', () => {
+describe('priceAxisModel — label fit at large prices', () => {
   it('labels the fitted BTC range with a uniform dollar ladder', () => {
     const scale = makeHybrid({ mid: 85505, rows: 4096, coreRows: 2048, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;
     const frame = priceFrame(scale.dnRows, scale.dnRows + scale.coreRows - 1, scale.rows, 0.08, 3, scale);
@@ -87,16 +88,27 @@ describe('priceAxisModel — label fit at large prices (R2-M2)', () => {
     }
   });
 
-  it('reduces decimals GLOBALLY so a big-price ladder stays inside the gutter', () => {
-    // Deep zoom on a large price: tick step 0.01 → "12345.01" (8 chars) would
-    // overflow the 7-char budget; the fit drops to 1 decimal for the WHOLE ladder.
+  it('never rounds big-price labels below the venue tick precision', () => {
+    // Deep zoom on a large price: a 0.01 tick prints "12345.01" (8 chars), wider
+    // than the 48 px gutter. The labels stay exact at two decimals; they are not
+    // rounded to fit, because rounding merges distinct ticks.
     const g = gm({ p0: 12345, step: 0.01 }, 8);
     const labels = priceAxisModel(g, DIMS.cssH, 48);
     expect(labels.length).toBeGreaterThan(2);
-    for (const l of labels) expect(l.label.length).toBeLessThanOrEqual(7);
-    // One scale, never mixed readouts.
-    const decimals = new Set(labels.map((l) => l.label.split('.')[1]?.length ?? 0));
-    expect(decimals.size).toBe(1);
+    for (const l of labels) expect(l.label).toMatch(/^12345\.\d{2}$/);
+    expect(new Set(labels.map((l) => l.label)).size).toBe(labels.length);
+  });
+
+  it('keeps 0.05-tick labels distinct on a 5-digit price in a narrow gutter', () => {
+    // Regression: the width fit dropped the ladder to one decimal, printing
+    // 12345.0 | 12345.1 | 12345.1 for the 0.05 ticks 12345.05, .10, .15.
+    const g = gm({ p0: 12345, step: 0.05 }, 8);
+    const labels = priceAxisModel(g, DIMS.cssH, 48);
+    expect(labels.length).toBeGreaterThan(2);
+    for (const l of labels) expect(l.label).toMatch(/^12345\.\d{2}$/);
+    expect(new Set(labels.map((l) => l.label)).size).toBe(labels.length);
+    const byPrice = labels.map((l) => Number(l.label));
+    for (let i = 1; i < byPrice.length; i++) expect(byPrice[i]).toBeGreaterThan(byPrice[i - 1]);
   });
 
   it('keeps the width-free path byte-identical (historical toFixed)', () => {
@@ -218,5 +230,67 @@ describe('gridline coverage contract — positions == labeled ticks', () => {
     const model = timeAxisModel(g, 800);
     expect(model.length).toBeGreaterThan(2);
     expect(timeTickPositions(g, 800)).toEqual(model.map((l) => l.pos));
+  });
+});
+
+describe('quarter-tick instruments — label precision and row registration', () => {
+  it('prints a 0.25-tick ladder with two decimals, never a step-rounded 0.3', () => {
+    // 0.25 grid step: the old ceil(-log10(0.25)) = 1 decimal printed 5230.25 as '5230.3'.
+    const g = gm({ p0: 5230, step: 0.25 }, 4);
+    const labels = priceAxisModel(g, DIMS.cssH);
+    expect(labels.map((l) => l.label)).toContain('5230.25');
+    for (const l of labels) expect(l.label).toMatch(/^\d+\.\d{2}$/);
+  });
+
+  it('registers each tick on the event row the price line uses (cell centre)', () => {
+    const g = gm({ p0: 5230, step: 0.25 }, 4);
+    const labels = priceAxisModel(g, DIMS.cssH);
+    expect(labels.length).toBeGreaterThan(2);
+    for (const l of labels) {
+      const price = Number(l.label);
+      expect(l.pos).toBeCloseTo(g.cssY(g.priceEventToRow(price)), 6);
+    }
+    expect(priceTickPositions(g, DIMS.cssH)).toEqual(labels.map((l) => l.pos));
+  });
+
+  it('keeps the venue-tick decimals at a six-digit price, so a narrow gutter never prints duplicate ticks', () => {
+    // 123456.00 / .25 / .50 / .75 with a 7-character limit: rounding to whole
+    // dollars printed 123456 twice and 123457 twice.
+    const g = gm({ p0: 123456, step: 0.25, tick: 0.25 }, 4);
+    const labels = priceAxisModel(g, DIMS.cssH, 42).map((l) => l.label);
+    expect(labels.length).toBeGreaterThan(2);
+    expect(new Set(labels).size).toBe(labels.length);
+    for (const label of labels) expect(label).toMatch(/^\d{6}\.\d{2}$/);
+  });
+
+  it('uses the venue tick as the decimal floor when the grid step is coarser', () => {
+    // Grid step 1 (grouped) over a 0.25 venue tick still labels whole quarters.
+    const g = new GridMap({ ...VIEW, rowScale: 8 }, DIMS, TIME, { p0: 5230, step: 1, tick: 0.25 });
+    const labels = priceAxisModel(g, DIMS.cssH);
+    for (const l of labels) expect(l.label).toMatch(/^\d+\.\d{2}$/);
+  });
+
+  it('prints a 0.025-tick ladder with three decimals (both axis and GEX share the venue tick)', () => {
+    // Grid step 0.025 and venue tick 0.025: quoteDecimals gives 3, whatever the axis step is.
+    const g = new GridMap({ ...VIEW, rowScale: 8 }, DIMS, TIME, { p0: 5230, step: 0.025, tick: 0.025 });
+    const labels = priceAxisModel(g, DIMS.cssH);
+    expect(labels.length).toBeGreaterThan(0);
+    for (const l of labels) expect(l.label).toMatch(/^\d+\.\d{3}$/);
+  });
+});
+
+describe('time-axis clock', () => {
+  it('keeps the session-relative T+ clock when no clock is given', () => {
+    expect(timeAxisLabelFormatter(1_000_000_000n, null)(3_000_000_000n)).toBe('00:00:03');
+  });
+
+  it('reads wall time in the chosen zone when a clock is given', () => {
+    // Epoch 0 is 00:00 UTC on 1 Jan 1970, which is 19:00 the evening before in New York.
+    expect(timeAxisLabelFormatter(1_000_000_000n, { pref: 'utc', exchangeZone: 'America/New_York' })(0n)).toBe('00:00:00');
+    expect(timeAxisLabelFormatter(1_000_000_000n, { pref: 'exchange', exchangeZone: 'America/New_York' })(0n)).toBe('19:00:00');
+  });
+
+  it('adds milliseconds on a sub-second step, as the session clock does', () => {
+    expect(timeAxisLabelFormatter(250_000_000n, { pref: 'utc', exchangeZone: 'UTC' })(1_500_000_000n)).toBe('00:00:01.500');
   });
 });

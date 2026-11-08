@@ -7,14 +7,13 @@ import {
   formatDurationNs,
   fractionOfExtent,
   nextSpeed,
-  phaseLabel,
   seekTargetNs,
   SPEED_STEPS,
   transportPhase,
 } from './replay';
 
 describe('SPEED_STEPS', () => {
-  it('is the 1–100× ladder from §9', () => {
+  it('is the 1–100× ladder', () => {
     expect([...SPEED_STEPS]).toEqual([1, 2, 5, 10, 50, 100]);
   });
 });
@@ -90,9 +89,10 @@ describe('nextSpeed — the one cycling control over the whole ladder', () => {
     expect(nextSpeed(100)).toBe(1); // wraps
   });
 
-  it('steps down and wraps the other way', () => {
+  it('steps down and stops at 1x instead of wrapping to the fastest speed', () => {
     expect(nextSpeed(5, -1)).toBe(2);
-    expect(nextSpeed(1, -1)).toBe(100);
+    expect(nextSpeed(1, -1)).toBe(1);
+    expect(nextSpeed(100, -1)).toBe(50);
   });
 
   it('snaps an off-ladder value onto the ladder before stepping', () => {
@@ -113,19 +113,15 @@ describe('nextSpeed — the one cycling control over the whole ladder', () => {
   });
 });
 
-describe('transportPhase / phaseLabel', () => {
+describe('transportPhase', () => {
   it('reports the CAMERA state in live mode, not the connection', () => {
     expect(transportPhase(false, false, true)).toBe('live-following');
     expect(transportPhase(false, false, false)).toBe('live-detached');
-    expect(phaseLabel('live-following', 1)).toBe('FOLLOWING');
-    expect(phaseLabel('live-detached', 1)).toBe('SCROLLED BACK');
   });
 
   it('reports play state and speed in replay mode', () => {
     expect(transportPhase(true, false, true)).toBe('replay-playing');
     expect(transportPhase(true, true, true)).toBe('replay-paused');
-    expect(phaseLabel('replay-playing', 5)).toBe('REPLAY 5× PLAYING');
-    expect(phaseLabel('replay-paused', 100)).toBe('REPLAY 100× PAUSED');
   });
 
   it('ignores `following` in replay (the scrubber owns position there)', () => {

@@ -1,11 +1,10 @@
 /**
- * `C` hotkey for the depth display channel (campaign 3, lane CD, contract C2).
+ * `C` hotkey for the depth display channel.
  *
  * Invisible mount: just the keyboard surface for cycling
  * sum → bid → ask → imbalance. The channel VALUE lives in the settings store
- * (`depthChannel`) and is applied by App via `renderer.setDepthChannel(mode)`
- * — this component never touches the renderer, so a build without the C2
- * setter simply keeps the default view while the setting still cycles.
+ * (`depthChannel`) and is applied to the renderer by App; this component never
+ * touches the renderer itself.
  */
 
 import { useEffect } from 'react';

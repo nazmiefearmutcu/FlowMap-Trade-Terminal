@@ -1,0 +1,31 @@
+FlowMap Trade Terminal
+Copyright 2026 Nazmi Efe Armutcu
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE). A copy of that licence and of this NOTICE file is published with each release and is bundled in the desktop installers.
+
+FlowMap includes or depends on third-party software. The components below are the main ones that ship
+in the desktop installers or are required to run from source. THIRD-PARTY-NOTICES.txt, attached to each release, is the complete list of bundled packages. Each component remains under its own
+licence, and the licence text ships with the component's package. The licences named here are the
+ones each project declares; they are listed for attribution. Each release attaches
+THIRD-PARTY-NOTICES.txt, with one section per installer target, named by its Rust target triple (x86_64-pc-windows-msvc, aarch64-pc-windows-msvc, aarch64-apple-darwin, x86_64-apple-darwin and x86_64-unknown-linux-gnu), for the Python distributions in that platform's bundled runtime, and shared sections for the production client packages and the Rust crates of the desktop shell's locked dependency graph, each with the licence it declares. A package that declares no licence is marked UNKNOWN there and is checked before the release is published.
+
+Bundled in the installers
+- CPython 3.13 runtime, from python-build-standalone (astral-sh) — Python Software Foundation License
+- Tauri 2 desktop shell — MIT or Apache-2.0
+- Microsoft WebView2 runtime (Windows; bootstrapper downloaded at install time when missing) — Microsoft terms
+- Crocodile market-data engine 0.3.2, vendored as server/vendor/crocodile-0.3.2-py3-none-any.whl — Apache-2.0 as its wheel metadata declares; the licence file ships inside the wheel (dist-info/licenses/LICENSE)
+- Python dependencies: aiohttp (Apache-2.0), certifi (MPL-2.0), fastapi (MIT), msgspec (BSD-3-Clause), numpy (BSD-3-Clause), polars (MIT), uvicorn (BSD-3-Clause), ccxt (MIT)
+- Packages that the market-data engine and ccxt install with them: pandas (BSD-3-Clause), pyarrow (Apache-2.0; not shipped in the Windows arm64 installer), yfinance (Apache-2.0), beautifulsoup4 (MIT), duckdb (MIT, used by the intelligence store), curl_cffi (MIT), cryptography (Apache-2.0 OR BSD-3-Clause)
+- Client libraries: React and React DOM (MIT), zustand (MIT)
+- Typefaces bundled with the client: Inter and JetBrains Mono, under the SIL Open Font License 1.1.
+  Their licence texts are in the source repository at client/src/assets/fonts/LICENSE-inter.txt and
+  client/src/assets/fonts/LICENSE-jetbrains-mono.txt, and each release's THIRD-PARTY-NOTICES.txt includes them.
+
+Build and test tooling (not shipped)
+- Vite, Vitest, Playwright, TypeScript, ESLint and typescript-eslint, pytest, ruff
+
+Market-data providers (used at run time, not bundled)
+- Binance, Bybit, Coinbase, Deribit and OKX public endpoints; Yahoo Finance and Google Finance endpoints.
+  Feed modules for FRED (St. Louis Fed), FINRA, House Stock Watcher, OpenSky Network, USAspending and
+  Greenhouse job boards exist, but no producer runs for them in this build, so they are not contacted.
+  Each provider's terms apply. See the README section on data providers and attribution.

@@ -130,15 +130,15 @@ test('whole history uses bounded coarse detail without cutting time, price or ol
     const original = state.requestHistory;
     const requests: ObservedHistoryRequest[] = [];
     (window as RequestWindow).__overviewHistoryRequests = requests;
-    store.setState({ requestHistory: (time, count, overview) => {
+    store.setState({ requestHistory: (time: number, count: number, overview?: { start_col: number; end_col: number; stride: number }) => {
       const record: ObservedHistoryRequest = { count, start: overview?.start_col, end: overview?.end_col,
         stride: overview?.stride, started: performance.now() };
       requests.push(record);
-      return original(time, count, overview).then(response => {
+      return original(time, count, overview).then((response: { depth_cols: { col_seq: number }[]; bar_cols: unknown[] }) => {
         Object.assign(record, { elapsed: performance.now() - record.started!, depths: response.depth_cols.length,
           bars: response.bar_cols.length, first: response.depth_cols[0]?.col_seq, last: response.depth_cols.at(-1)?.col_seq });
         return response;
-      }, error => { record.elapsed = performance.now() - record.started!; record.error = String(error); throw error; });
+      }, (error: unknown) => { record.elapsed = performance.now() - record.started!; record.error = String(error); throw error; });
     } });
     renderer.setFollowTime(false);
     renderer.setOverlayVisibility({ bubbles: false, bbo: false, vwap: false, profile: false, markers: false, gex: false });
@@ -179,14 +179,14 @@ test('whole history uses bounded coarse detail without cutting time, price or ol
   expect(whole.raw!.count).toBeLessThanOrEqual(RAW_BUDGET);
   expect(whole.requests.some((request: { start?: number; stride?: number }) => request.start === 0 && request.stride! > 1)).toBe(true);
   expect(whole.cvd.length).toBeGreaterThan(30);
-  expect(whole.cvd.every(point => Number.isFinite(point.cvd))).toBe(true);
+  expect(whole.cvd.every((point: { cvd: number }) => Number.isFinite(point.cvd))).toBe(true);
   expect(whole.cvd[0].col).toBeLessThan(before.range!.oldest);
   expect(whole.cvd.at(-1)!.col).toBeGreaterThan(before.newest * 0.8);
   expect(whole.coloredVolume).toBeGreaterThan(100);
   expect(whole.extrema).not.toBeNull();
   expect(whole.physicalFrame).not.toBeNull();
-  expect(whole.physicalFrame!.low).toBeLessThanOrEqual(whole.extrema.low);
-  expect(whole.physicalFrame!.high).toBeGreaterThanOrEqual(whole.extrema.high);
+  expect(whole.physicalFrame!.low).toBeLessThanOrEqual(whole.extrema!.low);
+  expect(whole.physicalFrame!.high).toBeGreaterThanOrEqual(whole.extrema!.high);
 
   for (const tolerance of [0, 50, 90]) {
     await page.evaluate(value => window.__flowmapLive!.renderer.setTolerance(value), tolerance);
@@ -232,11 +232,11 @@ test('whole history uses bounded coarse detail without cutting time, price or ol
   const oldView = await page.evaluate(() => window.__flowmapLive!.renderer.viewSnapshot);
   expect(oldView.colScale).toBe(256);
   const rawRequests = await page.evaluate(start =>
-    (window as RequestWindow).__overviewHistoryRequests.slice(start).filter(request => request.stride === 1), rawRequestStart);
+    (window as RequestWindow).__overviewHistoryRequests.slice(start).filter((request: ObservedHistoryRequest) => request.stride === 1), rawRequestStart);
   expect(rawRequests.length).toBeGreaterThan(0);
   expect(rawRequests.length, 'A distant view must load only its own bounded pages').toBeLessThanOrEqual(20);
   expect(rawRequests[0].end, 'The first page must land directly at the chosen old view').toBe(319);
-  expect(rawRequests.every(request => request.start! >= 32 && request.end! <= 319)).toBe(true);
+  expect(rawRequests.every((request: ObservedHistoryRequest) => request.start! >= 32 && request.end! <= 319)).toBe(true);
 
   await page.getByTestId('desk-fit').click();
   await waitForOverview(page);

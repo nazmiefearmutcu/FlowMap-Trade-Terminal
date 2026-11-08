@@ -76,10 +76,11 @@ cargo tauri build --bundles app --config "$MACOS_MINIMUM_CONFIG"
 echo "==> [5/7] Injecting the pyruntime into the .app"
 # macOS deliberately injects the pyruntime via `ditto` (symlink- and
 # metadata-preserving) rather than Tauri's `bundle.resources`: the base
-# tauri.conf.json carries NO resources key, so `cargo tauri build` above does
-# not copy the ~529 MB tree — no double-copy. (Windows/Linux DO use
-# bundle.resources, declared in tauri.windows.conf.json / tauri.linux.conf.json,
-# because those runners have no ditto step.) The rm -rf makes this idempotent.
+# tauri.conf.json lists only the LICENSE and NOTICE files, not the pyruntime
+# tree, so `cargo tauri build` above does not copy the ~529 MB tree — no
+# double-copy. (Windows/Linux DO map the tree through bundle.resources, declared
+# in tauri.windows.conf.json / tauri.linux.conf.json, because those runners have
+# no ditto step.) The rm -rf makes this idempotent.
 rm -rf "$APP_PATH/Contents/Resources/pyruntime"
 ditto "$PYRUNTIME" "$APP_PATH/Contents/Resources/pyruntime"
 
@@ -87,7 +88,16 @@ echo "==> [6/7] Deep ad-hoc codesign (no Developer ID available)"
 # Ad-hoc, WITHOUT the hardened runtime, so the bundled unsigned dylibs/.so load
 # freely (library validation is not enforced for an ad-hoc, non-hardened bundle).
 codesign --force --deep --sign - "$APP_PATH"
-codesign --verify --deep --verbose=1 "$APP_PATH" 2>&1 | tail -2 || true
+# A failed verification must fail the build: a broken ad-hoc signature would
+# otherwise ship in the DMG and only fail at first launch on the user's Mac.
+CODESIGN_LOG="$(mktemp)"
+if ! codesign --verify --deep --verbose=1 "$APP_PATH" >"$CODESIGN_LOG" 2>&1; then
+  cat "$CODESIGN_LOG" >&2
+  echo "ERROR: ad-hoc signature verification failed for $APP_PATH" >&2
+  exit 1
+fi
+tail -2 "$CODESIGN_LOG"
+rm -f "$CODESIGN_LOG"
 
 echo "==> [7/7] Building the DMG (designed background + drag-to-Applications layout)"
 # A plain `hdiutil create -format UDZO` cannot carry a window layout: the icon
@@ -173,5 +183,6 @@ echo "==> DONE"
 echo "    FlowMap.app : $APP_PATH  ($APP_SIZE)"
 echo "    FlowMap.dmg : $DMG_PATH  ($DMG_SIZE)"
 echo ""
-echo "    First run (unsigned/unnotarized): right-click → Open, or"
-echo "    xattr -cr /Applications/FlowMap.app"
+echo "    First run (unsigned/unnotarized), macOS 15 or later: open FlowMap once, then"
+echo "    System Settings → Privacy & Security → Open Anyway. On older macOS, right-click"
+echo "    FlowMap.app → Open. Or clear the quarantine flag: xattr -cr /Applications/FlowMap.app"

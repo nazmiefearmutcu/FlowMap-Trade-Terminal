@@ -1,0 +1,5 @@
+{
+  "_comment": "Skip and flake budget enforced by checkBudget.mjs in the CI e2e job. maxSkipped = the 8 known skip sites (smooth-zoom x4 conditional on EXT_color_buffer_float/SUM mips, gl4 lost-context x1, chart-reconstructed x2, shell replay transport x1 unconditional). Any new skip fails the job until this file is changed with a reason. maxFlaky allows tests that pass on a CI retry; lower it as flakes are fixed.",
+  "maxSkipped": 8,
+  "maxFlaky": 2
+}

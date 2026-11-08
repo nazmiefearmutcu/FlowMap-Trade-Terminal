@@ -1,4 +1,4 @@
-"""Pre-encoded snapshot frames (campaign item: kill the per-attach 8-16 MB
+"""Pre-encoded snapshot frames (removes the per-attach 8-16 MB
 inline encode).
 
 Finalized columns encode ONCE at finalize time; ``_snapshot_frames`` serves
@@ -14,6 +14,7 @@ import asyncio
 import numpy as np
 
 import flowmap_server.core.session as session_mod
+import flowmap_server.core.session_fanout as fanout_mod
 from flowmap_server.core.grid import Grid, GridCfg
 from flowmap_server.core.session import ClientTx, Session
 from flowmap_server.feeds.base import BookState
@@ -133,7 +134,7 @@ async def test_second_attach_serves_cache_without_reencode():
 
 
 async def test_encode_cache_is_bounded_by_snapshot_window(monkeypatch):
-    monkeypatch.setattr(session_mod, "SNAPSHOT_COLS", 4)
+    monkeypatch.setattr(fanout_mod, "SNAPSHOT_COLS", 4)
     feed = DrivenFeed()
     sess = Session("enc3", feed=feed, grid=Grid(_cfg()), timer=FakeTimer())
     sess.attach(ClientTx())

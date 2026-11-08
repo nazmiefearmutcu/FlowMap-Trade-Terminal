@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { setLocale } from '../i18n';
 import { cvdBounds, cvdColToX, cvdProject, cvdValueToY, fmtCvd } from './cvd';
 
 describe('cvdBounds — signed value range always spanning zero', () => {
@@ -60,12 +61,22 @@ describe('cvdColToX — matches the heatmap column-centre transform', () => {
 describe('fmtCvd — compact signed magnitude', () => {
   it('signs and abbreviates', () => {
     expect(fmtCvd(0)).toBe('0');
-    expect(fmtCvd(1500)).toBe('+1.5k');
+    expect(fmtCvd(1500)).toBe('+1.5K');
     expect(fmtCvd(-2_400_000)).toBe('−2.40M');
     expect(fmtCvd(42)).toBe('+42');
   });
   it('handles non-finite input', () => {
     expect(fmtCvd(Number.NaN)).toBe('—');
+  });
+  it('uses the UI locale decimal separator, like the DOM ladder', () => {
+    try {
+      setLocale('tr');
+      expect(fmtCvd(1500)).toBe('+1,5K');
+      expect(fmtCvd(-2_400_000)).toBe('−2,40M');
+      expect(fmtCvd(1_200_000_000)).toBe('+1,20B');
+    } finally {
+      setLocale('en');
+    }
   });
 });
 

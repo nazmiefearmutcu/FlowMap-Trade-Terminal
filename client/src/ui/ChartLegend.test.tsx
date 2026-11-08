@@ -4,7 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { OVERLAY, applyChartInk, applyOverlayPalette, resolveOverlayColors } from '../gl/overlays/palette';
 import { getCanvasPalette, resetThemeStoreForTest, setTheme, THEMES, THEME_IDS, useTheme } from '../theme';
-import { ChartLegend } from './ChartLegend';
+import { setLocale } from '../i18n';
+import { ChartLegend, legendItemsFor } from './ChartLegend';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLElement | null = null;
@@ -43,7 +44,28 @@ afterEach(() => {
   applyOverlayPalette(null);
 });
 
+describe('ChartLegend overlay visibility', () => {
+  it('drops the keys of overlays that are turned off, so the legend never names hidden layers', () => {
+    const all = legendItemsFor('midnight').map((i: { label: string }) => i.label);
+    expect(all).toEqual(['Last price', 'VWAP', 'BBO', 'Trades']);
+    const hidden = legendItemsFor('midnight', { vwap: false, bbo: false }).map((i: { label: string }) => i.label);
+    expect(hidden).toEqual(['Last price', 'Trades']);
+    expect(legendItemsFor('midnight', { price: false, vwap: false, bbo: false, bubbles: false })).toEqual([]);
+  });
+});
+
 describe('ChartLegend', () => {
+  it('names the legend group in the active locale, and follows a locale switch', () => {
+    setLocale('tr');
+    try {
+      const el = render().querySelector('[data-testid="chart-legend"]')!;
+      expect(el.getAttribute('aria-label')).toMatch(/^Grafik açıklaması: /);
+      expect(el.getAttribute('aria-label')).not.toContain('Chart legend');
+    } finally {
+      setLocale('en');
+    }
+  });
+
   it('renders the four price-family keys in English', () => {
     const el = render().querySelector('[data-testid="chart-legend"]')!;
     expect([...el.querySelectorAll('.chart-legend__label')].map(n => n.textContent)).toEqual(['Last price','VWAP','BBO','Trades']);

@@ -1,12 +1,10 @@
 """The one place a ``Subscribe.market`` string becomes a :class:`Feed`.
 
-This used to be copy-pasted twice — once in ``SessionManager`` for the test
-path and once in ``api.app`` for the server path — differing only in the sim
-feed's ``realtime`` flag. With the venue set now numbering in the hundreds
-rather than three, two copies is two places to drift; the flag is a parameter
-instead.
+The test path (``SessionManager``) and the server path (``api.app``) both call
+this, so the two cannot drift apart. The only difference between them is the sim
+feed's ``realtime`` flag, which is a parameter.
 
-Market grammar (unchanged, now with a far larger domain):
+Market grammar:
 
 ``sim``                     the deterministic demo feed
 ``<exchange>[-<segment>]``  any crypto venue Crocodile can reach — the ten
@@ -24,7 +22,7 @@ venue — a wall of ids is not a better error than a rule.
 from __future__ import annotations
 
 from flowmap_server.config import Config
-from flowmap_server.feeds.base import Feed
+from flowmap_server.feeds.base import DropCounters, Feed
 from flowmap_server.feeds.crypto import CryptoFeed, is_crypto_market, split_market
 from flowmap_server.feeds.equity import EQUITY_MARKETS, EquityFeed
 from flowmap_server.feeds.sim import SimFeed
@@ -37,19 +35,20 @@ SIM_MARKET = "sim"
 
 
 def build_feed(
-    sub: events.Subscribe, cfg: Config, *, realtime_sim: bool, stats: object | None = None
+    sub: events.Subscribe, cfg: Config, *, realtime_sim: bool, stats: DropCounters | None = None
 ) -> Feed:
     """Route one subscription to its feed.
 
     ``realtime_sim`` paces the demo feed to wall time (one column per ``dt_ns``,
     which keeps the event loop live and the stream watchable). Tests want the
     unpaced variant so they can drive the clock themselves. ``stats`` is the
-    server-wide telemetry aggregate (campaign C1, duck-typed): when set, the
+    server-wide telemetry aggregate (duck-typed): when set, the
     live feeds count their queue evictions and ts-gate drops into it at the
     source instead of leaving them write-only.
     """
     if sub.market == SIM_MARKET:
-        return SimFeed(seed=42, dt_ns=cfg.dt_crypto_ns, start_ns=0, realtime=realtime_sim)
+        return SimFeed(seed=42, dt_ns=cfg.dt_crypto_ns, start_ns=0, realtime=realtime_sim,
+                       symbol=sub.symbol)
     if sub.market in EQUITY_MARKETS:
         # Tier (keyless SYNTH / Alpaca / Finnhub) auto-selected from cfg keys.
         return EquityFeed(sub.symbol, cfg, stats=stats)

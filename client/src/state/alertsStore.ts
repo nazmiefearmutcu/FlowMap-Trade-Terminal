@@ -1,5 +1,5 @@
 /**
- * Client-local price alerts (campaign 3, lane CD).
+ * Client-local price alerts.
  *
  * A plain module-scoped store OUTSIDE React (the bookStore pattern): the chart
  * overlays subscribe for repaints, an evaluation tick feeds it the last traded /
@@ -20,9 +20,13 @@
  * the band, never a timer.
  *
  * Toast delivery goes through the `window.__flowmapToast?.(msg)` hook ONLY —
- * the Toaster component (another lane) binds to that global; this module never
- * imports UI. Absent hook = silently no toast (the marker + log still fire).
+ * the Toaster component binds to that global; this module never imports a
+ * component. Absent hook = silently no toast (the marker + log still fire).
  */
+
+import { t } from '../i18n';
+import { alertPriceText } from '../ui/alertPrice';
+import { safeLocalStorage } from './safeStorage';
 
 /** One user price alert. */
 export interface PriceAlert {
@@ -64,7 +68,7 @@ export interface AlertLogEntry {
   /**
    * The alert's direction at fire time (true = fires on a rise). Optional for
    * hand-built fixtures; live entries always carry it so an exact-touch fire
-   * is labeled by its own direction instead of price comparison (R2-L4).
+   * is labeled by its own direction instead of a price comparison.
    */
   above?: boolean;
 }
@@ -78,7 +82,7 @@ export interface AlertsSnapshot {
   log: readonly AlertLogEntry[];
 }
 
-/** Max alerts retained per symbol (contract: "max 50 alerts per symbol"). */
+/** Max alerts retained per symbol. */
 export const MAX_ALERTS_PER_SYMBOL = 50;
 /** Triggered-log ring capacity. */
 export const LOG_CAP = 200;
@@ -109,6 +113,8 @@ let idCounter = 0;
 let cachedSnapshot: AlertsSnapshot | null = null;
 
 let storage: StorageLike | null | undefined;
+/** Set once the "alerts not saved" notice has been shown in this page session. */
+let saveFailureNotified = false;
 const listeners = new Set<() => void>();
 
 /** Minimal Web-Storage subset (mirrors ui/settings.ts StorageLike). */
@@ -118,18 +124,13 @@ export interface StorageLike {
   removeItem?(key: string): void;
 }
 
-/** The default storage (browser localStorage), resolved lazily + guarded. */
-function defaultStorage(): StorageLike | null {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
-  } catch {
-    /* localStorage denied (privacy mode) — alerts simply stay session-local */
-  }
-  return null;
-}
-
+/**
+ * The browser localStorage, resolved lazily through the one guarded accessor
+ * shared with the other boot-time readers. A denied profile reads as null, so
+ * alerts simply stay session-local.
+ */
 function getStorage(): StorageLike | null {
-  if (storage === undefined) storage = defaultStorage();
+  if (storage === undefined) storage = safeLocalStorage();
   return storage;
 }
 
@@ -181,7 +182,20 @@ function persistKey(key: string): void {
       s.setItem(STORAGE_PREFIX + key, JSON.stringify({ v: 1, alerts: list }));
     }
   } catch {
-    /* quota / serialization failure — best-effort, alerts stay in memory */
+    // Quota or serialization failure: the alerts stay active for this session,
+    // but a reload would lose them, so the user is told once.
+    notifySaveFailure();
+  }
+}
+
+/** Tell the user, once per page session, that alerts are not surviving a reload. */
+function notifySaveFailure(): void {
+  if (saveFailureNotified) return;
+  saveFailureNotified = true;
+  try {
+    defaultToast(t('alerts.saveFailed'));
+  } catch {
+    /* the notice itself is best-effort */
   }
 }
 
@@ -191,15 +205,20 @@ function normalizeAlerts(key: string, raw: unknown): PriceAlert[] {
   const out: PriceAlert[] = [];
   for (const o of raw.slice(0, MAX_ALERTS_PER_SYMBOL)) {
     const a = (o ?? {}) as Partial<PriceAlert> & Record<string, unknown>;
-    const price = typeof a.price === 'number' ? a.price : Number(a.price);
-    if (!Number.isFinite(price)) continue;
+    // Only a real number is a level. `Number(null)` and `Number('')` are 0 and
+    // would pass a finiteness test, turning a corrupt entry into an alert at 0
+    // that fires on the next tick; a zero or negative level is never valid here.
+    const price = a.price;
+    if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) continue;
     const above = a.above !== false;
     const triggered = a.triggered === true;
-    const rearmRaw = typeof a.rearmPx === 'number' ? a.rearmPx : Number(a.rearmPx);
+    // The same strictness for the re-arm level: JSON `null` (an ARMED alert, the
+    // common case) must stay null, not become a band at 0.
+    const rearmRaw = typeof a.rearmPx === 'number' && Number.isFinite(a.rearmPx) ? a.rearmPx : null;
     // Legacy payloads (pre-hysteresis) carry a latched `triggered` with no band:
     // adopt the unified re-arm by deriving the band from the level, so an old
     // alert cannot stay stuck beyond its level forever.
-    const rearmPx = Number.isFinite(rearmRaw)
+    const rearmPx = rearmRaw !== null
       ? rearmRaw
       : triggered
         ? rearmPriceFor(price, above)
@@ -293,13 +312,17 @@ export function allAlertKeys(): string[] {
 /**
  * Create an alert at `price` for `key`. `refPx` (the live reference price, e.g.
  * the current mid) decides the direction: an alert ABOVE the reference fires on
- * the way up, one BELOW on the way down. Returns the created alert, or null for
- * a non-finite price. Adding to a FULL symbol (≥ {@link MAX_ALERTS_PER_SYMBOL})
- * evicts that symbol's oldest alert to make room — bounded growth, never a
- * silent refusal.
+ * the way up, one BELOW on the way down. Returns the created alert, or null when
+ * the level is not a positive finite price, or when it sits EXACTLY on the
+ * reference: that level is already crossed, so it would fire on the next tick
+ * (both directions compare with `>=`/`<=`). Adding to a FULL symbol
+ * (≥ {@link MAX_ALERTS_PER_SYMBOL}) evicts that symbol's oldest alert to make
+ * room — bounded growth, never a silent refusal.
  */
 export function addAlert(key: string, price: number, refPx?: number, now = Date.now()): PriceAlert | null {
-  if (!Number.isFinite(price)) return null;
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const hasRef = typeof refPx === 'number' && Number.isFinite(refPx);
+  if (hasRef && price === refPx) return null; // already at the market: refuse, do not fire
   const list = loadKey(key);
   while (list.length >= MAX_ALERTS_PER_SYMBOL) {
     list.shift(); // oldest first (lists are append-ordered by creation)
@@ -376,14 +399,6 @@ export function rearmAlert(id: string): boolean {
     return true;
   }
   return false;
-}
-
-/** Delete every alert for one symbol. */
-export function clearAlerts(key: string): void {
-  if (!byKey.has(key)) loadKey(key);
-  byKey.set(key, []);
-  persistKey(key);
-  bump();
 }
 
 /**
@@ -463,24 +478,32 @@ export function evaluateAlerts(
 
 /** Human toast line for a fired alert, e.g. `Alert BTCUSDT · crossed above 60,000 (now 60,012.5)`. */
 export function alertToastMessage(e: AlertLogEntry): string {
-  const fmt = (n: number): string =>
-    n.toLocaleString('en-US', { maximumFractionDigits: 8 });
+  // Both prices are LEVELS, so they use the shared level format (alertPriceText):
+  // never digit-grouped and always '.'-decimal, the same text as the popover row
+  // and the marker tag in every locale (a Turkish session reads 60000.50 here, as
+  // it does on the chart). Grouping them would contradict alertPrice.ts.
   // The log entry owns the full `market:symbol` key; the toast must NAME the
-  // symbol or a walk-away user cannot tell which chart cried (survey 3 #1).
+  // symbol or a walk-away user cannot tell which chart cried.
   // Direction: prefer the entry's own flag (exact-touch fires are unambiguous);
   // hand-built/legacy fixtures without it fall back to the price comparison.
   const colon = e.key.indexOf(':');
   const symbol = colon >= 0 ? e.key.slice(colon + 1) : e.key;
   const above = e.above ?? e.price < e.crossedAt;
-  return `Alert ${symbol} · crossed ${above ? 'above' : 'below'} ${fmt(e.price)} (now ${fmt(e.crossedAt)})`;
+  return t('alert.fired', {
+    symbol,
+    direction: t(above ? 'alert.above' : 'alert.below'),
+    price: alertPriceText(e.price),
+    now: alertPriceText(e.crossedAt),
+  });
 }
 
-/** The toast hook: `window.__flowmapToast?.(msg)` — bound by the shell lane. */
+/**
+ * The toast hook: `window.__flowmapToast?.(msg)`, bound by the app shell. Its
+ * type is declared once, globally, beside the Toaster that binds it.
+ */
 function defaultToast(msg: string): void {
   if (typeof window === 'undefined') return;
-  const hook = (window as unknown as { __flowmapToast?: (msg: string) => void })
-    .__flowmapToast;
-  hook?.(msg);
+  window.__flowmapToast?.(msg);
 }
 
 // --- test seams ------------------------------------------------------------------
@@ -492,6 +515,7 @@ export function resetAlertsForTest(): void {
   version = 0;
   idCounter = 0;
   cachedSnapshot = null;
+  saveFailureNotified = false;
   listeners.clear();
 }
 

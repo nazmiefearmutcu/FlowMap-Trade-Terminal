@@ -3,6 +3,42 @@ import { GridMap } from './coords';
 import type { OverlayFrame } from './frame';
 import { accumulateProfile, Profile } from './profile';
 import { makeHybrid, priceToRow, rowToPrice, type PriceScale } from '../priceScale';
+import { setLocale } from '../../i18n';
+
+describe('profile badge text follows the active locale', () => {
+  it('pending and failed badges read the locale table, not hard-coded Turkish', () => {
+    const scale: PriceScale = { kind: 'linear', rows: 8, p0: 0, step: 1 };
+    const bid = new Float32Array(8); bid[3] = 9;
+    const gm = new GridMap({ colOffset: 0, colScale: 3, rowOffset: 0, rowScale: 8 },
+      { cssW: 1000, cssH: 600, drawW: 1000, drawH: 600 }, null, { p0: 0, step: 1, scale });
+    const badge = vi.fn();
+    const profile = new Profile({ maxCols: 2 });
+    const frame = { gm, resident: { oldest: 0, newest: 2 },
+      columnArrays: () => ({ bid, ask: null }),
+      solid: { begin: () => {}, addRect: () => {}, flush: () => {} }, text: { badge },
+    } as unknown as OverlayFrame;
+    try {
+      setLocale('en');
+      profile.draw(frame);
+      expect(badge.mock.calls.at(-1)![2]).toBe('Computing profile…');
+      // Retries exhausted: the state stays 'failed' and no new run starts.
+      (profile as unknown as { failures: number }).failures = 99;
+      profile.calculationState = 'failed';
+      profile.draw(frame);
+      expect(badge.mock.calls.at(-1)![2]).toBe('Profile unavailable');
+      setLocale('tr');
+      profile.draw(frame);
+      expect(badge.mock.calls.at(-1)![2]).toBe('Profil hesaplanamadı');
+      profile.calculationState = 'pending';
+      (profile as unknown as { failures: number }).failures = 0;
+      profile.draw(frame);
+      expect(badge.mock.calls.at(-1)![2]).toBe('Profil hesaplanıyor…');
+    } finally {
+      setLocale('en');
+      profile.dispose();
+    }
+  });
+});
 
 describe('profile physical price intervals', () => {
   it('a missing last column does not erase the full cached profile window', async () => {

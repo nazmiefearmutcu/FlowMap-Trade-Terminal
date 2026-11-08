@@ -6,30 +6,62 @@ name: release
 #
 # Native Python wheels (numpy / polars / msgspec / curl-cffi …) must be built on
 # their own OS+arch, so each installer is produced on its matching runner — the
-# bundled pyruntime cannot be cross-built. Triggered by pushing a `vX.Y.Z` (or
-# hotfix `vX.Y.Z.W`) tag; `workflow_dispatch` can dry-run the build (no upload)
-# or (re)release an existing tag.
+# bundled pyruntime cannot be cross-built. Triggered by pushing a `vX.Y.Z` tag;
+# `workflow_dispatch` can dry-run the build (no upload) or (re)release an
+# existing tag, which requires typing that tag into the `confirm` input.
+#
+# Pipeline (least privilege at every step):
+#   prepare     reads the tag, checks the nine version fields and the notes file
+#   gate        the full CI workflow (ci.yml) on the tagged commit; nothing below
+#               starts when it is red
+#   build       one leg per OS/arch, contents: read only, no publish token; the
+#               installers leave the leg as workflow artifacts. Every leg installs
+#               or launches what it built and checks the server it starts
+#               (scripts/packaged_smoke_windows.py on Windows,
+#               scripts/packaged_smoke_posix.py on macOS and Linux), and records the
+#               third-party components of its own runtime
+#   publish     the only job with write scope. It runs behind the `release`
+#               GitHub Environment (add required reviewers in repository settings
+#               to make the publish step wait for a human), attests and checksums
+#               the installers, uploads them, verifies the uploaded bytes against
+#               SHA256SUMS and only then flips the release out of draft.
 #
 # Every released installer is signed with a SLSA build-provenance attestation
-# and listed in a single `SHA256SUMS` asset, so a download can be tied back to
-# this repo and this commit without trusting the release page — see SECURITY.md.
+# and listed in a single `SHA256SUMS` asset together with THIRD-PARTY-NOTICES.txt,
+# the Apache-2.0 LICENSE, NOTICE and the font licence texts, so a download can be
+# tied back to this repo and this commit without trusting the release page — see
+# SECURITY.md.
 on:
   push:
     tags:
       # GitHub tag filters are glob-ish (no `(...)` groups or `{n,m}`
-      # quantifiers), so three-part and four-part hotfix tags get one
-      # explicit pattern each.
+      # quantifiers). Only SemVer tags are releases; hotfixes are patch versions.
       - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing git tag to build & release (e.g. v1.2.0). Leave blank to build without releasing."
+        description: "Existing git tag to build and release (e.g. v1.2.0). Leave blank to build without releasing."
+        required: false
+        default: ""
+      confirm:
+        description: "Required when `tag` is set: type the same tag again to confirm the release."
         required: false
         default: ""
 
-permissions:
-  contents: write
+# No token scope unless a job declares it below.
+permissions: {}
+
+# Exact versions of the tools that build the installers. Bump them deliberately:
+# ci.yml, windows-benchmark.yml and macos-runtime-audit.yml carry the same UV_VERSION.
+env:
+  UV_VERSION: "0.12.12"
+  RUST_TOOLCHAIN: "1.98.0"
+
+# Two runs for the same tag must not race to publish; a running release is
+# never cancelled half-way through an upload.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -37,6 +69,8 @@ jobs:
   # ---------------------------------------------------------------------------
   prepare:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       do_release: ${{ steps.resolve.outputs.do_release }}
@@ -49,17 +83,22 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_CONFIRM: ${{ github.event.inputs.confirm }}
         run: |
           set -euo pipefail
           TAG=""
           if [ "$EVENT_NAME" = "push" ]; then
             TAG="$REF_NAME"
           elif [ -n "$INPUT_TAG" ]; then
+            if [ "$INPUT_CONFIRM" != "$INPUT_TAG" ]; then
+              echo "Refusing to release $INPUT_TAG: type the same tag into the confirm input." >&2
+              exit 1
+            fi
             TAG="$INPUT_TAG"
           fi
           if [ -n "$TAG" ]; then
-            if [[ ! "$TAG" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]]; then
-              echo "Invalid release tag: $TAG" >&2
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid release tag: $TAG (expected vX.Y.Z; hotfixes use a patch version)" >&2
               exit 1
             fi
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -72,88 +111,72 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ steps.resolve.outputs.tag && format('refs/tags/{0}', steps.resolve.outputs.tag) || github.sha }}
+          persist-credentials: false
 
-      - name: Verify release versions match the selected tag
+      - name: Verify release versions and release notes for the selected tag
         if: steps.resolve.outputs.do_release == 'true'
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib, re
-          root = pathlib.Path('.')
-          expected = os.environ['TAG'][1:]
-          def matched_version(path, pattern):
-              match = re.search(pattern, (root / path).read_text())
-              if match is None:
-                  raise SystemExit(f'Missing version in {path}')
-              return match.group(1)
-          versions = {
-              'Tauri': json.loads((root / 'app/src-tauri/tauri.conf.json').read_text())['version'],
-              'Cargo': matched_version('app/src-tauri/Cargo.toml', r'(?m)^version = "([^"]+)"'),
-              'Cargo lock': matched_version('app/src-tauri/Cargo.lock', r'name = "flowmap"\s+version = "([^"]+)"'),
-              'Client': json.loads((root / 'client/package.json').read_text())['version'],
-              'Client lock': json.loads((root / 'client/package-lock.json').read_text())['version'],
-              'Client root lock': json.loads((root / 'client/package-lock.json').read_text())['packages']['']['version'],
-              'Server': matched_version('server/pyproject.toml', r'(?m)^version = "([^"]+)"'),
-              'Server lock': matched_version('server/uv.lock', r'name = "flowmap-server"\s+version = "([^"]+)"'),
-              'Server runtime': matched_version('server/src/flowmap_server/__init__.py', r'__version__ = "([^"]+)"'),
-          }
-          wrong = {name: value for name, value in versions.items() if value != expected}
-          if wrong:
-              raise SystemExit(f'Tag expects {expected}; inconsistent versions: {wrong}')
-          print(f'All release versions match {expected}')
-          PY
+          set -euo pipefail
+          # The nine version fields must agree with each other and with the tag
+          # (scripts/check_release_versions.py, also run on every push by ci.yml).
+          python3 scripts/check_release_versions.py --tag "$TAG"
+          # The notes file is part of the release; there is no auto-generated fallback.
+          NOTES="docs/release-notes-${TAG#v}.md"
+          if [ ! -s "$NOTES" ]; then
+            echo "Missing release notes: $NOTES" >&2
+            exit 1
+          fi
 
-  # ---------------------------------------------------------------------------
-  # Ensure a (draft) Release exists for the tag before the matrix uploads to it.
-  # ---------------------------------------------------------------------------
-  release-draft:
-    needs: prepare
-    if: needs.prepare.outputs.do_release == 'true'
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ format('refs/tags/{0}', needs.prepare.outputs.tag) }}
-      - name: Ensure a draft release exists
+      # A published release is never rebuilt or overwritten: its installers and
+      # SHA256SUMS are what people already downloaded. A draft left by an earlier
+      # attempt is still reusable, and a tag without a release starts a new draft.
+      - name: Refuse to rebuild or overwrite a published release
+        if: steps.resolve.outputs.do_release == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.prepare.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          NOTES="docs/release-notes-${TAG#v}.md"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — reusing it."
-            if [ -f "$NOTES" ]; then
-              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES"
+          if DRAFT="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>"$RUNNER_TEMP/release-view.err")"; then
+            if [ "$DRAFT" = "false" ]; then
+              echo "Release $TAG is already published. Refusing to rebuild or overwrite it: cut the next version instead." >&2
+              exit 1
             fi
-          elif [ -f "$NOTES" ]; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
-              --title "FlowMap $TAG" --notes-file "$NOTES" --draft
+            echo "Release $TAG exists as a draft; the publish job will reuse it."
+          elif grep -qi 'not found' "$RUNNER_TEMP/release-view.err"; then
+            echo "No release exists yet for $TAG; the publish job will create a draft."
           else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --verify-tag --title "FlowMap $TAG" --generate-notes --draft
+            cat "$RUNNER_TEMP/release-view.err" >&2
+            echo "Could not read the release state for $TAG." >&2
+            exit 1
           fi
 
   # ---------------------------------------------------------------------------
-  # Build one installer per OS/arch and upload it to the draft release.
+  # The full CI gate (typecheck, lint, unit, server, shell and e2e tests) on the
+  # commit being released. Nothing is drafted, built or published unless it is
+  # green, so a tag cannot ship code that CI would reject.
+  # ---------------------------------------------------------------------------
+  gate:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.tag && format('refs/tags/{0}', needs.prepare.outputs.tag) || github.sha }}
+    permissions:
+      contents: read
+
+  # ---------------------------------------------------------------------------
+  # Build one installer per OS/arch. Read-only: no token reaches the build steps
+  # and the installers leave the leg only as workflow artifacts.
   # ---------------------------------------------------------------------------
   build:
-    needs: [prepare, release-draft]
-    # Run when releasing (release-draft succeeded) OR on a dry-run build
-    # (release-draft skipped). Never run if prepare failed or the run cancelled.
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.release-draft.result == 'success' || needs.release-draft.result == 'skipped') }}
+    needs: [prepare, gate]
+    # Run when the gate passed (releasing or a dry-run build). Never run if the
+    # gate or prepare failed or the run was cancelled.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.gate.result == 'success' }}
     permissions:
-      contents: write
-      # An unsigned installer downloaded from a stranger's GitHub is, on its
-      # face, indistinguishable from malware — "the source is open" says nothing
-      # about the 168 MB binary, which nobody compiled themselves. These two
-      # scopes let the run sign a provenance statement binding each installer's
-      # digest to this repository, this workflow file and this commit, so the
-      # link from readable source to downloaded binary stops being a promise:
-      #   gh attestation verify FlowMap_<version>_aarch64.dmg -R <owner>/<repo>
-      id-token: write
-      attestations: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -194,10 +217,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.prepare.outputs.tag && format('refs/tags/{0}', needs.prepare.outputs.tag) || github.sha }}
+          persist-credentials: false
 
       - name: Install Rust (host target ${{ matrix.triple }})
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.triple }}
 
       - name: Cache Rust build
@@ -214,6 +239,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: ${{ env.UV_VERSION }}
 
       - name: Install Linux WebView + bundling deps
         if: matrix.kind == 'linux'
@@ -237,40 +264,48 @@ jobs:
 
       - name: Install Tauri CLI (cargo-tauri)
         # Pinned to the exact crate version whose npm twin CI uses
-        # (@tauri-apps/cli@2.11.4, ci.yml shell job). An unpinned ^2.0 would
-        # let a future bad 2.x release change how an old tag rebuilds —
-        # breaking the reproducibility promise the SHA-pinned actions keep.
-        run: cargo install tauri-cli --version "2.11.4" --locked
+        # (@tauri-apps/cli@2.11.5, ci.yml shell job) and that Cargo.lock locks
+        # (tauri 2.11.5). An unpinned ^2.0 would let a future bad 2.x release
+        # change how an old tag rebuilds.
+        run: cargo install tauri-cli --version "2.11.5" --locked
+
+      - name: Verify Cargo.lock is current
+        working-directory: app/src-tauri
+        run: cargo metadata --locked --format-version 1 >/dev/null
 
       # --- macOS: the existing all-in-one script (client → pyruntime → tauri →
       #     ditto → ad-hoc codesign → dmg). Arch-aware, so it drives both the
       #     Apple-Silicon and Intel runners. ------------------------------------
-      # The committed DMG artwork carries a version stamp; a release bump that
-      # forgets to re-render it would otherwise fail the whole mac leg. Render
-      # it on the runner (Menlo lives on macOS) whenever the stamp is stale.
-      - name: Refresh DMG artwork when the version stamp is stale
+      # The committed DMG artwork carries a version stamp. The release never
+      # re-renders it on the runner (that needed an unpinned Pillow install in
+      # the build leg). scripts/check_dmg_art.py refuses a stale stamp here, and
+      # ci.yml runs the same check on every push, so a stale release cannot start.
+      - name: Verify DMG artwork matches the app version
         if: matrix.kind == 'macos'
-        run: |
-          set -euo pipefail
-          VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' app/src-tauri/tauri.conf.json | head -1)"
-          STAMP="$(cat app/icons/dmg/RENDERED_VERSION 2>/dev/null || true)"
-          if [ "$STAMP" != "$VERSION" ]; then
-            echo "artwork stamp '$STAMP' != version '$VERSION' — regenerating"
-            # macOS runners are PEP 668-managed; pillow is a dev-time dep here.
-            python3 -m pip install --quiet --user --break-system-packages pillow
-            python3 app/icons/dmg/make-bg.py "$VERSION" --all
-          else
-            echo "artwork stamp current ($STAMP)"
-          fi
+        run: python3 scripts/check_dmg_art.py
 
+      # The python-build-standalone lookup in bundle-python.sh authenticates with
+      # GITHUB_TOKEN when it is set; unauthenticated calls share a 60-per-hour
+      # limit per runner egress IP and intermittently fail. The token goes to the
+      # two steps that run bundle-python.sh and nothing else in this job. The
+      # job's permissions are read-only (`contents: read`), so the token cannot
+      # write to the repository or read any repository secret.
       - name: Build macOS installer (build-dmg.sh)
         if: matrix.kind == 'macos'
         env:
-          # Lets bundle-python.sh authenticate its python-build-standalone
-          # release lookup; the unauthenticated GitHub API cap is 60/hour per IP
-          # and shared runner IPs blow through it, returning a 403.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash app/scripts/build-dmg.sh
+
+      # --- macOS packaged-app smoke: the DMG this leg built is attached, FlowMap.app
+      #     is copied out and launched, and the same loopback checks as the Windows
+      #     legs run against its server (scripts/packaged_smoke_posix.py).
+      - name: Smoke test the installed macOS app
+        if: matrix.kind == 'macos'
+        run: |
+          set -euo pipefail
+          for dmg in app/src-tauri/target/release/bundle/dmg/*.dmg; do
+            python3 scripts/packaged_smoke_posix.py --installer "$dmg"
+          done
 
       - name: Preserve macOS runtime minimum evidence
         if: always() && matrix.kind == 'macos'
@@ -295,7 +330,7 @@ jobs:
       - name: Bundle Python runtime (${{ matrix.triple }})
         if: matrix.kind != 'macos'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash app/scripts/bundle-python.sh "${{ matrix.triple }}"
 
       - name: Generate Tauri icon set
@@ -308,30 +343,58 @@ jobs:
         working-directory: app/src-tauri
         run: cargo tauri build
 
-      # The .deb is the SUPPORTED Linux installer and must succeed.
+      # --- Windows packaged-app smoke: the installers this leg built are installed
+      #     on the runner, the installed app is launched, its server answers
+      #     /api/health, refuses a foreign Host and an unauthenticated request, the
+      #     window closes and no python from the installed runtime keeps running.
+      #     It runs on the bundled interpreter (stdlib only) and needs no token.
+      - name: Smoke test the installed Windows app
+        if: matrix.kind == 'windows'
+        run: |
+          set -euo pipefail
+          PY="app/src-tauri/resources/pyruntime/python.exe"
+          for installer in app/src-tauri/target/release/bundle/msi/*.msi \
+                           app/src-tauri/target/release/bundle/nsis/*-setup.exe; do
+            # A glob that matches nothing stays literal and fails the smoke's own check.
+            "$PY" scripts/packaged_smoke_windows.py --installer "$installer"
+          done
+
+      # Linux ships two installers and both are required: the .deb and the
+      # AppImage. A failed AppImage step fails the leg and blocks publication
+      # (scripts/validate_release_assets.py requires all eight installers).
       - name: Build Linux .deb
         if: matrix.kind == 'linux'
         working-directory: app/src-tauri
         run: cargo tauri build --bundles deb
 
-      # The AppImage is a best-effort portable EXTRA. linuxdeploy has to pack the
-      # embedded ~500 MB CPython runtime into a squashfs image and fails on it
-      # with an opaque "failed to run linuxdeploy" (Tauri swallows its stderr),
-      # while the .deb from the same build is fine. Keep dry-run builds useful
-      # when this fails; publication still requires all eight installers,
-      # including the AppImage, at the final release-assets gate below.
+      # The AppImage is packed by linuxdeploy, which must pack the embedded
+      # ~500 MB CPython runtime into a squashfs image; Tauri swallows its stderr.
       #   APPIMAGE_EXTRACT_AND_RUN — linuxdeploy and its plugins ARE AppImages
       #     and mount themselves via FUSE, which the runner cannot provide.
       #   NO_STRIP — linuxdeploy strips every bundled shared object; the CPython
       #     runtime has thousands and one unstrippable file aborts the bundle.
-      - name: Build Linux AppImage (best-effort)
+      - name: Build Linux AppImage
         if: matrix.kind == 'linux'
-        continue-on-error: true
         working-directory: app/src-tauri
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
           NO_STRIP: true
         run: cargo tauri build --bundles appimage
+
+      # --- Linux packaged-app smoke: each installer this leg built is installed or
+      #     run in place, the shell is launched under a virtual display (the shell
+      #     opens a window) and the same loopback checks as the Windows legs run
+      #     against its server (scripts/packaged_smoke_posix.py). The .deb is
+      #     installed with apt, the AppImage runs where it was built.
+      - name: Smoke test the installed Linux apps (.deb and AppImage)
+        if: matrix.kind == 'linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends xvfb
+          for installer in app/src-tauri/target/release/bundle/deb/*.deb \
+                           app/src-tauri/target/release/bundle/appimage/*.AppImage; do
+            xvfb-run -a python3 scripts/packaged_smoke_posix.py --installer "$installer"
+          done
 
       # --- Per-OS smoke test: import every server dep from the BUNDLED
       #     interpreter, then boot the server and poll /api/health (mirrors the
@@ -355,7 +418,10 @@ jobs:
           "$PY" app/scripts/import-gate.py
           PORT=8799
           DATA_DIR="$(mktemp -d)"
-          FLOWMAP_HOST=127.0.0.1 FLOWMAP_PORT="$PORT" FLOWMAP_RECORDING_ENABLED=0 FLOWMAP_DATA_DIR="$DATA_DIR" "$PY" -m flowmap_server &
+          # Recording is ON here because the shipped shell turns it on by default
+          # (recording.json can turn it off), so the smoke exercises the write path
+          # a user gets.
+          FLOWMAP_HOST=127.0.0.1 FLOWMAP_PORT="$PORT" FLOWMAP_RECORDING_ENABLED=1 FLOWMAP_DATA_DIR="$DATA_DIR" "$PY" -m flowmap_server &
           SRV=$!
           ok=0
           for _ in $(seq 1 60); do
@@ -365,12 +431,60 @@ jobs:
             sleep 1
           done
           kill "$SRV" 2>/dev/null || true
+          wait "$SRV" 2>/dev/null || true
           if [ "$ok" != "1" ]; then echo "server health check FAILED"; exit 1; fi
 
-      # The README's download table names every installer and its size, so those
-      # numbers need a source that is not a guess. This prints what the leg
-      # actually produced into the job summary — and because it runs on dry-run
-      # builds too, the table can be refreshed BEFORE the tag is cut.
+      # THIRD-PARTY-NOTICES is merged from one part per release target, because the
+      # bundled Python packages differ by platform (colorama and winloop are Windows
+      # only, uvloop is not shipped on Windows, and the win-arm64 leg drops packages
+      # and re-pins cryptography). Each leg records the components of the runtime it
+      # bundles; the locked Rust crates are platform-independent, so only the Linux
+      # leg reads them. An UNKNOWN licence is printed here and must be checked by the
+      # owner before publishing.
+      - name: Record this target's third-party components
+        env:
+          TRIPLE: ${{ matrix.triple }}
+          KIND: ${{ matrix.kind }}
+        run: |
+          set -euo pipefail
+          if [ "$KIND" = "windows" ]; then
+            PY="app/src-tauri/resources/pyruntime/python.exe"
+          else
+            PY="app/src-tauri/resources/pyruntime/bin/python3.13"
+            [[ -x "$PY" ]] || PY="app/src-tauri/resources/pyruntime/bin/python3"
+          fi
+          VERSION="$("$PY" -c 'import json; print(json.load(open("app/src-tauri/tauri.conf.json"))["version"])')"
+          mkdir -p notice-parts
+          OUT="notice-parts/THIRD-PARTY-NOTICES.$TRIPLE.json"
+          if [ "$KIND" = "linux" ]; then
+            "$PY" scripts/third_party_notices.py \
+              --runtime app/src-tauri/resources/pyruntime \
+              --client client \
+              --version "$VERSION" \
+              --target "$TRIPLE" \
+              --cargo app/src-tauri \
+              --out "$OUT"
+          else
+            "$PY" scripts/third_party_notices.py \
+              --runtime app/src-tauri/resources/pyruntime \
+              --client client \
+              --version "$VERSION" \
+              --target "$TRIPLE" \
+              --out "$OUT"
+          fi
+
+      - name: Upload this target's third-party notice part
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: third-party-notices-${{ matrix.triple }}
+          path: notice-parts/THIRD-PARTY-NOTICES.${{ matrix.triple }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+      # The installer sizes quoted in the release notes need a source that is not a
+      # guess. This prints what the leg actually produced into the job summary, and
+      # because it runs on dry-run builds too, the sizes can be checked BEFORE the
+      # tag is cut.
       - name: Report produced installers
         env:
           TRIPLE: ${{ matrix.triple }}
@@ -396,12 +510,10 @@ jobs:
           # a dry-run build could report sizes that no one could then fetch to
           # update the download tables with.
 
-      # One list, resolved once and reused by the attestation, the checksums and
-      # the upload — so what gets signed, what gets hashed and what gets shipped
-      # are the same files by construction, not by three globs agreeing.
+      # One list, resolved once and reused by the upload — so what is shipped is
+      # the file that was built, renamed to the release naming scheme.
       - name: Collect the produced installers
         id: installers
-        if: needs.prepare.outputs.do_release == 'true'
         env:
           KIND: ${{ matrix.kind }}
           TAG: ${{ needs.prepare.outputs.tag }}
@@ -411,16 +523,20 @@ jobs:
           case "$KIND" in
             macos)   FILES=$(ls "$B"/dmg/*.dmg) ;;
             windows) FILES=$(ls "$B"/msi/*.msi "$B"/nsis/*-setup.exe) ;;
-            # The .deb is required; the AppImage is best-effort (see the build
-            # step above), so glob it separately and tolerate its absence.
-            linux)   FILES=$(ls "$B"/deb/*.deb; ls "$B"/appimage/*.AppImage 2>/dev/null || true) ;;
+            # Both Linux installers are required; a missing one fails here.
+            linux)   FILES=$(ls "$B"/deb/*.deb "$B"/appimage/*.AppImage) ;;
           esac
+          # Dry runs keep the bundler's names; a release renames to the
+          # FlowMap_<version>_<suffix> scheme (no leading v).
           REL="${TAG#v}"
           RENAMED=""
           while IFS= read -r n; do
             [ -z "$n" ] && continue
-            new="$(printf '%s' "$n" | sed -E 's#^(.*/)?FlowMap_[^_]+#\1FlowMap_'"$REL"'#')"
-            [ "$n" = "$new" ] || mv "$n" "$new"
+            new="$n"
+            if [ -n "$REL" ]; then
+              new="$(printf '%s' "$n" | sed -E 's#^(.*/)?FlowMap_[^_]+#\1FlowMap_'"$REL"'#')"
+              [ "$n" = "$new" ] || mv "$n" "$new"
+            fi
             RENAMED="${RENAMED}${new}"$'\n'
           done <<< "$FILES"
           echo "$RENAMED"
@@ -428,109 +544,148 @@ jobs:
           # and these are build-dir paths, so a literal marker is safe.
           { echo "files<<__FLOWMAP_EOF__"; printf '%s' "$RENAMED"; echo "__FLOWMAP_EOF__"; } >> "$GITHUB_OUTPUT"
 
-      # Signs a SLSA provenance statement for every installer BEFORE it is
-      # uploaded, so the digest in the attestation is the digest of the file the
-      # next step ships. Sigstore-backed and public — anyone can check a download
-      # against it without trusting the release page:
-      #   gh attestation verify <file> -R <owner>/<repo>
-      - name: Attest build provenance
-        if: needs.prepare.outputs.do_release == 'true'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
-        with:
-          subject-path: ${{ steps.installers.outputs.files }}
-
-      # Per-leg checksum lines. They are collected into a single SHA256SUMS asset
-      # by the publish job — one file the whole release can be checked against,
-      # which the parallel matrix cannot produce on its own.
-      #   shasum first, not sha256sum: the macOS runners have no sha256sum. The
-      #   fallback is not decoration — it keeps the leg alive if a runner image
-      #   ever ships without perl, which is what shasum is.
-      - name: Checksum the installers
-        if: needs.prepare.outputs.do_release == 'true'
-        env:
-          FILES: ${{ steps.installers.outputs.files }}
-          TRIPLE: ${{ matrix.triple }}
-        run: |
-          set -euo pipefail
-          sha256_of() {
-            if command -v shasum >/dev/null 2>&1; then
-              shasum -a 256 "$1" | cut -d' ' -f1
-            else
-              sha256sum "$1" | cut -d' ' -f1
-            fi
-          }
-          mkdir -p checksums
-          OUT="checksums/$TRIPLE.txt"
-          : > "$OUT"
-          while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            # `hash  basename` — the format `shasum -c` expects when it is run
-            # next to the downloaded files, not next to this build tree.
-            printf '%s  %s\n' "$(sha256_of "$f")" "$(basename "$f")" >> "$OUT"
-          done <<< "$FILES"
-          cat "$OUT"
-
-      - name: Upload the checksum lines
-        if: needs.prepare.outputs.do_release == 'true'
+      # Hands the installers to the publish job. The publish job, not this leg,
+      # attests, checksums and uploads them.
+      - name: Upload the installers as workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: checksums-${{ matrix.triple }}
-          path: checksums/${{ matrix.triple }}.txt
+          name: installers-${{ matrix.triple }}
+          path: ${{ steps.installers.outputs.files }}
           if-no-files-found: error
-
-      - name: Upload installers to the release
-        if: needs.prepare.outputs.do_release == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-          FILES: ${{ steps.installers.outputs.files }}
-        run: |
-          set -euo pipefail
-          echo "uploading:"; echo "$FILES"
-          # shellcheck disable=SC2086
-          gh release upload "$TAG" $FILES --repo "$GITHUB_REPOSITORY" --clobber
+          retention-days: 7
 
   # ---------------------------------------------------------------------------
-  # Flip the release out of draft once every installer uploaded successfully.
-  # The operator must finish source review and validation before pushing the
-  # tag: a successful release run publishes a stable Latest release automatically.
+  # The only job with write scope and the only one that runs behind the release
+  # Environment. It runs no package manager or build script: it attests,
+  # checksums, uploads, verifies the uploaded bytes and publishes.
   # ---------------------------------------------------------------------------
   publish:
     needs: [prepare, build]
-    if: needs.prepare.outputs.do_release == 'true' && needs.build.result == 'success'
+    if: ${{ !cancelled() && needs.prepare.outputs.do_release == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-22.04
+    # Put required reviewers on the `release` environment (repository Settings →
+    # Environments) to hold every publish until someone approves it. Without
+    # reviewers the environment only scopes the job; it does not pause it.
+    environment:
+      name: release
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.prepare.outputs.tag }}
     permissions:
       contents: write
+      # Sigstore provenance for the installers below.
+      id-token: write
+      attestations: write
       # download-artifact reads this run's own artifacts.
       actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ format('refs/tags/{0}', needs.prepare.outputs.tag) }}
+          persist-credentials: false
 
-      - name: Fetch the per-leg checksum lines
+      - name: Fetch the installers from every leg
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: checksums-*
-          path: checksums
+          pattern: installers-*
+          path: installers
 
-      # One SHA256SUMS for the whole release. The attestation is the strong
-      # check (it proves *where* a file came from); this is the cheap one that
-      # needs no tooling — `shasum -c SHA256SUMS` next to the downloads.
-      # `find`, not a fixed glob: download-artifact's layout depends on whether
-      # the artifacts were merged, and both shapes have to work.
-      - name: Assemble and upload SHA256SUMS
+      - name: Fetch the third-party notice parts from every target
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: third-party-notices-*
+          path: notice-parts
+
+      # One part per target, checked against the matrix: a missing target fails here.
+      - name: Merge THIRD-PARTY-NOTICES
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("app/src-tauri/tauri.conf.json"))["version"])')"
+          mkdir -p notices
+          python3 scripts/third_party_notices.py \
+            --merge $(find notice-parts -type f -name 'THIRD-PARTY-NOTICES.*.json' | sort) \
+            --expect aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc x86_64-unknown-linux-gnu \
+            --version "$VERSION" \
+            --out notices/THIRD-PARTY-NOTICES.txt
+
+      # One flat directory holds exactly what gets attested, checksummed and
+      # shipped, so the three cannot disagree by construction.
+      - name: Stage the installers
+        run: |
+          set -euo pipefail
+          mkdir -p stage
+          find installers -type f -name 'FlowMap_*' -print0 | while IFS= read -r -d '' f; do
+            n="$(basename "$f")"
+            if [ -e "stage/$n" ]; then echo "duplicate installer name: $n" >&2; exit 1; fi
+            cp "$f" "stage/$n"
+          done
+          if [ -z "$(ls -A stage)" ]; then echo "no installers were downloaded"; exit 1; fi
+          if [ ! -s notices/THIRD-PARTY-NOTICES.txt ]; then echo "missing THIRD-PARTY-NOTICES.txt"; exit 1; fi
+          cp notices/THIRD-PARTY-NOTICES.txt stage/THIRD-PARTY-NOTICES.txt
+          # The Apache-2.0 licence, the NOTICE text and the SIL OFL texts of the
+          # bundled fonts travel with every release, as separate files.
+          cp LICENSE NOTICE client/src/assets/fonts/LICENSE-inter.txt \
+            client/src/assets/fonts/LICENSE-jetbrains-mono.txt stage/
+          ls -l stage
+
+      # Signs a SLSA provenance statement for every installer BEFORE it is
+      # uploaded, so the digest in the attestation is the digest of the file the
+      # next step ships. Sigstore-backed and public — anyone can check a download
+      # against it without trusting the release page:
+      #   gh attestation verify <file> -R <owner>/<repo>
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        with:
+          subject-path: stage/FlowMap_*
+
+      # One SHA256SUMS for the whole release, in the `hash  basename` format that
+      # `sha256sum -c` expects next to the downloads. It covers the installers and
+      # the notices file, so every file a user downloads is in the manifest.
+      - name: Assemble SHA256SUMS
+        run: |
+          set -euo pipefail
+          (cd stage && sha256sum FlowMap_* THIRD-PARTY-NOTICES.txt LICENSE NOTICE \
+            LICENSE-inter.txt LICENSE-jetbrains-mono.txt | sort -k2) > SHA256SUMS
+          if [ ! -s SHA256SUMS ]; then echo "no checksum lines collected"; exit 1; fi
+          cat SHA256SUMS
+
+      - name: Ensure a draft release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          find checksums -name '*.txt' -exec cat {} + | sort -k2 > SHA256SUMS
-          if [ ! -s SHA256SUMS ]; then echo "no checksum lines collected"; exit 1; fi
-          cat SHA256SUMS
-          gh release upload "$TAG" SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name' | while IFS= read -r name; do
+          NOTES="docs/release-notes-${TAG#v}.md"
+          if [ ! -s "$NOTES" ]; then
+            echo "Missing release notes: $NOTES" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — reusing it."
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag               --title "FlowMap $TAG" --notes-file "$NOTES" --draft
+          fi
+
+      - name: Upload installers and SHA256SUMS to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2046
+          gh release upload "$TAG" stage/FlowMap_* stage/THIRD-PARTY-NOTICES.txt stage/LICENSE stage/NOTICE \
+            stage/LICENSE-inter.txt stage/LICENSE-jetbrains-mono.txt SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      # A stale installer from an earlier attempt must not survive into the
+      # release. Any failure here fails the step: nothing is swallowed.
+      - name: Remove stale FlowMap assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ASSETS="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          while IFS= read -r name; do
             [ -z "$name" ] && continue
             case "$name" in
               FlowMap_*)
@@ -540,7 +695,28 @@ jobs:
                 fi
                 ;;
             esac
-          done || true
+          done <<< "$ASSETS"
+
+      # The name check below proves which files exist. This step proves their
+      # bytes: every uploaded installer is downloaded again from the release and
+      # compared with SHA256SUMS, so a corrupted or clobbered upload blocks the
+      # publish.
+      - name: Verify the uploaded bytes against SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          rm -rf verify && mkdir verify
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'FlowMap_*' --pattern 'THIRD-PARTY-NOTICES.txt' \
+            --pattern LICENSE --pattern NOTICE \
+            --pattern LICENSE-inter.txt --pattern LICENSE-jetbrains-mono.txt --dir verify
+          # The manifest is the one computed above from the built files, not the
+          # copy that came back from the release.
+          cp SHA256SUMS verify/SHA256SUMS
+          (cd verify && sha256sum -c SHA256SUMS)
+          echo "uploaded bytes match SHA256SUMS"
 
       - name: Require all eight installers before publishing
         env:

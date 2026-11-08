@@ -6,7 +6,7 @@ shutdown phase now flushes every active session (``SessionManager.flush_all``)
 while the loop is still running, before uvicorn tears it down.
 
 The discovery cache's ``run_background`` prewarm is ALSO started/cancelled
-here (survey-1 #3 — it was dead code with a docstring claiming otherwise), so
+here, so
 every test through this lifespan injects a no-network fake cache; a dedicated
 test pins the start/cancel wiring.
 
@@ -91,7 +91,7 @@ async def test_shutdown_flush_tolerates_manager_without_sessions(tmp_path):
 async def test_lifespan_starts_and_cancels_market_cache_prewarm(tmp_path):
     """The prewarm loop (crypto+equity, 30 s cadence) must actually run for
     the app's lifetime and be cancelled on shutdown — it used to never be
-    started at all (survey-1 #3)."""
+    started at all."""
     cache = _FakePrewarmCache()
     cfg = Config(data_dir=str(tmp_path))
     app = create_app(cfg, market_cache=cache)

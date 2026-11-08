@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import importlib
+import json
+import logging
 import threading
 import time
 import math
@@ -20,6 +22,8 @@ from crocodile.core.schema.enums import AssetClass
 from crocodile.core.schema.records import OHLCV
 
 from flowmap_server.feeds.base import ts_ns_sane
+
+log = logging.getLogger(__name__)
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="yahoo-import")
 _lock = threading.Lock()
@@ -70,7 +74,24 @@ async def yahoo_types():
 # blocking cookie/session worker. These are sampled 1m bars, never a tick tape.
 # Endpoint/parameters: github.com/ranaroussi/yfinance/blob/main/yfinance/scrapers/history.py
 _BAR_FRESH_S = 60.0
-_BAR_DEADLINE_S = 6.0
+# Outer budget for one history request, admission included. Each of the two hosts
+# gets its own 3 s total timeout, so the budget must cover both plus admission;
+# the former 6 s let a second host start with about zero time left.
+_BAR_DEADLINE_S = 9.0
+
+
+class YahooUnavailableError(ValueError):
+    """Yahoo answered with an error or an unusable body: a provider outage."""
+
+
+class UnknownSymbolError(ValueError):
+    """Yahoo says the ticker does not exist. Retrying another host cannot help."""
+
+
+class YahooNoDataError(ValueError):
+    """Both Yahoo hosts answered, with a valid chart that holds no bars."""
+
+
 _BAR_CACHE_SIZE = 64
 _BAR_MAX_REQUESTS = 8
 _BAR_MAX_INFLIGHT = 32
@@ -89,10 +110,16 @@ class _BarsState:
 def _parse_bars(data: object, symbol: str, *, now_ns: int) -> tuple[OHLCV, ...]:
     """Decode only published, complete OHLCV rows; never fill null gaps."""
     if not isinstance(data, dict):
-        raise ValueError("invalid Yahoo chart response")
+        raise YahooUnavailableError("invalid Yahoo chart response")
     chart = data.get("chart")
-    if not isinstance(chart, dict) or chart.get("error"):
-        raise ValueError("Yahoo chart unavailable")
+    if not isinstance(chart, dict):
+        raise YahooUnavailableError("Yahoo chart response has no chart object")
+    error = chart.get("error")
+    if error:
+        code = error.get("code") if isinstance(error, dict) else None
+        if code == "Not Found":
+            raise UnknownSymbolError(f"Yahoo has no ticker {symbol!r}")
+        raise YahooUnavailableError(f"Yahoo chart error for {symbol!r}")
     result = chart.get("result")
     if not isinstance(result, list) or not result or not isinstance(result[0], dict):
         return ()
@@ -140,6 +167,7 @@ async def _request_bars(symbol: str) -> tuple[OHLCV, ...]:
         connector=aiohttp.TCPConnector(ssl=_ssl_context),
     ) as client:
         last_error: Exception | None = None
+        answered_empty = False
         for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
             try:
                 async with client.get(
@@ -152,17 +180,22 @@ async def _request_bars(symbol: str) -> tuple[OHLCV, ...]:
                     async for chunk in response.content.iter_chunked(64_000):
                         size += len(chunk)
                         if size > _BAR_RESPONSE_LIMIT:
-                            raise ValueError("Yahoo chart response too large")
+                            raise YahooUnavailableError("Yahoo chart response too large")
                         chunks.append(chunk)
-                    import json
 
                     bars = _parse_bars(json.loads(b"".join(chunks)), symbol, now_ns=time.time_ns())
                     if bars:
                         return bars
+                    answered_empty = True
+            except UnknownSymbolError:
+                # The second host would give the same answer; do not spend its budget.
+                raise
             except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
                 last_error = exc
         if last_error is not None:
             raise last_error
+        if answered_empty:
+            raise YahooNoDataError(f"Yahoo returned no bars for {symbol!r} on either host")
         return ()
 
 
@@ -172,7 +205,7 @@ async def equity_bars(symbol: str) -> tuple[OHLCV, ...]:
     A stale cache remains truthful at its original provider timestamps and is
     returned while one background refresh runs. Cancellation detaches only the
     caller: other quote/chart consumers retain their one shared request, which
-    is itself limited to six seconds including admission. No loop-bound task
+    is itself limited to _BAR_DEADLINE_S seconds including admission. No loop-bound task
     or aiohttp session survives into a different event loop.
     """
     symbol = symbol.upper()
@@ -194,9 +227,18 @@ async def equity_bars(symbol: str) -> tuple[OHLCV, ...]:
 
         async def refresh():
             try:
-                async with asyncio.timeout(_BAR_DEADLINE_S):
-                    async with state.slots:
-                        bars = await _request_bars(symbol)
+                try:
+                    async with asyncio.timeout(_BAR_DEADLINE_S):
+                        async with state.slots:
+                            bars = await _request_bars(symbol)
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        f"Yahoo history for {symbol!r} exceeded {_BAR_DEADLINE_S:g}s"
+                    ) from exc
+                except YahooNoDataError:
+                    # A healthy answer with no bars: say so in the log, keep any prior session.
+                    log.info("Yahoo has no minute bars for %s on either host", symbol)
+                    bars = ()
                 # An empty/error response cannot erase a usable prior session.
                 if bars:
                     state.cache[symbol] = (loop.time(), bars)

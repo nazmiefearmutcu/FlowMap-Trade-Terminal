@@ -10,7 +10,10 @@
         "type": "downloadBootstrapper"
       },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "languages": ["English", "Turkish"],
+        "displayLanguageSelector": true,
+        "installerHooks": "windows/hooks.nsi"
       }
     }
   }

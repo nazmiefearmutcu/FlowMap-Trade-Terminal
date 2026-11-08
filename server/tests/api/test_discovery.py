@@ -1,4 +1,4 @@
-"""Discovery REST tests (GOAL 2) — /universe, /movers, /quote + the TTL cache.
+"""Discovery REST tests — /universe, /movers, /quote + the TTL cache.
 
 The universe endpoint is pure (bundled directory). Movers/quote run against a
 canned :class:`MarketDataCache` injected into ``create_app`` — no network. Also

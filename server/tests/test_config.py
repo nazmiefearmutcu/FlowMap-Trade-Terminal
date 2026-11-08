@@ -4,7 +4,7 @@ from flowmap_server.config import Config
 
 def test_defaults():
     cfg = Config.from_env({})
-    assert cfg.host == "127.0.0.1"          # spec §11: loopback only, asserted
+    assert cfg.host == "127.0.0.1"          # Loopback only, asserted
     assert cfg.port == 8720
     assert cfg.ring_columns == 32_768
     assert cfg.max_sessions == 4

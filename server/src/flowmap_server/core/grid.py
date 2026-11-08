@@ -1,6 +1,6 @@
 """Time-weighted density grid with epochs and a float16 column ring.
 
-Design spec §8.1–8.2. Semantics that are load-bearing for the whole product:
+Semantics that are load-bearing for the whole product:
 
 - **Density is time-weighted resting size.** Each book update integrates the
   *previous* book state over ``(ts_ns - prev_ts)`` into the current column's
@@ -237,7 +237,7 @@ class Grid:
         # _p0/_step, which remain the truth there; a hybrid band replaces it
         # wholesale on its first real-mid anchor.
         self._scale: PriceScale = linear_scale(self._p0, self._step, cfg.rows)
-        # Per-epoch params table (spec §6.3): snapshot/history must be able to
+        # Per-epoch params table: snapshot/history must be able to
         # announce EVERY epoch still present in the ring, not just the current
         # one. Populated here (epoch 0) and on every re-anchor; kept for the
         # session lifetime (re-anchors are rare, entries are tiny).
@@ -293,16 +293,18 @@ class Grid:
         self._cvd_cum = 0.0
         self._vwap_num_cum = 0.0
         self._vwap_den_cum = 0.0
+        # Prints whose timestamp fell outside the forming interval: counted, not dropped.
+        self.out_of_interval_trades = 0
 
     @property
     def cfg(self) -> GridCfg:
         """The immutable grid configuration (read-only)."""
         return self._cfg
 
-    # -- rehydration (spec §8.1 restart) ---------------------------------------
+    # -- rehydration ---------------------------------------
 
     def preload(self, columns: list[FinalizedColumn], epochs: list[EpochParams]) -> None:
-        """Seed the ring from a recorded tail (spec §8.1 restart rehydration).
+        """Seed the ring from a recorded tail.
 
         Only valid on a *virgin* grid — before any :meth:`on_book` or
         :meth:`on_trade` has anchored time (raises ``RuntimeError``
@@ -344,7 +346,7 @@ class Grid:
         # recorded tail legitimately carries a different one from cfg. A tail
         # that spans the FIRST band anchor carries BOTH: epoch 0 columns were
         # written under the nominal cfg multiple before the mid froze a banded
-        # one (M3). So the shape fields must match for every epoch, but the
+        # one. So the shape fields must match for every epoch, but the
         # multiple only has to be either the nominal one or the NEWEST epoch's
         # frozen one — anything else is a shape change and rejects the tail.
         # The tick gets the same treatment on an auto_tick grid: the adapted
@@ -393,7 +395,7 @@ class Grid:
                 # and _column_from_ring assume every seq in [oldest, _count) was
                 # written. A gap-cap skip in a prior session can make load_tail
                 # return a non-contiguous window (e.g. ring_columns raised between
-                # runs); reject it so _apply_tail degrades to a cold start (§8.1)
+                # runs); reject it so _apply_tail degrades to a cold start
                 # instead of crashing the first attach with a missing-bar assert.
                 if c.col_seq != prev.col_seq + 1:
                     raise ValueError(
@@ -436,7 +438,7 @@ class Grid:
             self._band_anchored = True
             self._anchor_mid = self._p0 + (self._cfg.rows * self._step) / 2.0
         # Rebuild the row<->price map from the tail's epoch, not the __init__
-        # linear seed (H1): a hybrid tail restored without its scale would bin
+        # linear seed: a hybrid tail restored without its scale would bin
         # every live book with the linear map from core_p0 — wing rows land on
         # wrong prices or off-grid. scale_of returns the same hybrid/linear
         # kind the epoch was recorded with; a stale hybrid core can then roll
@@ -625,11 +627,23 @@ class Grid:
 
     @staticmethod
     def _pack_density(density: np.ndarray) -> tuple[np.ndarray, float]:
+        """Pack a density into float16 with a per-column power-of-two scale.
+
+        Large peaks shrink into float16 range (<= 60000). Small peaks grow: below
+        1.0 the scale is 2**floor(log2(peak)), so the packed peak lands in [1, 2)
+        instead of the float16 subnormal range (absolute step ~6e-8), where thin
+        books lost most of their resolution.
+        """
         peak = float(np.max(density))
         if not math.isfinite(peak):
             finite = density[np.isfinite(density)]
             peak = float(finite.max()) if finite.size else 0.0
-        scale = 2.0 ** max(0, math.ceil(math.log2(peak / 60000.0))) if peak > 60000 else 1.0
+        if peak > 60000:
+            scale = 2.0 ** max(0, math.ceil(math.log2(peak / 60000.0)))
+        elif 0.0 < peak < 1.0:
+            scale = 2.0 ** math.floor(math.log2(peak))
+        else:
+            scale = 1.0
         return (density / scale).astype(np.float16), scale
 
     @staticmethod
@@ -740,6 +754,14 @@ class Grid:
         if self._cur_idx is None:
             self._cur_idx = ts_ns // self._cfg.dt_ns
             self._prev_ts = ts_ns
+        # Interval boundaries advance only in on_book. A print stamped outside
+        # the forming interval (already past its end, because the next book has
+        # not arrived yet, or late) is tallied in out_of_interval_trades and
+        # still folded into this bar as it always was: dropping it would remove
+        # volume from the bars while session CVD kept it, breaking their sum.
+        # Attributing it to its own bar needs held prints.
+        if ts_ns // self._cfg.dt_ns != self._cur_idx:
+            self.out_of_interval_trades += 1
 
         if self._bar_has_trade:
             self._h = max(self._h, price)
@@ -1113,6 +1135,45 @@ class Grid:
         """Scalar cache bounds; overview requests need no full-ring copy."""
         retained = min(self._count - self._oldest_seq, self._cfg.ring_columns)
         return None if retained <= 0 else (self._count - retained, self._count - 1)
+
+    def prune_epoch_params(self) -> int:
+        """Drop epoch params that neither the live epoch nor a resident column uses.
+
+        Returns how many entries were removed. A caller
+        that still validates an older recorded column must read that epoch from
+        the recording's own epoch table, which keeps every epoch; this table
+        only answers for what the ring can serve.
+        """
+        keep = {self._epoch}
+        rng = self.retained_sequence_range()
+        if rng is not None:
+            rc = self._cfg.ring_columns
+            slots = np.arange(rng[0], rng[1] + 1, dtype=np.int64) % rc
+            keep.update(int(e) for e in np.unique(self._ring_epoch[slots]))
+        stale = [epoch for epoch in self._epoch_params if epoch not in keep]
+        for epoch in stale:
+            del self._epoch_params[epoch]
+        return len(stale)
+
+    def snapshot_meta(self, n: int) -> list[tuple[int, int, int, int]]:
+        """``(slot_seq, col_seq, t0_ns, epoch)`` of the newest ``n`` retained columns.
+
+        Same window as :meth:`history`, but no density is copied, so an attach
+        that hits the encode cache never materializes a column. Oldest first.
+        """
+        rng = self.retained_sequence_range()
+        if rng is None or n <= 0:
+            return []
+        rc = self._cfg.ring_columns
+        return [
+            (
+                seq,
+                int(self._ring_seq[seq % rc]),
+                int(self._ring_t0[seq % rc]),
+                int(self._ring_epoch[seq % rc]),
+            )
+            for seq in range(max(rng[0], rng[1] - n + 1), rng[1] + 1)
+        ]
 
     def history_sequence_batch(self, start: int, end: int, limit: int = 64) -> list[FinalizedColumn]:
         """Copy a small explicit sequence interval on the feed's event loop.

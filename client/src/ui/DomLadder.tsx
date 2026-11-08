@@ -1,9 +1,9 @@
 /**
- * DOM ladder panel (§9 right rail, M2 T11).
+ * DOM ladder panel.
  *
  * Price rungs centered on the mid, each rung showing bid size (left) and ask size
  * (right) with a horizontal size bar (teal bid / red ask) whose length ∝ size. The
- * data source is capability-driven and HONEST (§7) — the badge shows the real tier
+ * data source is capability-driven and honest — the badge shows the real tier
  * and the panel never fabricates bid/ask it does not have:
  *
  * The badge (honesty tier) and the layout SHAPE are decoupled ({@link depthTier}
@@ -20,8 +20,13 @@
  *                   a legacy one-sided SYNTH_PROFILE mode still renders a centered
  *                   profile. Either way, badge `SYNTH` — honest provenance.
  *
- * For M2 (sim + crypto) it is always L2. The sim feed emits NO BBO, so the mid and
- * best bid/ask are DERIVED from the book's density arrays; when a BBO is present
+ * A recorded-density replay keeps its real tier in the badge and shows a
+ * `RECORDED DENSITY` provenance chip beside it.
+ *
+ * The sim and native crypto feeds badge `L2`; a ccxt-polled book badges
+ * `L2-SNAPSHOT` (real, but re-read whole each tick, so it carries the caution
+ * style). The sim feed emits NO BBO, so the mid and best bid/ask are DERIVED from
+ * the book's density arrays; when a BBO is present
  * (crypto) it is preferred. Auto-scroll keeps the mid centered; a lock toggle
  * freezes the center so the user can read a level while the market moves.
  *
@@ -38,10 +43,14 @@ import {
   MODE_SYNTH_PROFILE,
   type EpochParams,
 } from '../proto/types';
+import { honestDepthTier } from '../gl/depthTier';
 import { priceToRow, rowToPrice, scaleFromEpoch, stepAtRow } from '../gl/priceScale';
 import { subscribe, getSnapshot, bookSessionKey, type BookSnapshot } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
+import { formatPrice, formatSizeCompact } from '../i18n/format';
+import { useT } from '../i18n/useT';
 import './TradingPanels.css';
+import './DomLadder.css';
 
 /** Row height in CSS px — must match `.ladder__row` height in App.css. */
 const ROW_H = 17;
@@ -49,7 +58,14 @@ const DEFAULT_LADDER_ROWS = 21;
 /** Density below this is treated as an empty book level (f16 residue floor). */
 const DENSITY_EPS = 1e-6;
 
-export type DepthTier = 'L2' | 'L1' | 'SYNTH' | 'RECORDED DENSITY';
+/**
+ * The depth badge. `L2-SNAPSHOT` is a real but lower-fidelity book (a ccxt
+ * venue re-read whole each tick): it never reads as native `L2`.
+ */
+export type DepthTier = 'L2' | 'L2-SNAPSHOT' | 'L1' | 'SYNTH';
+
+/** Provenance chip text for a recorded-density replay (same wording as the top bar chip). */
+const RECORDED_DENSITY_CHIP = 'RECORDED DENSITY';
 
 export interface LadderRowVM {
   row: number;
@@ -76,15 +92,23 @@ export interface LadderModel {
   spread: number | null;
 }
 
-/** Map the capability depth tier (falling back to the book mode) to a badge tier. */
+/**
+ * The honest depth tier (falling back to the book mode) that every surface
+ * reads: the rung badge, the heat legend, the crosshair and the measure tool.
+ * It reads through {@link honestDepthTier}, the verdict the chart's ramp uses,
+ * so a replay without recorded provenance reads `SYNTH` here too. A
+ * recorded-density replay keeps its real tier (a keyless equity recording stays
+ * `SYNTH`); the provenance is a separate fact, {@link isRecordedDensity}, so the
+ * tier never hides a synthetic depth.
+ */
 export function depthTier(
   capability: Record<string, unknown> | null,
   bookMode: number | null,
 ): DepthTier | null {
-  if (capability?.depth_provenance === 'recorded-density') return 'RECORDED DENSITY';
-  const d = capability?.depth;
+  const d = honestDepthTier(capability);
   if (typeof d === 'string') {
     if (d === 'L2') return 'L2';
+    if (d === 'L2-snapshot') return 'L2-SNAPSHOT';
     if (d === 'L1_BAND' || d === 'L1') return 'L1';
     if (d === 'SYNTH' || d === 'SYNTH_PROFILE') return 'SYNTH';
   }
@@ -92,6 +116,11 @@ export function depthTier(
   if (bookMode === MODE_L1_BAND) return 'L1';
   if (bookMode === MODE_SYNTH_PROFILE) return 'SYNTH';
   return null;
+}
+
+/** True when the density is an interval aggregate from a recording (its own provenance chip). */
+export function isRecordedDensity(capability: Record<string, unknown> | null | undefined): boolean {
+  return capability?.depth_provenance === 'recorded-density';
 }
 
 /**
@@ -228,6 +257,45 @@ function deriveQuotes(
 }
 
 /**
+ * Top of book read straight from the depth book, the same best rungs the DOM
+ * ladder highlights. The market strip uses it when no BBO frame has
+ * arrived (sim, some recorded feeds), so its Bid/Ask/Spread agree with the
+ * ladder instead of showing a dash beside a populated book. Unlike
+ * {@link deriveQuotes} it never synthesises a missing side: it returns null
+ * unless both sides are resting and the bid sits below the ask. Recorded
+ * density and synthetic profiles carry no quotes, so they also return null.
+ */
+export function bookTopOfBook(
+  snap: BookSnapshot,
+  params: EpochParams | undefined,
+): { bidPx: number; bidSz: number; askPx: number; askSz: number } | null {
+  const book = snap.book;
+  if (!params || !book || book.recordedDensity || !book.ask) return null;
+  let bidRow = -1;
+  for (let r = book.bid.length - 1; r >= 0; r -= 1) {
+    if (book.bid[r] > DENSITY_EPS) {
+      bidRow = r;
+      break;
+    }
+  }
+  let askRow = -1;
+  for (let r = 0; r < book.ask.length; r += 1) {
+    if (book.ask[r] > DENSITY_EPS) {
+      askRow = r;
+      break;
+    }
+  }
+  if (bidRow < 0 || askRow < 0 || askRow <= bidRow) return null;
+  const scale = scaleFromEpoch(params);
+  return {
+    bidPx: rowToPrice(scale, bidRow),
+    bidSz: book.bid[bidRow],
+    askPx: rowToPrice(scale, askRow),
+    askSz: book.ask[askRow],
+  };
+}
+
+/**
  * Pure ladder model for a snapshot. `centerOverride` (the locked center) pins the
  * window; when null the window auto-centers on the live mid. Returns `visRows`
  * rungs top-to-bottom (highest price first).
@@ -301,27 +369,17 @@ export function buildLadder(
   return { rows: out, priceDecimals: decimals, midRow, spread };
 }
 
-/** Compact size formatting (matches the crosshair readout). */
+/**
+ * Compact size formatting, shared with the crosshair and measure readouts via
+ * i18n/format (rounds before choosing the suffix, so 999,960 reads `1M`, not
+ * `1000K`; non-finite densities show an honest over-range glyph, never a number).
+ */
 export function fmtSz(v: number): string {
-  // Never render the raw JS "Infinity"/"NaN" strings: a non-finite density is
-  // over-range/unusable (e.g. an upstream f16-overflowed SYNTH volume bucket) —
-  // show an honest over-range glyph, not a fabricated number.
-  if (!Number.isFinite(v)) return v > 0 ? '∞' : '';
-  if (v <= 0) return '';
-  if (v >= 1e9) return compact(v, 1e9, 'B');
-  if (v >= 1e6) return compact(v, 1e6, 'M');
-  if (v >= 1e3) return compact(v, 1e3, 'K');
-  if (v >= 100) return v.toFixed(1);
-  return v.toFixed(2);
-}
-
-/** One-decimal SI-suffixed magnitude, trimming a trailing `.0` (2000→"2K"). */
-function compact(v: number, div: number, suffix: string): string {
-  const s = (v / div).toFixed(1);
-  return (s.endsWith('.0') ? s.slice(0, -2) : s) + suffix;
+  return formatSizeCompact(v);
 }
 
 export function DomLadder(): JSX.Element {
+  const t = useT();
   const capability = useFlowMapStore((s) => s.capability);
   const epochs = useFlowMapStore((s) => s.epochs);
   const gridEpoch = useFlowMapStore((s) => s.gridEpoch);
@@ -336,7 +394,23 @@ export function DomLadder(): JSX.Element {
   const [centerPrice, setCenterPrice] = useState<number | null>(null);
   const wheelHandlerRef = useRef<(e: WheelEvent) => void>(() => {});
 
-  useEffect(() => subscribe(setSnap), []);
+  // Trade-only flushes keep the same book and BBO objects, so the ladder keeps
+  // its previous snapshot and skips the rebuild. A session reset still propagates
+  // through sessionVersion / sessionKey (mirrors the Tape guard).
+  useEffect(
+    () =>
+      subscribe((s) =>
+        setSnap((prev) =>
+          prev.book === s.book &&
+          prev.bbo === s.bbo &&
+          prev.sessionKey === s.sessionKey &&
+          prev.sessionVersion === s.sessionVersion
+            ? prev
+            : s,
+        ),
+      ),
+    [],
+  );
 
   // Fit the number of rungs to the panel height (odd, so the mid sits centered).
   useEffect(() => {
@@ -353,7 +427,9 @@ export function DomLadder(): JSX.Element {
   const params = epochs.get(snap.book?.epoch ?? gridEpoch ?? -1);
   const bookMode = snap.book ? snap.book.mode : null;
   const tier = depthTier(capability, bookMode);
-  const shape = ladderShape(tier, bookMode);
+  const recorded = isRecordedDensity(capability);
+  // A recorded interval keeps the book layout whatever its tier (as it always has).
+  const shape = ladderShape(recorded ? null : tier, bookMode);
   const scale = useMemo(() => params ? scaleFromEpoch(params) : null, [params]);
   // The lock pins a PRICE, not a row: re-anchor to a row against the CURRENT
   // epoch each render, so a mid-stream p0/step change keeps the same price
@@ -407,7 +483,7 @@ export function DomLadder(): JSX.Element {
   const badge = tier ?? 'N/A';
   // Class-safe token: `tier.toLowerCase()` yields 'l2'/'l1'/'synth' (and 'na'
   // for the no-data case) — never 'n/a', whose slash breaks the CSS selector.
-  const badgeClass = tier === 'RECORDED DENSITY' ? 'recorded-density' : tier ? tier.toLowerCase() : 'na';
+  const badgeClass = tier ? tier.toLowerCase() : 'na';
 
   const spreadTicks =
     model.spread !== null && params && params.tick > 0
@@ -416,16 +492,16 @@ export function DomLadder(): JSX.Element {
   const mode = useFlowMapStore((s) => s.subscription?.mode ?? 'live');
   const emptyMsg =
     feedState === 'closed'
-      ? 'market closed'
+      ? t('ladder.empty.closed')
       : status === 'reconnecting' || status === 'closed'
-        ? 'disconnected'
+        ? t('ladder.empty.disconnected')
         : status === 'connecting'
-          ? 'connecting…'
+          ? t('ladder.empty.connecting')
           : mode === 'replay'
             ? // Replay streams trades but no live book: "waiting for…" would
-              // promise a book that is never coming (F3).
-              'no book stream in replay — the tape keeps playing'
-            : 'waiting for book…';
+              // promise a book that is never coming.
+              t('ladder.empty.replay')
+            : t('ladder.empty.waiting');
 
   return (
     <section
@@ -448,20 +524,28 @@ export function DomLadder(): JSX.Element {
         <span
           className={`panel__badge panel__badge--${badgeClass}`}
           data-testid="ladder-badge"
-          title={tier === 'RECORDED DENSITY' ? 'Recorded interval density; inside quotes, when available, are reconstructed from row centres.' : undefined}
         >
           {badge}
         </span>
+        {recorded && (
+          <span
+            className="panel__badge panel__badge--recorded-density"
+            data-testid="ladder-provenance"
+            title={t('ladder.recordedTitle')}
+          >
+            {RECORDED_DENSITY_CHIP}
+          </span>
+        )}
         {spreadTicks !== null && (
           <span className="panel__spread" data-testid="ladder-spread">
-            spr {snap.bbo ? '' : '≈'}{model.spread!.toFixed(model.priceDecimals)}
+            {t('ladder.spreadShort')} {snap.bbo ? '' : '≈'}{formatPrice(model.spread!, model.priceDecimals)}
             {spreadTicks > 0 ? ` (${spreadTicks}t)` : ''}
           </span>
         )}
         {params && scale && model.midRow !== null && (
           <span className="panel__resolution" data-testid="ladder-resolution"
-            title="Depth quantities are grouped over this price interval. Inside quotes and tape retain the exchange tick.">
-            Δ {stepAtRow(scale, Math.floor(model.midRow)).toFixed(priceDecimals(params.tick))}
+            title={t('ladder.resolutionTitle')}>
+            Δ {formatPrice(stepAtRow(scale, Math.floor(model.midRow)), priceDecimals(params.tick))}
           </span>
         )}
         <button
@@ -469,29 +553,29 @@ export function DomLadder(): JSX.Element {
           className={`panel__lock${locked ? ' is-on' : ''}`}
           disabled={model.midRow === null}
           aria-pressed={locked}
-          title={locked ? 'center locked — click to follow mid' : 'following mid — click to lock'}
+          title={locked ? t('ladder.lockedTitle') : t('ladder.followTitle')}
           onClick={() => {
             if (!locked && model.midRow !== null && scale) setCenterPrice(rowToPrice(scale, model.midRow));
             setLocked((v) => !v);
           }}
           data-testid="ladder-lock"
         >
-          {locked ? 'LOCKED' : 'FOLLOW'}
+          {locked ? t('ladder.locked') : t('ladder.follow')}
         </button>
         <button type="button" className="panel__lock ladder__center" data-testid="ladder-center"
           disabled={model.midRow === null}
-          title="Center on the current midpoint and follow the market"
-          onClick={() => { setLocked(false); setCenterPrice(null); }}>CENTER</button>
+          title={t('ladder.centerTitle')}
+          onClick={() => { setLocked(false); setCenterPrice(null); }}>{t('ladder.center')}</button>
       </header>
       {!collapsed && (
         <>
         {model.rows.length > 0 && tier !== 'SYNTH' && shape !== 'profile' && (
           <div className="ladder__summary" data-testid="ladder-totals"
-            title="Sum of sizes on the displayed grouped rungs only; not the full book">
-            <span>Visible Σ</span><span className="ladder__total-bid">B {fmtSz(totals.bid) || '0'}</span>
-            <span className="ladder__total-ask">A {fmtSz(totals.ask) || '0'}</span>
-            <span className="ladder__browse">{locked ? 'wheel to browse'
-              : tier === 'RECORDED DENSITY' && model.spread === null ? 'following density' : 'following mid'}</span>
+            title={t('ladder.totalsTitle')}>
+            <span>{t('ladder.visibleSum')}</span><span className="ladder__total-bid">{t('ladder.bidShort')} {fmtSz(totals.bid) || '0'}</span>
+            <span className="ladder__total-ask">{t('ladder.askShort')} {fmtSz(totals.ask) || '0'}</span>
+            <span className="ladder__browse">{locked ? t('ladder.wheelBrowse')
+              : recorded && model.spread === null ? t('ladder.followDensity') : t('ladder.followMid')}</span>
           </div>
         )}
         <div className="ladder__body" ref={bodyRef} data-testid="ladder-body">
@@ -500,7 +584,7 @@ export function DomLadder(): JSX.Element {
           ) : (
             <>
               {(shape === 'book' || shape === 'l1') && midOffsetPx !== null
-                && (tier !== 'RECORDED DENSITY' || model.spread !== null) && (
+                && (!recorded || model.spread !== null) && (
                 <div
                   className="ladder__mid"
                   aria-hidden="true"
@@ -516,8 +600,11 @@ export function DomLadder(): JSX.Element {
                   }`}
                   data-testid="ladder-row"
                   data-row={r.row}
-                  data-price={r.price.toFixed(model.priceDecimals)}
-                  title={scale ? `${rowToPrice(scale, r.row - 0.5).toFixed(model.priceDecimals)} – ${rowToPrice(scale, r.row + 0.5).toFixed(model.priceDecimals)}: grouped resting size` : undefined}
+                  data-price={formatPrice(r.price, model.priceDecimals)}
+                  title={scale ? t('ladder.groupTitle', {
+                    low: formatPrice(rowToPrice(scale, r.row - 0.5), model.priceDecimals),
+                    high: formatPrice(rowToPrice(scale, r.row + 0.5), model.priceDecimals),
+                  }) : undefined}
                   data-bid={r.bidSz.toFixed(4)}
                   data-ask={r.askSz.toFixed(4)}
                 >
@@ -538,23 +625,25 @@ export function DomLadder(): JSX.Element {
                           className={`ladder__bar ladder__bar--bid${r.bidPct > 0 ? '' : ' is-empty'}`}
                           style={{ width: `${r.bidPct}%` }}
                         />
+                        <span className="app-visually-hidden">{t('ladder.bidFull')}</span>
                         <span className="ladder__sz">
                           {fmtSz(r.bidSz)}
                         </span>
                       </div>
-                      <div className="ladder__px">{r.price.toFixed(model.priceDecimals)}</div>
+                      <div className="ladder__px">{formatPrice(r.price, model.priceDecimals)}</div>
                       <div className="ladder__cell ladder__cell--ask">
                         <div
                           className={`ladder__bar ladder__bar--ask${r.askPct > 0 ? '' : ' is-empty'}`}
                           style={{ width: `${r.askPct}%` }}
                         />
+                        <span className="app-visually-hidden">{t('ladder.askFull')}</span>
                         <span className="ladder__sz">
                           {fmtSz(r.askSz)}
                         </span>
                       </div>
                     </>
                   )}
-                  {shape === 'profile' && <div className="ladder__px ladder__px--synth">{r.price.toFixed(model.priceDecimals)}</div>}
+                  {shape === 'profile' && <div className="ladder__px ladder__px--synth">{formatPrice(r.price, model.priceDecimals)}</div>}
                 </div>
               ))}
             </>

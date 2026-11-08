@@ -73,7 +73,7 @@ describe('mipGroupCols (the group the SUM covers)', () => {
   });
 });
 
-describe('validFrom gating of the downsample (B-2)', () => {
+describe('validFrom gating of the downsample', () => {
   it('passes the ring validFrom + the appended group into the level-1 pass', () => {
     const { chain, ring, gl } = makeChain();
     for (let s = 0; s <= 3; s++) append(ring, s);
@@ -125,7 +125,7 @@ describe('validFrom gating of the downsample (B-2)', () => {
     expect(lastMaskUniforms(gl).validFrom).toBe(-0x7fffffff);
   });
 
-  it('skips the level-2 bake while the 16-group straddles a gap boundary (R2 H-1)', () => {
+  it('skips the level-2 bake while the 16-group straddles a gap boundary', () => {
     const { chain, ring, gl } = makeChain();
     for (let s = 0; s <= 5; s++) append(ring, s);
     // Gap: slots 6..49 still hold whatever the previous session left there.
@@ -196,7 +196,7 @@ describe('FBO completeness fallback (B-7c)', () => {
   });
 });
 
-describe('updateRange — batched history-page splices (survey #6b)', () => {
+describe('updateRange — batched history-page splices', () => {
   it('bakes a whole aligned 256-column page in ONE pass per level (was ~80 viewports)', () => {
     const { chain, ring, gl } = makeChain();
     for (let s = 0; s < 256; s++) append(ring, s);
@@ -255,7 +255,7 @@ describe('updateRange — batched history-page splices (survey #6b)', () => {
     for (const p of ps) expect(p.u_groupNewest).toBeLessThanOrEqual(300);
   });
 
-  it('skips level-2 groups that straddle validFrom (R2 H-1 at range granularity)', () => {
+  it('skips level-2 groups that straddle validFrom', () => {
     const { chain, ring, gl } = makeChain();
     for (let s = 0; s <= 5; s++) append(ring, s);
     for (let s = 50; s <= 51; s++) append(ring, s);
@@ -306,7 +306,7 @@ describe('updateRange — batched history-page splices (survey #6b)', () => {
   });
 });
 
-describe('row-only mip chain (R2-M1: decoupled row grouping at deep time zoom)', () => {
+describe('row-only mip chain', () => {
   it('writes one row-only column on EVERY append (1xrows/4 viewport, group-aligned by column)', () => {
     const { chain, ring, gl } = makeChain();
     for (let s = 0; s <= 2; s++) append(ring, s);

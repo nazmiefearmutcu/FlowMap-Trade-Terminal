@@ -1,7 +1,7 @@
-"""Deterministic simulated feed (M1 T6).
+"""Deterministic simulated feed.
 
 The sim feed is the test/demo data source for the whole stack: e2e tests, the
-M2 renderer perf harness (``generate_history``) and visual verification of
+renderer perf harness (``generate_history``) and visual verification of
 sum-mips (persistent liquidity walls) all build on it, so everything here is
 driven by one seeded ``np.random.default_rng`` and NOTHING reads the wall
 clock. Two constructions with the same seed yield identical event sequences;
@@ -32,7 +32,7 @@ it does not influence the generated data).
 
 ``generate_history`` reuses the exact same per-interval core but drives a
 private :class:`Grid` with a single book state per interval boundary — the
-relaxation the plan allows for speed — and builds 10k columns (rows=2048) in
+relaxation chosen for speed — and builds 10k columns (rows=2048) in
 ~2 s on a quiet box; the test's budget carries headroom for loaded machines.
 """
 
@@ -185,7 +185,7 @@ class SimFeed:
     """Deterministic simulated market feed (implements the Feed protocol)."""
 
     market = "sim"
-    symbol = "SIM-DEMO"
+    symbol = "SIM-DEMO"  # default; a subscription may name another symbol
 
     def __init__(
         self,
@@ -194,6 +194,7 @@ class SimFeed:
         start_ns: int = 0,
         *,
         realtime: bool = False,
+        symbol: str | None = None,
     ) -> None:
         if dt_ns <= 0:
             raise ValueError("dt_ns must be positive")
@@ -201,14 +202,21 @@ class SimFeed:
         self._dt_ns = dt_ns
         self._start_ns = start_ns
         self._realtime = realtime
+        # The subscribed symbol is honoured as the label; the data stays synthetic.
+        self.symbol = symbol or type(self).symbol
         self.capability: dict[str, object] = {
             "depth": "L2",
             "tape": "tick",
             "trade_side": "exchange",
-            # Exchange-true aggressor side -> honest per-bar CVD in grid.on_trade
-            # (SIDE_BUY/SIDE_SELL are counted; spec §7 dual-market parity).
+            # The generator assigns each aggressor side (a buy hits the ask), so
+            # "exchange" means only that the sides are counted in per-bar CVD by
+            # grid.on_trade (SIDE_BUY/SIDE_SELL). "synthetic" below marks the data
+            # as generated.
             "cvd": "exchange",
-            "markers": ["liquidation", "gap"],
+            # Only markers events() actually emits. "gap" is never produced here.
+            "markers": ["liquidation"],
+            # Every price, trade and depth level is generated, never observed.
+            "synthetic": True,
         }
 
     async def events(self) -> AsyncIterator[FeedEvent]:
@@ -258,7 +266,7 @@ class SimFeed:
         tick_multiple: int = 1,
         ring_columns: int = 1024,
     ) -> list[FinalizedColumn]:
-        """Build ``n_cols`` finalized columns fast (M2 perf harness).
+        """Build ``n_cols`` finalized columns fast (renderer perf harness).
 
         Same deterministic core as ``events()``, but one book state per
         interval boundary drives a private :class:`Grid` in a tight loop

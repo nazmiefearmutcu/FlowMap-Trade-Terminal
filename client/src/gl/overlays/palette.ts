@@ -1,5 +1,5 @@
 /**
- * Overlay palette (§9 UI: trading-terminal, teal/red buy-sell accent pair).
+ * Overlay palette (UI: trading-terminal, teal/red buy-sell accent pair).
  *
  * One source of truth for the overlay colors, in both forms the two layers need:
  * `gl` = normalized RGBA [0..1] for the GL primitives, `css` = a string for the
@@ -33,11 +33,6 @@ export const OVERLAY = {
   /** Soft glow drawn under the price line to fatten it without hard edges. */
   priceHalo: { gl: rgba(0, 0, 0), css: css(0, 0, 0) },
   priceGlow: { gl: rgba(245, 248, 252, 0.22), css: css(245, 248, 252, 0.22) },
-  /** Area wash under the price line (text-layer gradient, top → bottom). Kept
-   *  very faint: the density field is the protagonist, the wash only seats the
-   *  line visually. */
-  priceFillTop: { gl: rgba(245, 248, 252, 0.07), css: css(210, 225, 245, 0.07) },
-  priceFillBottom: { gl: rgba(245, 248, 252, 0.0), css: css(210, 225, 245, 0) },
   /** Dashed last-price level marker (quieter than the line itself). */
   priceLevel: { gl: rgba(245, 248, 252, 0.38), css: css(245, 248, 252, 0.38) },
   /** Price-axis pill: near-white plate, near-black text (the axis "last" tag). */
@@ -164,7 +159,7 @@ export function applyOverlayPalette(p: OverlayThemePalette | null): void {
   // Chart ink and categorical colors are owned by applyChartInk.
 }
 
-// --- chart-ink bridge (visual campaign 2026-09-11, L4) --------------------------
+// --- chart-ink bridge ---------------------------------------
 //
 // The theme-aware chart makes the canvas ground follow the active theme (ramp
 // LUT store + CSS `--chart-*` mirror). The NON-semantic ink over the canvas —
@@ -189,10 +184,10 @@ export interface ChartInkPalette {
   price: string;
   bg: string;
   chipBg?: string;
-  /** CSS-only channel (M-3): fired-alert ink on chip plates. Declared here so
+  /** CSS-only channel: fired-alert ink on chip plates. Declared here so
    *  the registry palette satisfies the interface; there is no OVERLAY entry. */
   sell?: string;
-  /** CSS-only channel (M-3): caution ink on chip plates. Same contract. */
+  /** CSS-only channel: caution ink on chip plates. Same contract. */
   warn?: string;
 }
 
@@ -224,8 +219,6 @@ const CHART_INK_KEYS = [
   'priceGlow',
   'priceLevel',
   'pricePill',
-  'priceFillTop',
-  'priceFillBottom',
   'pricePillText',
   'badgeBg',
   'badgeText',
@@ -238,8 +231,6 @@ const CHART_INK_PRICE_KEYS = [
   'priceGlow',
   'priceLevel',
   'pricePill',
-  'priceFillTop',
-  'priceFillBottom',
 ] as const;
 
 /** Per-entry opacities, read off the SHIPPED literals so a themed write keeps
@@ -277,7 +268,7 @@ export function applyChartInk(p: ChartInkPalette | null): void {
   write('priceHalo', priceHalo, 1);
   for (const [key, color] of Object.entries(categories)) write(key, color);
   write('axis', p.axis);
-  // L-4: light themes raise the gridline alpha (the shipped 0.14 hairline
+  // Light themes raise the gridline alpha (the shipped 0.14 hairline
   // vanishes on paper/white); omitted keeps the entry's shipped alpha.
   write('grid', p.grid, p.gridAlpha);
   // p.sell / p.warn are consumed by CSS (`--chart-sell`/`--chart-warn`); the

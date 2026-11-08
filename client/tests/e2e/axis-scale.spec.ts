@@ -1,7 +1,9 @@
+import type { LooseProbe } from './probe';
 import { expect, test, type Page } from '@playwright/test';
+import { waitFrames } from './waits';
 
 /**
- * §9 price-axis control surface — the TradingView/Bookmap interaction the chart
+ * Price-axis control surface — the TradingView/Bookmap interaction the chart
  * canvas cannot provide (there, an unmodified wheel is TIME zoom).
  *
  * Driven through the REAL renderer against the real sim feed, with real input
@@ -31,11 +33,11 @@ interface View {
 }
 
 const view = (page: Page): Promise<View> =>
-  page.evaluate(() => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.viewSnapshot);
+  page.evaluate(() => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.viewSnapshot);
 
 const follow = (page: Page): Promise<{ following: boolean; priceFollow: string }> =>
   page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     return { following: r.following, priceFollow: r.priceFollow };
   });
 
@@ -49,7 +51,7 @@ async function bootLive(page: Page): Promise<string[]> {
   await expect(page.getByTestId('chart-startup-gate')).toBeHidden({ timeout: 45_000 });
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       return !!live && live.store.getState().status === 'live';
     },
     undefined,
@@ -57,7 +59,7 @@ async function bootLive(page: Page): Promise<string[]> {
   );
   // Wait for a real column so the camera has a fitted frame to scale.
   await page.waitForFunction(
-    () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.newestColSeq >= 0,
+    () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.newestColSeq >= 0,
     undefined,
     { timeout: 30_000 },
   );
@@ -84,10 +86,12 @@ async function settleTimeFrame(page: Page): Promise<void> {
   await expect
     .poll(
       async () => {
+        // Two 24-frame windows (about 0.4 s at 60 Hz) with no change; a frame
+        // count, not a wall-clock sleep, so a slow software renderer is not raced.
         const a = (await view(page)).colScale;
-        await page.waitForTimeout(400);
+        await waitFrames(page, 24);
         const b = (await view(page)).colScale;
-        await page.waitForTimeout(400);
+        await waitFrames(page, 24);
         const c = (await view(page)).colScale;
         return a === b && b === c;
       },
@@ -96,7 +100,7 @@ async function settleTimeFrame(page: Page): Promise<void> {
     .toBe(true);
 }
 
-test('§9 price gutter scales price like TradingView, and never touches time', async ({ page }) => {
+test('price gutter scales price like TradingView, and never touches time', async ({ page }) => {
   test.setTimeout(120_000);
   const consoleErrors = await bootLive(page);
 
@@ -239,7 +243,7 @@ test('maximum time zoom stays wide while price gutter and keyboard gestures keep
   expect(errors).toEqual([]);
 });
 
-test('§9 a horizontal canvas drag detaches TIME but keeps price tracking', async ({ page }) => {
+test('a horizontal canvas drag detaches TIME but keeps price tracking', async ({ page }) => {
   test.setTimeout(120_000);
   await bootLive(page);
 
@@ -263,7 +267,7 @@ test('§9 a horizontal canvas drag detaches TIME but keeps price tracking', asyn
   // PRESERVES the user's price zoom + follow mode — re-arming must never
   // re-frame the book out from under the chosen scale (goLive() now routes
   // through follow(), not camera.reset()).
-  await page.locator('[data-testid="go-live"]').click();
+  await page.getByTestId('chip-go-live').click();
   await expect.poll(async () => (await follow(page)).following).toBe(true);
   expect((await follow(page)).priceFollow).toBe('track');
 });

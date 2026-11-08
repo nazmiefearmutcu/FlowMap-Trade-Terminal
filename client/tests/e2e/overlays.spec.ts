@@ -1,11 +1,13 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { expect, test } from '@playwright/test';
+import { waitFrames } from './waits';
 
 /**
- * T10 verification — overlays (trade bubbles, BBO, VWAP, volume profile, markers,
+ * Overlays (trade bubbles, BBO, VWAP, volume profile, markers,
  * price/time axes) render OVER the heatmap, locked to the camera, driven through
  * the REAL renderer on ANGLE/SwiftShader (software GL, headless).
  *
@@ -45,7 +47,7 @@ interface Probe {
   kind: 'teal' | 'red' | 'violet' | 'orange';
 }
 
-test('§8.3 T10: overlays render over the heatmap, locked to the camera', async ({ page }) => {
+test('overlays render over the heatmap, locked to the camera', async ({ page }) => {
   test.setTimeout(120_000);
 
   const consoleErrors: string[] = [];
@@ -56,7 +58,7 @@ test('§8.3 T10: overlays render over the heatmap, locked to the camera', async 
 
   await page.goto('/?overlays=1');
   await page.waitForFunction(
-    () => !!(window as unknown as { __flowmapLive?: any }).__flowmapLive?.renderer,
+    () => !!(window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive?.renderer,
     undefined,
     { timeout: 45_000 },
   );
@@ -64,7 +66,7 @@ test('§8.3 T10: overlays render over the heatmap, locked to the camera', async 
   // Preload depth + publish epoch/capability + inject the known overlay events.
   const probes: Probe[] = await page.evaluate(
     (tags) => {
-      const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
       const r = live.renderer;
       const sc = r.preloadOverlayScenario();
       live.store.setState({
@@ -141,7 +143,7 @@ test('§8.3 T10: overlays render over the heatmap, locked to the camera', async 
   );
 
   // Let a couple of dirty frames draw the overlays.
-  await page.waitForTimeout(300);
+  await waitFrames(page, 3);
 
   // Save the overlay frame as the report artifact.
   mkdirSync(ARTIFACT_DIR, { recursive: true });
@@ -163,20 +165,24 @@ test('§8.3 T10: overlays render over the heatmap, locked to the camera', async 
     const match = (kind: string, r: number, g: number, b: number): boolean => {
       switch (kind) {
         case 'teal':
-          return g > 90 && r < 110 && b > 55 && g > b - 40;
+          // The best-bid line is the bid palette colour (31,182,166) drawn over the chart;
+          // it samples at about rgb(111,207,186), just past the older bound of 110.
+          return g > 90 && r < 125 && b > 55 && g > b - 40;
         case 'red':
           return r > 110 && r > g + 40 && r > b + 40;
         case 'violet':
           return b > 140 && r > 100 && b > g + 30;
         case 'orange':
-          return r > 150 && g > 60 && g < 175 && b < 95;
+          // The liquidation glyph is the palette orange (255,138,46) at 0.95 alpha, which
+          // samples at about rgb(246,158,106).
+          return r > 150 && g > 60 && g < 175 && b < 120;
         default:
           return false;
       }
     };
 
     const out: Record<string, number> = {};
-    for (const p of ps as any[]) {
+    for (const p of ps as LooseProbe[]) {
       let n = 0;
       const cx = Math.round(p.x * dpr);
       const cy = Math.round(p.y * dpr);
@@ -205,7 +211,7 @@ test('§8.3 T10: overlays render over the heatmap, locked to the camera', async 
 
   // Deterministic overlay state: data ingested + profile POC in the wall band.
   const dbg = await page.evaluate(() =>
-    (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.overlayDebugForTest(),
+    (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.overlayDebugForTest(),
   );
   expect(dbg.bubbles, 'both trades ingested').toBeGreaterThanOrEqual(2);
   expect(dbg.markers, 'markers ingested (incl. number-ts_ns)').toBeGreaterThanOrEqual(3);

@@ -1,12 +1,12 @@
 /**
- * The density tile ring (§8.3 storage) + full-res residency (§8.3, M2 T8).
+ * The density tile ring (storage) + full-res residency.
  *
  * One immutable `TEXTURE_2D_ARRAY`, `256 (cols/tile) × rows × layers`, `RG32F`
  * (R = bid density, G = ask density). A column append is a single
  * `texSubImage3D` writing one column (width 1, height `rows`) into one
  * (layer, x) slot — the ONLY GPU write that ever touches history. Panning and
  * zooming change draw uniforms only; a column, once uploaded, is never
- * re-uploaded (the §8.3 no-CPU-re-raster invariant).
+ * re-uploaded (the no-CPU-re-raster invariant).
  *
  * Addressing: an absolute `colSeq` maps to a flat ring slot
  * `slot = colSeq mod capacityCols`, and `(layer, x) = (slot / 256, slot % 256)`.
@@ -15,11 +15,11 @@
  * one past either end of the resident window overwrites (via the modulo wrap)
  * exactly the column `capacityCols` away, i.e. the far end of the window: the
  * ring self-evicts the least-recently-touched end with no bookkeeping. This is
- * what lets deep scroll-back (T8) splice OLDER columns at their true absolute
+ * what lets deep scroll-back splice OLDER columns at their true absolute
  * col_seq and slide the resident window backward through history — the live
  * edge (which the user has panned away from) is the LRU end that falls out.
  *
- * ### Full-res residency budget (§8.3 / §10 memory gate)
+ * ### Full-res residency budget (/ memory gate)
  *
  * Full-res tiles are memory-bounded. The budget is the ring capacity in columns
  * (`256 × layers`); at RG32F (2 channels × 4 bytes = 8 B/texel) one column is
@@ -39,7 +39,7 @@
  * without a WebGL context.
  *
  * Per-epoch row transform seam: columns carry an `epoch`, and different epochs
- * map a given row index to different prices (§8.2). This ring stores raw
+ * map a given row index to different prices. This ring stores raw
  * densities only and is epoch-agnostic; the row→price affine is a per-draw
  * uniform (see Heatmap). This task assumes a single epoch (the sim's) for the
  * spliced-column geometry and records the appended epoch for a future hook.
@@ -66,7 +66,7 @@ export interface TileSlot {
 
 /**
  * Pure full-res residency book-keeping — the resident absolute-col_seq window
- * plus a per-tile-layer last-touched clock (the LRU record §8.3 asks for). No
+ * plus a per-tile-layer last-touched clock (the LRU record asks for). No
  * GL: {@link TileRing} composes one and drives it from `append`, and the unit
  * tests drive it directly.
  *
@@ -266,7 +266,7 @@ export class TileRing {
     this.texture = tex;
 
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-    // Immutable storage, one mip level (SUM mips are separate textures, T7).
+    // Immutable storage, one mip level (SUM mips are separate textures).
     gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RG32F, this.colsPerTile, rows, layers);
     // texelFetch does its own indexing — NEAREST + clamp keep the texture
     // complete without implying any filtering.
@@ -291,7 +291,7 @@ export class TileRing {
    * quantities above the half-float ceiling.
    *
    * Absolute-col_seq addressing means this is equally the LIVE-append path
-   * (forward, colSeq = newest+1) and the T8 backfill splice path (older colSeq
+   * (forward, colSeq = newest+1) and the backfill splice path (older colSeq
    * landing in its true slot): the resident window (see {@link residentRange})
    * grows toward whichever end was written and evicts the far LRU end when the
    * budget is exceeded.

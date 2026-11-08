@@ -1,5 +1,5 @@
 /**
- * Streaming RSI kernel vs the old branch's goldens: hand-derived alternating
+ * Streaming RSI kernel vs the reference implementation's goldens: hand-derived alternating
  * fractions, degenerate endpoints, the NaN-gap deviation pin, and a naive
  * Wilder reference (shared only in spirit — spelled out independently here).
  */
@@ -38,7 +38,7 @@ function naiveWilder(values: number[], period: number): (number | null)[] {
 }
 
 describe('rsi kernel', () => {
-  it('hand-computed alternating case (period 3), ported fractions', () => {
+  it('hand-computed alternating case (period 3), reference fractions', () => {
     // values [1,2,3,2,4,3,5]: seed RSI 200/3, then 250/3, 2000/33, 235/3.
     const k = createRsi(3);
     const got = closes([1, 2, 3, 2, 4, 3, 5]).map((c) => k.push(c)[0]);

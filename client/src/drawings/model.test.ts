@@ -1,5 +1,5 @@
 /**
- * Model tests (lane CF): pure data-space drawing operations — fib ladder,
+ * Model tests: pure data-space drawing operations — fib ladder,
  * arity-safe construction, immutable move/translate/restyle, bounds.
  */
 

@@ -1,4 +1,4 @@
-"""The M1 acceptance e2e (plan Task 8): real uvicorn + binary WS + sim feed.
+"""End-to-end test: real uvicorn + binary WS + sim feed.
 
 Boots an actual uvicorn server in-process (fresh per test: sessions must not
 leak between tests), connects with the ``websockets`` client, and exercises
@@ -201,7 +201,7 @@ async def test_subscribe_live_stream_and_history(server):
 
 
 async def test_session_limit_second_key_gets_status_and_1013(server_one_session):
-    """§6.3/§11: a Subscribe that would exceed max_sessions gets a refusal
+    """: a Subscribe that would exceed max_sessions gets a refusal
     Status{feed_state=degraded} and close code 1013 (try again later); the
     existing session's client is unaffected."""
     port = server_one_session
@@ -314,7 +314,7 @@ async def test_shared_session_two_clients(server):
 
 
 # ---------------------------------------------------------------------------
-# Review-fix wave 2: honest replay refusal + dead-peer liveness
+# Honest replay refusal + dead-peer liveness
 
 
 async def test_replay_subscribe_refused_with_1003(server):
@@ -416,6 +416,16 @@ async def test_replay_engine_streams_recorded_session(port, tmp_path):
             # Pause must stall the recorded stream (a live sim would keep
             # producing; the replay has nothing new once held).
             await ws.send(wire.encode(events.Pause()))
+            # Frames queued before the Pause reached the server may still arrive:
+            # take the baseline only once the stream has been quiet for a while.
+            seen = len(finals)
+            quiet_since = time.monotonic()
+            deadline = quiet_since + 3.0
+            while time.monotonic() - quiet_since < 0.6 and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+                if len(finals) != seen:
+                    seen = len(finals)
+                    quiet_since = time.monotonic()
             held = len(finals)
             await asyncio.sleep(1.2)
             assert len(finals) == held, "paused replay must not deliver finals"

@@ -1,4 +1,4 @@
-"""Session / subscription / backpressure tests (M1 plan Task 7).
+"""Session / subscription / backpressure tests.
 
 Covers the eight frozen behaviors from the plan: snapshot shape, refcount +
 grace teardown, column lag-dropping with gap markers, the non-column cap,
@@ -36,6 +36,8 @@ from flowmap_server.proto.events import (
     BBO,
     MODE_L1_BAND,
     MODE_L2,
+    SIDE_BUY,
+    SIDE_SRC_EXCHANGE,
     BarColumn,
     DepthColumn,
     EpochStart,
@@ -377,8 +379,8 @@ def test_gap_marker_counts_columns_not_frames():
         # one t0; they coalesce latest-wins to a single depth+bar pair.
         nxt = (i + 1) * DT
         for _ in range(3):
-            client.offer(b"pd", col_msg=True, t0_ns=nxt, is_partial=True)
-            client.offer(b"pb", col_msg=True, t0_ns=nxt, is_partial=True)
+            client.offer(b"pd", col_msg=True, t0_ns=nxt, is_partial=True, partial_kind="depth")
+            client.offer(b"pb", col_msg=True, t0_ns=nxt, is_partial=True, partial_kind="bar")
 
     clock.advance(LAG_DROP_NS + 1)  # everything queued is now lagged out
     client.offer(b"dF", col_msg=True, t0_ns=n * DT)  # final of column n arrives
@@ -398,10 +400,22 @@ def test_partial_reemissions_coalesce_latest_wins():
     client = ClientTx(clock=FakeClock())
     client.offer(b"final", col_msg=True, t0_ns=0)
     for k in range(5):
-        client.offer(b"pd%d" % k, col_msg=True, t0_ns=DT, is_partial=True)
-        client.offer(b"pb%d" % k, col_msg=True, t0_ns=DT, is_partial=True)
+        client.offer(b"pd%d" % k, col_msg=True, t0_ns=DT, is_partial=True, partial_kind="depth")
+        client.offer(b"pb%d" % k, col_msg=True, t0_ns=DT, is_partial=True, partial_kind="bar")
     assert len(client) == 3  # final + ONE coalesced partial pair
     assert client.drain(1 << 30) == [b"final", b"pd4", b"pb4"]
+
+
+def test_bar_partial_never_evicts_queued_depth_partial():
+    """A depth partial queued by a book change must survive the bar-only ticks
+    that follow it on a quiet feed. Otherwise the forming column never updates:
+    the depth is not re-sent until the next book change."""
+    client = ClientTx(clock=FakeClock())
+    client.offer(b"pb0", col_msg=True, t0_ns=DT, is_partial=True, partial_kind="bar")
+    client.offer(b"pd1", col_msg=True, t0_ns=DT, is_partial=True, partial_kind="depth")
+    for k in range(1, 4):
+        client.offer(b"pb%d" % k, col_msg=True, t0_ns=DT, is_partial=True, partial_kind="bar")
+    assert client.drain(1 << 30) == [b"pd1", b"pb3"]
 
 
 def test_dropped_stale_partial_yields_no_gap_marker():
@@ -547,11 +561,11 @@ async def test_live_loop_end_to_end_sim():
     assert any(isinstance(m, Trade) for m in msgs)
 
 
-async def test_periodic_partial_flush_animates_quiet_feed():
-    """Regression: partial re-emissions are CLOCK-driven, not feed-driven. A
-    quiet feed (equity keyless polls every 10 s; sim/crypto burst then sleep)
-    must still animate the forming column at FLUSH_INTERVAL_NS (20 Hz) so the
-    heatmap right edge never freezes between feed events."""
+async def test_periodic_partial_flush_resends_forming_column_only_on_change():
+    """The forming depth column only moves on book updates. A quiet feed must
+    not re-send it every tick (encode, fan-out and client redraw for identical
+    pixels), while a book update that moves the integral is still delivered on
+    the next tick."""
     grid = _mk_grid(rows=64, ring_columns=128)
     _drive_synthetic(grid, 2)  # anchor the grid so a partial is in flight
     assert grid.current_partial() is not None
@@ -559,16 +573,67 @@ async def test_periodic_partial_flush_animates_quiet_feed():
     client = ClientTx()
     sess.attach(client)
     await sess.start()
+
+    def forming_depths() -> int:
+        return sum(1 for m in _drain_all(client) if isinstance(m, DepthColumn) and not m.final)
+
     try:
-        # ClientTx coalesces partials latest-wins per t0, so drain per tick:
-        # every ~50 ms window must deliver a fresh right-edge re-emission
-        # with zero feed events.
-        seen = 0
+        await asyncio.sleep(0.06)
+        forming_depths()  # the first tick after attach carries the forming column
+        quiet = 0
         for _ in range(3):
             await asyncio.sleep(0.06)
-            msgs = _drain_all(client)
-            seen += sum(1 for m in msgs if isinstance(m, DepthColumn) and not m.final)
-        assert seen >= 3, "quiet feed froze the forming column"
+            quiet += forming_depths()
+        assert quiet == 0, "unchanged forming column was re-sent on a quiet feed"
+
+        grid.on_book(2 * DT + DT // 4, *_BOOK)  # moves the forming integral
+        await asyncio.sleep(0.06)
+        assert forming_depths() >= 1, "a changed forming column was not delivered"
+    finally:
+        sess.run_task.cancel()
+        await asyncio.gather(sess.run_task, return_exceptions=True)
+
+
+async def test_quiet_feed_sends_the_forming_bar_only_on_change_and_new_clients_get_it():
+    """The forming bar moves only on trades. A quiet feed sends it once, a trade
+    moves it so the next tick delivers it, and a client attached afterwards
+    still receives it (attach forgets the last bar that was sent)."""
+    grid = _mk_grid(rows=64, ring_columns=128)
+    _drive_synthetic(grid, 2)  # anchor the grid so a partial is in flight
+    sess = Session("bar-tick", feed=IdleFeed(), grid=grid)
+    client = ClientTx()
+    sess.attach(client)
+    await sess.start()
+
+    def bars(c: ClientTx) -> int:
+        return sum(1 for m in _drain_all(c) if isinstance(m, BarColumn))
+
+    async def bar_within_deadline(c: ClientTx) -> int:
+        got = 0
+        async with asyncio.timeout(2.0):
+            while got == 0:
+                got += bars(c)
+                if got == 0:
+                    await asyncio.sleep(0.01)
+        return got
+
+    try:
+        await asyncio.sleep(0.06)
+        bars(client)  # the first tick after attach carries the forming bar
+        quiet = 0
+        for _ in range(3):
+            await asyncio.sleep(0.06)
+            quiet += bars(client)
+        assert quiet == 0, "unchanged forming bar was re-sent on a quiet feed"
+
+        grid.on_trade(2 * DT + DT // 4, 100.25, 1.0, SIDE_BUY)  # moves the forming bar
+        assert await bar_within_deadline(client) >= 1, "a changed forming bar was not delivered"
+
+        late = ClientTx()
+        sess.attach(late)
+        assert await bar_within_deadline(late) >= 1, (
+            "a client attached after the last change got no forming bar"
+        )
     finally:
         sess.run_task.cancel()
         await asyncio.gather(sess.run_task, return_exceptions=True)
@@ -905,11 +970,11 @@ async def test_unknown_feed_event_warns_and_continues(caplog):
 
 
 # ---------------------------------------------------------------------------
-# equity sessions: SYNTH grid routing + closed-market Status (M3 T2)
+# equity sessions: SYNTH grid routing + closed-market Status
 #
 # Fixture-driven, NO live network: bars/clock are injected so the EquityFeed
 # runs its keyless SYNTH path against a pinned closed market (Saturday) with a
-# hand-built last session's 1 m bars (reuses T1's fixture approach).
+# hand-built last session's 1 m bars.
 
 
 def _eq_et_ns(y: int, mo: int, d: int, h: int, mi: int = 0) -> int:
@@ -1252,7 +1317,7 @@ async def test_equity_routed_by_default_feed_factory():
     assert feed.market == EQUITY_MARKET and feed.symbol == "MSFT"
 
 
-# --- price-band session keying (§8.1) ---------------------------------------
+# --- price-band session keying ---------------------------------------
 
 
 def test_canonical_band_rejects_arbitrary_client_text():
@@ -1429,3 +1494,141 @@ async def test_deep_boot_does_not_fetch_candle_backfill_it_cannot_display():
     sess = Session("deep-fast-boot", feed=feed, grid=grid, backfill_fn=fetch, backfill_max_cols=512)
     await sess._run_backfill()
     assert not called
+
+
+# ---------------------------------------------------------------------------
+# feed-reported degraded state and Subscribe.source
+
+
+class StaleProfileFeed:
+    """Keyless-equity shape: reports ``degraded`` while it withholds a stale
+    profile, and yields a gap Marker plus book events in that state. With
+    ``recover=True`` it flips its own flag to ``live`` mid-stream."""
+
+    market = "sim"
+    symbol = "STALE"
+    capability: dict[str, object] = {"depth": "L2"}
+
+    def __init__(self, *, recover: bool) -> None:
+        self.feed_state = "degraded"
+        self._recover = recover
+
+    async def events(self):
+        yield Marker(ts_ns=0, kind="gap", text="stale profile from 2026-11-06")
+        yield BookState(DT, *_BOOK)
+        if self._recover:
+            self.feed_state = "live"
+        yield BookState(2 * DT, *_BOOK)
+
+
+async def test_feed_reported_degraded_is_broadcast_and_held_through_events():
+    """The feed's own ``degraded`` flag must reach the client as a Status even
+    when its first event is a gap Marker. Before the fix only ``closed`` was
+    read, so the state reached the client as a Marker alone and the session
+    never announced it."""
+    grid = _mk_grid(rows=64, ring_columns=256, p0=84.0)
+    sess = Session("stale", feed=StaleProfileFeed(recover=False), grid=grid, restart_backoff_base_s=0.001)
+    client = ClientTx()
+    sess.attach(client)
+    await sess.start()
+    await asyncio.wait_for(sess.run_task, timeout=5)
+
+    statuses = [m for m in _drain_all(client) if isinstance(m, Status)]
+    assert [s.feed_state for s in statuses] == ["degraded"]
+
+
+async def test_feed_degraded_recovers_to_live_when_the_feed_says_so():
+    grid = _mk_grid(rows=64, ring_columns=256, p0=84.0)
+    sess = Session("recover", feed=StaleProfileFeed(recover=True), grid=grid, restart_backoff_base_s=0.001)
+    client = ClientTx()
+    sess.attach(client)
+    await sess.start()
+    await asyncio.wait_for(sess.run_task, timeout=5)
+
+    statuses = [m for m in _drain_all(client) if isinstance(m, Status)]
+    assert [s.feed_state for s in statuses] == ["degraded", "live"]
+
+
+async def test_clock_tick_mirrors_a_degraded_flag_that_arrives_without_events():
+    """A feed that turns degraded while quiet never yields an event, so only the
+    clock tick (the partial flusher) can announce it. Run that real tick."""
+    feed = IdleFeed()
+    feed.feed_state = "degraded"
+    sess = Session("quiet", feed=feed, grid=_mk_grid(rows=64, ring_columns=256, p0=84.0))
+    sess._flush_interval_ns = 1_000_000  # 1 ms tick: the test must not wait 16 ms a step
+    client = ClientTx()
+    sess.attach(client)
+    tick = asyncio.create_task(sess._partial_flusher())
+    statuses: list[Status] = []
+    try:
+        for _ in range(400):
+            await asyncio.sleep(0.005)
+            statuses += [m for m in _drain_all(client) if isinstance(m, Status)]
+            if statuses:
+                break
+    finally:
+        tick.cancel()
+        await asyncio.gather(tick, return_exceptions=True)
+    assert statuses, "the clock tick never announced the degraded flag"
+    assert {s.feed_state for s in statuses} == {"degraded"}
+
+
+def test_canonical_source_keeps_known_names_and_drops_the_rest():
+    from flowmap_server.core.session import KNOWN_SOURCES, canonical_source
+
+    assert canonical_source(None) is None
+    for good in KNOWN_SOURCES:
+        assert canonical_source(good) == good
+    for junk in ("", "crocodile ", "junk", "../etc/passwd", "z" * 5000):
+        assert canonical_source(junk) is None
+
+
+async def test_unknown_source_names_do_not_mint_a_second_session():
+    """``source`` is part of the SessionManager key; a junk value used to open
+    an identical Session per distinct string (the band bug, for source)."""
+    cfg = Config(max_sessions=4, ring_columns=256, max_rows=64, dt_crypto_ns=DT)
+    mgr = SessionManager(cfg, timer=FakeTimer(), feed_factory=lambda sub: IdleFeed())
+
+    def sub(source: str | None) -> Subscribe:
+        return Subscribe(market="sim", symbol="SRC", mode="live", source=source, start_t=None)
+
+    s_none = await mgr.subscribe(sub(None), ClientTx())
+    assert await mgr.subscribe(sub("junk-" + "z" * 40), ClientTx()) is s_none
+    s_known = await mgr.subscribe(sub("crocodile"), ClientTx())
+    assert s_known is not s_none
+    for s in (s_none, s_known):
+        s.run_task.cancel()
+    await asyncio.gather(s_none.run_task, s_known.run_task, return_exceptions=True)
+
+
+class TradeFeed:
+    """Feed that yields a fixed list of trades in order, then ends."""
+
+    market = "sim"
+    symbol = "TRADES"
+    capability: dict[str, object] = {"depth": "L2"}
+
+    def __init__(self, trades: list[Trade]) -> None:
+        self._trades = trades
+
+    async def events(self):
+        for trade in self._trades:
+            yield trade
+
+
+async def test_trades_are_numbered_once_at_ingest_and_a_numbered_trade_keeps_its_seq():
+    fill = {"ts_ns": DT, "price": 100.5, "size": 2.5, "side": SIDE_BUY,
+            "side_src": SIDE_SRC_EXCHANGE, "venue": "binance"}
+    sess = Session("trade-seq", feed=TradeFeed([
+        Trade(**fill),         # two distinct fills in the same ms, at the same
+        Trade(**fill),         # price and size, must not share one number
+        Trade(**fill, seq=7),  # already numbered upstream: passes through unchanged
+    ]), grid=_mk_grid(rows=64, ring_columns=128, p0=100.0))
+    await sess._consume()
+    assert [trade.seq for trade in sess._tape] == [1, 2, 7]
+
+
+def test_trade_seq_cycles_through_1_to_65535_and_never_emits_zero():
+    sess = Session("trade-seq-wrap", feed=IdleFeed(), grid=_mk_grid(rows=64, ring_columns=128, p0=100.0))
+    sess._trade_seq = 65534
+    assert [sess._next_trade_seq() for _ in range(3)] == [65535, 1, 2]

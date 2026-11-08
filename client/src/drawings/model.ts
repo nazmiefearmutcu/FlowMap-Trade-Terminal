@@ -1,7 +1,6 @@
 /**
- * Pure model operations over finished {@link Drawing}s (campaign 3, lane CF —
- * ported from the old branch's drawings/model-ish helpers: fib.ts, store's
- * withPoints/translate, bbox.ts). No canvas, no storage, no React: every
+ * Pure model operations over finished {@link Drawing}s. No canvas, no storage,
+ * no React: every
  * function is (data in) → (new data out) and rebuilds drawings rather than
  * splicing their anchor tuples in place, so each member's arity stays part of
  * its type (see types.ts) and reference-changed outputs mean "this moved" for

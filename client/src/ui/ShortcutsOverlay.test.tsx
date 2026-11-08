@@ -1,5 +1,5 @@
 /**
- * ShortcutsOverlay (A5) — the `?` dialog. Pinned: it is a proper dialog
+ * ShortcutsOverlay — the `?` dialog. Pinned: it is a proper dialog
  * (role/aria-modal), Escape closes it, Tab is trapped inside, and the shared
  * `isHelpToggle` routing never fires while typing or inside another dialog.
  */
@@ -9,7 +9,8 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { setLocale } from '../i18n';
+import { setLocale, t } from '../i18n';
+import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import { isHelpToggle, KEYSHEET } from './keysheet';
 import { resetOverlays } from './overlayStack';
 import { SettingsDrawer } from './SettingsDrawer';
@@ -27,6 +28,7 @@ afterEach(() => {
     container.remove();
   }
   setLocale('en');
+  setSingleKeyShortcutsEnabled(true);
   resetOverlays();
 });
 
@@ -86,6 +88,48 @@ describe('ShortcutsOverlay', () => {
     expect(el.textContent).toContain('Ctrl+Z');
   });
 
+  it('says how the single-key shortcuts can be turned off, in the active locale', () => {
+    render();
+    const note = document.body.querySelector('[data-testid="shortcuts-single-key-note"]');
+    expect(note?.textContent).toBe(t('shortcuts.singleKeysHint'));
+    expect(note?.textContent).toContain('Turn off');
+    act(() => setLocale('tr'));
+    expect(document.body.querySelector('[data-testid="shortcuts-single-key-note"]')?.textContent)
+      .toBe(t('shortcuts.singleKeysHint'));
+    expect(document.body.querySelector('[data-testid="shortcuts-single-key-note"]')?.textContent)
+      .toContain('Kapatırsanız');
+  });
+
+  it('lists no bare-key row as working while single-key shortcuts are off', () => {
+    render();
+    const rowKeys = (): string[] => [...document.body.querySelectorAll('[data-testid="shortcuts-list"] .keysheet__keys')]
+      .map((el) => el.textContent ?? '');
+    expect(rowKeys()).toEqual(KEYSHEET.map((entry) => entry.keys));
+    act(() => setSingleKeyShortcutsEnabled(false));
+    const bare = KEYSHEET.filter((entry) => entry.singleKey === true).map((entry) => entry.keys);
+    for (const key of bare) expect(rowKeys(), key).not.toContain(key);
+    expect(rowKeys()).toContain('⌘K / Ctrl+K');
+    // The note says the bare keys are off and where to turn them back on.
+    const note = document.body.querySelector('[data-testid="shortcuts-single-key-note"]');
+    expect(note?.textContent).toBe(t('shortcuts.singleKeysOff'));
+    expect(note?.textContent).not.toBe(t('shortcuts.singleKeysHint'));
+    act(() => setSingleKeyShortcutsEnabled(true));
+    expect(rowKeys()).toEqual(KEYSHEET.map((entry) => entry.keys));
+    expect(document.body.querySelector('[data-testid="shortcuts-single-key-note"]')?.textContent)
+      .toBe(t('shortcuts.singleKeysHint'));
+  });
+
+  it('names the ? toggle in the footer only while single-key shortcuts are on', () => {
+    render();
+    const footer = (): string => document.body.querySelector('.keyshelp__foot')?.textContent ?? '';
+    expect(footer()).toContain(t('shortcuts.footerToggle'));
+    act(() => setSingleKeyShortcutsEnabled(false));
+    expect(footer()).not.toContain(t('shortcuts.footerToggle'));
+    expect(footer()).toContain(t('shortcuts.footerClose'));
+    act(() => setSingleKeyShortcutsEnabled(true));
+    expect(footer()).toContain(t('shortcuts.footerToggle'));
+  });
+
   it('moves focus to its close button and Escape closes', () => {
     const { onClose } = render();
     expect(document.activeElement).toBe(
@@ -106,6 +150,19 @@ describe('ShortcutsOverlay', () => {
     // A chorded keystroke is never the help toggle.
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', ctrlKey: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('with single-key shortcuts switched off, ? leaves the overlay open and Escape still closes it', () => {
+    setSingleKeyShortcutsEnabled(false);
+    const { onClose } = render();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });

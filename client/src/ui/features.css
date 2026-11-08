@@ -1,12 +1,10 @@
 /* ============================================================================
-   Lane CD feature styles — measure tool, price alerts, perf HUD.
-   Mounted by INT via `import './ui/features.css'` (single import in App.tsx;
-   the components also import it directly so standalone test pages work).
-   Token vocabulary matches ui/theme.css; nothing hardcodes the palette.
-   Chips rendered INSIDE the chart viewport use the chart tokens (--chart-*),
-   which the theme mirror pairs with the active chart ground — the ink and its
-   plate always flip together (visual campaign 2026-09-11; was the fixed
-   dark-island rule, fix 2026-09-10 F1-3).
+   Feature styles: measure tool, price alerts, perf HUD.
+   The components import this sheet directly, so standalone test pages get the
+   same styles. Token vocabulary matches ui/theme.css; nothing hardcodes the
+   palette. Chips rendered INSIDE the chart viewport use the chart tokens
+   (--chart-*), which the theme mirror pairs with the active chart ground, so
+   the ink and its plate always flip together.
    ========================================================================= */
 
 /* --- measure tool (M) ----------------------------------------------------- */
@@ -24,8 +22,8 @@
 }
 .measure__rect {
   position: absolute;
-  border: 1px dashed var(--chart-accent, #33d6c4);
-  background: rgba(31, 182, 166, 0.08);
+  border: 1px dashed var(--chart-accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   pointer-events: none;
 }
 .measure__box {
@@ -33,14 +31,14 @@
   z-index: 7;
   min-width: 150px;
   padding: 6px 9px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: var(--fs-xs, 10px);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs, 11px);
   line-height: 1.55;
-  color: var(--chart-ink, #e6edf3);
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
-  border-radius: 5px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  color: var(--chart-ink);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
+  border-radius: var(--r-2);
+  box-shadow: var(--shadow-pop);
   pointer-events: none;
   white-space: nowrap;
 }
@@ -51,11 +49,11 @@
   align-items: baseline;
 }
 .measure__row--dim {
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
   margin-top: 2px;
 }
 .measure__k {
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
   letter-spacing: 0.06em;
 }
 .measure__v {
@@ -63,10 +61,10 @@
   font-family: var(--font-mono);
 }
 .measure__bid {
-  color: var(--chart-accent, #33d6c4);
+  color: var(--chart-accent);
 }
 .measure__ask {
-  color: var(--chart-sell, #e8635f);
+  color: var(--chart-sell);
 }
 .measure__mode {
   position: absolute;
@@ -75,12 +73,12 @@
   transform: translateX(-50%);
   z-index: 7;
   padding: 4px 10px;
-  font-size: var(--fs-2xs, 9px);
+  font-size: var(--fs-2xs, 11px);
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: var(--chart-accent, #33d6c4);
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  color: var(--chart-accent);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
   border-radius: 999px;
   pointer-events: none;
 }
@@ -99,30 +97,30 @@
   left: 0;
   right: 0;
   height: 0;
-  border-top: 1px dashed var(--chart-warn, #d6a13a);
+  border-top: 1px dashed var(--chart-warn);
 }
 .alert-line__tag {
   position: absolute;
   left: 6px;
   top: -14px;
   padding: 1px 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: var(--fs-2xs, 9px);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs, 11px);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
-  color: var(--chart-warn, #d6a13a);
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--warn-line, #3a3016);
+  color: var(--chart-warn);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--warn-line);
   border-radius: 3px;
   white-space: nowrap;
 }
 .alert-line--triggered {
   border-top-style: solid;
-  border-top-color: var(--chart-sell, #e8635f);
+  border-top-color: var(--chart-sell);
 }
 .alert-line--triggered .alert-line__tag {
-  color: var(--chart-sell, #e8635f);
-  border-color: var(--sell-line, #3b1f1f);
+  color: var(--chart-sell);
+  border-color: var(--sell-line);
 }
 /* Fired alerts pulse the marker for a couple of seconds (reduced-motion safe). */
 .alert-line--pulse {
@@ -150,23 +148,23 @@
   gap: 6px;
   padding: 4px 10px;
   font-family: inherit;
-  font-size: var(--fs-2xs, 9px);
+  font-size: var(--fs-2xs, 11px);
   font-weight: 600;
   letter-spacing: 0.06em;
-  color: var(--chart-ink-dim, #93a1b4);
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  color: var(--chart-ink-dim);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
   border-radius: 999px;
   cursor: pointer;
   transition: border-color var(--t-fast, 0.12s), color var(--t-fast, 0.12s);
 }
 .alerts-chip:hover,
 .alerts-chip.is-open {
-  color: var(--chart-ink, #e6edf3);
-  border-color: var(--warn-line, #3a3016);
+  color: var(--chart-ink);
+  border-color: var(--warn-line);
 }
 .alerts-chip__count {
-  color: var(--chart-warn, #d6a13a);
+  color: var(--chart-warn);
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
 }
@@ -183,19 +181,19 @@
   max-height: 46vh;
   display: flex;
   flex-direction: column;
-  font-size: var(--fs-xs, 10px);
-  color: var(--chart-ink, #e6edf3);
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
-  border-radius: 8px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+  font-size: var(--fs-xs, 11px);
+  color: var(--chart-ink);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-drop);
 }
 .alerts-pop__head {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--chart-chip-border, #1a2030);
+  border-bottom: 1px solid var(--chart-chip-border);
 }
 .alerts-pop__title {
   flex: 1;
@@ -208,7 +206,7 @@
 }
 .alerts-pop__empty {
   padding: 14px 10px;
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
   text-align: center;
 }
 .alert-row {
@@ -216,73 +214,74 @@
   align-items: center;
   gap: 8px;
   padding: 5px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 .alert-row:hover {
-  background: color-mix(in srgb, var(--chart-ink, #e6edf3) 8%, transparent);
+  background: color-mix(in srgb, var(--chart-ink) 8%, transparent);
 }
 .alert-row__px {
   flex: 1;
-  color: var(--chart-ink, #e6edf3);
+  color: var(--chart-ink);
 }
 .alert-row__state {
-  font-size: var(--fs-2xs, 9px);
+  font-size: var(--fs-2xs, 11px);
   letter-spacing: 0.05em;
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
 }
 .alert-row__state--fired {
-  color: var(--chart-sell, #e8635f);
+  color: var(--chart-sell);
 }
 .alert-row__state--muted {
-  color: var(--chart-warn, #d6a13a);
+  color: var(--chart-warn);
 }
 .alert-row__btn {
   padding: 2px 7px;
   font-family: inherit;
-  font-size: var(--fs-2xs, 9px);
+  font-size: var(--fs-2xs, 11px);
   font-weight: 600;
   letter-spacing: 0.05em;
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
   background: transparent;
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  border: 1px solid var(--chart-chip-border);
   border-radius: 4px;
   cursor: pointer;
 }
 .alert-row__btn:hover {
-  color: var(--chart-ink, #e6edf3);
-  border-color: var(--chart-accent, #33d6c4);
+  color: var(--chart-ink);
+  border-color: var(--chart-accent);
 }
 .alerts-add {
   display: flex;
   gap: 6px;
   padding: 8px 10px;
-  border-top: 1px solid var(--chart-chip-border, #1a2030);
+  border-top: 1px solid var(--chart-chip-border);
 }
 .alerts-add__input {
   flex: 1;
   min-width: 0;
   padding: 4px 8px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: var(--fs-xs, 10px);
-  color: var(--chart-ink, #e6edf3);
-  background: var(--chart-gutter-bg, #0e121a);
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs, 11px);
+  color: var(--chart-ink);
+  background: var(--chart-gutter-bg);
+  border: 1px solid var(--chart-chip-border);
   border-radius: 4px;
 }
 .alerts-add__input:focus-visible {
-  outline: none;
-  border-color: var(--chart-accent, #33d6c4);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-color: var(--chart-accent);
 }
 .alerts-add__go {
   padding: 4px 10px;
   font-family: inherit;
-  font-size: var(--fs-2xs, 9px);
+  font-size: var(--fs-2xs, 11px);
   font-weight: 700;
   letter-spacing: 0.06em;
-  color: var(--chart-accent, #33d6c4);
+  color: var(--chart-accent);
   background: transparent;
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  border: 1px solid var(--chart-chip-border);
   border-radius: 4px;
   cursor: pointer;
 }
@@ -300,12 +299,12 @@
   display: flex;
   gap: 10px;
   padding: 4px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: var(--fs-2xs, 9px);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs, 11px);
   line-height: 1.6;
-  color: var(--chart-ink-dim, #93a1b4);
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  color: var(--chart-ink-dim);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
   border-radius: 6px;
   pointer-events: none;
   white-space: nowrap;
@@ -316,15 +315,15 @@
   gap: 4px;
 }
 .perfhud__k {
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
   letter-spacing: 0.05em;
 }
 .perfhud__v {
-  color: var(--chart-ink, #e6edf3);
+  color: var(--chart-ink);
 }
 
-/* --- W4 TAPE: Bookmap-grade scanability (additive over App.css) ------------ */
-/* The base row grid lives in App.css (lane W3); these are the tape-side layers.
+/* --- Tape scanability layers (additive over App.css) ----------------------- */
+/* The base row grid lives in App.css; these are the tape-side layers.
    All tints are color-mix of the theme ink, so every preset (paper, swiss…)
    gets the same reading without hardcoding a palette.
    NOTE on specificity: App.css/features.css bundle order is import-graph
@@ -361,4 +360,15 @@ section.tape .tape__row--sell.is-big {
 }
 section.tape .tape__row.is-big:hover {
   background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+/* First-run disclosures under the connect step: simulated data and on-disk recording. */
+.onboard__notes {
+  margin: var(--sp-3) 0 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
 }

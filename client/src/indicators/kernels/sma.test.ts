@@ -1,5 +1,5 @@
 /**
- * Streaming SMA kernel vs the old branch's golden math. The naive reference is
+ * Streaming SMA kernel vs the reference implementation's golden math. The naive reference is
  * a deliberate per-window re-sum (O(n·period)) so it cannot drift with the
  * kernel's rolling accumulator.
  */

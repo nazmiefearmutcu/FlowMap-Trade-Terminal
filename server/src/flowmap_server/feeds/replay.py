@@ -1,4 +1,4 @@
-"""Recording-backed replay feed (spec docs/superpowers/specs/2026-09-03-replay-engine-design.md).
+"""Recording-backed replay feed.
 
 Serves a symbol's RECORDED session as a paced ``Feed``: every recorded
 column becomes one synthesized :class:`BookState` snapshot at the column's
@@ -24,19 +24,42 @@ from __future__ import annotations
 import asyncio
 import bisect
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 import numpy as np
 
 from flowmap_server.core.price_scale import row_to_price, scale_of
 from flowmap_server.core.record import TailData
 from flowmap_server.feeds.base import BookState, FeedEvent
+from flowmap_server.feeds.equity import EQUITY_MARKET
 from flowmap_server.proto import events
 
-__all__ = ["ReplayFeed"]
+__all__ = ["ReplayFeed", "unrecorded_capability"]
 
 _PARK_POLL_S = 0.2  # end-of-recording / paused tick
 _TICK_S = 0.02  # clock wait granularity while pacing
+# Markets whose every price, trade and depth level is generated, not observed.
+_GENERATED_MARKETS = frozenset({"sim"})
+
+# Capability keys a replay takes from the live feed's recorded metadata. Every
+# other key (markers, replay flags, provenance) is this server's own statement.
+_RECORDED_HONESTY_KEYS = ("depth", "tape", "trade_side", "cvd")
+
+
+def unrecorded_capability(market: str) -> dict[str, object]:
+    """Honest capability for a recording whose live capability was never stored.
+
+    Keyless equity and the sim are synthetic by construction (the depth is
+    generated, not observed), so they replay as ``SYNTH`` and never as the real
+    ``L2`` ramp. Any other venue is a snapshot-driven book. Trade side and CVD
+    are unknown for a stored recording, so both are ``na``: a replay never
+    inherits the exchange-true ``exchange`` a live venue declared.
+    """
+    if market == EQUITY_MARKET:
+        return {"depth": "SYNTH", "tape": "poll", "trade_side": "na", "cvd": "na"}
+    if market == "sim":
+        return {"depth": "SYNTH", "tape": "tick", "trade_side": "na", "cvd": "na"}
+    return {"depth": "L2-snapshot", "tape": "tick", "trade_side": "na", "cvd": "na"}
 
 
 class _Clock:
@@ -80,16 +103,34 @@ class ReplayFeed:
     capability: dict[str, object]
 
     def __init__(self, *, market: str, symbol: str, tail: TailData, speed: float = 1.0,
-                 paused: bool = False) -> None:
+                 paused: bool = False,
+                 recorded_capability: Mapping[str, object] | None = None) -> None:
         self.market = market
         self.symbol = symbol
-        # Preserve the legacy depth schema; explicit provenance distinguishes
-        # recorded aggregate density from an original raw L2 book.
-        self.capability = {"depth": "L2", "tape": "tick", "trade_side": "exchange", "replay": True}
+        # The recording's own honesty fields when the live feed stored them, else
+        # the honest stand-in for this market. Never a hard-coded real-depth claim:
+        # a replayed keyless equity session must show SYNTH, not L2 with exchange side.
+        honesty = unrecorded_capability(market)
+        if recorded_capability is not None:
+            honesty.update(
+                {k: recorded_capability[k] for k in _RECORDED_HONESTY_KEYS
+                 if k in recorded_capability}
+            )
+        # A replay is synthetic when its data was generated rather than observed:
+        # the sim market, or any recording whose depth tier is SYNTH.
+        self.capability = {
+            **honesty,
+            "replay": True,
+            "synthetic": market in _GENERATED_MARKETS or honesty["depth"] == "SYNTH",
+        }
+        # Provenance says how the density was captured: recorded aggregates, never
+        # an original raw L2 book. A SYNTH recording keeps it, because its columns
+        # were recorded. Its generated depth is carried by the SYNTH tier and by
+        # ``synthetic`` above, so clients key the honesty labels on those.
         self.capability["depth_provenance"] = "recorded-density"
         self.capability["quote_provenance"] = "recorded-row-centres"
-        # Legacy Feed consumers retain this hint. Production Session replay
-        # installs immutable recorded epoch geometry directly.
+        # The Feed protocol's price-adaptive hint is kept for generic consumers.
+        # Production Session replay installs recorded epoch geometry directly.
         self.price_adaptive_tick = market != "sim"
 
         self._cols = sorted(tail.columns, key=lambda c: c.t0_ns)

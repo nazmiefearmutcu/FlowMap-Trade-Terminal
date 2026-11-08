@@ -1,5 +1,5 @@
 /**
- * Theme application tests (lane CE): persistence, data-theme stamping,
+ * Theme application tests: persistence, data-theme stamping,
  * first-run prefers-color-scheme, cycle, canvas palette, `T` key wiring.
  */
 
@@ -9,6 +9,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import { DEFAULT_THEME_ID, THEME_IDS, type ThemeId } from './registry';
 import {
   THEME_STORAGE_KEY,
@@ -145,6 +146,17 @@ describe('attachThemeKey (T)', () => {
     off();
   });
 
+  it('does not cycle again while the key auto-repeats', () => {
+    setTheme('midnight');
+    const off = attachThemeKey(window);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 't' }));
+    expect(getTheme()).toBe('paper');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 't', repeat: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 't', repeat: true }));
+    expect(getTheme()).toBe('paper');
+    off();
+  });
+
   it('ignores chords, text fields, and open dialogs', () => {
     setTheme('midnight');
     const off = attachThemeKey(window);
@@ -176,6 +188,19 @@ describe('attachThemeKey (T)', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 't' }));
     expect(getTheme()).toBe('midnight');
   });
+
+  it('leaves bare T alone while single-key shortcuts are switched off (WCAG 2.1.4)', () => {
+    setTheme('midnight');
+    setSingleKeyShortcutsEnabled(false);
+    const off = attachThemeKey(window);
+    try {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 't' }));
+      expect(getTheme()).toBe('midnight');
+    } finally {
+      off();
+      setSingleKeyShortcutsEnabled(true);
+    }
+  });
 });
 
 describe('storage key contract', () => {
@@ -184,7 +209,7 @@ describe('storage key contract', () => {
   });
 });
 
-describe('ONE theme store — lazy resolution, single writer (fix 2026-09-10 F1-4)', () => {
+describe('ONE theme store: lazy resolution, single writer', () => {
   /** Mounts a probe that records every useTheme() value it renders with. */
   function mountProbe(): { seen: ThemeId[]; unmount: () => void } {
     const seen: ThemeId[] = [];

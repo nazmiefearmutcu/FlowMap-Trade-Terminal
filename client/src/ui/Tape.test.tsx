@@ -3,17 +3,20 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setLocale } from '../i18n';
 import { SIDE_BUY, SIDE_SELL, SIDE_UNKNOWN, type EpochParams } from '../proto/types';
 import { flushForTest, ingestForTest, resetForSession, resetForTest, type TapeTrade } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
 import {
   Tape,
+  TapeRow,
   fmtTapeSize,
   fmtTapeTime,
   filterTape,
   isBigTrade,
   largeThreshold,
   sideClass,
+  sideGlyph,
   tapeBadge,
   tapeKeys,
 } from './Tape';
@@ -292,6 +295,14 @@ describe('Tape render', () => {
   });
 });
 
+describe('TapeRow memoisation', () => {
+  it('is a memoised component, so a flush re-renders only the prints that changed', () => {
+    // Trades are immutable and the list only grows at its head: an unchanged row must
+    // be skipped by React rather than rebuilt (and re-formatted) on every 16 ms flush.
+    expect((TapeRow as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.memo'));
+  });
+});
+
 describe('Tape inspection controls', () => {
   const print = (ts: bigint, price: number, side = SIDE_BUY): void => {
     ingestForTest({ type: 5, ts_ns: ts, price, size: 2, side, side_src: 2, venue: 'binance' } as never);
@@ -400,5 +411,74 @@ describe('Tape inspection controls', () => {
       flushForTest();
     });
     expect(onRender).not.toHaveBeenCalled();
+  });
+});
+
+describe('largeThreshold — a uniform tape emphasises nothing', () => {
+  it('returns Infinity when every visible print has the same size', () => {
+    const trades = Array.from({ length: 12 }, () => tapeTrade(5));
+    expect(largeThreshold(trades)).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('still flags the outliers when sizes genuinely spread', () => {
+    const trades = Array.from({ length: 12 }, (_, i) => tapeTrade(i + 1));
+    expect(largeThreshold(trades)).toBe(11);
+  });
+
+  it('still flags a lone large print on an otherwise uniform tape', () => {
+    // 11 prints at size 1 and one at 5: the p90 lands on the floor, so the
+    // threshold is the smallest larger size (5), and only that print is large.
+    const trades = [...Array.from({ length: 11 }, () => tapeTrade(1)), tapeTrade(5)];
+    const threshold = largeThreshold(trades);
+    expect(threshold).toBe(5);
+    expect(trades.filter((t) => t.size >= threshold).map((t) => t.size)).toEqual([5]);
+  });
+});
+
+describe('Tape side marks (WCAG 1.4.1 — the side is not conveyed by colour alone)', () => {
+  afterEach(() => setLocale('en'));
+
+  const print = (ts: bigint, side: number): void => {
+    ingestForTest({ type: 5, ts_ns: ts, price: 100, size: 2, side, side_src: 2, venue: 'binance' } as never);
+  };
+
+  it('maps each side to a shape, and to a screen-reader word', () => {
+    expect(sideGlyph('buy')).toBe('▲');
+    expect(sideGlyph('sell')).toBe('▼');
+    expect(sideGlyph('unknown')).toBe('–');
+  });
+
+  it('draws a shape and a hidden word on every row, newest first', () => {
+    print(1n, SIDE_BUY);
+    print(2n, SIDE_SELL);
+    print(3n, SIDE_UNKNOWN);
+    flushForTest();
+    const { container } = render(<Tape />);
+    const rows = [...container.querySelectorAll('[data-testid="tape-row"]')];
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.querySelector('.tape__side')?.textContent)).toEqual(['–', '▼', '▲']);
+    expect(rows.map((r) => r.querySelector('.tape__sr')?.textContent)).toEqual(['Unknown', 'Sell', 'Buy']);
+    // The visible letter is decorative: the hidden word is what assistive tech reads.
+    expect(rows[0].querySelector('.tape__side')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('exposes the scrolling body as a named region that keyboard users can reach', () => {
+    print(1n, SIDE_BUY);
+    flushForTest();
+    const { container } = render(<Tape />);
+    const body = container.querySelector('[data-testid="tape-body"]');
+    expect(body?.getAttribute('role')).toBe('region');
+    expect(body?.getAttribute('aria-label')).toBe('T&S');
+    expect(body?.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('translates the screen-reader side word with the UI locale', () => {
+    setLocale('tr');
+    print(1n, SIDE_BUY);
+    flushForTest();
+    const { container } = render(<Tape />);
+    expect(container.querySelector('[data-testid="tape-row"] .tape__sr')?.textContent).toBe('Alış');
+    // The decorative mark is a shape, so the Turkish row carries the same glyph as English.
+    expect(container.querySelector('[data-testid="tape-row"] .tape__side')?.textContent).toBe('▲');
   });
 });

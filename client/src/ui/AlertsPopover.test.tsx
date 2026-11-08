@@ -4,6 +4,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PriceAlert } from '../state/alertsStore';
+import { setLocale } from '../i18n';
+import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
+import { setTimeZonePref } from '../i18n/format';
 import { classifyTarget } from '../input/keys';
 import { resetOverlays } from './overlayStack';
 import { AlertsPopover } from './AlertsPopover';
@@ -32,6 +35,8 @@ afterEach(() => {
     container.remove();
   }
   resetOverlays();
+  setLocale('en');
+  setTimeZonePref('local');
 });
 
 function mk(partial: Partial<PriceAlert> & { id: string }): PriceAlert {
@@ -197,6 +202,51 @@ describe('AlertsPopover', () => {
     expect(go.disabled).toBe(true);
   });
 
+  it('a blocked add row is disabled, explains why, and never submits', () => {
+    const props = baseProps();
+    const { container } = render(
+      <AlertsPopover {...props} alerts={[]} addBlockedReason="replay blocked" />,
+    );
+    const input = container.querySelector<HTMLInputElement>('[data-testid="alerts-add-input"]')!;
+    const go = container.querySelector<HTMLButtonElement>('[data-testid="alerts-add-go"]')!;
+    expect(input.disabled).toBe(true);
+    expect(go.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="alerts-add-hint"]')!.textContent).toBe('replay blocked');
+    expect(props.onCreate).not.toHaveBeenCalled();
+  });
+
+  it('the fired-at clock follows the Settings zone (UTC, exchange), not a fixed en-GB format', () => {
+    // 12:05:09 UTC is 07:05:09 in New York in January (EST, UTC-5).
+    const at = Date.UTC(2026, 0, 15, 12, 5, 9);
+    const fired = mk({ id: 'f1', triggered: true, triggeredAt: at, rearmPx: 99.9 });
+    setTimeZonePref('utc');
+    const { container } = render(<AlertsPopover {...baseProps()} group="equity" alerts={[fired]} />);
+    const stateText = () => container.querySelector('[data-testid="alert-state"]')!.textContent ?? '';
+    expect(stateText()).toContain('12:05:09');
+    expect(stateText()).toContain('UTC');
+
+    act(() => {
+      setTimeZonePref('exchange');
+    });
+    expect(stateText()).toContain('07:05:09'); // equity exchange zone = America/New_York
+    expect(stateText()).toContain('EST');
+  });
+
+  it('reads the Turkish locale end to end: no English literal survives on the popover', () => {
+    setLocale('tr');
+    const alerts: PriceAlert[] = [
+      mk({ id: 'a1', price: 90, above: false }),
+      mk({ id: 'a2', price: 110, triggered: true, triggeredAt: 999_000, rearmPx: 109.89 }),
+      mk({ id: 'a3', price: 120, snoozedUntil: 1_060_000 }),
+    ];
+    const { container } = render(<AlertsPopover {...baseProps()} alerts={alerts} />);
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/Price alerts|clear fired|snooze|re-arm|armed|fired|muted|add\b/);
+    expect(container.querySelector('[data-testid="alerts-add-input"]')!.getAttribute('placeholder')).not.toMatch(
+      /level/,
+    );
+  });
+
   it('Escape closes only when it is the top overlay', () => {
     const props = baseProps();
     const { container } = render(<AlertsPopover {...props} alerts={[]} />);
@@ -205,5 +255,18 @@ describe('AlertsPopover', () => {
     });
     expect(props.onClose).toHaveBeenCalledOnce();
     void container;
+  });
+});
+
+describe('AlertsPopover empty hint follows the single-key preference', () => {
+  afterEach(() => setSingleKeyShortcutsEnabled(true));
+
+  it('names the A key only while single-key shortcuts are on', () => {
+    const { container } = render(<AlertsPopover {...baseProps()} alerts={[]} />);
+    const empty = container.querySelector('[data-testid="alerts-empty"]')!;
+    expect(empty.textContent).toContain('Press A');
+    act(() => setSingleKeyShortcutsEnabled(false));
+    expect(empty.textContent).not.toContain('Press A');
+    expect(empty.textContent).toContain('Type a level below');
   });
 });

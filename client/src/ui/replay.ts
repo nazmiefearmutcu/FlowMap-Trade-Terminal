@@ -1,5 +1,5 @@
 /**
- * Replay transport helpers (§9 timeline, T12) — pure, unit-tested.
+ * Replay transport helpers — pure, unit-tested.
  *
  * The speed ladder the transport exposes, and the map from a seek-scrubber
  * fraction ∈ [0,1] to the absolute nanosecond timestamp sent in a `Seek{t}`
@@ -7,7 +7,7 @@
  * component) lets the test lock the boundary behaviour (clamp, empty extent).
  */
 
-/** The discrete replay speeds the transport offers (§9: 1–100×). */
+/** The discrete replay speeds the transport offers (1–100×). */
 export const SPEED_STEPS = [1, 2, 5, 10, 50, 100] as const;
 export type ReplaySpeed = (typeof SPEED_STEPS)[number];
 
@@ -69,9 +69,11 @@ export function formatDurationNs(ns: bigint): string {
 }
 
 /**
- * Next speed on the ladder, wrapping. `dir` = +1 steps up, -1 steps down. Built
- * on {@link clampSpeed} so an off-ladder store value (or a stale persisted one)
- * is snapped onto the ladder before stepping, rather than jumping to 1×.
+ * Next speed on the ladder. `dir` = +1 steps up and wraps past the top (the one
+ * cycling button); `dir` = -1 steps down and stops at 1× rather than wrapping
+ * to the fastest speed. Built on {@link clampSpeed} so an off-ladder store value
+ * (or a stale persisted one) is snapped onto the ladder before stepping, rather
+ * than jumping to 1×.
  *
  * This is what lets ONE cycling button expose the whole 1–100× range: the six
  * discrete steps stay the domain, only the presentation collapses.
@@ -79,8 +81,8 @@ export function formatDurationNs(ns: bigint): string {
 export function nextSpeed(current: number, dir: 1 | -1 = 1): ReplaySpeed {
   const snapped = clampSpeed(current);
   const i = SPEED_STEPS.indexOf(snapped);
-  const n = SPEED_STEPS.length;
-  return SPEED_STEPS[(i + dir + n) % n];
+  if (dir < 0) return SPEED_STEPS[Math.max(0, i - 1)];
+  return SPEED_STEPS[(i + 1) % SPEED_STEPS.length];
 }
 
 /** What the transport is doing right now — the one thing its pill must say. */
@@ -98,24 +100,6 @@ export function transportPhase(
 ): TransportPhase {
   if (isReplay) return paused ? 'replay-paused' : 'replay-playing';
   return following ? 'live-following' : 'live-detached';
-}
-
-/**
- * Pill text for a phase. Deliberately about the CAMERA, never "LIVE"/"OFFLINE":
- * the TopBar's connection chip already owns feed health, and a second widget
- * saying LIVE in a different sense would make the word meaningless.
- */
-export function phaseLabel(phase: TransportPhase, speed: number): string {
-  switch (phase) {
-    case 'live-following':
-      return 'FOLLOWING';
-    case 'live-detached':
-      return 'SCROLLED BACK';
-    case 'replay-playing':
-      return `REPLAY ${speed}× PLAYING`;
-    case 'replay-paused':
-      return `REPLAY ${speed}× PAUSED`;
-  }
 }
 
 /** How far behind the live edge the view sits, in ns, from a column count. */

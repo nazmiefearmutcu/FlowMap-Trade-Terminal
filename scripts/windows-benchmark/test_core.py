@@ -308,7 +308,12 @@ class MeasurementTests(unittest.TestCase):
         source=(Path(__file__).resolve().parents[2]/'app/src-tauri/src/main.rs').read_text(encoding='utf-8')
         guard=source.index('benchmark environment requires the isolated benchmark build identity')
         self.assertLess(guard,source.index('app.path().app_data_dir()'))
-        self.assertIn('.env("FLOWMAP_RECORDING_ENABLED", "1")',source)
+        # Recording is a user setting now, but the benchmark build must always record:
+        # the sidecar env comes from recording_env(), which forces "1" for benchmark.
+        sidecar=(Path(__file__).resolve().parents[2]/'app/src-tauri/src/sidecar.rs').read_text(encoding='utf-8')
+        self.assertIn('"FLOWMAP_RECORDING_ENABLED",\n            recording_env(launch.benchmark,',sidecar)
+        recording=(Path(__file__).resolve().parents[2]/'app/src-tauri/src/recording.rs').read_text(encoding='utf-8')
+        self.assertIn('pub(crate) fn recording_env(benchmark: bool, enabled: bool) -> &\'static str {\n    if benchmark || enabled {\n        "1"',recording)
         self.assertIn('let benchmark = handle.config().identifier == BENCHMARK_IDENTIFIER;',source)
         self.assertIn('if benchmark {\n',source)
 

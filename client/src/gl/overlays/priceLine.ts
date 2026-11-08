@@ -1,5 +1,5 @@
 /**
- * Last-price line overlay (§2 G2, §8.3).
+ * Last-price line overlay.
  *
  * A bright polyline of the per-column CLOSE price over time — the "price line"
  * a chart user expects on top of the liquidity heatmap. Each {@link BarColumn}
@@ -23,7 +23,7 @@
  * the chart (the TradingView signature) and exposes {@link last} so the price
  * axis can draw the matching right-edge price pill.
  *
- * NO AREA WASH (swarm2 F4, QA3 H-1): the old `fillUnder(pts, cssH)` gradient
+ * NO AREA WASH: the old `fillUnder(pts, cssH)` gradient
  * flooded the whole field below the line (measured luma ≈25 vs bg 7.8, fading
  * over ~440 px — the single most luminous structure in the default live view)
  * and, over reconstructed history where `add()` gets one point per candle, it
@@ -44,17 +44,35 @@ export const PRICE_GLOW_WIDTH = 4.0;
 /** Opaque under-stroke: either price or halo clears 3:1 on every LUT sample. */
 export const PRICE_GLOW_ALPHA = 1;
 /** Alpha of the dashed last-price level marker (quieter than the trace).
- *  `OVERLAY.priceLevel` is palette-lane owned; this slice re-stamps its alpha
+ * `OVERLAY.priceLevel` is owned by the palette; this re-stamps its alpha
  *  here so hues stay palette-owned. */
 export const PRICE_LEVEL_ALPHA = 0.28;
-/** Dash pattern of the last-price level (on/off CSS px). W6 swarm2: [2,4] read
+/** Dash pattern of the last-price level (on/off CSS px). [2,4] read
  *  as a fine dotted texture at 1:1 (223 dashes across the chart); the calmer
  *  long-dash [3,6] keeps the same duty ratio with a third fewer dashes. */
 export const PRICE_LEVEL_DASH: readonly number[] = [3, 6];
 /** CSS-px length of the solid stub bridging the trace to the right gutter. */
-export const PRICE_STUB_PX = 10;
+const PRICE_STUB_PX = 10;
 /** Alpha of the right-edge stub (subtle; the core pass stays the brightest ink). */
 export const PRICE_STUB_ALPHA = 0.7;
+
+/**
+ * Pixel-style staircase through the same vertices: each step runs
+ * horizontally to the next column at the previous close, then vertically to the
+ * next close. Pure; fewer than two points is returned unchanged.
+ */
+export function steppedPath(pts: readonly Pt[]): Pt[] {
+  if (pts.length < 2) return pts.slice();
+  const out: Pt[] = [{ x: pts[0].x, y: pts[0].y }];
+  for (let i = 1; i < pts.length; i++) {
+    const prev = pts[i - 1];
+    const cur = pts[i];
+    // A flat run is already a horizontal segment: no corner point is needed.
+    if (cur.y !== prev.y) out.push({ x: cur.x, y: prev.y });
+    out.push({ x: cur.x, y: cur.y });
+  }
+  return out;
+}
 
 /**
  * Re-stamp a css color's alpha, keeping its rgb (hue) untouched. Pure; an
@@ -78,10 +96,15 @@ export class PriceLine {
   private readonly extremes = new Map<number, { low: number; high: number }>();
   /** Newest close (highest col_seq seen) — O(1) maintenance, O(1) read. */
   private lastClose: LastClose | null = null;
+  /** Bumped on every change to the stored closes or extremes (see {@link priceRange}). */
+  private revision = 0;
+  /** Last {@link priceRange} answer, valid while the window and {@link revision} are unchanged. */
+  private rangeMemo: { lo: number; hi: number; revision: number; result: { low: number; high: number } | null } | null = null;
 
   /** Record / refresh a column's close price at its absolute col_seq. */
   add(bar: BarColumn): void {
     if (!Number.isFinite(bar.c)) return;
+    this.revision++;
     this.closes.set(bar.col_seq, bar.c);
     const low = Number.isFinite(bar.l) && bar.l > 0 ? Math.min(bar.l, bar.c) : bar.c;
     const high = Number.isFinite(bar.h) && bar.h > 0 ? Math.max(bar.h, bar.c) : bar.c;
@@ -97,8 +120,23 @@ export class PriceLine {
     return this.closes.size;
   }
 
-  /** Real prices in an overview, never the depth grid's arbitrary coverage. */
+  /**
+   * Real prices in an overview, never the depth grid's arbitrary coverage. The
+   * answer is memoised per window until the stored closes change, because the
+   * renderer asks for it on frames where the data did not move.
+   */
   priceRange(lo: number, hi: number): { low: number; high: number } | null {
+    let memo = this.rangeMemo;
+    if (memo === null || memo.revision !== this.revision || memo.lo !== lo || memo.hi !== hi) {
+      memo = { lo, hi, revision: this.revision, result: this.scanPriceRange(lo, hi) };
+      this.rangeMemo = memo;
+    }
+    const result = memo.result;
+    return result === null ? null : { low: result.low, high: result.high };
+  }
+
+  /** Full scan of the resident closes for one window. */
+  private scanPriceRange(lo: number, hi: number): { low: number; high: number } | null {
     let low = Infinity;
     let high = -Infinity;
     for (const [col, price] of this.closes) {
@@ -115,14 +153,18 @@ export class PriceLine {
     const lo = oldest - pad;
     const hi = newest + pad;
     for (const seq of this.closes.keys()) {
-      if (seq < lo || seq > hi) { this.closes.delete(seq); this.extremes.delete(seq); }
+      if (seq < lo || seq > hi) {
+        this.closes.delete(seq);
+        this.extremes.delete(seq);
+        this.revision++;
+      }
     }
   }
 
   /**
    * Re-init ONLY the session high-water cursor (`lastClose`). A replaced session
    * restarts `col_seq` at 0; without this the col_seq-max would keep `last()`
-   * frozen on the old session's price (dashed level + axis pill; survey S1 D5).
+   * frozen on the old session's price (dashed level + axis pill).
    * `reset()` calls this and additionally drops the per-column data.
    */
   resetCursor(): void {
@@ -132,6 +174,7 @@ export class PriceLine {
   reset(): void {
     this.closes.clear();
     this.extremes.clear();
+    this.revision++;
     this.resetCursor();
   }
 
@@ -163,15 +206,20 @@ export class PriceLine {
     }
     if (pts.length === 0) return;
 
-    // No area wash (swarm2 F4): the old full-height `fillUnder` slab flooded the
-    // field (QA3 H-1) and tiled into flat 1-px slabs over reconstructed history.
+    // No area wash: the old full-height `fillUnder` slab flooded the field and
+    // tiled into flat 1-px slabs over reconstructed history.
     // The contrasting under-stroke + core carry the trace.
 
+    // Pixel chart style: the same closes as a staircase with square
+    // joins. Normal style keeps the smooth round-joined polyline unchanged.
+    const pixel = frame.pixelStyle === true;
+    const path = pixel ? steppedPath(pts) : pts;
     // Reuse the same points for the opaque under-stroke; no second history pass.
-    text.polyline(pts, {
+    text.polyline(path, {
       width: PRICE_GLOW_WIDTH,
       color: OVERLAY.priceHalo.css,
       alpha: PRICE_GLOW_ALPHA,
+      square: pixel,
     });
     // Right-edge solid stub: carries the trace the last few px into the gutter
     // so the line reads where it meets the axis pill. Drawn BEFORE the core so
@@ -180,15 +228,16 @@ export class PriceLine {
     const newest = pts[pts.length - 1];
     const stubEnd = Math.min(gm.dims.cssW, newest.x + PRICE_STUB_PX);
     if (stubEnd - newest.x >= 1) {
-      text.polyline([newest, { x: stubEnd, y: newest.y }], { width: PRICE_GLOW_WIDTH, color: OVERLAY.priceHalo.css });
+      text.polyline([newest, { x: stubEnd, y: newest.y }], { width: PRICE_GLOW_WIDTH, color: OVERLAY.priceHalo.css, square: pixel });
       text.polyline([newest, { x: stubEnd, y: newest.y }], {
         width: PRICE_LINE_WIDTH,
         color: OVERLAY.price.css,
         alpha: PRICE_STUB_ALPHA,
+        square: pixel,
       });
     }
     // Bright core pass.
-    text.polyline(pts, { width: PRICE_LINE_WIDTH, color: OVERLAY.price.css });
+    text.polyline(path, { width: PRICE_LINE_WIDTH, color: OVERLAY.price.css, square: pixel });
     // A single visible vertex: draw a short dash so it's still visible.
     if (pts.length === 1) {
       text.dashedLine(pts[0].x - 4, pts[0].y, pts[0].x + 4, pts[0].y, OVERLAY.priceHalo.css, [99, 0], PRICE_GLOW_WIDTH);

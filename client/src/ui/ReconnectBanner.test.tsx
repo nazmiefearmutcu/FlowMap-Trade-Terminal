@@ -1,5 +1,5 @@
 /**
- * ReconnectBanner (A5) — truthful reconnect state. It renders ONLY while the
+ * ReconnectBanner — truthful reconnect state. It renders ONLY while the
  * store's connection status is literally `reconnecting`, and it names the
  * market:symbol it is trying to reach. Live / connecting / idle render nothing —
  * a banner that guessed would be exactly the dishonesty this app refuses.
@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { setLocale } from '../i18n';
+import { setLocale, t } from '../i18n';
 import { useFlowMapStore } from '../state/store';
 import { ReconnectBanner, closeReasonText } from './ReconnectBanner';
 
@@ -25,7 +25,7 @@ afterEach(() => {
     container.remove();
   }
   setLocale('en');
-  useFlowMapStore.setState({ status: 'idle', lastClose: null, reconnectAttempts: 0 });
+  useFlowMapStore.setState({ status: 'idle', lastClose: null, reconnectAttempts: 0, protocolMismatch: null, refusal: null });
 });
 
 function render(): void {
@@ -133,5 +133,72 @@ describe('ReconnectBanner', () => {
     render();
     const el = document.body.querySelector('[data-testid="reconnect-banner"]')!;
     expect(el.textContent).toContain('reconnecting to the feed');
+  });
+});
+
+describe('ReconnectBanner terminal and escalated states', () => {
+  it('shows a fatal protocol-mismatch alert with no retry control, even while not reconnecting', () => {
+    useFlowMapStore.setState({ status: 'closed', protocolMismatch: { got: 9, expected: 3 } });
+    render();
+    const el = document.body.querySelector('[data-testid="protocol-mismatch-banner"]')!;
+    expect(el.getAttribute('role')).toBe('alert');
+    expect(el.textContent).toContain('The engine speaks protocol 9, but this FlowMap build expects 3.');
+    expect(el.textContent).toContain('retrying will not help');
+    expect(document.body.querySelector('[data-testid="reconnect-retry"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="reconnect-banner"]')).toBeNull();
+  });
+
+  it('shows a known refusal code as its sentence, with no retry control', () => {
+    useFlowMapStore.setState({ status: 'closed', refusal: { reason: 'invalid_symbol' } });
+    render();
+    const el = document.body.querySelector('[data-testid="refusal-banner"]')!;
+    expect(el.getAttribute('role')).toBe('alert');
+    expect(el.textContent).toBe(
+      t('banner.refusedWithReason', { reason: t('banner.refusalReason.invalidSymbol') }),
+    );
+    expect(el.textContent).not.toContain('invalid_symbol');
+    expect(document.body.querySelector('[data-testid="reconnect-retry"]')).toBeNull();
+  });
+
+  it('shows the generic unrecognized-reason copy for an unknown code, never the raw token', () => {
+    useFlowMapStore.setState({ status: 'closed', refusal: { reason: 'no recording for this session' } });
+    render();
+    const el = document.body.querySelector('[data-testid="refusal-banner"]')!;
+    expect(el.textContent).toBe(
+      t('banner.refusedWithReason', { reason: t('banner.refusalReason.unknown') }),
+    );
+    expect(el.textContent).not.toContain('no recording');
+  });
+
+  it('uses the plain refusal copy when the server gives no reason', () => {
+    useFlowMapStore.setState({ status: 'closed', refusal: { reason: null } });
+    render();
+    const el = document.body.querySelector('[data-testid="refusal-banner"]')!;
+    expect(el.textContent).toBe(t('banner.refused'));
+  });
+
+  it('keeps the plain attempt copy below the escalation threshold', () => {
+    useFlowMapStore.setState({ status: 'reconnecting', reconnectAttempts: 7 });
+    render();
+    const text = document.body.querySelector('[data-testid="reconnect-banner"]')!.textContent ?? '';
+    expect(text).toContain('attempt 7');
+    expect(text).not.toContain('still failing');
+  });
+
+  it('escalates the reconnect copy from eight attempts on', () => {
+    useFlowMapStore.setState({ status: 'reconnecting', reconnectAttempts: 8 });
+    render();
+    const text = document.body.querySelector('[data-testid="reconnect-banner"]')!.textContent ?? '';
+    expect(text).toContain('still failing after 8 attempts');
+    expect(text).not.toContain('attempt 8');
+  });
+
+  it('localizes the 1002 and 1003 close reasons through the banner keys', () => {
+    setLocale('tr');
+    expect(closeReasonText({ code: 1002, wasClean: true })).toBe('bağlantı protokol hatası');
+    expect(closeReasonText({ code: 1003, wasClean: true })).toBe('abonelik reddedildi');
+    setLocale('en');
+    expect(closeReasonText({ code: 1002, wasClean: true })).toBe('protocol error');
+    expect(closeReasonText({ code: 1003, wasClean: true })).toBe('subscription refused');
   });
 });

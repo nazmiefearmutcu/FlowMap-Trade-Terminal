@@ -20,6 +20,7 @@ import aiohttp
 
 from flowmap_server import __version__
 from flowmap_server.data.warehouse import DuckWarehouse
+from flowmap_server.feeds.warehouse_share import shared_warehouse
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +50,12 @@ class DefenseContractsListener:
     """Monitors US government and DoD contract awards for publicly traded defense/tech issuers."""
 
     def __init__(self, warehouse: DuckWarehouse | None = None) -> None:
-        self.warehouse = warehouse or DuckWarehouse()
+        self.warehouse = warehouse or shared_warehouse()
         self._session: aiohttp.ClientSession | None = None
+        # Outcome of the latest fetch, so an outage is not read as "no awards".
+        self.last_status: dict[str, Any] = {}
+        # Awards already stored by this process; repeated polls do not re-insert them.
+        self._stored: set[tuple[object, ...]] = set()
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -75,6 +80,9 @@ class DefenseContractsListener:
             "filters": {
                 "time_period": [{"start_date": start_date, "end_date": end_date}],
                 "award_type_codes": ["A", "B", "C", "D"],  # Contracts
+                # Restrict to the mapped issuers at the source. Without this the top
+                # awards nationwide are fetched and the mapped ones are picked out afterwards.
+                "recipient_search_text": sorted(set(RECIPIENT_TICKER_MAP)),
             },
             "fields": [
                 "Award ID",
@@ -92,18 +100,25 @@ class DefenseContractsListener:
 
         session = await self._get_session()
         data: dict[str, Any] = {}
+        http_status: int | None = None
+        error: str | None = None
         try:
             async with session.post(_USASPENDING_API, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                http_status = resp.status
                 if resp.status == 200:
                     data = await resp.json()
                 else:
+                    error = f"http_{resp.status}"
                     log.warning("USASpending API returned status %d", resp.status)
         except Exception as exc:
+            error = "unreachable"
             log.warning("Failed querying USASpending.gov API: %s", exc)
 
         results: list[dict[str, Any]] = []
         raw_results = data.get("results", []) if isinstance(data, dict) else []
         if not isinstance(raw_results, list):
+            self.last_status = {"source_ok": False, "http_status": http_status,
+                                "error": error or "malformed_response", "rows": 0}
             return []
 
         now_ns = time.time_ns()
@@ -143,8 +158,12 @@ class DefenseContractsListener:
                 "date": item.get("Action Date") or None,
             }, ensure_ascii=False)
 
+            # Stamp the award's action date. The fetch time is only the fallback when
+            # the source gives no usable date, and then detail says so.
+            action_ns = _action_date_ns(item.get("Action Date"))
+            event_ns = action_ns if action_ns is not None else now_ns
             contract_event = {
-                "ts_ns": now_ns,
+                "ts_ns": event_ns,
                 "kind": "defense_contract",
                 "symbol": matched_sym,
                 "headline": headline,
@@ -153,8 +172,15 @@ class DefenseContractsListener:
                 "source": "USASpending.gov",
             }
             results.append(contract_event)
+            award_key = (item.get("Award ID"), item.get("Action Date"), matched_sym)
+            if award_key in self._stored:
+                continue
+            self._stored.add(award_key)
+            if len(self._stored) > _STORED_KEYS:
+                self._stored.clear()
+                self._stored.add(award_key)
             self.warehouse.insert_intelligence(
-                now_ns,
+                event_ns,
                 "defense_contract",
                 matched_sym,
                 headline,
@@ -163,4 +189,20 @@ class DefenseContractsListener:
                 "USASpending.gov",
             )
 
+        self.last_status = {"source_ok": error is None, "http_status": http_status,
+                            "error": error, "rows": len(results)}
         return results
+
+
+_STORED_KEYS = 50_000
+
+
+def _action_date_ns(value: object) -> int | None:
+    """UTC-midnight ns of a YYYY-MM-DD action date, or None when it is absent or invalid."""
+    if not isinstance(value, str):
+        return None
+    try:
+        day = datetime.strptime(value.strip(), "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return int(day.timestamp()) * 1_000_000_000

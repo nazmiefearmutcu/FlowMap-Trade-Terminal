@@ -1,8 +1,7 @@
 /**
- * Drawings store (campaign 3, lane CF) — the zustand home for pro-charting
- * annotations over the heatmap (ported from the old branch's drawings/store.ts
- * + toolStore.ts, re-anchored to data space and extended with undo/redo,
- * per-drawing styling and the toolbar toggle).
+ * Drawings store — the zustand home for chart annotations over the heatmap,
+ * anchored to data space, with undo/redo, per-drawing styling and the toolbar
+ * toggle.
  *
  * One document per market:symbol, mirroring persist.ts's namespaced keys so
  * switching instruments never bleeds one chart's trendlines onto another. The
@@ -25,16 +24,17 @@
  * while a pointer DRAG pushes exactly once at drag start and then streams
  * {@link DrawingsState.moveBy} / {@link DrawingsState.moveAnchor} (one undo
  * step per gesture, not per pointermove). The stack is bounded at
- * {@link UNDO_CAP} snapshots (contract: ≥ 20).
+ * {@link UNDO_CAP} snapshots (at least 20 steps).
  */
 
 import { create } from 'zustand';
 
 import { createDrawing, movePoint as modelMovePoint, restyleDrawing, translateDrawing } from './model';
-import { capDrawings, loadDrawings, saveDrawings, type StorageLike } from './persist';
-import { DEFAULT_STYLE, POINTS_PER_TOOL, type ChartPoint, type Drawing, type DrawingTool, type DrawStyle } from './types';
+import { hasDrawingRoom, loadDrawings, saveDrawings, type StorageLike } from './persist';
+import { safeLocalStorage } from '../state/safeStorage';
+import { clampWidth, DEFAULT_STYLE, POINTS_PER_TOOL, type ChartPoint, type Drawing, type DrawingTool, type DrawStyle } from './types';
 
-/** Undo-stack depth (contract: ≥ 20; generous because snapshots are cheap). */
+/** Undo-stack depth (at least 20; generous because snapshots are cheap). */
 export const UNDO_CAP = 64;
 
 /** The slice of state components subscribe to. */
@@ -58,6 +58,12 @@ export interface DrawingsState {
   /** Bounded undo/redo histories of `items` snapshots (newest LAST). */
   undoStack: Drawing[][];
   redoStack: Drawing[][];
+  /**
+   * Placements refused at the per-symbol limit. Increments on each
+   * refusal, so the drawing layer can raise one notice per attempt. Nothing is
+   * evicted: the existing drawings stay exactly as they are.
+   */
+  limitRefusals: number;
 
   /** Switch documents: flush the outgoing scope, then load the incoming one. */
   setScope(market: string, symbol: string): void;
@@ -117,18 +123,9 @@ export function setDrawingsStorage(s: StorageLike | null): void {
   savedStorage = s;
 }
 
-/** The default storage (browser localStorage), resolved lazily + guarded. */
-function defaultStorage(): StorageLike | null {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
-  } catch {
-    /* localStorage denied (privacy mode) — drawings simply stay session-local */
-  }
-  return null;
-}
-
+/** The browser's localStorage, resolved lazily; drawings stay session-local when it is denied. */
 function getStorage(): StorageLike | null {
-  if (savedStorage === undefined) savedStorage = defaultStorage();
+  if (savedStorage === undefined) savedStorage = safeLocalStorage();
   return savedStorage;
 }
 
@@ -139,11 +136,43 @@ function nextId(): string {
   return `drw-${idCounter}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * A drag moved drawings in memory but has not written them yet. Set by
+ * {@link markPersistPending}; cleared by any full save and by
+ * {@link flushDrawingsPersist}.
+ */
+let persistPending = false;
+
 /** Best-effort save of the CURRENT scope. No-op before a scope is loaded. */
 function persistCurrentScope(get: () => DrawingsState): void {
   const s = get();
+  persistPending = false;
   if (s.market === null || s.symbol === null) return;
   saveDrawings(getStorage(), s.market, s.symbol, s.items);
+}
+
+/**
+ * Note that the in-memory scope is ahead of storage, without writing. A drag
+ * fires one move per pointer event (60+ per second), and a synchronous
+ * localStorage write per event stalls the chart; the write is deferred to the
+ * drag's end ({@link flushDrawingsPersist}).
+ */
+function markPersistPending(): void {
+  persistPending = true;
+}
+
+/**
+ * Write the current scope if a drag left it unsaved. The drawing layer calls
+ * this on pointer release; the page-hide hook below covers a release that never
+ * arrives. Idempotent and a no-op when nothing is pending.
+ */
+export function flushDrawingsPersist(): void {
+  if (!persistPending) return;
+  persistCurrentScope(useDrawingsStore.getState);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => flushDrawingsPersist());
 }
 
 /** Push `items` onto the undo history, truncating any redo tail. */
@@ -165,6 +194,7 @@ export const useDrawingsStore = create<DrawingsState>((set, get) => ({
   toolbarVisible: false,
   undoStack: [],
   redoStack: [],
+  limitRefusals: 0,
 
   setScope(market, symbol) {
     // Flush the OUTGOING scope under ITS key before overwriting state — a fast
@@ -197,6 +227,13 @@ export const useDrawingsStore = create<DrawingsState>((set, get) => ({
       set({ draftPoints: next });
       return null;
     }
+    // At the per-symbol limit the placement is refused, not evicted: the oldest
+    // drawing is never removed to make room. The armed tool is dropped too, so a
+    // repeated click cannot re-trigger the notice without a fresh choice.
+    if (!hasDrawingRoom(items.length)) {
+      set({ draftPoints: [], tool: null, limitRefusals: get().limitRefusals + 1 });
+      return null;
+    }
     const drawing = createDrawing(tool, next, defaultStyle, nextId(), Date.now());
     if (drawing === null) {
       set({ draftPoints: [] });
@@ -204,7 +241,7 @@ export const useDrawingsStore = create<DrawingsState>((set, get) => ({
     }
     set({
       ...snapshotForUndo(get()),
-      items: capDrawings([...items, drawing]),
+      items: [...items, drawing],
       draftPoints: [],
       // TradingView default: draw once, land back in select mode with the new
       // drawing selected (so Delete / immediate restyle work without a click).
@@ -262,14 +299,14 @@ export const useDrawingsStore = create<DrawingsState>((set, get) => ({
     const d = get().items.find((x) => x.id === id);
     if (!d) return;
     set({ items: get().items.map((x) => (x.id === id ? translateDrawing(d, dtNs, dPrice) : x)) });
-    persistCurrentScope(get);
+    markPersistPending(); // written once, on release (flushDrawingsPersist)
   },
 
   moveAnchor(id, index, p) {
     const d = get().items.find((x) => x.id === id);
     if (!d) return;
     set({ items: get().items.map((x) => (x.id === id ? modelMovePoint(d, index, p) : x)) });
-    persistCurrentScope(get);
+    markPersistPending(); // written once, on release (flushDrawingsPersist)
   },
 
   remove(id) {
@@ -328,7 +365,7 @@ export const useDrawingsStore = create<DrawingsState>((set, get) => ({
     const defaultStyle: DrawStyle = {
       color: patch.color ?? s.defaultStyle.color,
       width: patch.width !== undefined
-        ? Math.min(6, Math.max(1, Math.round(patch.width)))
+        ? clampWidth(patch.width)
         : s.defaultStyle.width,
     };
     // A selected drawing follows the swatch immediately — the user points at a
@@ -389,7 +426,7 @@ export const useDrawingsStore = create<DrawingsState>((set, get) => ({
 
 /**
  * Toggle the drawing toolbar's visibility. Module-level so the `D` key binding
- * (DrawToolbar's self-listener, or INT's keys.ts if it takes over the key)
+ * (DrawToolbar's self-listener, or App's keys.ts if it takes over the key)
  * needs no React and no hook — the same seam MeasureTool's arming uses.
  */
 export function toggleDrawToolbar(): void {
@@ -414,5 +451,6 @@ export function resetDrawingsForTest(): void {
     toolbarVisible: false,
     undoStack: [],
     redoStack: [],
+    limitRefusals: 0,
   });
 }

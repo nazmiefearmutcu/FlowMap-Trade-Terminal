@@ -1,16 +1,24 @@
 # FlowMap architecture
 
+Status: current for the code on `main`. Changes not yet in a release are listed in [CHANGELOG.md](../CHANGELOG.md).
+
 FlowMap is three processes (or two, when you run from source without the desktop shell):
 
-1. **Tauri 2 shell** (`app/`, Rust) — spawns the sidecar on a free loopback port, injects
-   `window.__FLOWMAP_SERVER__` into the webview, terminates the sidecar on quit
-   (SIGTERM → SIGKILL on Unix; a private kill-on-close Job Object on Windows also
-   terminates the server if the shell crashes). See [app/README.md](../app/README.md).
-2. **Client** (`client/`) — React 18 + TypeScript + WebGL2. In dev, vite serves it on `:5173`
-   and proxies `/api` and `/ws` to `:8720` (see `client/vite.config.ts`). In the packaged app,
-   the same client is bundled static assets.
+1. **Tauri 2 shell** (`app/`, Rust) — spawns the sidecar on a free loopback port with a fresh
+   per-launch session token (`FLOWMAP_SESSION_TOKEN`), injects `window.__FLOWMAP_SERVER__` and
+   `window.__FLOWMAP_SESSION_TOKEN__` into the webview, and applies the webview CSP from
+   `app/src-tauri/tauri.conf.json`. It stops the sidecar on quit: it closes the sidecar's stdin
+   (the server exits through its normal path, flushing its recorder, because the shell sets
+   `FLOWMAP_EXIT_ON_STDIN_EOF=1`), sends SIGTERM on Unix, and kills it after 3 s. If the shell
+   crashes, the sidecar stops too: a parent-death signal on Linux, the same stdin EOF on macOS, and a
+   kill-on-close Job Object on Windows. See [app/README.md](../app/README.md).
+2. **Client** (`client/`) — React 18 + TypeScript + WebGL2. In dev, vite serves it on `:5173`;
+   vite injects the server origin (`http://127.0.0.1:8720`), so the page talks to the server directly,
+   and vite's `/api` and `/ws` proxy is a same-origin fallback (see `client/vite.config.ts`). In the
+   packaged app, the same client is bundled static assets.
 3. **Server** (`server/`) — Python 3.13, FastAPI + uvicorn, one asyncio event loop, bound to
-   `127.0.0.1:8720` (non-loopback `FLOWMAP_HOST` is rejected at startup).
+   `127.0.0.1` (non-loopback `FLOWMAP_HOST` is rejected at startup). The port is `8720` in source runs;
+   the installed app passes the shell a free loopback port at each launch.
 
 ```
 WebView (client) --HTTP /api/*--> FastAPI REST --\
@@ -25,8 +33,19 @@ WebView (client) --HTTP /api/*--> FastAPI REST --\
 
 ## HTTP surface
 
-All routes are unauthenticated, loopback-only, and read in-memory state only (no network in a
-request handler):
+Every route is loopback-only: the `Host` header must name `127.0.0.1`, `localhost` or `[::1]`
+(optional port), or the request gets HTTP 400 (WebSocket close 4400). In the installed app each
+request must also carry the per-launch session token in the `X-FlowMap-Token` header (HTTP 401
+otherwise). A browser WebSocket cannot set headers, so it offers the token as the subprotocol
+`flowmap.auth.<token>` next to `flowmap.v1`; the server accepts that entry and never echoes it in the
+handshake. A non-browser client may send the header on the handshake instead. On a WebSocket, the `token` query
+parameter is still accepted for command-line tools, and the server redacts its value from the logs.
+A WebSocket connection without a valid token closes with 4401. `GET /api/health` and CORS preflight
+(`OPTIONS`) are exempt. Source runs set no token,
+so only the Host check applies. Most routes read in-memory state and never wait on the network. Three can
+wait. `GET /api/quote` and `GET /api/movers` read the network-cached market data and may await a provider
+fetch on a cache miss (a failed fetch returns the last good value flagged stale), and `GET /api/universe`
+with a specific crypto venue enumerates that venue live, behind a cache. The table lists every route:
 
 | Route | Purpose | Source |
 |---|---|---|
@@ -36,6 +55,8 @@ request handler):
 | `GET /api/universe` | Full bundled universe (same source as `/api/symbols`) | `api/discovery.py` |
 | `GET /api/movers`, `GET /api/quote` | Network-cached market data for the symbol palette | `api/discovery.py`, `api/market_cache.py` |
 | `GET /api/export` | Stream the last-N finalized density columns of a session as CSV or JSON (see below) | `api/export.py` |
+| `GET /api/recordings`, `GET /api/recordings/availability`, `GET /api/recordings/window` | List recorded sessions, report recorded hours, and preview a recorded window for the replay picker | `api/rest.py` |
+| `GET /api/previews` | Replay preview listing (see `api/discovery.py`) | `api/discovery.py` |
 | `WS /ws` | The binary event stream, guarded by an origin gate and a connection cap (see below) | `api/ws.py` |
 
 ### Session statistics (`/api/health` v3)
@@ -66,8 +87,8 @@ runs in a sync generator off the event loop, same discipline as `/api/recordings
 Before serving, `WS /ws` applies two checks:
 
 - **Origin gate** — browser `Origin` headers must match a built-in loopback allow-list
-  (`http://127.0.0.1:*`, `http://localhost:*`, `tauri://localhost`,
-  `https://tauri.localhost`). `FLOWMAP_WS_ALLOWED_ORIGINS` replaces the list (comma-separated;
+  (`http://127.0.0.1:*`, `http://localhost:*`, `http://[::1]:*`, `tauri://localhost`,
+  `https://tauri.localhost`, `http://tauri.localhost`). `FLOWMAP_WS_ALLOWED_ORIGINS` replaces the list (comma-separated;
   `*` disables the check); requests with no `Origin` (non-browser tools) always pass.
   Rejections `ACCEPT` then `CLOSE` with code **1008** and an honest Status frame + reason —
   they never masquerade as protocol errors.
@@ -103,6 +124,9 @@ boundary; `payload_len` is always the **unpadded** length, so readers advance by
 | `0x08` | `STATUS` | S→C | cold JSON: degraded/error states |
 | `0x09`/`0x47` | `PING`/`PONG` | both | hot: send timestamps for RTT |
 | `0x0A` | `HISTORY_RESP` | S→C | hot: header (req_id, epoch, oldest_available_t_ns, four u16 counts) + that many nested complete messages |
+| `0x20` | `GEX_UPDATE` | S→C | intelligence event: gamma-exposure model output (see `proto/wire.py`) |
+| `0x21` | `MARKET_INTELLIGENCE` | S→C | intelligence event: research-panel payload (see `proto/wire.py`) |
+| `0x22` | `MACRO_STRESS` | S→C | intelligence event: macro stress readings (see `proto/wire.py`) |
 | `0x23` | `BOOK_UPDATE` | S→C | hot: same layout as `DEPTH_COL`, containing the current grouped book, with `final=false`; `t0_ns` is the observation time |
 | `0x40`–`0x46` | `SUBSCRIBE`, `UNSUBSCRIBE`, `SEEK`, `SET_SPEED`, `PAUSE`, `RESUME`, `HISTORY_REQ` | C→S | cold JSON |
 
@@ -136,7 +160,7 @@ Pong and subscription changes while one bounded history worker is running.
 
 ## Sessions, grid, and the feed router
 
-`SUBSCRIBE {market, symbol, mode, source, start_t}` is routed by
+`SUBSCRIBE {market, symbol, mode, source, start_t, end_t}` (`end_t` is optional and bounds a replay window) is routed by
 `feeds/router.py::build_feed` with the market grammar:
 
 - `sim` — the deterministic `SIM-DEMO` feed (no network; paced to wall time in the server).
@@ -186,12 +210,14 @@ is order independent so newest-first disk pages contribute their full CDF.
 
 ## Recording and replay lifecycle (`core/record.py`, `feeds/replay.py`, `core/session.py`)
 
-- **Recording** is enabled by default (`FLOWMAP_RECORDING_ENABLED=0` disables it). A
+- **Recording** is enabled by default in the server and in the installed app
+  (`FLOWMAP_RECORDING_ENABLED=0` disables it; the dev launchers default to off; in the installed app the Settings switch writes `recording.json`). A
   `SessionRecorder` writes hourly part-files per event kind:
   `~/.flowmap/recordings/{market}/{symbol}/{YYYYMMDD-HH}-{kind}-{part:06d}.parquet` (overridable
   via `FLOWMAP_DATA_DIR`). Writes go through polars; a flush renames completed files into place so
-  readers never see a truncated part. A global cap (`FLOWMAP_RECORDING_GB_CAP`, default 20 GB)
-  deletes the lexicographically oldest parts across all symbols as it fills.
+  readers never see a truncated part. A soft global cap (`FLOWMAP_RECORDING_GB_CAP`, default 20 GB)
+  deletes the lexicographically oldest parts across all symbols as the total grows. `*-epochs-*`
+  parts are exempt, so the total can stay above the cap.
 - **Replay** is a feed like any other: `SUBSCRIBE` with `mode: "replay"` (optionally `start_t`)
   builds a `ReplayFeed` over that key's recordings. The transport is driven by the client through
   `SEEK` / `SET_SPEED` / `PAUSE` / `RESUME` (1–100×).
@@ -213,7 +239,7 @@ anchored in chart space (column, price) through `gl/overlays/coords.ts` + `gl/pr
   profile, axes) drawn inside the renderer frame.
 - 2D canvas layers: the **drawing overlay** (trendlines, rays, rectangles, Fibonacci
   retracements, hlines, text — per-symbol `localStorage` persistence) and the **indicator
-  overlay** (EMA/SMA/RSI/VWAP/Bollinger/MACD + synthesized candles) each ride their own
+  overlay** (EMA, SMA, VWAP and Bollinger overlays and synthesized candles on the price scale, and RSI, MACD, ATR and OBV sub-panes aligned to the time axis) each ride their own
   canvas wrapped in a `position:relative` container above the GL stage.
 - DOM layers: crosshair with the per-cell readout, the **measure tool** (dashed drag
   rectangle with Δprice/Δtime/Δdepth), **price-alert lines** and their popover, the perf HUD,
@@ -228,7 +254,7 @@ computed CSS variables (below), so no overlay hardcodes palette literals.
 
 ## Themes and i18n (client shell)
 
-- **Themes** — `client/src/theme/` holds a registry of seven CVD-safe palettes (`midnight`
+- **Themes** — `client/src/theme/` holds a registry of seven palettes (`midnight`
   default, `paper`, `swiss`, `amber`, `sea`, `paper-deut`, `contrast`). Each theme re-declares
   the full CSS-variable token set on `:root[data-theme='<id>']` over the base sheet, so
   switching is one `data-theme` attribute stamp plus a `localStorage` write; first run seeds

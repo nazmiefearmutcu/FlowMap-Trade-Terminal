@@ -4,6 +4,7 @@ import { DEFAULT_WHITE_PERCENTILE } from '../gl/normalize';
 import {
   DEFAULT_SETTINGS,
   SETTINGS_KEY,
+  SETTINGS_VERSION,
   historyDepthCols,
   loadSettings,
   normalizeSettings,
@@ -116,7 +117,7 @@ describe('normalizeSettings', () => {
     // choice made afterwards carries settingsVersion 2 and persists (below).
     const n = normalizeSettings({ colormap: 'inferno' });
     expect(n.colormap).toBe('theme');
-    expect(n.settingsVersion).toBe(2);
+    expect(n.settingsVersion).toBe(SETTINGS_VERSION);
   });
 
   it('a version-2 blob honors an explicit legacy family choice', () => {
@@ -164,9 +165,9 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings({}).historyDepth).toBe(DEFAULT_SETTINGS.historyDepth);
   });
 
-  it('coerces the depth-channel field (C2: sum default, junk → default)', () => {
+  it('coerces the depth-channel field (absent or junk values fall back to sum)', () => {
     expect(DEFAULT_SETTINGS.depthChannel).toBe('sum'); // the bit-identical default
-    expect(normalizeSettings({}).depthChannel).toBe('sum'); // pre-C2 payload adopts it
+    expect(normalizeSettings({}).depthChannel).toBe('sum'); // a payload saved before the field existed adopts it
     for (const c of ['sum', 'bid', 'ask', 'imbalance'] as const) {
       expect(normalizeSettings({ depthChannel: c }).depthChannel).toBe(c);
     }
@@ -227,6 +228,27 @@ describe('normalizeSettings', () => {
     expect(n.followPrice).toBe(DEFAULT_SETTINGS.followPrice);
     expect(n.priceBand).toBe(DEFAULT_SETTINGS.priceBand);
     expect(n.colormap).toBe(DEFAULT_SETTINGS.colormap);
-    expect(n.settingsVersion).toBe(2);
+    expect(n.settingsVersion).toBe(SETTINGS_VERSION);
+  });
+});
+
+describe('chart style', () => {
+  it('defaults to normal, and a payload without the field adopts it', () => {
+    expect(DEFAULT_SETTINGS.chartStyle).toBe('normal');
+    expect(normalizeSettings({}).chartStyle).toBe('normal');
+  });
+
+  it('persists the pixel choice and reloads it unchanged', () => {
+    const s = memStorage();
+    saveSettings({ ...DEFAULT_SETTINGS, chartStyle: 'pixel' }, s);
+    expect(loadSettings(s).chartStyle).toBe('pixel');
+    saveSettings({ ...DEFAULT_SETTINGS, chartStyle: 'normal' }, s);
+    expect(loadSettings(s).chartStyle).toBe('normal');
+  });
+
+  it('coerces junk to normal without touching the other fields', () => {
+    const out = normalizeSettings({ chartStyle: 'pixelated', contrast: 40 });
+    expect(out.chartStyle).toBe('normal');
+    expect(out.contrast).toBe(40);
   });
 });

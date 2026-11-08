@@ -1,13 +1,18 @@
 /**
  * ATR kernel — Wilder's Average True Range over real candle ranges.
  *
- * Unlike the old branch (a close-only fallback, its feed carrying no h/l), the
+ * Unlike the reference implementation (a close-only fallback, its feed carrying no h/l), the
  * candle stream has a real range, so this is the TEXTBOOK true range:
  *   TR = max(h − l, |h − cPrev|, |l − cPrev|)
  * seeded with the SMA of the first `period` TRs and advanced with the Wilder
- * recurrence — the identical smoothing the old ATR applied. NaN policy kept:
- * a NaN TR (non-finite h/l/c) poisons the line (nulls) until reset; ±Inf
- * propagates as Infinity. O(1) per push.
+ * recurrence — the identical smoothing the old ATR applied. A bad candle (a
+ * non-finite high, low or previous close makes TR NaN) is SKIPPED: its output is
+ * null, the Wilder state is kept, and the previous close only advances on a
+ * finite close. One bad print therefore leaves a gap, not a dead line.
+ * ±Inf propagates as Infinity. O(1) per push.
+ *
+ * A carry-forward bar (`carry`, an empty bucket) has no range and does not move the
+ * close, so it is not a true-range bar: the ATR holds its value through it.
  */
 
 import { intParam, type CandleInput, type IndicatorKernel, type KernelValues } from './types';
@@ -18,26 +23,30 @@ export function createAtr(period: number): IndicatorKernel {
   let trs = 0;
   let sumTR = 0;
   let avg = 0;
-  let poisoned = false;
   const out: KernelValues = [null];
 
   function step(c: CandleInput, commit: boolean): KernelValues {
-    if (poisoned) {
-      out[0] = null;
+    if (c.carry === true) {
+      // An empty bucket is not a bar: it has no true range and does not move the
+      // close. The ATR holds its last value through it (null while still warming up).
+      out[0] = trs >= period ? avg : null;
       return out;
     }
     const pc = prevClose;
-    if (commit) prevClose = c.c;
+    const closeOk = Number.isFinite(c.c);
     if (pc === null) {
-      out[0] = null; // the first candle has no previous close → no TR
+      // The first candle has no previous close → no TR.
+      if (commit && closeOk) prevClose = c.c;
+      out[0] = null;
       return out;
     }
     const tr = Math.max(c.h - c.l, Math.abs(c.h - pc), Math.abs(c.l - pc));
     if (Number.isNaN(tr)) {
-      if (commit) poisoned = true;
+      // Skipped bar: no TR, no state change, and a NaN close never becomes the prev close.
       out[0] = null;
       return out;
     }
+    if (commit && closeOk) prevClose = c.c;
     if (trs < period) {
       const n = trs + 1;
       const s = sumTR + tr;
@@ -68,7 +77,6 @@ export function createAtr(period: number): IndicatorKernel {
       trs = 0;
       sumTR = 0;
       avg = 0;
-      poisoned = false;
     },
   };
 }

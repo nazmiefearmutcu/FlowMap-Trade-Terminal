@@ -6,7 +6,7 @@ rows. These tests pin the resolution order: an explicit config override
 wins, a feed-declared ``preferred_tick`` comes next, the fallback last;
 invalid values are treated as "no answer", never trusted.
 
-The second half pins the price-ADAPTIVE fallback (QA20 C1/H2): when neither
+The second half pins the price-ADAPTIVE fallback: when neither
 override answers and the feed opts in (CryptoFeed's ``price_adaptive_tick``),
 the grid replaces a fallback tick too coarse for the instrument with the 5th
 significant digit of its own price at the first real mid — DOGEUSDT gets a
@@ -103,10 +103,10 @@ def test_grid_for_default_matches_the_old_fallback() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Price-adaptive fallback (QA20 C1/H2): no declared tick + opt-in feed
+# Price-adaptive fallback: no declared tick + opt-in feed
 # ---------------------------------------------------------------------------
 
-# What QA20 measured live: DOGEUSDT ~$0.0825 with the fallback $0.50 step put
+# What a live run measured: DOGEUSDT ~$0.0825 with the fallback $0.50 step put
 # the whole book inside one row and the axis frame at ±1.5 (negative prices).
 DOGE_MID = 0.0825
 DOGE_VENUE_TICK = 1e-5
@@ -218,7 +218,7 @@ def test_crypto_replays_opt_in_but_sim_replays_do_not() -> None:
 
 
 def test_doge_first_book_gets_a_sane_frame_with_no_negative_prices() -> None:
-    """QA20 C1: DOGE must not collapse into <1 row with a negative axis."""
+    """DOGE must not collapse into <1 row with a negative axis."""
     mgr = SessionManager(Config(recording_enabled=False), timer=FakeTimer())
     grid = mgr._grid_for(_adaptive_feed())
     assert grid.cfg.tick == 0.5 and grid._step == 0.5  # nominal until the mid

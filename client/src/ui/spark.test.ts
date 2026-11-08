@@ -43,7 +43,9 @@ describe('fmtPct / fmtPrice', () => {
     expect(fmtPct(null)).toBe('—');
   });
   it('adapts price decimals to magnitude', () => {
-    expect(fmtPrice(64000)).toBe('64,000');
+    // Ungrouped everywhere: the same price reads the same on every panel.
+    expect(fmtPrice(64000)).toBe('64000.00');
+    expect(fmtPrice(75761.99)).toBe('75761.99');
     expect(fmtPrice(210.5)).toBe('210.50');
     expect(fmtPrice(0.1234)).toBe('0.1234');
     expect(fmtPrice(null)).toBe('—');

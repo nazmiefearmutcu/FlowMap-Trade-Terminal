@@ -1,25 +1,27 @@
 /**
- * PerfHud (campaign 3, lane CD, contract C3) — the render-health chip.
+ * PerfHud — the render-health chip.
  *
  * A tiny monospace HUD (bottom-left of the chart viewport) showing fps, frame
  * ms, texture uploads, draw calls and the column-cache footprint, read from
- * `renderer.stats()` (EMA-smoothed on the renderer side, contract C3). Polled
+ * `renderer.stats()` (EMA-smoothed on the renderer side). Polled
  * at 2 Hz — NEVER per frame — and rendering an honest `—` per field while the
- * renderer provides no stats (a build without C3) or before the first poll.
+ * renderer provides no stats or before the first poll.
  *
  * `H` toggles visibility; the flag is workspace state, so the component takes
  * `visible` + `onToggle` props and App persists it in the settings store
- * (`hudVisible`). Defensive against the C3 contract landing in either order:
- * `stats()` is feature-detected off the renderer instance.
+ * (`hudVisible`). `stats()` is feature-detected off the renderer instance, so a
+ * renderer without it shows the dashes.
  */
 
 import { useEffect, useState, type MutableRefObject } from 'react';
 
 import type { Renderer } from '../gl/renderer';
 import { classifyTarget, routeGlobalKey } from '../input/keys';
+import { formatFixed, formatNumber } from '../i18n/format';
+import { useT } from '../i18n/useT';
 import './features.css';
 
-/** The C3 stats shape CB's renderer ships. All values O(1) reads. */
+/** The renderer's `stats()` snapshot. Every value is an O(1) read. */
 export interface RendererStats {
   fps: number;
   frameMs: number;
@@ -33,27 +35,25 @@ const POLL_MS = 500;
 
 function readStats(renderer: Renderer | null): RendererStats | null {
   if (renderer === null) return null;
-  const fn = (renderer as unknown as { stats?: () => RendererStats }).stats;
-  if (typeof fn !== 'function') return null; // contract C3 not landed — honest —
   try {
-    const s = fn.call(renderer);
-    return s && typeof s === 'object' ? s : null;
+    return renderer.stats();
   } catch {
+    // A failed read shows the dashes rather than a stale or partial snapshot.
     return null;
   }
 }
 
 function fmt1(v: number | null, dash = '—'): string {
-  return v === null || !Number.isFinite(v) ? dash : v.toFixed(1);
+  return v === null || !Number.isFinite(v) ? dash : formatFixed(v, 1);
 }
 
 function fmtInt(v: number | null, dash = '—'): string {
-  return v === null || !Number.isFinite(v) ? dash : String(Math.round(v));
+  return v === null || !Number.isFinite(v) ? dash : formatNumber(Math.round(v));
 }
 
-function fmtMb(bytes: number | null, dash = '—'): string {
+function fmtMb(bytes: number | null, megabyte: string, dash = '—'): string {
   if (bytes === null || !Number.isFinite(bytes)) return dash;
-  return `${(bytes / 1_048_576).toFixed(0)}MB`;
+  return `${formatFixed(bytes / 1_048_576, 0)}${megabyte}`;
 }
 
 interface PerfHudProps {
@@ -66,6 +66,7 @@ interface PerfHudProps {
 
 export function PerfHud({ rendererRef, visible, onToggle }: PerfHudProps): JSX.Element | null {
   const [stats, setStats] = useState<RendererStats | null>(null);
+  const t = useT();
 
   // `H` — toggle the chip. Routed through the shared router so the
   // editable/dialog guards live in exactly one place (input/keys.ts).
@@ -94,35 +95,37 @@ export function PerfHud({ rendererRef, visible, onToggle }: PerfHudProps): JSX.E
   const dash = '—';
 
   return (
-    <div className="perfhud" data-testid="perf-hud" role="status" aria-label="render performance">
+    // A named group, not a live region: the values refresh at 2 Hz, and a polite
+    // status region would announce every refresh to a screen reader user.
+    <div className="perfhud" data-testid="perf-hud" role="group" aria-label={t('perfHud.aria')}>
       <span className="perfhud__cell">
-        <span className="perfhud__k">fps</span>
+        <span className="perfhud__k">{t('perfHud.fps')}</span>
         <span className="perfhud__v" data-testid="perfhud-fps">
           {stats ? fmt1(stats.fps) : dash}
         </span>
       </span>
       <span className="perfhud__cell">
-        <span className="perfhud__k">frame</span>
+        <span className="perfhud__k">{t('perfHud.frame')}</span>
         <span className="perfhud__v" data-testid="perfhud-frame">
-          {stats ? `${fmt1(stats.frameMs)}ms` : dash}
+          {stats ? `${fmt1(stats.frameMs)}${t('unit.ms')}` : dash}
         </span>
       </span>
       <span className="perfhud__cell">
-        <span className="perfhud__k">upl</span>
+        <span className="perfhud__k">{t('perfHud.uploads')}</span>
         <span className="perfhud__v" data-testid="perfhud-uploads">
           {stats ? fmtInt(stats.uploads) : dash}
         </span>
       </span>
       <span className="perfhud__cell">
-        <span className="perfhud__k">draws</span>
+        <span className="perfhud__k">{t('perfHud.draws')}</span>
         <span className="perfhud__v" data-testid="perfhud-draws">
           {stats ? fmtInt(stats.draws) : dash}
         </span>
       </span>
       <span className="perfhud__cell">
-        <span className="perfhud__k">cache</span>
+        <span className="perfhud__k">{t('perfHud.cache')}</span>
         <span className="perfhud__v" data-testid="perfhud-cache">
-          {stats ? fmtMb(stats.cacheBytes) : dash}
+          {stats ? fmtMb(stats.cacheBytes, t('unit.mb')) : dash}
         </span>
       </span>
     </div>

@@ -1,5 +1,5 @@
 /**
- * Streaming indicator kernel contract (campaign 3, lane CG).
+ * Streaming indicator kernel contract.
  *
  * The old-branch indicator library was array-in/array-out (a full recompute per
  * render). On a live tape that is O(n) per bucket forever; these kernels are
@@ -13,7 +13,7 @@
  *   (still-accumulating) candle — without mutating any state. The returned
  *   array is the kernel's reused scratch: read it, never retain it.
  * - All outputs are `number | null` where null = honest warm-up gap (the old
- *   library's alignment contract, kept verbatim).
+ *   library's alignment contract).
  *
  * Inputs are whole candles (not bare closes) so ATR can use h/l and OBV/VWAP
  * can use volume; kernels that only need closes ignore the rest.
@@ -27,6 +27,12 @@ export interface CandleInput {
   c: number;
   /** Trade size accumulated in the bucket (0 allowed; VWAP/OBV skip-by-null). */
   v: number;
+  /**
+   * True for an empty bucket committed as a carry-forward bar: no trades, the
+   * previous close repeated. A bar with no range carries no true range, so ATR
+   * skips it; every other kernel reads it as an ordinary zero-volume bar.
+   */
+  carry?: boolean;
 }
 
 /** Reused output values aligned 1:1 with `outputKeys` (scratch — do not retain). */
@@ -43,7 +49,7 @@ export interface IndicatorKernel {
   reset(): void;
 }
 
-/** Validate an integer parameter (the old library's RangeError contract). */
+/** Validate an integer parameter (the reference library's RangeError contract). */
 export function intParam(name: string, v: number, min: number): number {
   if (!Number.isInteger(v) || v < min) {
     throw new RangeError(`${name} must be an integer >= ${min}, got ${v}`);

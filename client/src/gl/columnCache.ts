@@ -1,13 +1,13 @@
 /**
- * CPU column cache for the crosshair readout (§8.3, M2 T9) — ONE preallocated
- * slot-addressed pool (campaign 3, survey #5).
+ * CPU column cache for the crosshair readout — ONE preallocated
+ * slot-addressed pool.
  *
  * The crosshair must show the EXACT resting size at a hovered `(time, price)`
  * cell — read from the precise f32 values the renderer appended, NEVER from the
- * GPU-filtered / SUM-mip texels (those are approximate: f16-quantized, saturated
- * at 60 000, and — at coarse levels — column-averaged / row-summed). So we keep
+ * GPU-filtered / SUM-mip texels (those are approximate: at coarse levels they are
+ * column-averaged / row-summed). So we keep
  * a compact CPU-side copy of the exact `bid`/`ask` densities for the resident
- * columns. It doubles as the §8.3 instant-recovery source after a WebGL context
+ * columns. It doubles as the instant-recovery source after a WebGL context
  * loss.
  *
  * ### Paged pool storage (replaces the per-column entry objects)
@@ -48,7 +48,7 @@
 import type { PriceMap } from './overlays/coords';
 
 /** Exact summed resting size at a cell (or grouped cell). */
-export interface CellSize {
+interface CellSize {
   bid: number;
   ask: number;
 }
@@ -113,7 +113,7 @@ export class ColumnCache {
 
   /**
    * Bytes retained by the RESIDENT pool pages + the metadata typed arrays
-   * (diagnostics, §10 memory accounting — `Renderer.stats().cacheBytes`).
+   * (diagnostics, memory accounting — `Renderer.stats().cacheBytes`).
    * Grows page-wise as the session touches new pages; 0 pool bytes before the
    * first put.
    */
@@ -177,6 +177,12 @@ export class ColumnCache {
    * whose slot holds a different col_seq implicitly evicts it — ring parity.
    */
   put(colSeq: number, bid: Float32Array, ask: Float32Array | null, t0_ns: bigint, epoch = 0, nativePrice: PriceMap | null = null): void {
+    // A mismatched ask would spill into the next slot's bid block (TypedArray.set
+    // copies the whole array), silently corrupting an unrelated column. Refuse it,
+    // as TileRing.append does.
+    if (ask !== null && ask.length !== bid.length) {
+      throw new Error(`flowmap/columnCache: ask length ${ask.length} ≠ bid length ${bid.length}`);
+    }
     this.ensureRows(bid.length);
     const rows = this.poolRows;
     const slot = this.slotOf(colSeq);

@@ -19,6 +19,15 @@ from test_observation import bounded
 ENGINE=r'\GPU Engine(*)\Utilization Percentage'
 ALLOC='pid_1_luid_0x00000000_0x00000001_phys_0'
 ENGINE_NAME=ALLOC+'_eng_0_engtype_3D'
+# Hang guard for real PDH and worker waits, not a speed budget: first samples need
+# counter warm-up whose length depends on machine load, so a tight bound flakes.
+REAL_WAIT_SECONDS=120
+
+def wait_until(predicate,message):
+    deadline=time.monotonic()+REAL_WAIT_SECONDS
+    while not predicate():
+        if time.monotonic()>=deadline:raise AssertionError(message)
+        time.sleep(.02)
 
 def fixture():
     result={}
@@ -223,19 +232,21 @@ class PdhWindowsTests(unittest.TestCase):
             worker=subprocess.Popen([sys._base_executable,'-B',str(Path(__file__).with_name('sample_pdh.py')),
                 '--identity-file',str(identity),'--output-file',str(output),'--stop-file',str(stop)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             try:
-                deadline=time.monotonic()+6;rows=[]
-                while time.monotonic()<deadline:
-                    if output.exists():
-                        complete=output.read_text(encoding='utf-8').splitlines()
-                        try:rows=[json.loads(line) for line in complete]
-                        except json.JSONDecodeError:rows=[]
-                        if rows:break
-                    time.sleep(.05)
+                rows=[]
+                def first_complete_row():
+                    nonlocal rows
+                    if worker.poll() is not None or not output.exists():return bool(rows)
+                    complete=output.read_text(encoding='utf-8').splitlines()
+                    try:rows=[json.loads(line) for line in complete]
+                    except json.JSONDecodeError:rows=[]
+                    return bool(rows)
+                # Stop early if the worker exits without a row; otherwise wait for one.
+                wait_until(lambda:first_complete_row() or worker.poll() is not None,'Actual worker produced no complete row')
                 self.assertTrue(rows,'Actual worker produced no complete row')
                 self.assertEqual(rows[0]['sampler_pid'],worker.pid)
                 self.assertEqual(Path(rows[0]['sampler_interpreter']).resolve(),Path(sys._base_executable).resolve())
                 self.assertEqual(rows[0]['errors'],[]);self.assertEqual(pdh.validate_row(rows[0]),[])
-                stop.write_text('stop');stdout,stderr=worker.communicate(timeout=5)
+                stop.write_text('stop');stdout,stderr=worker.communicate(timeout=REAL_WAIT_SECONDS)
                 self.assertEqual(worker.returncode,0,stderr)
             finally:
                 if worker.poll() is None:worker.terminate();worker.wait(timeout=5)
@@ -255,22 +266,23 @@ class PdhWindowsTests(unittest.TestCase):
                 # Device creation returns before performance-provider publication.
                 # Establish actual instance publication on a separate diagnostic
                 # query; the tested query's first sample still predates birth.
-                deadline=time.monotonic()+3
-                while True:
+                def instance_published():
                     with pdh.Query([ENGINE]) as probe:
                         probe.collect();raw=probe.array(probe.handles[ENGINE],raw=True)
-                    if any(i['name'].startswith(f'pid_{child.pid}_') for i in raw['items']):break
-                    if time.monotonic()>=deadline:self.fail('Owned D3D11 counter instance not published within three seconds')
-                    time.sleep(.05)
+                    return any(i['name'].startswith(f'pid_{child.pid}_') for i in raw['items'])
+                wait_until(instance_published,'Owned D3D11 counter instance was never published')
             with pdh.Query([ENGINE]) as query: evidence=query.acquire(interval=1,between=start_child)
             prefix=f'pid_{child.pid}_'
             new=[i for i in evidence[ENGINE]['formatted']['items'] if i['name'].startswith(prefix)]
             self.assertTrue(new);self.assertTrue(all(i['status'] not in pdh.VALID and i['value'] is None for i in new))
             birth=process_identity(child.pid);rows=[]
             observer=ProcessObserver(lambda:observe_processes(job,process_sample,qpc),interval=.05).start()
-            time.sleep(.1)
+            # Samples must overlap observer rows: wait for rows before and after them.
+            wait_until(lambda:observer.status()['observed']>=2,'The process observer produced no rows')
             samples=[sample(None,snapshot_reader=lambda _: {child.pid:birth}) for _ in range(2)]
-            time.sleep(.1);observer.stop();observer.publish(rows.append)
+            after_samples=observer.status()['observed']+2
+            wait_until(lambda:observer.status()['observed']>=after_samples,'The process observer stopped producing rows')
+            observer.stop();observer.publish(rows.append)
             self.assertEqual(observer.status()['errors'],[])
             for row in samples:
                 self.assertEqual(row['errors'],[]);self.assertEqual(pdh.validate_row(row),[])

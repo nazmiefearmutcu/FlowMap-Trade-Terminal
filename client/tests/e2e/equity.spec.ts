@@ -1,11 +1,13 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { expect, test } from '@playwright/test';
+import { waitFrames } from './waits';
 
 /**
- * M3 T3 verification — SYNTH-profile equity rendering + honesty (§7 / §7.1),
+ * SYNTH-profile equity rendering and honesty,
  * driven through the REAL renderer + bookStore on software GL (headless).
  *
  * The page opens with `?panels=1` (no live feed — the sim stream does not fight
@@ -35,7 +37,7 @@ const DEPTH = 3;
 const MODE_SYNTH_PROFILE = 2;
 const RAMP_SYNTH = 6;
 
-test('§7 M3 T3: SYNTH-profile equity renders honestly (amber ramp, SYNTH ladder, closed banner)', async ({
+test('SYNTH-profile equity renders honestly (amber ramp, SYNTH ladder, closed banner)', async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -49,7 +51,7 @@ test('§7 M3 T3: SYNTH-profile equity renders honestly (amber ramp, SYNTH ladder
   await page.goto('/?panels=1');
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       return !!(live?.renderer && live?.bookStore);
     },
     undefined,
@@ -59,7 +61,7 @@ test('§7 M3 T3: SYNTH-profile equity renders honestly (amber ramp, SYNTH ladder
   // Publish the keyless-equity capability + epoch, feed a SYNTH_PROFILE book into
   // the renderer + bookStore, and drive a closed Status (opens ~90 s out).
   const poc = await page.evaluate((tags) => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     const r = live.renderer;
 
     // Equity SYNTH grid: cent tick, re-anchored near AAPL's real price (~$180).
@@ -109,7 +111,7 @@ test('§7 M3 T3: SYNTH-profile equity renders honestly (amber ramp, SYNTH ladder
       live.bookStore.ingestForTest(col); // DOM ladder
     }
 
-    // Terminal closed Status (spec §7.1): last-session warmup profile stays, feed
+    // Terminal closed status: last-session warmup profile stays, feed
     // is closed, next open ~90 s out so the countdown is visible.
     const nextOpenMs = Date.now() + 90_000;
     live.store.setState({
@@ -127,7 +129,7 @@ test('§7 M3 T3: SYNTH-profile equity renders honestly (amber ramp, SYNTH ladder
   expect(poc.effBbo, 'BBO overlay draws no fabricated quote').toBeNull();
 
   // Let a couple of dirty frames paint the amber profile.
-  await page.waitForTimeout(300);
+  await waitFrames(page, 3);
 
   // Wait for the throttled (~10 Hz) bookStore flush to paint the ladder.
   await page.waitForFunction(

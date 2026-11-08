@@ -1,5 +1,5 @@
 /**
- * Streaming OBV kernel vs the old branch's goldens (adapted from volume=1 to
+ * Streaming OBV kernel vs the reference implementation's goldens (adapted from volume=1 to
  * real candle volume): up adds, down subtracts, flat holds, first close plants
  * the baseline at 0.
  */
@@ -41,6 +41,15 @@ describe('obv kernel', () => {
     // The NaN close became prevClose; a gap close carries the total, no delta.
     expect(k.push(candles([[1, 5]])[0])[0]).toBe(5);
     expect(k.push(candles([[2, 5]])[0])[0]).toBe(10); // and deltas resume from there
+  });
+
+  it('a finite close with a bad volume does not move the reference close', () => {
+    const k = createObv();
+    candles([[1, 5], [2, 5]]).forEach((c) => k.push(c)); // cum 5, reference close 2
+    expect(k.push({ o: 3, h: 3, l: 3, c: 3, v: Number.NaN })[0]).toBeNull(); // skipped whole
+    // 2.5 is above the last valid close (2), so this is an up candle: +5 → 10.
+    // Committing the skipped close (3) would make it a down candle instead.
+    expect(k.push(candles([[2.5, 5]])[0])[0]).toBe(10);
   });
 
   it('peek mirrors push without committing', () => {

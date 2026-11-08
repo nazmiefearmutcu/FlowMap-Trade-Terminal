@@ -1,5 +1,5 @@
 /**
- * Depth-stream seam detection (QA3 C-1 honesty).
+ * Depth-stream seam detection.
  *
  * A session reattach can merge two grids into one ring: the old session's live
  * columns (250 ms cadence) followed by a reconstructed block from a DIFFERENT
@@ -22,7 +22,7 @@
  *
  * Warp is reported only for the FIRST inconsistent pair of a run
  * ({@link SeamTracker}): the reconstructed block is internally uniform, so a
- * naive rule would emit one marker per column (513 in the measured QA3 repro).
+ * naive rule would emit one marker per column (513 in the measured repro).
  * Backward always reports — it is the corruption signature itself.
  */
 

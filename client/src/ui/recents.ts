@@ -1,5 +1,5 @@
 /**
- * Recent symbols for the palette (A5). localStorage-backed, capped at 5, most
+ * Recent symbols for the palette. localStorage-backed, capped at 5, most
  * recent first. Pure functions over a `Storage | null` so jsdom tests can pass
  * an in-memory fake (and SSR / private-mode can pass null without throwing).
  *

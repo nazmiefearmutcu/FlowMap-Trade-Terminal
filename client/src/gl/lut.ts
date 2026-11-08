@@ -1,18 +1,18 @@
 /**
- * Heatmap colormaps (§8.3 / §9).
+ * Heatmap colormaps (/).
  *
  * Seven ramps live side by side in one 256×7 RGBA8 atlas texture so the fragment
  * shader can select a ramp with a single uniform and a single texture bind:
  *   - row 0 (RAMP_INFERNO): density ramp — near-black → indigo → violet →
  *     magenta → RED → orange → saturated gold as density rises.
  *   - row 1 (RAMP_SYNTH): a distinct single-hue amber ramp for SYNTHETIC equity
- *     depth, so fabricated density reads as visually different from real L2.
+ * depth, so fabricated density reads as visually different from real L2.
  *   - row 2 (RAMP_CLASSIC): the legacy thermal ramp (blue → cyan → yellow →
  *     saturated yellow-gold), kept as a user-selectable option.
  *   - row 3 (RAMP_FLOW): the identity/default "deep water" ramp (near-black
  *     slate → dark navy → deep teal → sage → sand → bright gold). See FLOW_STOPS.
  *   - row 4 (RAMP_IMBALANCE): the DIVERGENT row for the depth-channel
- *     `imbalance` mode (§9 channel modes) — NOT a density ramp: signed
+ *     `imbalance` mode (channel modes) — NOT a density ramp: signed
  *     (bid−ask)/(bid+ask) maps through it, ask-dominant → blue, bid-dominant →
  *     orange, balanced → near-background neutral. Magnitude is brightness on
  *     each side; the blue↔orange axis is the CVD-safe divergent pair.
@@ -21,7 +21,7 @@
  *     theme is registered, so the identity (midnight) path is byte-identical.
  *   - row 6 (RAMP_THEME_SYNTH): the active theme's synthetic-depth ramp (same
  *     store + fallback to SYNTH_STOPS). Never used to dress synthetic depth in a
- *     real-depth ramp — {@link rampForMode} keeps the §7 honesty tier first.
+ *     real-depth ramp — {@link rampForMode} keeps the honesty tier first.
  *
  * **Why the default changed.** The classic thermal ramp crosses half its
  * luminance range by LUT index 96 and spent its top third in bright
@@ -45,7 +45,7 @@
  * Inferno reaches a strong red at ~70% of full luminance, on the way up, which
  * satisfies both constraints at once.
  *
- * **Honesty (§7) outranks the user's colormap choice.** {@link rampForMode}
+ * **Honesty outranks the user's colormap choice.** {@link rampForMode}
  * evaluates the synthetic-depth tier FIRST and unconditionally, so no setting
  * can dress fabricated equity depth in a real-depth ramp.
  *
@@ -75,12 +75,12 @@ export const RAMP_THEME_SYNTH = 6;
 /**
  * Rows 0 (REAL depth) and 1 (SYNTH amber) are pinned by the e2e parity matrix —
  * raw rows therefore never renumber. Row 4 holds the divergent
- * imbalance row; rows 5/6 append the theme-owned ramps (campaign visual
- * 2026-09-11). Unthemed rows 0..4 retain their frozen bytes; active row 4 may adapt.
+ * imbalance row; rows 5/6 append the theme-owned ramps. Unthemed rows 0..4
+ * retain their frozen bytes; active row 4 may adapt.
  */
 export const LUT_ROWS = 7;
 
-/** The colormap families a user can choose between (the §9 Settings knob).
+/** The colormap families a user can choose between (the Settings knob).
  *  The catalog in theme/appearance.ts powers acceptance and picker choices.
  *  Active appearances resolve all families into row 5; raw fixtures keep 0..3. */
 
@@ -88,7 +88,7 @@ export const LUT_ROWS = 7;
 export const DEFAULT_COLORMAP: Colormap = 'theme';
 
 /**
- * Highest LUT index at which a PIXEL probe can still prove the §7 synthetic-
+ * Highest LUT index at which a PIXEL probe can still prove the synthetic-
  * depth signal.
  *
  * The signal is "synthetic depth wears a visibly different ramp". That is only
@@ -172,7 +172,7 @@ const SYNTH_STOPS: RampStop[] = [
   { t: 1.0, rgb: [255, 240, 200] },
 ];
 
-// Flow (the DEFAULT ramp) — the Bookmap-class "aurora" thermal (campaign 4.1):
+// Flow (the identity ramp, used when no theme is registered) — the Bookmap-class "aurora" thermal:
 // near-black slate → deep navy → blue → indigo → violet → magenta-orange →
 // amber → gold. Redesigned against what the previous teal/sage ramp still got
 // wrong on real crypto books:
@@ -180,7 +180,7 @@ const SYNTH_STOPS: RampStop[] = [
 //      read as cheap phosphor; blue-violet is the ordered-book vocabulary
 //      traders already know from Bookmap.
 //   2. The field stays DARK through its lower ~55% — with the dark-field gamma
-//      default (gl/heatmap DEFAULT_DISPLAY_GAMMA ≈ 0.86) the median resting
+//      default (gl/heatmap DEFAULT_DISPLAY_GAMMA = 0.653) the median resting
 //      cell paints in the near-black head, so the ladder does not scream.
 //   3. Warmth is EARNED and arrives FAST: hue crosses from violet to amber
 //      between index ≈146 and ≈152, so an orange/gold pixel is unambiguous
@@ -190,7 +190,7 @@ const SYNTH_STOPS: RampStop[] = [
 // luminance-monotone. The endpoint is bright gold (blue-starved, luma > 200,
 // never white), so the e2e "wall is bright gold, distinct from the white price
 // line" contract still holds; the low half stays COOL (B ≥ G) through index
-// 146, so the §7 synthetic-depth cool-pixel probe stays sound.
+// 146, so the synthetic-depth cool-pixel probe stays sound.
 const FLOW_STOPS: RampStop[] = [
   { t: 0.0, rgb: [5, 8, 14] },
   { t: 0.16, rgb: [10, 22, 60] },
@@ -267,7 +267,7 @@ export function rampForColormap(colormap: Colormap): number {
 }
 
 /**
- * Colormap row for a density column (§7 / §8.3). SYNTHETIC equity depth renders
+ * Colormap row for a density column (/). SYNTHETIC equity depth renders
  * in the single-hue amber ramp so it reads as visually distinct from real L2/L1
  * depth; everything else uses the user's chosen ramp. The honesty signal is the
  * capability `depth` tier (``"SYNTH"`` / legacy ``"SYNTH_PROFILE"``), NOT the

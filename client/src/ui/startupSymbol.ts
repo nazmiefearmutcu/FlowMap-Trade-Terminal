@@ -11,7 +11,33 @@ function valid(pick: unknown): pick is RecentPick {
     && !/[\x00-\x1f\x7f]/.test(p.symbol);
 }
 
-export function loadStartupSymbol(storage: Storage | null): RecentPick {
+/**
+ * A `?symbol=market:SYMBOL` deep link (a shared URL, or a desktop launch that
+ * names an instrument), validated exactly like a saved pick. Null when the
+ * parameter is absent or malformed, so a bad link is ignored silently.
+ */
+export function symbolFromSearch(search: string | undefined): RecentPick | null {
+  if (!search) return null;
+  let raw: string | null;
+  try {
+    raw = new URLSearchParams(search).get('symbol');
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  const colon = raw.indexOf(':');
+  if (colon <= 0) return null;
+  const pick = { market: raw.slice(0, colon), symbol: raw.slice(colon + 1) };
+  return valid(pick) ? pick : null;
+}
+
+/**
+ * The instrument to open at boot: a `?symbol=` deep link first (this session
+ * only, not persisted), then the saved pick, then recents, then the demo.
+ */
+export function loadStartupSymbol(storage: Storage | null, search?: string): RecentPick {
+  const fromUrl = symbolFromSearch(search);
+  if (fromUrl !== null) return fromUrl;
   try {
     const raw = storage?.getItem(ACTIVE_SYMBOL_KEY);
     if (raw) {

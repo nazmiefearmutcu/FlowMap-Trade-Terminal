@@ -7,7 +7,7 @@ import { setFlowMapTransport, useFlowMapStore } from '../state/store';
 import type { SocketLike } from '../net/connection';
 import type { CameraController } from '../input/gestures';
 
-// Exact native run real-picker-qa-06 geometry/timestamp/bar price. Sparse
+// Exact native replay geometry, timestamp and bar price. Sparse
 // crossed density reproduces its observed extent-derived center (2350.5),
 // rather than pretending these aggregates are raw L2 or fabricating a BBO.
 const T0 = 1791917241250000000n;

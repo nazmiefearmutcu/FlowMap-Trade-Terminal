@@ -1,5 +1,5 @@
 /**
- * Streaming MACD kernel vs the old branch's goldens: warm-up null counts
+ * Streaming MACD kernel vs the reference implementation's goldens: warm-up null counts
  * (macd at slow−1, signal/hist at slow+signal−2), the constant-series
  * convergence (fast EMA → value ⇒ macd → 0), and a naive batch reference.
  */

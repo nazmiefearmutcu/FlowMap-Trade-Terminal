@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 import math
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -39,10 +40,23 @@ def test_invalid_spot_produces_no_gex_levels(spot):
     ("open_interest", float("inf")), ("dte_days", 0.0), ("dte_days", float("nan")),
     ("is_call", "call"),
 ])
-def test_invalid_contract_produces_no_partial_model(field, value):
+def test_invalid_contract_is_skipped_and_counted_never_priced(field, value):
     invalid = option()
     setattr(invalid, field, value)
-    assert_unavailable(calculate_gex("TEST", 100.0, [option(90), invalid]), spot=100.0)
+    result = calculate_gex("TEST", 100.0, [option(90), invalid])
+    alone = calculate_gex("TEST", 100.0, [option(90)])
+    assert result.available is True
+    assert result.strikes == [90]
+    assert result.net_gex == pytest.approx(alone.net_gex)
+    assert result.model_provenance["skipped_invalid_contracts"] == 1
+    assert alone.model_provenance["skipped_invalid_contracts"] == 0
+
+
+def test_chain_with_only_invalid_contracts_remains_unavailable():
+    bad_strike, bad_iv = option(), option()
+    bad_strike.strike = 0.0
+    bad_iv.implied_vol = float("nan")
+    assert_unavailable(calculate_gex("TEST", 100.0, [bad_strike, bad_iv]), spot=100.0)
 
 
 def test_missing_chain_and_numerical_overflow_remain_unavailable():
@@ -158,6 +172,18 @@ async def test_source_iv_is_required_instead_of_defaulting_to_point_25(monkeypat
     assert_unavailable(await fetch_options_and_calculate_gex("TEST"), spot=100)
 
 
+async def test_malformed_yahoo_rows_are_skipped_and_counted_not_invented(monkeypatch):
+    yahoo(monkeypatch,
+          calls=[{"strike": 110, "openInterest": 2000, "impliedVolatility": 0.20},
+                 {"strike": 120, "openInterest": 500, "impliedVolatility": None}],
+          puts=[{"strike": 90, "openInterest": 2000, "impliedVolatility": 0.20},
+                {"strike": 80, "openInterest": float("nan"), "impliedVolatility": 0.20}])
+    result = await fetch_options_and_calculate_gex("TEST")
+    assert result.available is True
+    assert result.strikes == [90, 110]
+    assert result.model_provenance["skipped_invalid_contracts"] == 2
+
+
 async def test_real_yahoo_chain_retains_source_and_model_provenance(monkeypatch):
     yahoo(monkeypatch,
           calls=[{"strike": 110, "openInterest": 2000, "impliedVolatility": 0.20}],
@@ -168,6 +194,42 @@ async def test_real_yahoo_chain_retains_source_and_model_provenance(monkeypatch)
     assert result.gamma_flip is not None
     assert result.model_provenance["options_source"].startswith("yfinance option chain")
     assert result.model_provenance["spot_source"] == "yfinance fast_info.last_price"
+
+
+async def test_gex_uses_crocodile_shared_gate_when_the_installed_build_provides_it(monkeypatch):
+    from flowmap_server.core import gex
+
+    seen = []
+
+    async def shared_gate(func):
+        seen.append(func)
+        return func("gate-session")
+
+    monkeypatch.setattr(gex, "_load_shared_yfinance_runner", lambda: shared_gate)
+    yahoo(monkeypatch, calls=[{"strike": 110, "openInterest": 2000, "impliedVolatility": 0.20}],
+          puts=[{"strike": 90, "openInterest": 2000, "impliedVolatility": 0.20}])
+    result = await fetch_options_and_calculate_gex("TEST")
+    assert len(seen) == 1 and result.available is True
+
+
+async def test_gex_without_shared_gate_runs_on_yfinance_default_session(monkeypatch):
+    from flowmap_server.core import gex
+
+    sessions = []
+    monkeypatch.setattr(gex, "_load_shared_yfinance_runner", lambda: None)
+    yahoo(monkeypatch, calls=[{"strike": 110, "openInterest": 2000, "impliedVolatility": 0.20}],
+          puts=[{"strike": 90, "openInterest": 2000, "impliedVolatility": 0.20}])
+    import yfinance as yf
+
+    make_ticker = yf.Ticker
+
+    def record_session(symbol, **kwargs):
+        sessions.append(kwargs.get("session"))
+        return make_ticker(symbol, **kwargs)
+
+    monkeypatch.setattr(yf, "Ticker", record_session)
+    result = await fetch_options_and_calculate_gex("TEST")
+    assert result.available is True and sessions == [None]
 
 
 REGISTRY = {"abcdef": {"symbol": "TEST", "company": "Verified fixture", "tail": "TEST-1"}}
@@ -233,15 +295,32 @@ async def test_invalid_aircraft_position_cannot_become_current_telemetry(monkeyp
     assert await tracker.check_aircraft_states() == []
 
 
-async def test_real_matched_aircraft_preserves_source_position_clock(monkeypatch):
+async def test_old_aircraft_position_is_not_reported_as_current(monkeypatch):
     tracker = CorporateJetTracker(verified_registry=REGISTRY)
-    session = Session(Response([position(icao="123456"), position(altitude=None, velocity=float("nan"))]))
+    monkeypatch.setattr(tracker, "_get_session", AsyncMock(return_value=Session(Response([position()]))))
+    assert await tracker.check_aircraft_states() == []
+    assert tracker.last_status["abcdef"] == {"ok": True, "reason": "stale_positions_only",
+                                             "http_status": 200, "stale_states": 1}
+
+
+async def test_aircraft_rate_limit_is_reported_not_read_as_no_aircraft(monkeypatch):
+    tracker = CorporateJetTracker(verified_registry=REGISTRY)
+    monkeypatch.setattr(tracker, "_get_session", AsyncMock(return_value=Session(Response(status=429))))
+    assert await tracker.check_aircraft_states() == []
+    assert tracker.last_status["abcdef"]["reason"] == "rate_limited"
+
+
+async def test_real_matched_aircraft_preserves_source_position_clock(monkeypatch):
+    recent = round(time.time() - 60, 3)  # inside the 15-minute freshness window
+    tracker = CorporateJetTracker(verified_registry=REGISTRY)
+    session = Session(Response([position(icao="123456", time=recent),
+                                position(time=recent, altitude=None, velocity=float("nan"))]))
     monkeypatch.setattr(tracker, "_get_session", AsyncMock(return_value=session))
     result = await tracker.check_aircraft_states()
     assert len(result) == 1
     event = result[0]
     assert event["icao24"] == "abcdef"
-    assert event["ts_ns"] == 1_700_000_000_250_000_000
+    assert abs(event["ts_ns"] - recent * 1_000_000_000) < 1_000  # float64 rounding of the source clock
     assert event["received_at_ns"] > event["ts_ns"]
     assert event["altitude_m"] is None and event["velocity_mps"] is None
     assert event["status"] == "Airborne"

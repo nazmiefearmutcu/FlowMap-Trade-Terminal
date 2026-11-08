@@ -1,38 +1,56 @@
 /** Price-family key resolved from the current theme, independently of canvas bridge timing. */
 import { resolveOverlayColors } from '../gl/overlays/palette';
+import type { OverlayVisibility } from '../gl/overlays/frame';
 import { THEMES, useTheme, type ThemeId } from '../theme';
+import { t } from '../i18n';
+import { useT } from '../i18n/useT';
 import './ChartLegend.css';
 
 /** Swatch shape: a line (price-family), a teal/red line pair (BBO), or a dot pair (trades). */
 type SwatchKind = 'line' | 'pair' | 'dots';
 
-interface LegendItem {
+export interface LegendItem {
+  /** The overlay toggle that draws this item; a hidden overlay drops its key. */
+  key: 'price' | 'vwap' | 'bbo' | 'bubbles';
   label: string;
   kind: SwatchKind;
   /** One color for `line`; two for `pair` / `dots`. */
   colors: readonly string[];
 }
 
-/** The same pure palette the canvas bridge applies after React renders. */
-function legendItems(theme: ThemeId): LegendItem[] {
+/**
+ * The price-family keys for the current theme, minus any overlay that is off.
+ * Shared with the PNG export so the picture lists exactly what the screen lists.
+ * The palette is the same pure one the canvas bridge applies after React renders.
+ */
+export function legendItemsFor(theme: ThemeId, overlays?: Partial<OverlayVisibility>): LegendItem[] {
   const colors = resolveOverlayColors(THEMES[theme].canvas, THEMES[theme].chart);
-  return [
-    { label: 'Last price', kind: 'line', colors: [colors.price] },
-    { label: 'VWAP', kind: 'line', colors: [colors.vwap] },
-    { label: 'BBO', kind: 'pair', colors: [colors.bid, colors.ask] },
-    { label: 'Trades', kind: 'dots', colors: [colors.buy, colors.sell] },
+  const all: LegendItem[] = [
+    { key: 'price', label: t('desk.lastPrice'), kind: 'line', colors: [colors.price] },
+    { key: 'vwap', label: 'VWAP', kind: 'line', colors: [colors.vwap] },
+    { key: 'bbo', label: 'BBO', kind: 'pair', colors: [colors.bid, colors.ask] },
+    { key: 'bubbles', label: t('desk.bubbles'), kind: 'dots', colors: [colors.buy, colors.sell] },
   ];
+  return all.filter((item) => overlays?.[item.key] !== false);
 }
 
-export function ChartLegend(): JSX.Element {
+export interface ChartLegendProps {
+  /** Overlay visibility from the settings; omitted means every item is drawn. */
+  overlays?: Partial<OverlayVisibility>;
+}
+
+export function ChartLegend({ overlays }: ChartLegendProps = {}): JSX.Element | null {
   const { theme } = useTheme();
-  const items = legendItems(theme);
+  // Subscribes to the locale: the item labels and the group name re-render on change.
+  const localeT = useT();
+  const items = legendItemsFor(theme, overlays);
+  if (items.length === 0) return null;
   return (
     <div
       className="chart-legend"
       data-testid="chart-legend"
       role="img"
-      aria-label="Chart legend: last price, VWAP, best bid and ask, trades"
+      aria-label={localeT('legend.ariaLabel', { items: items.map((i) => i.label.toLowerCase()).join(', ') })}
     >
       {items.map((item) => (
         <span className="chart-legend__item" key={item.label}>

@@ -1,17 +1,27 @@
-import { act } from 'react';
+import { act, Profiler } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MODE_L1_BAND, MODE_L2, MODE_SYNTH_PROFILE, type EpochParams } from '../proto/types';
+import { MODE_L1_BAND, MODE_L2, MODE_SYNTH_PROFILE, SIDE_BUY, type EpochParams } from '../proto/types';
 import {
   flushForTest,
   ingestForTest,
   resetForTest,
   type BookSnapshot,
 } from '../state/bookStore';
+import { setLocale } from '../i18n';
 import { useFlowMapStore } from '../state/store';
-import { DomLadder, buildLadder, depthBucket, depthTier, ladderShape, fmtSz, priceDecimals } from './DomLadder';
+import {
+  DomLadder,
+  buildLadder,
+  depthBucket,
+  depthTier,
+  fmtSz,
+  isRecordedDensity,
+  ladderShape,
+  priceDecimals,
+} from './DomLadder';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -170,6 +180,41 @@ describe('depthTier', () => {
     expect(depthTier(null, MODE_L2)).toBe('L2');
     expect(depthTier(null, MODE_SYNTH_PROFILE)).toBe('SYNTH');
     expect(depthTier(null, null)).toBeNull();
+  });
+
+  it('reports the real tier of a recorded-density replay, never a provenance label', () => {
+    // A keyless equity recording replayed: the tier must stay SYNTH so the legend,
+    // crosshair and ladder keep the synthetic treatment the renderer already uses.
+    const replayedSynth = { depth: 'SYNTH', playback: { speed: 1 }, depth_provenance: 'recorded-density' };
+    expect(depthTier(replayedSynth, MODE_L1_BAND)).toBe('SYNTH');
+    expect(depthTier({ depth: 'L2', depth_provenance: 'recorded-density' }, MODE_L2)).toBe('L2');
+  });
+
+  it('badges a replayed SYNTH recording SYNTH even when the book mode says L2', () => {
+    // The server's replayed keyless equity descriptor against an L2 book mode: the
+    // badge must agree with the SYNTH ramp on the chart, not the book mode.
+    const replayed = { depth: 'SYNTH', depth_provenance: 'recorded-density', playback: { speed: 1 } };
+    expect(depthTier(replayed, MODE_L2)).toBe('SYNTH');
+  });
+
+  it('reads SYNTH for a replay whose density carries no recorded provenance', () => {
+    // honestDepthTier treats an unprovenanced replay as synthetic, so the badge does too.
+    expect(depthTier({ depth: 'L2', playback: { speed: 1 } }, MODE_L2)).toBe('SYNTH');
+  });
+
+  it('keeps a ccxt snapshot book on its own caution tier, never native L2', () => {
+    // A ccxt-polled book reports L2-snapshot while the grid's book mode is L2. The
+    // badge must not fall through to the book-mode L2 fallback.
+    expect(depthTier({ depth: 'L2-snapshot' }, MODE_L2)).toBe('L2-SNAPSHOT');
+    expect(depthTier({ depth: 'L2' }, MODE_L2)).toBe('L2');
+  });
+});
+
+describe('isRecordedDensity', () => {
+  it('flags only the recorded-density provenance', () => {
+    expect(isRecordedDensity({ depth: 'SYNTH', depth_provenance: 'recorded-density' })).toBe(true);
+    expect(isRecordedDensity({ depth: 'L2' })).toBe(false);
+    expect(isRecordedDensity(null)).toBe(false);
   });
 });
 
@@ -399,7 +444,8 @@ describe('DomLadder render', () => {
     book(1n, true);
     const { container } = render(<DomLadder />);
     const assertUnavailable = (): void => {
-      expect(container.querySelector('[data-testid="ladder-badge"]')?.textContent).toBe('RECORDED DENSITY');
+      expect(container.querySelector('[data-testid="ladder-badge"]')?.textContent).toBe('L2');
+      expect(container.querySelector('[data-testid="ladder-provenance"]')?.textContent).toBe('RECORDED DENSITY');
       expect(container.querySelector('[data-testid="ladder-spread"]')).toBeNull();
       expect(container.querySelector('.is-bestbid, .is-bestask')).toBeNull();
       expect(container.querySelector('[data-testid="ladder-mid"]')).toBeNull();
@@ -494,6 +540,47 @@ describe('DomLadder render', () => {
     expect(container.querySelector('.ladder__bar--ask')).not.toBeNull();
   });
 
+  it('badges a replayed keyless equity recording SYNTH, with its provenance beside the tier', () => {
+    useFlowMapStore.setState({
+      subscription: { market: 'equity', symbol: 'AAPL', mode: 'replay', band: 'native' },
+      capability: {
+        depth: 'SYNTH',
+        tape: 'poll',
+        trade_side: 'na',
+        replay: true,
+        depth_provenance: 'recorded-density',
+        playback: { speed: 1, paused: false },
+      },
+      epochs: new Map([[1, PARAMS]]),
+      gridEpoch: 1,
+    });
+    const { bid, ask } = makeBook();
+    ingestForTest({
+      type: 3,
+      epoch: 1,
+      col_seq: 1,
+      t0_ns: 1_000_000n,
+      mode: MODE_L1_BAND,
+      final: true,
+      bid,
+      ask,
+    } as never);
+    flushForTest();
+
+    const { container } = render(<DomLadder />);
+
+    expect(container.querySelector('[data-testid="ladder-badge"]')?.textContent).toBe('SYNTH');
+    expect(container.querySelector('[data-testid="ladder-provenance"]')?.textContent).toBe('RECORDED DENSITY');
+    expect(container.querySelector('[data-testid="dom-ladder"]')?.classList.contains('dom-ladder--synth')).toBe(true);
+    // Synthetic depth never offers the real-book summary, and the layout stays two-sided.
+    expect(container.querySelector('[data-testid="ladder-totals"]')).toBeNull();
+    expect(container.querySelector('[data-row="100"]')?.getAttribute('data-bid')).toBe('8.0000');
+    // Each rung names its bid and ask size for assistive tech, not by column alone.
+    const rung = container.querySelector('[data-row="100"]');
+    expect([...rung!.querySelectorAll('.app-visually-hidden')].map((el) => el.textContent))
+      .toEqual(['Bid size', 'Ask size']);
+  });
+
   it('uses a class-safe N/A badge token (never the slashed "n/a")', () => {
     // No capability and no book → tier null → badge label "N/A" but a CSS-safe
     // "na" class token, so the red no-data affordance actually hooks.
@@ -546,7 +633,7 @@ describe('DomLadder render', () => {
     expect(container.querySelector('.panel__empty')?.textContent).toBe('market closed');
   });
 
-  it('does not promise a book that replay never sends (F3)', () => {
+  it('does not promise a book that replay never sends', () => {
     useFlowMapStore.setState({
       capability: null,
       epochs: new Map(),
@@ -559,6 +646,23 @@ describe('DomLadder render', () => {
     const msg = container.querySelector('.panel__empty')?.textContent;
     expect(msg).toContain('replay');
     expect(msg).not.toContain('waiting');
+  });
+
+  it('translates the empty-body copy with the active locale', () => {
+    useFlowMapStore.setState({
+      capability: null,
+      epochs: new Map(),
+      gridEpoch: null,
+      status: 'connecting',
+      feedState: null,
+    });
+    setLocale('tr');
+    try {
+      const { container } = render(<DomLadder />);
+      expect(container.querySelector('.panel__empty')?.textContent).toBe('bağlanıyor…');
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('collapses the body via the header chevron', () => {
@@ -587,8 +691,8 @@ describe('DomLadder render', () => {
   });
 });
 
-// --- A5: truthful states + flash-on-quantity-change ---
-describe('DomLadder states (A5)', () => {
+// --- Truthful connection and empty states ---
+describe('DomLadder states', () => {
   it('says disconnected — not waiting — while the socket is down', () => {
     useFlowMapStore.setState({
       capability: null,
@@ -643,5 +747,38 @@ describe('DomLadder states (A5)', () => {
     });
     expect(szAt()).toBe(first);
     expect(szAt()?.textContent).toBe("9.00");
+  });
+});
+
+describe('DomLadder re-renders only for book or BBO changes', () => {
+  function seed(): void {
+    useFlowMapStore.setState({ capability: { depth: 'L2' }, epochs: new Map([[1, PARAMS]]), gridEpoch: 1 });
+    const { bid, ask } = makeBook();
+    ingestForTest({ type: 3, epoch: 1, col_seq: 1, t0_ns: 1n, mode: MODE_L2, final: true, bid, ask } as never);
+  }
+
+  it('does not rebuild or commit the ladder for a trade-only flush', () => {
+    seed();
+    const onRender = vi.fn();
+    render(<Profiler id="ladder" onRender={onRender}><DomLadder /></Profiler>);
+    onRender.mockClear();
+    act(() => {
+      ingestForTest({ type: 5, ts_ns: 2n, price: 100, size: 1, side: SIDE_BUY, side_src: 2, venue: 'binance' } as never);
+      flushForTest();
+    });
+    expect(onRender).not.toHaveBeenCalled();
+  });
+
+  it('still re-renders when a settled book column arrives (the guard is not a freeze)', () => {
+    seed();
+    const onRender = vi.fn();
+    render(<Profiler id="ladder" onRender={onRender}><DomLadder /></Profiler>);
+    onRender.mockClear();
+    const { bid, ask } = makeBook();
+    act(() => {
+      ingestForTest({ type: 3, epoch: 1, col_seq: 2, t0_ns: 2n, mode: MODE_L2, final: true, bid, ask } as never);
+      flushForTest();
+    });
+    expect(onRender).toHaveBeenCalled();
   });
 });

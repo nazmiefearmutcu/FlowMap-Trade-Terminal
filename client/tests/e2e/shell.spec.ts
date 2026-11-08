@@ -1,15 +1,17 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { expect, test, type Page } from '@playwright/test';
+import { en } from '../../src/i18n/en';
 import {
-  controls, expectEmptyPickerAndCancel, expectLiveUnchanged,
+  controls, edgeInput, expectEmptyPickerAndCancel, expectLiveUnchanged,
   openRecordedReplayPicker, seedReplayLocale, sessionSnapshot,
 } from './replayPicker';
 
 /**
- * T12 verification — the UI shell (§9) over the real server (playwright.config's
+ * The UI shell over the real server (playwright.config's
  * webServer boots flowmap-server + vite). The page loads with `?spy=1`, which
  * installs a control tap: every outbound control frame is decoded into
  * `window.__flowmapControls`, so the specs assert the EXACT messages the transport
@@ -33,8 +35,8 @@ const SET_SPEED = 0x43;
 const PAUSE = 0x44;
 const RESUME = 0x45;
 
-const storeState = (page: Page): Promise<any> =>
-  page.evaluate(() => (window as unknown as { __flowmapLive: any }).__flowmapLive.store.getState());
+const storeState = (page: Page): Promise<LooseProbe> =>
+  page.evaluate(() => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.store.getState());
 
 interface ReplayStoreState {
   status: string;
@@ -69,7 +71,7 @@ async function bootLive(page: Page): Promise<string[]> {
     if (m.type() === 'error') consoleErrors.push(m.text());
   });
   page.on('pageerror', (e) => consoleErrors.push(String(e)));
-  // Campaign-4: the first-run onboarding card's full-viewport scrim intercepts
+  // The first-run onboarding card's full-viewport scrim intercepts
   // the first pointer click in every fresh Playwright context. Seed the
   // dismissal flag (ui/OnboardingCard ONBOARDING_KEY) before boot so these
   // shell specs exercise the shell, not the onboarding card.
@@ -77,7 +79,7 @@ async function bootLive(page: Page): Promise<string[]> {
   await page.goto('/?spy=1');
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       return !!live && live.store.getState().status === 'live';
     },
     undefined,
@@ -102,8 +104,12 @@ test('shell renders as a trading terminal + screenshot', async ({ page }) => {
   await expect(page.locator('canvas#gl')).toBeVisible();
   await expect(page.locator('[data-testid="right-rail"]')).toBeVisible();
 
-  // Let a couple of seconds of live sim paint the heatmap for the screenshot.
-  await page.waitForTimeout(1500);
+  // Let live sim paint the heatmap for the screenshot: wait for a few columns.
+  await page.waitForFunction(
+    () => ((window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive?.renderer?.newestColSeq ?? 0) >= 3,
+    undefined,
+    { timeout: 20_000 },
+  );
   mkdirSync(ARTIFACT_DIR, { recursive: true });
   const shot = await page.screenshot();
   writeFileSync(join(ARTIFACT_DIR, 'shell.png'), shot);
@@ -172,8 +178,8 @@ test('replay transport controls (pause/resume/speed/seek) send the correct contr
   )).toEqual(availability.hours);
   expect(availability.latest_column_ns).toMatch(/^\d+$/);
   // Keep the picker's latest-anchored defaults; hour boundaries can contain gaps.
-  const start = await picker.getByLabel('Start date and time (UTC)', { exact: true }).inputValue();
-  const end = await picker.getByLabel('End date and time (exclusive) (UTC)', { exact: true }).inputValue();
+  const start = await edgeInput(picker, 'replayPicker.start').inputValue();
+  const end = await edgeInput(picker, 'replayPicker.end').inputValue();
   expect(Number.isFinite(new Date(start + 'Z').getTime())).toBe(true);
   expect(new Date(end + 'Z').getTime()).toBeGreaterThan(new Date(start + 'Z').getTime());
   const check = picker.getByRole('button', { name: 'Check interval', exact: true });
@@ -196,9 +202,9 @@ test('replay transport controls (pause/resume/speed/seek) send the correct contr
   const preview = await response.json() as { start_ns: string; end_ns: string; columns: number };
   expect(preview.columns).toBeGreaterThan(0);
   expect(BigInt(preview.end_ns)).toBeGreaterThan(BigInt(preview.start_ns));
-  const actualRange = picker.getByRole('status').filter({ hasText: 'Actual recorded range (UTC):' });
+  const actualRange = picker.getByRole('status').filter({ hasText: en['replayPicker.effective'] });
   await expect(actualRange).toBeVisible();
-  await expect(actualRange).toContainText('Recorded density and bars; quotes use recorded row centres. Missing intervals are not reconstructed.');
+  await expect(actualRange).toContainText(en['replayPicker.provenance']);
   const confirm = picker.getByRole('button', { name: 'Open paused', exact: true });
   await expect(confirm).toBeEnabled();
   await expectLiveUnchanged(page, opened);
@@ -352,13 +358,13 @@ test('Space toggles follow and `/` focuses the symbol search', async ({ page }) 
   await page.keyboard.press('Escape');
   await page.locator('canvas#gl').click();
   const before = await page.evaluate(
-    () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.following,
+    () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.following,
   );
   await page.keyboard.press('Space');
   await expect
     .poll(() =>
       page.evaluate(
-        () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.following,
+        () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.following,
       ),
     )
     .toBe(!before);

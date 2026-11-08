@@ -1,11 +1,11 @@
 /**
- * Heatmap shaders (§8.3 rendering). Inline GLSL ES 3.00 template strings — kept
+ * Heatmap shaders (rendering). Inline GLSL ES 3.00 template strings — kept
  * in a dedicated module so they read like `.vert`/`.frag` files without pulling
  * in a raw-import loader.
  *
  * The view is a uniform (colOffset/colScale, rowOffset/rowScale) — NOT baked —
- * so T6 can drive pan/zoom by writing uniforms only, never re-uploading pixels.
- * The row→price affine is likewise a per-draw concern (T6/T8); here rows map
+ * so can drive pan/zoom by writing uniforms only, never re-uploading pixels.
+ * The row→price affine is likewise a per-draw concern; here rows map
  * straight to texture rows for a single epoch.
  */
 
@@ -39,19 +39,19 @@ uniform int u_geometryEnabled;
 uniform float u_priceOriginResidual;
 uniform highp sampler2D u_resolution;
 uniform int u_resolutionEnabled;
-// SUM-mip levels (§8.3 / T7). Each texel of level L is the SUM of a 4^L x 4^L
+// SUM-mip levels. Each texel of level L is the SUM of a 4^L x 4^L
 // block of level 0 — walls stay walls when zoomed out. When mips are absent the
 // caller binds u_tiles here too (they are never sampled while u_level == 0).
 uniform highp sampler2DArray u_mip1; // level 1: colsPerTile/4 x rows/4
 uniform highp sampler2DArray u_mip2; // level 2: colsPerTile/16 x rows/16
-// Row-only mip (campaign visual 2026-09-11, R2-M1): each texel sums 4 ROWS of
+// Row-only mip: each texel sums 4 ROWS of
 // ONE column — no column summing. Sampled only when u_rowOnly == 1.
 uniform highp sampler2DArray u_rowMip1; // colsPerTile x rows/4
 // Colormap atlas: 256x5 RGBA8 — row 0 inferno, row 1 synth amber, row 2 classic
 // thermal, row 3 flow (the default), row 4 divergent imbalance (channel 3 only).
 uniform sampler2D u_lut;
 
-// View transform (screen uv -> absolute column/row). Driven by T6; identity-ish
+// View transform (screen uv -> absolute column/row). Driven by the renderer; identity-ish
 // here. col = colOffset + colScale * uv.x, row = rowOffset + rowScale * uv.y.
 uniform float u_colOffset;
 uniform float u_colScale;
@@ -78,11 +78,11 @@ uniform int u_rows;
 uniform int u_validFrom;
 uniform int u_residentNewest;
 
-// Value encoding + normalization (§8.3). intensity = (bid+ask) * decodeScale,
+// Value encoding + normalization. intensity = (bid+ask) * decodeScale,
 // then divided by the normalization percentile to land in ~[0,1].
 uniform float u_decodeScale;
 uniform float u_norm;
-// Perceptual display curve (§8.3). Order-flow density is heavy-tailed, so a
+// Perceptual display curve. Order-flow density is heavy-tailed, so a
 // LINEAR map against the p99 white-point crushes ~99% of levels into the near-
 // black floor and the field reads as black-with-walls. u_gamma < 1 (≈0.45)
 // raises the mids while fixing the black + white endpoints (pow(0)=0, pow(1)=1),
@@ -91,11 +91,11 @@ uniform float u_norm;
 uniform float u_gamma;
 
 // Two-segment transfer curve (Bookmap-class overhaul; low-span calibrated
-// 2026-09-13 after the owner-reported dark-field regression). u_knee is the
+// against a dark-field regression). u_knee is the
 // CPU's clamp(kneeNorm / white, 0.05, 0.95) — the fraction of u_norm where the
 // curve switches from the below-knee gamma lift to the above-knee log
 // compression. u_lowSpan fixes the output share the BELOW-knee segment owns
-// (TRANSFER_LOW_SPAN, 0.72): letting it end at k (the original formula)
+// (TRANSFER_LOW_SPAN, 0.85): letting it end at k (the original formula)
 // capped ~97% of active cells at LUT <= k*255 on heavy-tailed books and
 // rendered the field black. u_logScale is the fixed module constant
 // TRANSFER_LOG_SCALE. Endpoints stay exact: f(0) = 0, f(1) = 1 (LUT 255).
@@ -103,7 +103,7 @@ uniform float u_knee;
 uniform float u_logScale;
 uniform float u_lowSpan;
 
-// Black point (§9 "Tolerance"). Density below u_floor collapses to LUT entry 0 —
+// Black point ("Tolerance"). Density below u_floor collapses to LUT entry 0 —
 // bit-identical to what background() returns — so small resting size falls back
 // to background instead of painting, and only liquidity worth reading survives.
 // The survivors are RE-EXPANDED by u_floorScale (= 1/(1-u_floor), precomputed on
@@ -120,7 +120,7 @@ uniform float u_lowSpan;
 uniform float u_floor;
 uniform float u_floorScale;
 
-// Per-REGION black point (lane F17; D5 lever L1). Reconstructed (stretched
+// Per-REGION black point. Reconstructed (stretched
 // 1 m-candle) columns carry a different density scale from the live book —
 // measured recon/live ≈ 0.5× on BTC but ≈26× on ETH — so ONE global floor is
 // calibrated for at most one regime and the dim side reads as background. The
@@ -137,7 +137,7 @@ uniform float u_floorScaleRecon;
 // Colormap row: 0 = inferno (default), 1 = synth (amber), 2 = classic thermal.
 uniform int u_ramp;
 
-// Depth channel mode (§9 channel modes, contract C2). Coherent uniform branch:
+// Depth channel mode (channel modes). Coherent uniform branch:
 //   0 = sum        — (bid+ask) total density, the default and the historical
 //                    expression, bit-identical to pre-channel releases.
 //   1 = bid        — bid density only (acc.r).
@@ -148,11 +148,11 @@ uniform int u_ramp;
 uniform int u_channel;
 
 // The divergent atlas row (gl/lut.ts RAMP_IMBALANCE). The density u_ramp is NOT
-// redirected in channel 3 — honesty (§7) and the background() readout keep
+// redirected in channel 3 — honesty and the background() readout keep
 // sampling the density ramp; only the imbalance branch indexes this row.
 const int RAMP_IMBALANCE = 4;
 
-// Mip level selection (§8.3 / T7). All three are per-draw CONSTANTS (the CPU
+// Mip level selection. All three are per-draw CONSTANTS (the CPU
 // derives them from rows-per-pixel, which is a uniform), so every branch below
 // is coherent across the frame — no divergence, ~as cheap as a direct fetch.
 //   u_level    : 0/1/2 — which level to sample (coarser as more rows collapse).
@@ -163,7 +163,7 @@ uniform int u_level;
 uniform int u_blk;
 uniform int u_nRowTaps;
 
-// SUM-mip level cross-fade (campaign visual 2026-09-11, wave P2). The hard LOD
+// SUM-mip level cross-fade. The hard LOD
 // switch at 4^k footprints is a measured brightness pop; the CPU ramps this
 // weight 0→1 across the boundary band [0.75*4^k, 4^k]. 0 = pure legacy upload
 // (the finer fetch is skipped entirely); 1 = pure coarse level (the mix carries
@@ -175,17 +175,17 @@ uniform int u_nRowTaps;
 uniform float u_levelFade;
 uniform int u_nRowTapsFine;
 
-// Row-only mip flag (campaign visual 2026-09-11, R2-M1). 1 when the price axis
+// Row-only mip flag. 1 when the price axis
 // collapses rows per pixel (rpp >= 2.5) while the time axis is deep-zoomed
 // (cpp < 1.5): the 4x4 SUM mip would paint 4-column blocks, so rows are summed
 // through u_rowMip1 (ONE column per texel) instead. u_blk is then the row
 // block (4) and u_nRowTaps the 4-row taps covering the pixel footprint; the
 // intensity correction below undoes the SUM path's /blk column division.
-// With the lane-P cross-fade active this stays 1 for the WHOLE fade so the
+// With the cross-fade active this stays 1 for the WHOLE fade so the
 // /blk * blk pair cancels and the raw-scale mix is magnitude-correct.
 uniform int u_rowOnly;
 
-// Row-mip cross-fade weight (resolution-transition polish, lane P). 0 = pure
+// Row-mip cross-fade weight (resolution-transition polish). 0 = pure
 // level-0 single-row sampling (the exact legacy output); 1 = pure 4-row-sum
 // row-mip sampling (the exact post-4.1 rowOnly output). In between the level-0
 // sample and the row sums are blended so the LOD switch never pops while
@@ -195,12 +195,12 @@ uniform int u_rowOnly;
 // skipping the level-0 sampler — both stay bit-exact to their historical paths.
 uniform float u_rowFade;
 
-// Gaussian field sampler (Bookmap-class overhaul, lane F). Per-draw constants
+// Gaussian field sampler (Bookmap-class overhaul). Per-draw constants
 // derived from the view's cols-per-pixel (columns / drawingBufferWidth): a
 // symmetric tap table around the sample column, sigma pinned in CSS screen
 // pixels (2.5 CSS px → ~6.4 px 10–90 edge; the CPU scales the framebuffer
 // footprint by the device-pixel ratio so retina keeps the same CSS softness —
-// F14 §L2 / wave-4 F20) and capped at 2 columns as columns become sub-pixel.
+// DPR-scaled footprint) and capped at 2 columns as columns become sub-pixel.
 // Taps outside [u_validFrom, u_residentNewest] contribute NOTHING
 // and their weight is dropped from the normalizer, so window edges fold into
 // the core and the newest column keeps full weight (tail-columns contract).
@@ -208,20 +208,19 @@ uniform int u_smoothTaps;
 uniform float u_smoothOffsets[9];
 uniform float u_smoothWeights[9];
 
-// Vertical softening offset in ROW units (barcode fix 2026-09-13; wave-2
-// 2026-09-14 pixel-denominated + active at every zoom, CPU: rowSmoothDyFor;
-// wave-4 F20 CSS-denominated via the CPU's device-pixel-ratio scale).
+// Vertical softening offset in ROW units: pixel-denominated and active at every
+// zoom (CPU: rowSmoothDyFor), CSS-denominated via the CPU's device-pixel-ratio scale.
 // ~0 = single-sample legacy path (only a poisoned view); > 0 blends a
 // 0.25/0.5/0.25 vertical triple at ±dy rows around each sample so single-row
-// liquidity reads as a soft band instead of a hard hairline (the owner's
-// default-look complaint). The offset scales with the row footprint
+// liquidity reads as a soft band instead of a hard hairline at the
+// default zoom. The offset scales with the row footprint
 // (dy = sigma_css_px · rowsPerPixel · dpr), so the band stays ~constant in
 // CSS pixels at every zoom and every DPR — including the rpp ~3 DEFAULT.
 // Read by BOTH the level-0 field (fieldAt) and the deep-row mip fetch
 // (rowMipSoft, where the draw's conversion is dy/4 mip texels).
 uniform float u_rowSmoothDy;
 
-// Deep-row softening (barcode fix 2026-09-13, CPU: rowMipSoftenFor +
+// Deep-row softening (CPU: rowMipSoftenFor +
 // rowMipWeightsFor). 1 inside the row-mip regime (rpp >= 2.5). The row-mip
 // texel is a 4-ROW density sum; a Gaussian across the MIP row axis (integer
 // taps with manual bilinear reconstruction between texels, weights for the
@@ -231,6 +230,22 @@ uniform float u_rowSmoothDy;
 // single-fetch row path byte-exact.
 uniform float u_rowMipSoften;
 uniform float u_rowMipWeights[7];
+
+// Chart style. 0 = normal: the smooth field, untouched.
+// 1 = pixel: the fragment snaps to a grid of u_pixelBlock DEVICE pixels, samples
+// the density at that block's centre, and posterizes the final LUT coordinate
+// to 7 bands (posterizePixel) BEFORE the colormap lookup, so the colours are
+// always the active theme's ramp. u_viewport is the drawing-buffer size in
+// device pixels (the heatmap quad covers it exactly).
+uniform int u_pixelMode;
+uniform float u_pixelBlock;
+uniform vec2 u_viewport;
+
+// Pixel-style quantizer: seven flat bands at k/6 (k = 0..6). The endpoints stay
+// exact — 0 is the background ramp entry and 1 the top of the ramp.
+float posterizePixel(float v) {
+  return min(floor(clamp(v, 0.0, 1.0) * 7.0) / 6.0, 1.0);
+}
 
 vec4 background() {
   // LUT entry 0 is the near-black floor — reuse it so out-of-range and
@@ -245,7 +260,7 @@ vec2 fetchLevel(int x, int y, int layer) {
   return texelFetch(u_mip2, ivec3(x, y, layer), 0).rg;
 }
 
-// One texel at the FINER level during a wave-P2 LOD cross-fade: u_level 1 →
+// One texel at the FINER level during a LOD cross-fade: u_level 1 →
 // level 0 (u_tiles), u_level 2 → level 1 (u_mip1). Only called from the SUM
 // else-branch, where u_level >= 1 (level 0 never blends).
 vec2 fetchFine(int x, int y, int layer) {
@@ -268,7 +283,7 @@ vec2 fetchFine(int x, int y, int layer) {
 // center, 0, 1) is a STRICT wall detector: a texel whose strongest vertical
 // neighbour is under half its size (an isolated wall) keeps its own texel
 // exactly; any level that is part of a stack (neighbour >= half) takes the
-// full smooth Gaussian — those stacks are exactly the owner's "barcode".
+// full smooth Gaussian — those stacks are exactly the barcode pattern.
 vec2 fetchRowMipGauss(int x, int layer, float yMip) {
   int rowsR = u_rows / 4;
   vec2 acc = vec2(0.0);
@@ -292,7 +307,7 @@ vec2 fetchRowMipGauss(int x, int layer, float yMip) {
   return mix(acc, center, keep);
 }
 
-// Deep-row barcode killer, wave 2 (2026-09-14): the SAME pixel-denominated
+// Deep-row barcode killer: the SAME pixel-denominated
 // vertical triple the level-0 field uses (u_rowSmoothDy, CPU: rowSmoothDyFor),
 // applied to the deep-row Gaussian. dyMip = u_rowSmoothDy * 0.25 converts the
 // row-unit offset to 4-row mip texels. The center evaluation keeps the
@@ -356,7 +371,7 @@ vec2 fieldAt(float colf, float rowf) {
 }
 
 // The level-0 field sample: a symmetric Gaussian on the TIME axis (uniform
-// offsets/weights, lane F) over the vertically-softened field (barcode fix) —
+// offsets/weights) over the vertically-softened field (barcode fix) —
 // time gets the width-scaled kernel, price gets the small screen-scaled
 // triple. Taps that fall outside the VALID window (the live edge's
 // not-yet-written future column, the oldest valid edge) are skipped and
@@ -602,11 +617,18 @@ vec2 projectedSample(float colf, float price, out float confidence) {
 }
 
 void main() {
-  float colf = u_colOffset + u_colScale * v_uv.x;
-  float rowf = u_rowOffset + u_rowScale * v_uv.y;
+  // Pixel style: every sample is taken at the centre of its device-
+  // pixel block, so one block is one flat cell. Normal style keeps v_uv exactly.
+  vec2 uv = v_uv;
+  if (u_pixelMode == 1) {
+    vec2 centre = (floor(gl_FragCoord.xy / u_pixelBlock) + 0.5) * u_pixelBlock;
+    uv = min(centre, u_viewport - vec2(0.5)) / u_viewport;
+  }
+  float colf = u_colOffset + u_colScale * uv.x;
+  float rowf = u_rowOffset + u_rowScale * uv.y;
   // Depth is binned to the nearest storage row. Its real price interval is
   // [r-0.5,r+0.5], while texel indices start at r: align the bucket center.
-  if (u_priceProjection == 1) rowf = priceRow(v_uv.y) + 0.5;
+  if (u_priceProjection == 1) rowf = priceRow(uv.y) + 0.5;
   int col = int(floor(colf));
   int row = int(floor(rowf));
 
@@ -628,11 +650,11 @@ void main() {
   vec2 acc;
   float projectedConfidence = 1.0;
   if (u_priceProjection == 1) {
-    float delta = u_priceWings.z + u_priceWings.w * v_uv.y;
+    float delta = u_priceWings.z + u_priceWings.w * uv.y;
     acc = projectedSample(colf, delta, projectedConfidence);
     acc *= float(blk); // common pipeline below undoes only the column average
   } else if (u_rowFade >= 0.999) {
-    // Full row-sum endpoint (lane P; exact legacy row-only mip, R2-M1): SUM
+    // Full row-sum endpoint (exact legacy row-only mip): SUM
     // u_nRowTaps 4-row texels of THIS pixel's ONE column — a collapsing price
     // axis still groups rows, but the time axis keeps hard cell edges (no
     // 4-column block average). Bounds-clamped like the SUM path (a tap outside
@@ -641,7 +663,7 @@ void main() {
     // vertical Gaussian reconstruction (fetchRowMipGauss) wrapped in the
     // pixel-denominated triple (rowMipSoft) — same 4-row mip source, smooth
     // falloff that reaches the isolated single-level spikes too. Larger
-    // footprints (rpp > 4, D4 zone a: 88–90% sub-3-px hairlines with the bare
+    // footprints (rpp > 4, zone a: 88–90% sub-3-px hairlines with the bare
     // loop) soften PER TAP through the same Gaussian + triple, so a collapsing
     // price axis spreads isolated levels instead of painting needles. A
     // non-finite/poisoned view (soften 0) keeps the exact historical loop.
@@ -669,10 +691,10 @@ void main() {
       }
     }
   } else if (u_level == 0) {
-    // Width-scaled Gaussian field sampler (lane F; see sampleField0): one
+    // Width-scaled Gaussian field sampler (see sampleField0): one
     // continuous kernel across the whole zoom range — no crisp/blur handoff.
     acc = sampleField0(colf, rowf);
-    // Row-mip cross-fade (lane P): inside the row-mip regime the CPU ramps a
+    // Row-mip cross-fade: inside the row-mip regime the CPU ramps a
     // weight from 0 at the old rpp 2.5 switch edge to full row sums by rpp 3.2,
     // so the hard LOD switch becomes a smooth, step-free ramp. The legacy
     // endpoint (<= 0.001) skips the row fetches entirely; the full endpoint was
@@ -711,7 +733,7 @@ void main() {
       acc = mix(acc, accRow, clamp(u_rowFade, 0.0, 1.0));
     }
   } else {
-    // Zoomed out: the SUM path over the coarse level, plus the wave-P2 level
+    // Zoomed out: the SUM path over the coarse level, plus the LOD level
     // cross-fade when the CPU is ramping across a 4^k LOD boundary.
     acc = vec2(0.0);
     for (int t = 0; t < 4; t++) {
@@ -725,7 +747,7 @@ void main() {
     // pure coarse; ×4 and ÷4 cancel in powers of two). When the finer level IS
     // level 0 the DISPLAY sampler (the Gaussian above) is the right source: the
     // draw switches to the level-0 branch at fade 0, so a raw texelFetch sum
-    // here left a visible band-entry step (coordinator amendment on P2).
+    // here left a visible band-entry step.
     // fade <= 0.001 skips these fetches entirely.
     if (u_levelFade > 0.001) {
       vec2 accF;
@@ -760,7 +782,9 @@ void main() {
       return;
     }
     float d = clamp((acc.r - acc.g) / denom, -1.0, 1.0);
-    int li = int((d * 0.5 + 0.5) * 255.0 + 0.5);
+    float dq = d * 0.5 + 0.5;
+    if (u_pixelMode == 1) dq = posterizePixel(dq);
+    int li = int(dq * 255.0 + 0.5);
     fragColor = texelFetch(u_lut, ivec2(li, RAMP_IMBALANCE), 0);
     return;
   }
@@ -770,7 +794,7 @@ void main() {
   // (/blk), so a persistent wall reads at its true size, not blk x brighter —
   // and NOT diluted the way an average mip (which divides by blk*blk = the full
   // 16^L) would. That /blk is the "1/16^L rescale folded into normalization"
-  // from §8.3, reduced to the wall-preserving 1/4^L (T9 replaces this with a
+  // from, reduced to the wall-preserving 1/4^L (a later pass replaces this with a
   // per-level histogram percentile).
   //
   // The channel-0 expression is UNCHANGED historical code — mode 0 must stay
@@ -788,7 +812,7 @@ void main() {
   // Black point, then the transfer curve. Order matters: clipping AFTER the
   // curve would clip a curve, not a density, and the floor would mean a
   // different amount of size at every contrast setting. The region mask
-  // (lane F17) selects the live floor for every untagged column — mix(a,b,0)
+  // selects the live floor for every untagged column — mix(a,b,0)
   // is exactly a, so the shipped pixels are bit-identical — and the RELATIVE
   // recon floor for tagged (reconstructed) columns.
   int region = texelFetch(u_region, ivec3(x0, 0, layer), 0).r > 0.5 ? 1 : 0;
@@ -808,8 +832,12 @@ void main() {
     t = span + (1.0 - span) * log(1.0 + u_logScale * (t - k) / (1.0 - k)) / log(1.0 + u_logScale);
   }
 
-  int li = int(t * 255.0 + 0.5);
-  if (u_priceProjection == 1) li = int(t * projectedConfidence * 255.0 + 0.5);
+  // The LUT coordinate. Pixel style quantizes it here, after the transfer curve
+  // and before the lookup, so each band is one colour of the active ramp.
+  float coord = t;
+  if (u_priceProjection == 1) coord = t * projectedConfidence;
+  if (u_pixelMode == 1) coord = posterizePixel(coord);
+  int li = int(coord * 255.0 + 0.5);
   fragColor = texelFetch(u_lut, ivec2(li, u_ramp), 0);
 }
 `;

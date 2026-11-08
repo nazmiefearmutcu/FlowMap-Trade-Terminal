@@ -1,6 +1,6 @@
 /**
  * Streaming ATR kernel: textbook true range over real candle ranges, Wilder
- * smoothing identical to the old branch's close-only ATR. Verified against a
+ * smoothing identical to the reference implementation's close-only ATR. Verified against a
  * naive reference plus a hand-derived sequence.
  */
 
@@ -84,15 +84,50 @@ describe('atr kernel (14 default, hand cases use 2/3)', () => {
     ).toEqual([null, null, null]);
   });
 
-  it('a NaN TR poisons the line until reset (old policy)', () => {
+  it('a single NaN candle is skipped and the line recovers', () => {
     const k = createAtr(1);
     expect(k.push({ o: 0, h: 12, l: 10, c: 11, v: 0 })[0]).toBeNull(); // no prev close yet
     expect(k.push({ o: 0, h: 12, l: 10, c: 11, v: 0 })[0]).toBe(2);
-    expect(k.push({ o: 0, h: Number.NaN, l: 10, c: 11, v: 0 })[0]).toBeNull();
-    expect(k.push({ o: 0, h: 14, l: 10, c: 12, v: 0 })[0]).toBeNull(); // poisoned stays
+    expect(k.push({ o: 0, h: Number.NaN, l: 10, c: 11, v: 0 })[0]).toBeNull(); // the bad bar is a gap
+    // The prev close (11) and the Wilder state survived: the next valid bar is
+    // TR = max(4, |14-11|, |10-11|) = 4, avg = 4, not a dead line.
+    expect(k.push({ o: 0, h: 14, l: 10, c: 12, v: 0 })[0]).toBe(4);
     k.reset();
     expect(k.push({ o: 0, h: 12, l: 10, c: 11, v: 0 })[0]).toBeNull();
     expect(k.push({ o: 0, h: 12, l: 10, c: 11, v: 0 })[0]).toBe(2);
+  });
+
+  it('a NaN close never becomes the previous close (the next TR stays finite)', () => {
+    const k = createAtr(1);
+    k.push({ o: 0, h: 12, l: 10, c: 11, v: 0 });
+    expect(k.push({ o: 0, h: 12, l: 10, c: Number.NaN, v: 0 })[0]).toBe(2);
+    // prev close is still 11 (not NaN): TR = max(2, |13-11|, |11-11|) = 2.
+    expect(k.push({ o: 0, h: 13, l: 11, c: 12, v: 0 })[0]).toBe(2);
+  });
+
+  it('a carry-forward run holds the ATR and does not count toward the period', () => {
+    const k = createAtr(2);
+    k.push({ o: 0, h: 11, l: 9, c: 10, v: 0 }); // seeds the previous close
+    expect(k.push({ o: 0, h: 12, l: 10, c: 12, v: 0 })[0]).toBeNull(); // TR 2, one of two
+    expect(k.push({ o: 0, h: 14, l: 12, c: 13, v: 0 })[0]).toBe(2); // TR 2, seeds avg 2
+    // Three empty buckets at the previous close (13): no range, the ATR holds at 2.
+    for (let i = 0; i < 3; i += 1) {
+      expect(k.push({ o: 13, h: 13, l: 13, c: 13, v: 0, carry: true })[0]).toBe(2);
+    }
+    // The next real bar still measures from the close 13: TR = max(3, 3, 0) = 3.
+    expect(k.push({ o: 13, h: 16, l: 13, c: 15, v: 0 })[0]).toBeCloseTo(2.5, 12);
+    // A carry-forward bar during warm-up stays a gap, never a value.
+    const warm = createAtr(3);
+    warm.push({ o: 0, h: 11, l: 9, c: 10, v: 0 });
+    expect(warm.push({ o: 10, h: 10, l: 10, c: 10, v: 0, carry: true })[0]).toBeNull();
+  });
+
+  it('a carry-forward bar peeks as the held value and never moves the state', () => {
+    const k = createAtr(1);
+    k.push({ o: 0, h: 12, l: 10, c: 11, v: 0 });
+    k.push({ o: 0, h: 12, l: 10, c: 11, v: 0 }); // avg 2
+    expect(k.peek({ o: 11, h: 11, l: 11, c: 11, v: 0, carry: true })[0]).toBe(2);
+    expect(k.push({ o: 0, h: 14, l: 10, c: 12, v: 0 })[0]).toBe(4); // unchanged by the peek
   });
 
   it('rejects invalid periods; peek does not commit', () => {

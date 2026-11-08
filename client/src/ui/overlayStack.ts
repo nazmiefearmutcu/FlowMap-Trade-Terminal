@@ -10,11 +10,10 @@
  * pops in the cleanup), which is exactly the visual z-order React portals give.
  * Pure and dependency-free so the ordering rules are unit-testable.
  *
- * SECOND half of the contract (QA12 M-1): the stack alone cannot order a
- * surface that closes itself inside its own REACT keydown handler (the symbol
- * palette): React 18 flushes that discrete update — including the effect
- * cleanup that pops this stack — before the same native event reaches the
- * drawer's window listener. Such a handler must `preventDefault()` the
+ * A surface that closes itself inside its own React keydown handler (the symbol
+ * palette) needs one more rule: React 18 flushes that discrete update, including
+ * the effect cleanup that pops this stack, before the same native event reaches
+ * the drawer's window listener. Such a handler must `preventDefault()` the
  * keystroke (symbol palette and `?` overlay already do), and window-level
  * handlers below the top must ignore `e.defaultPrevented` — see
  * SettingsDrawer's Escape listener. Window-listener-only surfaces need no

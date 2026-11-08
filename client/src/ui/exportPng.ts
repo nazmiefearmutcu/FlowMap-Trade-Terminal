@@ -1,7 +1,7 @@
 /**
- * PNG snapshot export (§9 top bar) — BOOKMAP-CLASS COMPOSITION.
+ * PNG snapshot export (top bar) — Bookmap-class composition.
  *
- * QA13 H1+H2 (swarm2, 2026-09-14): the old export was the raw GL bitmap only —
+ * The old export was the raw GL bitmap only —
  * no price line, no axes, no last-price pill, no legend, no honesty badges, so
  * a shared artifact carried neither a price/time reference nor its fidelity
  * caveats. This module now composes the PNG from ALL the exportable layers:
@@ -26,13 +26,25 @@
  * NEVER produces a download; the caller shows a notice instead) are unchanged.
  */
 
-import { OVERLAY } from '../gl/overlays/palette';
+import type { OverlayVisibility } from '../gl/overlays/frame';
+import { getTheme } from '../theme/useTheme';
+import { legendItemsFor } from './ChartLegend';
 import {
   rampCssGradient,
   type Colormap,
 } from '../gl/lut';
 
 import { resolveLegend, type LegendInput, type LegendDescriptor } from './heatLegendModel';
+import { t } from '../i18n';
+import {
+  exchangeZoneFor,
+  getTimeZonePref,
+  resolveTimeZone,
+  zonedWallText,
+  zoneLabel,
+  type TimeZonePref,
+} from '../i18n/format';
+import { marketGroup } from './symbols';
 
 const FONT_STACK = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
@@ -45,13 +57,15 @@ export function pngStamp(d: Date): string {
   );
 }
 
-/** Local-time `YYYY-MM-DD HH:MM:SS` stamp for the provenance footer. */
-export function pngDisplayStamp(d: Date): string {
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  );
+/**
+ * `YYYY-MM-DD HH:MM:SS` stamp for the provenance footer, in the app's time-zone
+ * choice (Settings → Time zone) with that zone's label, so an exported chart
+ * reads the same clock as the chart it was taken from.
+ */
+export function pngDisplayStamp(d: Date, pref: TimeZonePref = getTimeZonePref(), exchangeZone = 'UTC'): string {
+  const ms = d.getTime();
+  const wall = zonedWallText(ms, resolveTimeZone(pref, exchangeZone));
+  return `${wall.slice(0, 10)} ${wall.slice(11, 19)} ${zoneLabel(pref, exchangeZone, ms)}`;
 }
 
 /** `flowmap-<market>-<symbol>-<YYYYMMDD-HHMMSS>.png` (local time). */
@@ -93,7 +107,7 @@ export function downloadPng(
 }
 
 // ---------------------------------------------------------------------------
-// Layer composition (QA13 H1+H2)
+// Layer composition
 // ---------------------------------------------------------------------------
 
 /** Chart-island chrome the composition paints from (theme-aware when read live). */
@@ -154,20 +168,25 @@ export interface ExportProvenanceInput {
 }
 
 /**
- * The honest caveats the artifact must travel with (QA13 H2): text the screen
+ * The honest caveats the artifact must travel with: text the screen
  * shows via badges/chips that the raw bitmap silently dropped. Pure.
  */
 export function exportProvenanceNotes(input: ExportProvenanceInput): string[] {
   const notes: string[] = [];
-  if (input.mode === 'replay') notes.push('replay');
-  if (input.following === false) notes.push('scrolled back');
+  if (input.mode === 'replay') notes.push(t('export.note.replay'));
+  if (input.following === false) notes.push(t('export.note.scrolledBack'));
   const cap = input.capability;
   if (cap) {
-    if (cap.history === 'reconstructed') notes.push('history ≈ reconstructed');
-    if (typeof cap.depth === 'string' && cap.depth.startsWith('SYNTH')) notes.push('synthetic depth');
-    if (typeof cap.tape === 'string' && cap.tape !== 'tick') notes.push(`tape ${cap.tape}`);
+    if (cap.history === 'reconstructed') notes.push(t('export.note.reconstructed'));
+    if (typeof cap.depth === 'string' && cap.depth.startsWith('SYNTH')) notes.push(t('export.note.syntheticDepth'));
+    if (typeof cap.tape === 'string' && cap.tape !== 'tick') notes.push(t('export.note.tape', { kind: cap.tape }));
   }
   return notes;
+}
+
+/** The footer's mode word, in the UI language: the same `live` and `replay` the chart shows. */
+function footerModeLabel(mode: string): string {
+  return mode === 'replay' ? t('export.note.replay') : t('status.live');
 }
 
 /** Legend descriptor for the density ramp chip (colormap + honesty tier). */
@@ -187,6 +206,8 @@ export interface ExportComposeOptions {
   notes?: readonly string[];
   /** Density ramp chip; omit to skip it. */
   legend?: ExportLegend | null;
+  /** Overlay visibility, so the legend lists only what is drawn; omit for all. */
+  overlays?: Partial<OverlayVisibility>;
   /** Test seam: canvas factory (default `document.createElement('canvas')`). */
   createCanvas?: () => HTMLCanvasElement;
 }
@@ -278,18 +299,18 @@ export function exportGradientStops(css: string): ExportRampStop[] {
   return stops;
 }
 
-/** Price-family legend entries — the same four the on-screen ChartLegend keys. */
-function priceLegendItems(): Array<{ label: string; kind: 'line' | 'pair' | 'dots'; colors: string[] }> {
-  return [
-    { label: 'Last price', kind: 'line', colors: [OVERLAY.price.css] },
-    { label: 'VWAP', kind: 'line', colors: [OVERLAY.vwap.css] },
-    { label: 'BBO', kind: 'pair', colors: [OVERLAY.bid.css, OVERLAY.ask.css] },
-    { label: 'Trades', kind: 'dots', colors: [OVERLAY.buy.css, OVERLAY.sell.css] },
-  ];
+/**
+ * Price-family legend entries: the on-screen ChartLegend's own list, so the
+ * export shows the active theme's colours and only the overlays that are drawn.
+ */
+function priceLegendItems(
+  overlays?: Partial<OverlayVisibility>,
+): Array<{ label: string; kind: 'line' | 'pair' | 'dots'; colors: string[] }> {
+  return legendItemsFor(getTheme(), overlays).map(({ label, kind, colors }) => ({ label, kind, colors: [...colors] }));
 }
 
 /**
- * Compose the export bitmap from the live layers (QA13 H1+H2). Returns null when
+ * Compose the export bitmap from the live layers. Returns null when
  * there is nothing to compose (no GL layer / no 2D context) — the caller's
  * honest-failure path. The output is opaque, DPR-native, and camera-independent
  * (no UI chrome beyond the fixed chips + provenance footer).
@@ -362,17 +383,19 @@ export function composeExportLayers(
   }
 
   // 4) Price-family legend chip (top-left, mirrors the on-screen ChartLegend).
-  drawPriceLegendChip(ctx, px(6), px(6), dpr, chrome);
+  drawPriceLegendChip(ctx, px(6), px(6), dpr, chrome, opts.overlays);
 
   // 5) Density ramp chip (top-right, mirrors the on-screen HeatLegend).
+  // Anchored to the GL plot's right edge, not the canvas edge: the price gutter
+  // carries the tick labels and the last-price pill, which the chip must not cover.
   if (opts.legend) {
     const descriptor = resolveLegend(opts.legend);
     const stops = exportGradientStops(descriptor.gradient);
-    if (stops.length > 1) drawRampChip(ctx, W, px(6), dpr, chrome, stops, opts.legend.tier, descriptor);
+    if (stops.length > 1) drawRampChip(ctx, glW, px(6), dpr, chrome, stops, opts.legend.tier, descriptor);
   }
 
   // 6) Provenance footer: identity always, honesty caveats when the state has
-  //    any (QA13 H2 — the caveats MUST travel with the artifact).
+  //    any (the caveats MUST travel with the artifact).
   if (footerH > 0) {
     const y0 = chartH + tH;
     ctx.fillStyle = chrome.plateBg;
@@ -386,7 +409,8 @@ export function composeExportLayers(
     ctx.font = `400 ${px(10)}px ${FONT_STACK}`;
     ctx.textBaseline = 'middle';
     if (opts.meta) {
-      const left = `flowmap · ${opts.meta.market}:${opts.meta.symbol} · ${opts.meta.mode} · ${pngDisplayStamp(opts.meta.at)}`;
+      const exchangeZone = exchangeZoneFor(marketGroup(opts.meta.market));
+      const left = `flowmap · ${opts.meta.market}:${opts.meta.symbol} · ${footerModeLabel(opts.meta.mode)} · ${pngDisplayStamp(opts.meta.at, getTimeZonePref(), exchangeZone)}`;
       ctx.textAlign = 'left';
       ctx.fillStyle = chrome.ink;
       ctx.fillText(left, px(8), cy);
@@ -418,6 +442,7 @@ function drawPriceLegendChip(
   y0: number,
   dpr: number,
   chrome: ExportChrome,
+  overlays?: Partial<OverlayVisibility>,
 ): void {
   const px = (n: number) => Math.round(n * dpr);
   const pad = px(6);
@@ -426,7 +451,7 @@ function drawPriceLegendChip(
   const labelGap = px(4);
   const size = px(10);
   ctx.font = `400 ${size}px ${FONT_STACK}`;
-  const items = priceLegendItems();
+  const items = priceLegendItems(overlays);
   const widths = items.map((it) => swatchW + labelGap + ctx.measureText(it.label).width);
   const totalW = pad * 2 + widths.reduce((a, b) => a + b, 0) + gap * (items.length - 1);
   const h = px(18);
@@ -515,6 +540,8 @@ export interface RunPngExportOptions {
   legend?: ExportLegend | null;
   /** Subscription mode, named in the footer. */
   mode?: string;
+  /** Overlay visibility, so the exported legend matches the drawn overlays. */
+  overlays?: Partial<OverlayVisibility>;
   /** Test seam: canvas factory for the composition. */
   createCanvas?: () => HTMLCanvasElement;
 }
@@ -543,12 +570,14 @@ export function runPngExport(
       meta: { market, symbol, mode: opts.mode ?? 'live', at: now },
       notes: opts.notes,
       legend: opts.legend,
+      overlays: opts.overlays,
       createCanvas: opts.createCanvas,
     });
     dataUrl = composed ? composed.toDataURL('image/png') : null;
   }
   if (!dataUrl) return null;
   const filename = pngFilename(market, symbol, now);
-  downloadPng(dataUrl, filename, makeElement);
+  // No anchor means no download started: report that instead of a fake success.
+  if (downloadPng(dataUrl, filename, makeElement) === null) return null;
   return filename;
 }

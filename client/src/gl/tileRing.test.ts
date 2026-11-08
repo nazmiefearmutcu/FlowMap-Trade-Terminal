@@ -4,7 +4,7 @@ import { Residency, TileRing } from './tileRing';
 import { makeFakeGL } from './mockGL';
 
 /**
- * Pure full-res residency book-keeping (T8) — the addressing/eviction logic the
+ * Pure full-res residency book-keeping — the addressing/eviction logic the
  * tile ring uses, exercised with NO WebGL context. A small ring
  * (colsPerTile=4, layers=2 → capacity 8) keeps the windows easy to reason about.
  */
@@ -14,7 +14,7 @@ function make(): Residency {
   return new Residency(cap, /* colsPerTile */ 4, /* layers */ 2);
 }
 
-describe('Residency window (T8 LRU)', () => {
+describe('Residency window', () => {
   it('is empty before any column', () => {
     const r = make();
     expect(r.range()).toBeNull();

@@ -1,6 +1,6 @@
 /**
  * OBV kernel — On-Balance Volume: cumulative ±volume on up/down closes.
- * Identical rules to the old branch's `obv()`: the first close plants 0; a
+ * Identical rules to the reference implementation's `obv()`: the first close plants 0; a
  * higher close adds the candle's volume, a lower one subtracts, an equal one
  * does nothing; a non-finite close OR volume leaves the line honestly null and
  * the state untouched. Real candle volume replaces the old volume=1 proxy.
@@ -16,6 +16,13 @@ export function createObv(): IndicatorKernel {
   function step(c: CandleInput, commit: boolean): KernelValues {
     const close = c.c;
     const pc = prevClose;
+    // A usable close with a bad volume is skipped whole: committing its price would
+    // drop that move from the next delta. A non-finite close still records
+    // a gap, as the branch below expects.
+    if (!Number.isFinite(c.v) && Number.isFinite(close)) {
+      out[0] = null;
+      return out;
+    }
     if (commit) prevClose = close;
     if (!Number.isFinite(close) || !Number.isFinite(c.v)) {
       out[0] = null;

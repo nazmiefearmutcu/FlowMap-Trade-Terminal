@@ -1,4 +1,4 @@
-"""Incremental top-N book maintenance in _BridgeSink (campaign item: the old
+"""Incremental top-N book maintenance in _BridgeSink (the old
 path sorted the ENTIRE book dict twice per delta - O(N log N) Python at venue
 delta rates on the event loop).
 

@@ -1,0 +1,7 @@
+/* Snapshot depth (a ccxt book re-read whole each tick) is real but lower fidelity:
+   amber caution ink, the same language as .cap--caution on the top-bar chip, so the
+   ladder badge and the chip never disagree about the same subscription. */
+.panel__badge--l2-snapshot {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}

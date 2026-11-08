@@ -1,5 +1,5 @@
 /**
- * Crosshair liquidity readout (§8.3 / §9, M2 T9).
+ * Crosshair liquidity readout.
  *
  * A pointer-events-none overlay over the GL canvas: on pointer-move it maps the
  * cursor back through the camera inverse to a `(col_seq, row)` cell (via the
@@ -11,7 +11,7 @@
  * size. Trading-terminal look — thin lines, near-black box (see Crosshair.css).
  *
  * It attaches its OWN passive `pointermove` listener to the canvas (it does not
- * wrap or capture the pointer), so the T6 pan/zoom gestures on the same canvas
+ * wrap or capture the pointer), so the pan/zoom gestures on the same canvas
  * are untouched. Probes are rAF-coalesced (≤ one per frame) so fast mouse motion
  * never storms React.
  */
@@ -21,8 +21,12 @@ import { useEffect, useRef, useState, type MutableRefObject, type RefObject } fr
 import type { CrosshairReadout, Renderer } from '../gl/renderer';
 import { getSnapshot } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
-import { recordProbeSpot } from './lastProbe';
-import { depthTier } from './DomLadder';
+import { exchangeZoneFor, formatClock, formatFixed, formatPrice, formatSizeReadout, useTimeZone, zoneLabel, type TimeZonePref } from '../i18n/format';
+import { useT } from '../i18n/useT';
+import { clearProbeSpot, recordProbeSpot } from './lastProbe';
+import { depthIsSynthetic, depthReadoutTier } from './heatLegendModel';
+import { marketGroup } from './symbols';
+import { fmtClockMs } from '../gl/overlays/axisTicks';
 import './Crosshair.css';
 
 interface CrosshairProps {
@@ -41,29 +45,8 @@ function sameReadout(a: CrosshairReadout | null, b: CrosshairReadout | null): bo
   return a === b || (a !== null && b !== null && READOUT_KEYS.every(key => Object.is(a[key], b[key])));
 }
 
-/** Thousands-grouped integers for the mid band (1e3..1e4). */
-const GROUP = new Intl.NumberFormat('en-US', { useGrouping: true, maximumFractionDigits: 0 });
-
-/**
- * Compact size formatting — integers big, a couple of decimals small, "—" null.
- * A non-finite density is over-range/unusable (e.g. an upstream f16-overflowed
- * SYNTH volume bucket): show the honest over-range glyph, never "Infinity"/"NaN"
- * (mirrors DomLadder's `fmtSz` guard, §7 honesty). Large sizes are thousands-
- * grouped, then K/M-compacted past 10k, keeping the small-size decimal bands.
- */
-export function fmtSize(v: number | null): string {
-  if (v === null) return '—';
-  if (v !== null && !Number.isFinite(v)) return v > 0 ? '∞' : '—';
-  if (v === 0) return '0';
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
-  if (v >= 10_000) return `${(v / 1000).toFixed(v >= 100_000 ? 0 : 1)}K`;
-  if (v >= 1000) return GROUP.format(Math.round(v));
-  if (v >= 100) return v.toFixed(1);
-  return v.toFixed(2);
-}
-
 function fmtPrice(r: CrosshairReadout): string {
-  return r.price === null ? '—' : r.price.toFixed(r.priceDecimals);
+  return r.price === null ? '—' : formatPrice(r.price, r.priceDecimals);
 }
 
 /**
@@ -78,24 +61,33 @@ function fmtPrice(r: CrosshairReadout): string {
 function fmtBand(r: CrosshairReadout): string {
   if (r.priceLo === null || r.priceHi === null) return '';
   const d = r.priceDecimals;
-  return `  ${r.priceLo.toFixed(d)}–${r.priceHi.toFixed(d)}`;
+  return `  ${formatPrice(r.priceLo, d)}–${formatPrice(r.priceHi, d)}`;
 }
 
-/** ns → HH:MM:SS.mmmz (UTC; the trailing `z` makes the zone explicit). */
-export function fmtTime(ns: bigint | null): string {
+/**
+ * ns → HH:MM:SS.mmm plus the zone label of the active time-zone preference
+ * (local, UTC or the instrument's exchange zone). Pure: the caller supplies the
+ * preference, so the readout re-renders when the Settings zone changes.
+ *
+ * A session-relative sim timestamp is not wall time: it reads the same T+ clock
+ * the time axis and the tape use, with no zone label and no conversion.
+ */
+export function fmtTime(ns: bigint | null, pref: TimeZonePref = 'utc', exchangeZone = 'UTC', sessionRelative = false): string {
   if (ns === null) return '—';
+  if (sessionRelative) return fmtClockMs(ns);
   const ms = Number(ns / 1_000_000n);
   if (!Number.isFinite(ms)) return '—';
-  try {
-    return `${new Date(ms).toISOString().substring(11, 23)}z`;
-  } catch {
-    return '—';
-  }
+  return `${formatClock(ms, pref, exchangeZone, true)} ${zoneLabel(pref, exchangeZone, ms)}`;
 }
 
 export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Element | null {
   const [hover, setHover] = useState<HoverState | null>(null);
   const capability = useFlowMapStore((s) => s.capability);
+  const market = useFlowMapStore((s) => s.subscription?.market ?? '');
+  const zonePref = useTimeZone();
+  const t = useT();
+  const group = marketGroup(market);
+  const exchangeZone = exchangeZoneFor(group);
   const rafRef = useRef(0);
 
   useEffect(() => {
@@ -103,6 +95,15 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
     if (!canvas) return;
 
     let pointer: { x: number; y: number } | null = null;
+    // While the pointer is still, the camera and data move underneath it, so the
+    // readout is re-read about ten times a second. Re-reading every frame (60/s)
+    // with a motionless cursor was constant CPU work for no visible change.
+    const REPROBE_MS = 100;
+    let reprobeTimer = 0;
+    const clearReprobe = (): void => {
+      if (reprobeTimer) window.clearTimeout(reprobeTimer);
+      reprobeTimer = 0;
+    };
     const probe = (): void => {
         rafRef.current = 0;
         if (!pointer) return;
@@ -119,17 +120,26 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
           at: Date.now(),
         });
         setHover(prev => prev && prev.x === x && prev.y === y && sameReadout(prev.readout, readout) ? prev : { x, y, readout });
-        // While hovered, the camera and resident data can move beneath a
-        // stationary cursor. Only changed readouts commit a React render.
-        rafRef.current = requestAnimationFrame(probe);
+        // Only changed readouts commit a React render. The next probe is due in
+        // REPROBE_MS, not on the next frame.
+        reprobeTimer = window.setTimeout(() => {
+          reprobeTimer = 0;
+          if (pointer && !rafRef.current) rafRef.current = requestAnimationFrame(probe);
+        }, REPROBE_MS);
     };
     const onMove = (e: PointerEvent): void => {
       const rect = canvas.getBoundingClientRect();
       pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      // A moving pointer probes immediately; the throttle only governs stillness.
+      clearReprobe();
       if (!rafRef.current) rafRef.current = requestAnimationFrame(probe);
     };
     const onLeave = (): void => {
       pointer = null;
+      // The A alert key must not anchor on the price left behind by a pointer that
+      // has already gone.
+      clearProbeSpot();
+      clearReprobe();
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = 0;
@@ -143,6 +153,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
       pointer = null;
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerleave', onLeave);
+      clearReprobe();
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, [canvasRef, rendererRef]);
@@ -150,11 +161,13 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   if (!hover) return null;
   const { x, y, readout } = hover;
 
-  // Depth-source provenance for the readout header (§7 honesty). SYNTH must never
-  // read as real — its size values are marked amber alongside the SYNTH tag.
+  // Depth-source provenance for the readout header. SYNTH must never read as real:
+  // its size values are marked amber alongside the SYNTH tag. The verdict matches
+  // the renderer's ramp, so a replayed synthetic recording is SYNTH here too.
   const bookMode = getSnapshot().book?.mode ?? null;
-  const tier = depthTier(capability, bookMode);
-  const isSynth = tier === 'SYNTH';
+  const isSynth = depthIsSynthetic(capability, bookMode);
+  const tier = depthReadoutTier(capability, bookMode);
+  const recorded = capability?.depth_provenance === 'recorded-density';
   const sizeSynthCls = isSynth ? ' crosshair__val--synth' : '';
 
   // Place the readout box near the cursor, flipping away from the near edge.
@@ -178,19 +191,20 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
         <div className="crosshair__box" data-testid="crosshair-readout" style={boxStyle}>
           {tier && (
             <div className="crosshair__line crosshair__line--head">
-              <span className="crosshair__key">src</span>
+              <span className="crosshair__key">{t('crosshair.src')}</span>
               <span
                 className={`crosshair__tag${isSynth ? ' crosshair__tag--synth' : ''}`}
                 data-testid="crosshair-src"
+                title={isSynth && recorded ? t('depthChip.recorded') : undefined}
               >
                 {tier}
               </span>
             </div>
           )}
           <div className="crosshair__line">
-            <span className="crosshair__key">t</span>
+            <span className="crosshair__key">{t('crosshair.time')}</span>
             <span className="crosshair__val" data-testid="crosshair-time">
-              {fmtTime(readout.timeNs)}
+              {fmtTime(readout.timeNs, zonePref, exchangeZone, group === 'sim')}
             </span>
           </div>
           <div className="crosshair__line">
@@ -200,33 +214,33 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
             </span>
           </div>
           <div className="crosshair__line">
-            <span className="crosshair__key crosshair__key--bid">bid</span>
+            <span className="crosshair__key crosshair__key--bid">{t('crosshair.bid')}</span>
             <span
               className={`crosshair__val crosshair__val--bid${sizeSynthCls}`}
               data-testid="crosshair-bid"
             >
-              {fmtSize(readout.bid)}
+              {formatSizeReadout(readout.bid)}
             </span>
           </div>
           <div className="crosshair__line">
-            <span className="crosshair__key crosshair__key--ask">ask</span>
+            <span className="crosshair__key crosshair__key--ask">{t('crosshair.ask')}</span>
             <span
               className={`crosshair__val crosshair__val--ask${sizeSynthCls}`}
               data-testid="crosshair-ask"
             >
-              {fmtSize(readout.ask)}
+              {formatSizeReadout(readout.ask)}
             </span>
           </div>
           {readout.group > 1 && (
             <div className="crosshair__line crosshair__line--dim">
-              <span className="crosshair__key">grp</span>
+              <span className="crosshair__key">{t('crosshair.group')}</span>
               <span className="crosshair__val" data-testid="crosshair-group">
                 {readout.group}×{fmtBand(readout)}
               </span>
             </div>
           )}
           {readout.averageMs !== undefined && <div className="crosshair__line crosshair__line--dim">
-            <span className="crosshair__key">avg</span><span className="crosshair__val">{(readout.averageMs / 1000).toFixed(1)} s</span>
+            <span className="crosshair__key">{t('crosshair.average')}</span><span className="crosshair__val">{formatFixed(readout.averageMs / 1000, 1)} {t('unit.s')}</span>
           </div>}
         </div>
       )}

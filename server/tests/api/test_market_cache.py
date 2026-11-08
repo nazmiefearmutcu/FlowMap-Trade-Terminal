@@ -1,4 +1,4 @@
-"""MarketDataCache hardening tests (upgrade wave A2): bounded size + honest
+"""MarketDataCache hardening tests: bounded size + honest
 error fallback.
 
 The cache previously grew without bound (every symbol ever browsed stayed in
@@ -156,7 +156,7 @@ def test_movers_max_matches_the_discovery_clamp():
 
 
 # ---------------------------------------------------------------------------
-# single-flight lock pruning (survey-1 #5: _release_lock ran while held)
+# single-flight lock pruning
 
 
 async def test_quote_locks_pruned_after_fetch():

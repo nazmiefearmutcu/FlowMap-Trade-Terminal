@@ -1,7 +1,7 @@
 /**
- * Watchlist store (campaign 4, lane C2) — a plain module-scoped favorites list
+ * Watchlist store — a plain module-scoped favorites list
  * OUTSIDE React (the alertsStore pattern), persisted to localStorage under the
- * contract key `flowmap.watchlist.v1`.
+ * key `flowmap.watchlist.v1`.
  *
  * Shape: keys are the composite `market:symbol` strings used everywhere else
  * (palette, recents, alerts), stored as a plain JSON string array in APPEND
@@ -21,9 +21,12 @@
 
 import { useSyncExternalStore } from 'react';
 
-/** localStorage key (contract: exact). */
+import { t } from '../i18n';
+import { safeLocalStorage } from '../state/safeStorage';
+
+/** localStorage key. Saved favorites live under this name, so it must not change. */
 export const WATCHLIST_KEY = 'flowmap.watchlist.v1';
-/** Max favorites retained (contract: cap 30). */
+/** Max favorites retained. */
 export const WATCHLIST_CAP = 30;
 
 /** Minimal Web-Storage subset (mirrors ui/settings.ts / state/alertsStore.ts). */
@@ -74,32 +77,38 @@ export function loadWatchlist(storage: StorageLike | null | undefined): string[]
   }
 }
 
-/** Persist the list; swallows quota / serialization errors (best-effort). */
+/**
+ * Persist the list. Returns true when it was written; false when there is no
+ * storage or the write failed (quota, serialization). The list still works for
+ * the session either way, so the caller decides how to tell the user.
+ */
 export function saveWatchlist(
   storage: StorageLike | null | undefined,
   keys: readonly string[],
-): void {
-  if (!storage) return;
+): boolean {
+  if (!storage) return false;
   try {
     storage.setItem(WATCHLIST_KEY, JSON.stringify(keys.slice(0, WATCHLIST_CAP)));
+    return true;
   } catch {
-    /* storage full / unavailable — favorites simply won't persist this session */
+    return false;
   }
 }
 
-/** The default storage (browser localStorage), resolved lazily + guarded. */
+/**
+ * The default storage (browser localStorage), resolved lazily. A denied profile
+ * (privacy mode, blocked site data) reads as null, so the list stays session-local
+ * through the one guarded accessor shared with the other boot-time readers.
+ */
 function defaultStorage(): StorageLike | null {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
-  } catch {
-    /* localStorage denied (privacy mode) — the list stays session-local */
-  }
-  return null;
+  return safeLocalStorage();
 }
 
 let storage: StorageLike | null | undefined;
 let keys: string[] | null = null; // lazy: loaded from storage on first touch
 const listeners = new Set<() => void>();
+/** The save-failure notice is shown once per page session, then stays quiet. */
+let saveFailureNotified = false;
 
 function getStorage(): StorageLike | null {
   if (storage === undefined) storage = defaultStorage();
@@ -109,6 +118,28 @@ function getStorage(): StorageLike | null {
 function current(): string[] {
   if (keys === null) keys = loadWatchlist(getStorage());
   return keys;
+}
+
+/** Persist the current list; a failed save tells the user once per session. */
+function persist(): void {
+  if (saveWatchlist(getStorage(), current())) return;
+  notifySaveFailure();
+}
+
+/**
+ * Tell the user, once per page session, that favourites will not survive a
+ * reload. Goes through the shared toast hook (`window.__flowmapToast`), as the
+ * alert store does; the hook is optional, so the notice is best-effort.
+ */
+function notifySaveFailure(): void {
+  if (saveFailureNotified) return;
+  saveFailureNotified = true;
+  if (typeof window === 'undefined') return;
+  try {
+    window.__flowmapToast?.(t('watchlist.saveFailed'));
+  } catch {
+    /* the notice itself must never break a favourite toggle */
+  }
 }
 
 function bump(): void {
@@ -157,7 +188,7 @@ export function addToWatchlist(key: string): boolean {
   if (list.includes(key)) return false;
   if (list.length >= WATCHLIST_CAP) return false;
   keys = [...list, key];
-  saveWatchlist(getStorage(), keys);
+  persist();
   bump();
   return true;
 }
@@ -168,7 +199,7 @@ export function removeFromWatchlist(key: string): boolean {
   const idx = list.indexOf(key);
   if (idx < 0) return false;
   keys = list.slice(0, idx).concat(list.slice(idx + 1));
-  saveWatchlist(getStorage(), keys);
+  persist();
   bump();
   return true;
 }
@@ -203,5 +234,6 @@ export function setWatchlistStorage(s: StorageLike | null): void {
 export function resetWatchlistForTest(): void {
   keys = null;
   storage = undefined;
+  saveFailureNotified = false;
   listeners.clear();
 }

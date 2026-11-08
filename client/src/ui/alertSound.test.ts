@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   BEEP_MIN_GAP_MS,
+  alertSoundEnabled,
   playAlertSound,
   resetAlertSoundForTest,
 } from './alertSound';
-import { DEFAULT_SETTINGS, normalizeSettings } from './settings';
+import { DEFAULT_SETTINGS, SETTINGS_KEY, normalizeSettings } from './settings';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -103,10 +104,13 @@ describe('playAlertSound', () => {
     expect(FakeAudioContext.instances[0].oscillators).toHaveLength(4); // two tones × two chimes
   });
 
-  it('resumes a suspended context and re-resumes it on the next user gesture', () => {
+  it('does not queue a late chime into a suspended context; it resumes and re-resumes on the next gesture', () => {
     FakeAudioContext.initialState = 'suspended';
-    expect(playAlertSound(20_000)).toBe(true);
+    // Nothing is scheduled while suspended: a queued tone would play minutes
+    // later, when the user comes back to the tab.
+    expect(playAlertSound(20_000)).toBe(false);
     const ctx = FakeAudioContext.instances[0];
+    expect(ctx.oscillators).toHaveLength(0);
     expect(ctx.state).toBe('suspended');
     expect(ctx.resume).toHaveBeenCalledTimes(1);
     // The gesture listener fires once and detaches itself.
@@ -116,6 +120,15 @@ describe('playAlertSound', () => {
     expect(ctx.resume).toHaveBeenCalledTimes(2);
   });
 
+  it('a refused suspended chime does not burn the rate-limit window', () => {
+    FakeAudioContext.initialState = 'suspended';
+    expect(playAlertSound(40_000)).toBe(false);
+    // The user resumes the context on a gesture; the next fired batch sounds at once.
+    FakeAudioContext.instances[0].state = 'running';
+    expect(playAlertSound(40_010)).toBe(true);
+    expect(FakeAudioContext.instances[0].oscillators).toHaveLength(2);
+  });
+
   it('is silent (and never throws) when the environment has no AudioContext', () => {
     delete (window as unknown as WindowWithAudio).AudioContext;
     expect(playAlertSound(30_000)).toBe(false);
@@ -123,12 +136,24 @@ describe('playAlertSound', () => {
   });
 });
 
-describe('alertSound setting (P3)', () => {
+describe('alertSound setting', () => {
+  afterEach(() => {
+    window.localStorage.removeItem(SETTINGS_KEY);
+  });
+
   it('defaults to on and normalizes junk to the default', () => {
     expect(DEFAULT_SETTINGS.alertSound).toBe(true);
     expect(normalizeSettings({}).alertSound).toBe(true); // pre-upgrade payload adopts it
     expect(normalizeSettings({ alertSound: false }).alertSound).toBe(false);
     expect(normalizeSettings({ alertSound: 'yes' }).alertSound).toBe(true);
     expect(normalizeSettings({ alertSound: 0 }).alertSound).toBe(true);
+  });
+
+  it('reads the persisted flag at call time, defaulting to on', () => {
+    expect(alertSoundEnabled()).toBe(true);
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ alertSound: false }));
+    expect(alertSoundEnabled()).toBe(false);
+    window.localStorage.setItem(SETTINGS_KEY, '{not json');
+    expect(alertSoundEnabled()).toBe(true);
   });
 });

@@ -107,7 +107,7 @@ describe('inferno LUT (the default ramp)', () => {
   });
 
   it('is hue-disjoint from the synth ramp through the mid-field', () => {
-    // The §7 honesty signal only works if the two ramps cannot be confused where
+    // The honesty signal only works if the two ramps cannot be confused where
     // most of the screen lives. Synth is warm single-hue (G ≥ B); inferno's
     // mid-field is violet/magenta (B > G).
     const inf = rgb(buildInfernoLUT(), 128);
@@ -116,8 +116,8 @@ describe('inferno LUT (the default ramp)', () => {
     expect(syn[1]).toBeGreaterThanOrEqual(syn[2]);
   });
 
-  it('pins SYNTH_HUE_SAFE_MAX — the range where a pixel probe can prove §7', () => {
-    // The §7 honesty proof is a pixel probe: "does synthetic depth render in a
+  it('pins SYNTH_HUE_SAFE_MAX — the range where a pixel probe can prove the honesty signal', () => {
+    // The honesty proof is a pixel probe: "does synthetic depth render in a
     // visibly different ramp?". That probe is only sound where the two ramps are
     // hue-DISJOINT, and the honest answer is that they are not disjoint
     // everywhere: inferno legitimately passes through orange in its top third,
@@ -127,7 +127,7 @@ describe('inferno LUT (the default ramp)', () => {
     // The real, verified boundary: the synth ramp is WARM (G ≥ B) at every
     // index, while inferno is COOL (B ≥ G) for indices 0..149. So a probe on a
     // cell below that index discriminates, and one above it does not. e2e specs
-    // asserting the §7 signal by pixel MUST keep their probe in that band; above
+    // asserting the signal by pixel MUST keep their probe in that band; above
     // it they must fall back to `renderer.currentRamp === RAMP_SYNTH`.
     const inf = buildInfernoLUT();
     const syn = buildSynthLUT();
@@ -186,7 +186,7 @@ describe('flow LUT (the default ramp)', () => {
   });
 
   it('earns its warmth: hue turns warm only in the top of the ramp', () => {
-    // Campaign 4.1: the crossover moved earlier (≈index 147) — below it the
+    // The crossover moved earlier (≈index 147) — below it the
     // band is pinned COOL by the probe test above; at 178 the pixel must be
     // unmistakably warm already (the old ramp was still sage there).
     const [r178, g178, b178] = rgb(lut, 178);
@@ -204,7 +204,7 @@ describe('flow LUT (the default ramp)', () => {
     expect(lut[i * 4 + 2]).toBeGreaterThan(lut[i * 4 + 0]);
   });
 
-  it('keeps a cool probe band for the §7 synthetic-depth pixel check', () => {
+  it('keeps a cool probe band for the synthetic-depth pixel check', () => {
     // Same soundness requirement as inferno's SYNTH_HUE_SAFE_MAX band: where
     // most of the screen lives, flow is COOL (B ≥ G), while the synth ramp is
     // WARM everywhere — so a cool pixel discriminates real depth from synthetic.
@@ -274,13 +274,13 @@ describe('synth (amber) LUT', () => {
     }
   });
 
-  it('is unchanged by the ramp overhaul (the §7 signal must not drift)', () => {
+  it('is unchanged by the ramp overhaul (the signal must not drift)', () => {
     expect(rgb(lut, 0)).toEqual([6, 3, 0]);
     expect(rgb(lut, LUT_SIZE - 1)).toEqual([255, 240, 200]);
   });
 });
 
-describe('rampForColormap (§9 user choice)', () => {
+describe('rampForColormap', () => {
   it('maps the three legacy families to their atlas rows', () => {
     expect(rampForColormap('flow')).toBe(RAMP_FLOW);
     expect(rampForColormap('inferno')).toBe(RAMP_INFERNO);
@@ -288,7 +288,7 @@ describe('rampForColormap (§9 user choice)', () => {
   });
 
   it('defaults to the identity (flow) row; the default family is now theme', () => {
-    // The default flipped with campaign visual 2026-09-11: `theme` resolves to
+    // The default flipped in the 2026-09-11 visual update: `theme` resolves to
     // the theme rows via rampForMode, and to FLOW here when no theme is active
     // (the midnight identity path).
     expect(rampForColormap(DEFAULT_COLORMAP)).toBe(RAMP_FLOW);
@@ -297,7 +297,7 @@ describe('rampForColormap (§9 user choice)', () => {
   });
 });
 
-describe('rampForMode (§7 mode → colormap)', () => {
+describe('rampForMode', () => {
   it('maps SYNTH_PROFILE density to the amber ramp', () => {
     expect(rampForMode(MODE_SYNTH_PROFILE)).toBe(RAMP_SYNTH);
   });
@@ -337,7 +337,7 @@ describe('rampForMode (§7 mode → colormap)', () => {
     expect(rampForMode(MODE_SYNTH_PROFILE, undefined, 'theme')).toBe(RAMP_SYNTH);
   });
 
-  it("maps 'theme' to the caller's themed rows when provided (F2)", () => {
+  it("maps 'theme' to the caller's themed rows when provided", () => {
     const themed = { density: RAMP_THEME, synth: RAMP_THEME_SYNTH };
     expect(rampForMode(MODE_L2, 'L2', 'theme', themed)).toBe(RAMP_THEME);
     expect(rampForMode(MODE_L1_BAND, 'SYNTH', 'theme', themed)).toBe(RAMP_THEME_SYNTH);
@@ -372,14 +372,14 @@ describe('LUT atlas', () => {
     expect(atlas.slice(LUT_SIZE * 8, LUT_SIZE * 12)).toEqual(buildClassicLUT());
     expect(atlas.slice(LUT_SIZE * 12, LUT_SIZE * 16)).toEqual(buildFlowLUT());
     // Rows 5/6 with no theme registered are the flow/synth identity bytes, so
-    // an un-themed boot is byte-identical to the legacy atlas (F2).
+    // an un-themed boot is byte-identical to the legacy atlas.
     expect(atlas.slice(LUT_SIZE * 20, LUT_SIZE * 24)).toEqual(buildFlowLUT());
     expect(atlas.slice(LUT_SIZE * 24, LUT_SIZE * 28)).toEqual(buildSynthLUT());
   });
 
   it('pins the row indices the e2e parity matrix asserts numerically', () => {
     expect(RAMP_INFERNO).toBe(0); // "whatever real depth renders as" (legacy)
-    expect(RAMP_SYNTH).toBe(1); // the §7 honesty row
+    expect(RAMP_SYNTH).toBe(1); // the honesty row
     expect(RAMP_FLOW).toBe(3); // the identity real-depth row
     expect(RAMP_THEME).toBe(5); // theme density — APPENDED, never renumbered
     expect(RAMP_THEME_SYNTH).toBe(6); // theme synth — APPENDED
@@ -422,7 +422,7 @@ describe('rampCssGradient (the legend must not drift from the texture)', () => {
   });
 });
 
-describe('clearColorForRamp — the clear color IS LUT entry 0 (B-6, no reset flash)', () => {
+describe('clearColorForRamp — the clear color IS LUT entry 0 (no reset flash)', () => {
   it('matches the ramp texture background byte-for-byte, for every ramp', () => {
     const luts: Record<number, Uint8Array> = {
       [RAMP_INFERNO]: buildInfernoLUT(),
@@ -451,7 +451,7 @@ describe('clearColorForRamp — the clear color IS LUT entry 0 (B-6, no reset fl
   });
 });
 
-describe('theme ramp rows 5/6 (campaign visual 2026-09-11, F2)', () => {
+describe('theme ramp rows 5/6', () => {
   // The store is module state — always restore the identity after each case so
   // the byte-identity assertions elsewhere in this file stay meaningful.
   afterEach(() => setThemeStops(null));

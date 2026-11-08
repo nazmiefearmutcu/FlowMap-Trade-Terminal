@@ -1,10 +1,14 @@
+import type { LooseProbe } from './probe';
 import { expect, test } from '@playwright/test';
 
 test('dense volume history becomes readable averaged groups with distinct heights', async ({ page }) => {
   await page.goto('/?test=heatmap');
   const result = await page.evaluate(async () => {
+    // @ts-expect-error Vite module
     const { VolBars } = await import('/src/gl/overlays/volbars.ts');
+    // @ts-expect-error Vite module
     const { TextLayer } = await import('/src/gl/textLayer.ts');
+    // @ts-expect-error Vite module
     const { GridMap } = await import('/src/gl/overlays/coords.ts');
     const canvas = document.createElement('canvas');
     const text = new TextLayer(canvas);
@@ -17,7 +21,7 @@ test('dense volume history becomes readable averaged groups with distinct height
     }
     const rects: Array<{ x: number; y: number; w: number; h: number }> = [];
     const paint = text.rect.bind(text);
-    text.rect = (x, y, w, h, ...rest) => { rects.push({ x, y, w, h }); paint(x, y, w, h, ...rest); };
+    text.rect = (x: number, y: number, w: number, h: number, ...rest: unknown[]) => { rects.push({ x, y, w, h }); paint(x, y, w, h, ...rest); };
     const gm = new GridMap({ colOffset: 0, colScale: 4096, rowOffset: 0, rowScale: 10 },
       { cssW: 96, cssH: 640, drawW: 96, drawH: 640 }, null, null);
     bars.draw({ gm, text, resident: { oldest: 0, newest: 4095 } });
@@ -40,7 +44,7 @@ test('dense volume history becomes readable averaged groups with distinct height
 
 test('the full live app gives volume its own opaque area below the price chart', async ({ page }) => {
   await page.goto('/?spy=1');
-  await page.waitForFunction(() => (window as any).__flowmapLive?.renderer?.newestColSeq > 8);
+  await page.waitForFunction(() => (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive?.renderer?.newestColSeq > 8);
   const result = await page.evaluate(async () => {
     const plot = document.querySelector<HTMLCanvasElement>('canvas#gl')!;
     const volume = document.querySelector<HTMLCanvasElement>('canvas.overlay-volume')!;
@@ -72,9 +76,13 @@ test('the full live app gives volume its own opaque area below the price chart',
 test('each volume bar stays under its own price vertex as visible column addresses change', async ({ page }) => {
   await page.goto('/?test=heatmap');
   const result = await page.evaluate(async () => {
+    // @ts-expect-error Vite module
     const { VolBars } = await import('/src/gl/overlays/volbars.ts');
+    // @ts-expect-error Vite module
     const { PriceLine } = await import('/src/gl/overlays/priceLine.ts');
+    // @ts-expect-error Vite module
     const { TextLayer } = await import('/src/gl/textLayer.ts');
+    // @ts-expect-error Vite module
     const { GridMap } = await import('/src/gl/overlays/coords.ts');
     const canvas = document.createElement('canvas');
     const text = new TextLayer(canvas);
@@ -87,7 +95,7 @@ test('each volume bar stays under its own price vertex as visible column address
     price.add(bar);
     let traceX: number | null = null;
     const paintLine = text.polyline.bind(text);
-    text.polyline = (pts, options) => {
+    text.polyline = (pts: { x: number; y: number }[], options: unknown) => {
       if (traceX === null && pts.length > 0) traceX = pts[0].x;
       paintLine(pts, options);
     };
@@ -116,8 +124,11 @@ test('completed volume bars keep their pixel height while the time viewport move
   await page.goto('/?test=heatmap');
   const result = await page.evaluate(async () => {
     // Exercise the production Canvas2D painter, not a recording mock.
+    // @ts-expect-error Vite module
     const { VolBars } = await import('/src/gl/overlays/volbars.ts');
+    // @ts-expect-error Vite module
     const { TextLayer } = await import('/src/gl/textLayer.ts');
+    // @ts-expect-error Vite module
     const { GridMap } = await import('/src/gl/overlays/coords.ts');
     const canvas = document.createElement('canvas');
     const text = new TextLayer(canvas);
@@ -157,8 +168,11 @@ test('completed volume bars keep their pixel height while the time viewport move
 test('an aggregated volume group moves at fractional pixel positions without snapping', async ({ page }) => {
   await page.goto('/?test=heatmap');
   const result = await page.evaluate(async () => {
+    // @ts-expect-error Vite module
     const { VolBars } = await import('/src/gl/overlays/volbars.ts');
+    // @ts-expect-error Vite module
     const { TextLayer } = await import('/src/gl/textLayer.ts');
+    // @ts-expect-error Vite module
     const { GridMap } = await import('/src/gl/overlays/coords.ts');
     const canvas = document.createElement('canvas');
     const text = new TextLayer(canvas);

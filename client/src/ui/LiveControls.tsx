@@ -1,5 +1,5 @@
 /**
- * In-chart live/follow affordance (§9 transport).
+ * In-chart live/follow affordance (transport).
  *
  * A small popup that surfaces INSIDE the chart (bottom-centre of the viewport)
  * only when a follow axis is off, so the user always sees how to get back to live
@@ -14,7 +14,7 @@
  *     App's composite ALSO re-pins time (see App.onTrackPrice) — the tooltip
  *     says so, so the click is never a silent surprise.
  *
- * Replay chrome (survey S4 D4, campaign 2026-09-11): in `replay` mode these
+ * Replay chrome: in `replay` mode these
  * chips are HIDDEN entirely. "GO LIVE" is meaningless against a replay head and
  * contradicts the transport pill, and "TRACK PRICE" alone cannot express the
  * replay-specific return-to-head action — the Timeline transport owns replay
@@ -28,17 +28,13 @@
 
 import { useEffect, useState, type RefObject } from 'react';
 
+import { useT } from '../i18n/useT';
 import { colsBehind } from '../gl/follow';
 import type { Renderer } from '../gl/renderer';
 import type { StreamMode } from '../proto/types';
 import { behindNs, formatDurationCoarseNs } from './replay';
 
 const POLL_MS = 250;
-
-/** CP1 seam (B2 lane): optional until the renderer ships the getter — a missing
- *  value is "unknown", which reads as visible (no hint about a return we cannot
- *  verify). */
-type RendererCp1 = Renderer & { readonly liveEdgeVisible?: boolean };
 
 interface LiveControlsProps {
   rendererRef: RefObject<Renderer | null>;
@@ -54,6 +50,7 @@ export function LiveControls({
   onTrackPrice,
   mode = 'live',
 }: LiveControlsProps): JSX.Element | null {
+  const t = useT();
   const [following, setFollowing] = useState(true);
   const [priceLocked, setPriceLocked] = useState(false);
   const [edgeVisible, setEdgeVisible] = useState(true);
@@ -61,14 +58,14 @@ export function LiveControls({
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      const r = rendererRef.current as RendererCp1 | null;
+      const r = rendererRef.current;
       if (!r) return;
       setFollowing((f) => (f === r.following ? f : r.following));
       setPriceLocked((p) => {
         const locked = r.priceFollow === 'off';
         return p === locked ? p : locked;
       });
-      const edge = r.liveEdgeVisible !== false;
+      const edge = r.liveEdgeVisible;
       setEdgeVisible((e) => (e === edge ? e : edge));
       const tl = r.timeline();
       let next = '';
@@ -100,10 +97,10 @@ export function LiveControls({
           className="livectl__chip livectl__chip--live"
           data-testid="chip-go-live"
           onClick={onGoLive}
-          title="Return to the live edge"
+          title={t('livectl.goLiveHint')}
         >
           <span className="livectl__dot" aria-hidden="true" />
-          GO LIVE{behind ? ` · −${behind}` : ''}
+          {t('transport.goLive')}{behind ? ` · −${behind}` : ''}
         </button>
       )}
       {priceLocked && (
@@ -112,13 +109,9 @@ export function LiveControls({
           className="livectl__chip"
           data-testid="chip-track-price"
           onClick={onTrackPrice}
-          title={
-            edgeVisible
-              ? 'Resume price tracking (keeps your zoom)'
-              : 'Resume price tracking and return to the live edge (keeps your zoom)'
-          }
+          title={edgeVisible ? t('livectl.trackHint') : t('livectl.trackHintEdge')}
         >
-          TRACK PRICE
+          {t('livectl.trackPrice')}
         </button>
       )}
     </div>

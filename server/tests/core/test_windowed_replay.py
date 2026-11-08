@@ -1,4 +1,4 @@
-"""Windowed replay (campaign NEEDS-CORE #2): Subscribe.start_t / end_t are
+"""Windowed replay: Subscribe.start_t / end_t are
 consumed by SessionManager._replay_feed through Recorder.load_tail ranged
 reads, and the parked-replay freshness policy understands that a bounded
 [end_t) window is immutable history.
@@ -34,7 +34,7 @@ TICK = 0.5
 P0 = 100.0 - ROWS * TICK / 2
 MARKET, SYMBOL = "sim", "SIM-DEMO"
 N0 = 20  # columns in the initial recording: t0 = 0..(N0-1)*DT
-# Replay keys carry (start_t, end_t) as part of identity (survey-1 #2).
+# Replay keys carry (start_t, end_t) as part of identity.
 KEY = (MARKET, SYMBOL, "replay", None, "native", None, None)
 
 
@@ -199,7 +199,7 @@ async def test_empty_window_refused(tmp_path):
     with pytest.raises(ReplayUnavailableError):
         await mgr.subscribe(_sub(start_t=11 * DT, end_t=10 * DT), ClientTx())
     assert mgr._sessions == {}
-    # Counted as a rejected subscribe in the C1 aggregate.
+    # Counted as a rejected subscribe in the stats aggregate.
     assert mgr.stats.snapshot()["sessions"]["rejected"] == 2
 
 
@@ -212,7 +212,7 @@ async def test_window_before_any_recording_refused(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# no-window replay is bounded (survey-1 #1)
+# no-window replay is bounded
 
 
 async def test_no_window_replay_serves_newest_ring_window(tmp_path, caplog):
@@ -316,7 +316,7 @@ async def test_no_window_replay_warns_when_only_tapes_truncated(tmp_path, monkey
 
 
 # ---------------------------------------------------------------------------
-# windowed sessions are identity, not an accident (survey-1 #2)
+# windowed sessions are identity, not an accident
 
 
 async def test_reattach_with_a_different_window_is_a_distinct_session(tmp_path):
@@ -427,7 +427,7 @@ def test_load_tail_end_ns_is_exclusive(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# the freshness probe runs off-loop (survey-4 L-1)
+# the freshness probe runs off-loop
 
 
 async def test_freshness_probe_runs_off_the_event_loop(tmp_path, monkeypatch):
@@ -468,8 +468,8 @@ async def test_freshness_probe_runs_off_the_event_loop(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# wire compatibility of the end_t field (proto lives in SB's files; the
-# round-trip pins belong with the consumer)
+# wire compatibility of the end_t field (the round-trip pins sit with the
+# consumer)
 
 
 def test_end_t_wire_roundtrip_and_old_payload_compat():

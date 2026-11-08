@@ -79,3 +79,11 @@ describe('PriceLine data holder', () => {
     expect(p.valueAt(2)).toBe(102);
   });
 });
+
+it('serves out-of-order arrivals in column order without relying on insertion order', () => {
+  const c = new Cvd();
+  c.add(bar(5, 100, 5)); c.add(bar(7, 100, 7));
+  expect(c.series(0, 10).map(p => p.col)).toEqual([5, 7]);
+  c.add(bar(3, 100, 3)); // a late first arrival below the newest column
+  expect(c.series(0, 10).map(p => p.col)).toEqual([3, 5, 7]);
+});

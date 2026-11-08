@@ -1,7 +1,5 @@
 /**
- * Canvas2D painter + hit-testing for chart drawings (campaign 3, lane CF —
- * ported from the old branch's drawings/painter.ts + hitTest.ts, re-anchored
- * from (col, price) chart space to (time-ns, price) data space).
+ * Canvas2D painter + hit-testing for chart drawings in (time-ns, price) data space.
  *
  * This module owns GEOMETRY only and is PURE with respect to the DOM: every
  * function takes an injected {@link DrawProjection} (data space ⇄ CSS px —
@@ -16,8 +14,10 @@
  * without style leaks.
  */
 
+import { formatFixed, formatPrice } from '../i18n/format';
+import { DRAWING_INK_DEFAULT } from '../theme/drawInks';
 import { FIB_LEVELS, fibPriceAt, timeSpan } from './model';
-import type { ChartPoint, Drawing } from './types';
+import { DEFAULT_STYLE, type ChartPoint, type Drawing } from './types';
 
 /** Anchor-handle square, CSS px (pro charting-style endpoint knob). */
 export const HANDLE_SIZE = 7;
@@ -70,16 +70,31 @@ function within(x1: number, y1: number, x2: number, y2: number, tol: number): bo
   return dx * dx + dy * dy <= tol * tol;
 }
 
-/** Level ratio → tidy percentage label ('0.618' → '61.8'); kills float dust. */
+/**
+ * Level ratio → tidy percentage label ('0.618' → '61.8%'; a whole level reads
+ * '50%', no trailing '.0'). Rounds first, so float dust never shows. The decimal
+ * separator follows the UI locale, so Turkish reads '61,8%'.
+ */
 export function fmtLevelPct(level: number): string {
-  return `${Math.round(level * 1000) / 10}%`;
+  const pct = Math.round(level * 1000) / 10;
+  return `${formatFixed(pct, Number.isInteger(pct) ? 0 : 1)}%`;
 }
 
-/** Compact price for the hline tag: integers bare, else precision by magnitude. */
-export function fmtPriceTag(price: number): string {
+/**
+ * Price text for the hline tag. With `decimals` (the venue tick's precision, from
+ * quoteDecimals) the tag reads at exactly that precision, as the price axis does.
+ * Without it the precision follows the magnitude: two decimals from 1 up, and
+ * enough digits below 1 that a small positive price never prints as zero. On that
+ * magnitude path trailing zeros are dropped ('101.5', not '101.50'). Prices stay
+ * '.'-decimal (formatPrice).
+ */
+export function fmtPriceTag(price: number, decimals?: number): string {
+  if (decimals !== undefined || !Number.isFinite(price)) return formatPrice(price, decimals ?? 2);
   if (Number.isInteger(price)) return String(price);
   const abs = Math.abs(price);
-  return price.toFixed(abs >= 100 ? 1 : abs >= 1 ? 2 : 5);
+  const digits = abs >= 1 ? 2 : Math.min(20, 2 - Math.floor(Math.log10(abs)));
+  const text = formatPrice(price, digits);
+  return text.includes('.') ? text.replace(/\.?0+$/, '') : text;
 }
 
 // --- hit-testing (pure; unit-tested with fixed projections) ---------------------
@@ -162,15 +177,17 @@ export function hitTestDrawing(
       return null;
     }
     case 'text': {
+      // The label's painted box, grown by the tolerance: left edge 4 px right of
+      // the anchor (paintDrawing), text centred vertically on it, and the whole
+      // measured width. Only the first few pixels used to be clickable.
       const p = d.points[0];
-      // A generous label-sized box, not a hairline: labels are the fattest
-      // target on the chart because they carry no stroke.
-      const px = proj.xAt(p.tNs);
-      const py = proj.yAt(p.price);
-      const pad = tol + 8;
-      return within(x, y, px + pad / 2, py - pad / 2, pad)
-        ? { id: d.id, kind: 'body', handle: -1 }
-        : null;
+      const left = proj.xAt(p.tNs) + 4;
+      const mid = proj.yAt(p.price);
+      const width = labelWidths.get(labelKey(d.id, d.text)) ?? d.text.length * TEXT_CHAR_PX_FALLBACK;
+      const half = TEXT_LINE_PX / 2;
+      const inside =
+        x >= left - tol && x <= left + width + tol && y >= mid - half - tol && y <= mid + half + tol;
+      return inside ? { id: d.id, kind: 'body', handle: -1 } : null;
     }
   }
 }
@@ -217,10 +234,34 @@ export function paintHandle(
 /** A label font for canvas text (mirrors the axis text style). */
 const LABEL_FONT = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const TEXT_FONT = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+/** Line box of the 12 px label: the vertical extent of its hit area. */
+const TEXT_LINE_PX = 14;
+/** Width estimate for a label no paint has measured yet (12 px monospace advance). */
+const TEXT_CHAR_PX_FALLBACK = 7.2;
+/** Bound on remembered label widths; the cache is rebuilt by painting, so a clear is safe. */
+const LABEL_WIDTH_CACHE_MAX = 2000;
+/** Measured label widths (CSS px) keyed by drawing id + text. */
+const labelWidths = new Map<string, number>();
+
+function labelKey(id: string, text: string): string {
+  return `${id}\u0000${text}`;
+}
+
+/** Remember the painted width of a label so the hit area matches what is drawn. */
+function rememberLabelWidth(ctx: CanvasRenderingContext2D, id: string, text: string): void {
+  const key = labelKey(id, text);
+  if (labelWidths.has(key) || typeof ctx.measureText !== 'function') return;
+  const w = ctx.measureText(text).width;
+  if (!Number.isFinite(w)) return;
+  if (labelWidths.size >= LABEL_WIDTH_CACHE_MAX) labelWidths.clear();
+  labelWidths.set(key, w);
+}
 const TAG_PAD_X = 6;
 const TAG_H = 16;
 const TAG_MARGIN = 4;
-const TAG_BG = 'rgba(5, 7, 9, 0.85)'; // --bg over the heatmap
+// A fixed dark plate behind the price tag: the heatmap pixels it sits over do not
+// follow the chrome theme, so a theme token would lose contrast on some themes.
+const TAG_BG = 'rgba(5, 7, 9, 0.85)';
 
 export interface PaintOpts {
   /** CSS px extent of the drawing surface (for infinite lines + tags). */
@@ -234,6 +275,8 @@ export interface PaintOpts {
   selectedColor?: string;
   /** Ghost stroke width (falls back to the default hairline). */
   draftWidth?: number;
+  /** Decimals of the instrument's price grid (quoteDecimals(tick)) for hline tags. */
+  priceDecimals?: number;
 }
 
 /** Shared dash arrays — setLineDash copies, so these are never mutated. */
@@ -242,8 +285,8 @@ const DASH_DASH: number[] = [4, 4];
 
 /** Ghost-draft identity + fallback style (the pending drawing is ephemeral). */
 const DRAFT_ID = '__draft__';
-const DEFAULT_GHOST_COLOR = '#33d6c4';
-const DEFAULT_GHOST_WIDTH = 2;
+const DEFAULT_GHOST_COLOR = DRAWING_INK_DEFAULT;
+const DEFAULT_GHOST_WIDTH = DEFAULT_STYLE.width;
 
 /**
  * Replay ONE finished drawing onto `ctx` in CSS px. Per tool: trendline
@@ -286,7 +329,7 @@ export function paintDrawing(
       // Right-edge price tag so the level is readable without tracing the line
       // to the axis.
       ctx.font = LABEL_FONT;
-      const text = fmtPriceTag(d.points[0].price);
+      const text = fmtPriceTag(d.points[0].price, opts.priceDecimals);
       const tagW = ctx.measureText(text).width + TAG_PAD_X * 2;
       ctx.fillStyle = TAG_BG;
       ctx.fillRect(width - TAG_MARGIN - tagW, y - TAG_H / 2, tagW, TAG_H);
@@ -354,6 +397,7 @@ export function paintDrawing(
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         ctx.fillText(d.text, proj.xAt(p.tNs) + 4, proj.yAt(p.price));
+        rememberLabelWidth(ctx, d.id, d.text);
       }
       break;
     }

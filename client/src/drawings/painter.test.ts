@@ -1,10 +1,12 @@
 /**
- * Painter tests (lane CF): the pure Canvas2D painter + hit-testing against a
+ * Painter tests: the pure Canvas2D painter + hit-testing against a
  * FIXED linear projection (10 px per second of data time; y = 100 − 10·price)
  * — render calls asserted via a recording 2D-context stub, hit-tests golden.
  */
 
 import { describe, expect, it, vi } from 'vitest';
+
+import { setLocale } from '../i18n';
 
 import {
   HANDLE_SIZE,
@@ -19,6 +21,7 @@ import {
   paintLayer,
   type DrawProjection,
 } from './painter';
+import { DRAWING_INK_DEFAULT } from '../theme/drawInks';
 import { DEFAULT_STYLE } from './types';
 import type { ChartPoint, Drawing } from './types';
 
@@ -75,6 +78,31 @@ describe('helpers', () => {
     expect(fmtPriceTag(101.5)).toBe('101.5');
     expect(fmtPriceTag(0.001234)).toBe('0.00123');
   });
+
+  it('the hline tag keeps cents above 100 and never prints a small positive price as zero', () => {
+    expect(fmtPriceTag(5234.25)).toBe('5234.25'); // no tick: magnitude fallback, two decimals
+    expect(fmtPriceTag(0.0000012)).toBe('0.0000012');
+    expect(fmtPriceTag(0.0000012)).not.toBe('0.00000');
+  });
+
+  it('with the instrument tick precision the tag reads at exactly that many decimals', () => {
+    expect(fmtPriceTag(5234.25, 2)).toBe('5234.25'); // 0.25 tick
+    expect(fmtPriceTag(5234.2, 2)).toBe('5234.20');
+    expect(fmtPriceTag(101.5, 1)).toBe('101.5');
+    expect(fmtPriceTag(0.0000012, 7)).toBe('0.0000012');
+  });
+
+  it('level labels follow the UI locale decimal separator (Turkish reads 61,8%)', () => {
+    setLocale('tr');
+    try {
+      expect(fmtLevelPct(0.618)).toBe('61,8%');
+      expect(fmtLevelPct(0.236)).toBe('23,6%');
+      expect(fmtLevelPct(0.5)).toBe('50%');
+      expect(fmtLevelPct(0)).toBe('0%');
+    } finally {
+      setLocale('en');
+    }
+  });
 });
 
 describe('paintDrawing', () => {
@@ -98,6 +126,20 @@ describe('paintDrawing', () => {
     expect(ctx.measureText).toHaveBeenCalledWith('5');
     expect(ctx.fillRect).toHaveBeenCalled(); // tag background
     expect(ctx.fillText).toHaveBeenCalledWith('5', expect.any(Number), 50);
+  });
+
+  it('an hline tag reads at the grid precision when the paint opts carry it', () => {
+    const ctx = stubCtx();
+    const d: Drawing = { id: 'h', tool: 'hline', createdAt: 0, points: [P(0n, 5234.25)], style: { ...STYLE } };
+    paintDrawing(ctx, d, PROJ, { width: 800, height: 300, priceDecimals: 2 });
+    expect(ctx.fillText).toHaveBeenCalledWith('5234.25', expect.any(Number), expect.any(Number));
+  });
+
+  it('a new drawing ghost is painted in the default drawing ink', () => {
+    const ctx = stubCtx();
+    paintDraft(ctx, 'trendline', [P(0n, 10)], P(10_000_000_000n, 0), PROJ, { width: 800, height: 300 });
+    expect(ctx.strokeStyle).toBe(DRAWING_INK_DEFAULT);
+    expect(DEFAULT_STYLE.color).toBe(DRAWING_INK_DEFAULT);
   });
 
   it('paints an hray from its anchor rightward only', () => {
@@ -241,6 +283,15 @@ describe('hit-testing (golden, fixed projection)', () => {
     expect(hitTestDrawing(d, 8, 0, PROJ)).toMatchObject({ kind: 'handle' }); // the knob itself
     expect(hitTestDrawing(d, 15, -5, PROJ)).toMatchObject({ kind: 'body' }); // label box
     expect(hitTestDrawing(d, 60, 0, PROJ)).toBeNull();
+  });
+
+  it('text: the whole painted label is clickable, sized by its measured width', () => {
+    const d: Drawing = { id: 'lbl', tool: 'text', createdAt: 0, points: [P(0n, 10)], style: { ...STYLE }, text: 'a long wall label' };
+    // Paint once so the measured width (stubbed at 40 px) is remembered.
+    paintDrawing(stubCtx() as unknown as CanvasRenderingContext2D, d, PROJ, { width: 800, height: 300 });
+    // Left edge is 4 px right of the anchor (x = 0); the label runs to x = 44.
+    expect(hitTestDrawing(d, 40, 0, PROJ)).toMatchObject({ kind: 'body' }); // far past the first 15–20 px
+    expect(hitTestDrawing(d, 51, 0, PROJ)).toBeNull(); // beyond the 6 px tolerance band
   });
 
   it('hitTestDrawings: topmost (later) drawing wins', () => {

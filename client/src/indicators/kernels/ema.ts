@@ -1,6 +1,6 @@
 /**
  * EMA kernel — SMA-seeded exponential moving average over candle closes.
- * Identical math to the old branch's `ema()` (see emaCore.ts for the seeding
+ * Identical math to the reference implementation's `ema()` (see emaCore.ts for the seeding
  * rationale and the skip-and-carry NaN policy). O(1) per push.
  */
 

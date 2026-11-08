@@ -1,12 +1,12 @@
-"""Crypto venue surface after the 3-venue -> ~109-venue widening. NO network.
+"""Crypto venue surface across the whole venue table. NO network.
 
-The crypto side used to be a hand-kept shortlist of three markets. It is now
-the engine's whole venue table: ten hand-written connectors plus every ccxt
-venue id, with the universal ccxt connector serving anything without a native
-reader. That connector has no incremental book diff (it re-reads the whole book
-each tick) and no liquidation topic, so the widening is only honest if the
-difference is CARRIED — in ``capability``, in the subscribed channel list, and
-in how a repeated ``BookSnapshot`` is interpreted.
+The crypto side is the engine's whole venue table: ten hand-written connectors
+plus every ccxt venue id, with the universal ccxt connector serving anything
+without a native reader. That connector has no incremental book diff (it
+re-reads the whole book each tick) and no liquidation topic, so the breadth of
+the venue table is only honest if the difference is CARRIED — in
+``capability``, in the subscribed channel list, and in how a repeated
+``BookSnapshot`` is interpreted.
 
 This file pins that difference on all three axes:
 
@@ -28,6 +28,7 @@ import pytest
 from crocodile.core.schema.enums import AssetClass, Side
 from crocodile.core.schema.records import BookDelta, BookSnapshot
 from crocodile.core.schema.records import Trade as CTrade
+from crocodile.crypto.instruments.registry import InstrumentRegistry
 
 from flowmap_server.config import Config
 from flowmap_server.feeds.base import BookState, FeedEvent
@@ -38,6 +39,7 @@ from flowmap_server.feeds.crypto import (
     NOT_STREAMABLE,
     CryptoFeed,
     _BridgeSink,
+    _PolledCCXTConnector,
     is_crypto_market,
     split_market,
 )
@@ -47,9 +49,10 @@ from flowmap_server.proto.events import (
     SIDE_SRC_NA,
     SIDE_UNKNOWN,
     Marker,
+    Trade,
 )
 
-# The engine's hand-written connectors, as of the merge. Pinned by name because
+# The engine's hand-written connectors. Pinned by name because
 # `native` is not cosmetic: it decides depth honesty, the gap marker, the
 # channel list and the connector kwargs.
 # The engine ships ten hand-written connectors; five of them are not order-flow
@@ -431,12 +434,9 @@ async def test_feed_wires_snapshot_driven_from_native(
     assert len([e for e in out if isinstance(e, BookState)]) == 3
 
 
-# --- the merged header's clock, pinned ------------------------------------------
-# A referee proved these were unpinned: swapping `record.source_ts` for
-# `record.local_ts` in `_BridgeSink._ts` left every migrated test green. That
-# rename (crypto `exchange_ts` -> `source_ts`) is the single most load-bearing
-# line of the Crocodile migration, so it gets assertions where the two clocks
-# genuinely differ.
+# --- the record header's clock, pinned ------------------------------------------
+# Swapping `record.source_ts` for `record.local_ts` in `_BridgeSink._ts` must
+# fail a test, so these assertions use two clocks that genuinely differ.
 
 _VENUE_NS = 1_700_000_000_000_000_000
 _LOCAL_NS = _VENUE_NS + 777_000_000  # receive clock, 777 ms later
@@ -494,7 +494,7 @@ async def test_trade_carries_the_venue_clock_not_the_receive_clock() -> None:
     (trade,) = out
     assert trade.ts_ns == _VENUE_NS
     assert trade.ts_ns != _LOCAL_NS
-    # …and the size field really is the merged `amount`, not a stale `size`.
+    # …and the size field really is `amount`, not `size`.
     assert trade.size == 2.0
 
 
@@ -539,6 +539,85 @@ async def test_polled_venues_do_not_re_emit_the_same_print() -> None:
         await sink.put(_hdr_trade(id="t1"))
         await sink.put(_hdr_trade(id="t2", price=101.0))
     assert [t.price for t in out] == [100.5, 101.0]
+
+
+class _FakePollExchange:
+    """Just enough of a ccxt exchange for trade polls: the capability map and
+    ``fetch_trades``. Each poll returns the next recent-trades window."""
+
+    def __init__(self, windows: list[list[dict[str, object]]]) -> None:
+        self.has = {"fetchTrades": True}
+        self._windows = list(windows)
+
+    async def fetch_trades(self, unified: str) -> list[dict[str, object]]:
+        return list(self._windows.pop(0))
+
+
+def _ccxt_print(
+    *, ts_ms: int = 1_700_000_000_000, price: float = 100.5, amount: float = 2.0, side: str = "buy"
+) -> dict[str, object]:
+    """One ccxt trade with no venue id, as the poll path receives it."""
+    return {"id": None, "timestamp": ts_ms, "price": price, "amount": amount, "side": side}
+
+
+async def _run_polls(windows: list[list[dict[str, object]]]) -> list[Trade]:
+    """Drive the real poll connector over *windows*, one trade poll each."""
+    out: list[FeedEvent] = []
+    sink = _BridgeSink(out.append, snapshot_driven=True)
+    conn = _PolledCCXTConnector(
+        symbols=["BTC/USDT"],
+        channels=["trade"],
+        out=sink,
+        registry=InstrumentRegistry(),
+        ccxt_id="kucoin",
+    )
+    ex = _FakePollExchange(windows)
+    for _ in windows:
+        await conn._poll_one(ex, "trade", "BTC/USDT")
+    return [e for e in out if isinstance(e, Trade)]
+
+
+def test_the_universal_connector_brackets_its_trade_polls() -> None:
+    feed = CryptoFeed("kucoin", "BTCUSDT", "", Config())
+    conn = feed._default_connector(_BridgeSink(lambda _: None))
+    assert isinstance(conn, _PolledCCXTConnector)
+    assert conn.ccxt_id == "kucoin"
+
+
+async def test_identical_id_less_fills_in_one_poll_are_both_kept() -> None:
+    """Two genuine fills with the same millisecond, price, size and side are
+    two prints. Both sit in one poll window, so both must reach the tape."""
+    same = _ccxt_print()
+    trades = await _run_polls([[same, same]])
+    assert [t.price for t in trades] == [100.5, 100.5]
+
+
+async def test_an_id_less_window_re_read_on_the_next_poll_is_not_re_emitted() -> None:
+    same, other = _ccxt_print(), _ccxt_print(price=101.0)
+    trades = await _run_polls([[same, same, other], [same, same, other]])
+    assert [t.price for t in trades] == [100.5, 100.5, 101.0]
+
+
+async def test_a_sliding_window_emits_only_its_new_prints() -> None:
+    old, same, new = _ccxt_print(price=99.0), _ccxt_print(), _ccxt_print(price=102.0)
+    trades = await _run_polls([[old, same], [same, new]])
+    assert [t.price for t in trades] == [99.0, 100.5, 102.0]
+
+
+async def test_a_later_poll_can_bring_a_genuinely_new_identical_fill() -> None:
+    same = _ccxt_print()
+    trades = await _run_polls([[same], [same, same]])
+    assert len(trades) == 2
+
+
+async def test_id_less_prints_outside_a_poll_window_are_kept_as_delivered() -> None:
+    """Websocket batches are never re-read, so nothing is deduplicated there."""
+    out: list[FeedEvent] = []
+    sink = _BridgeSink(out.append, snapshot_driven=True)
+    record = _hdr_trade(id="")
+    await sink.put(record)
+    await sink.put(record)
+    assert len(out) == 2
 
 
 async def test_a_delta_venue_is_not_deduped() -> None:

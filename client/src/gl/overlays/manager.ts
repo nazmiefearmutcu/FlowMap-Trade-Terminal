@@ -1,5 +1,5 @@
 /**
- * Overlay manager (§8.3 overlays, M2 T10).
+ * Overlay manager.
  *
  * Owns the two shared GL batches, the over-heatmap text layer, the optional
  * price/time gutter layers, and every overlay instance; routes the canonical
@@ -10,11 +10,12 @@
  * ring / camera.
  *
  * Everything is O(visible): each overlay only emits geometry for the columns in
- * the viewport, so the §10 perf gate is untouched (the renderer additionally
+ * the viewport, so the perf gate is untouched (the renderer additionally
  * skips the whole overlay pass when there is no epoch / during a perf run).
  */
 
-import { drawGridlines, drawPriceAxis, drawTimeAxis } from './axes';
+import { t } from '../../i18n';
+import { drawGridlines, drawPriceAxis, drawTimeAxis, type TimeAxisClock } from './axes';
 import { observeCanvasBox } from '../canvasBox';
 import { Bbo, type BboState } from './bbo';
 import { Bubbles } from './bubbles';
@@ -57,6 +58,8 @@ export interface OverlayDrawContext {
   changed?: () => void;
   /** Newest column's book (for the L2-derived BBO fallback), or null. */
   newestArrays: { bid: Float32Array; ask: Float32Array | null } | null;
+  /** The time-axis clock: null keeps the session-relative T+ axis (sim feeds). */
+  timeAxisClock?: TimeAxisClock | null;
   /** Native geometry of newestArrays; the displayed epoch can advance first. */
   newestPrice?: PriceMap | null;
   /**
@@ -69,6 +72,9 @@ export interface OverlayDrawContext {
    * stream overlays remain intact when an overview is being displayed. */
   overviewBars?: OverviewBars | null;
 }
+
+/** Placeholder column source for the reusable frame until the first draw supplies the live one. */
+const NO_COLUMN_ARRAYS: OverlayFrame['columnArrays'] = () => null;
 
 export class OverlayManager {
   private readonly axisBoxes = new Map<HTMLCanvasElement, ReturnType<typeof observeCanvasBox>>();
@@ -95,6 +101,8 @@ export class OverlayManager {
   private readonly gexLevels = new GexOverlay();
 
   private visibility: OverlayVisibility = { ...DEFAULT_OVERLAY_VISIBILITY };
+  /** Pixel chart style, copied into every frame ({@link setPixelStyle}). */
+  private pixelStyle = false;
 
   /** A real BBO print from the feed (preferred over the L2-derived fallback). */
   private channelBbo: BboState | null = null;
@@ -114,6 +122,16 @@ export class OverlayManager {
     canvas.className = 'overlay-volume';
     canvas.style.inset = 'auto 0 0';
     canvas.style.zIndex = '1';
+    this.frameScratch = {
+      gm: this.gm,
+      solid: this.solid,
+      points: this.points,
+      text: this.text,
+      resident: null,
+      capability: null,
+      columnArrays: NO_COLUMN_ARRAYS,
+      mipLevel: 0,
+    };
   }
 
   /**
@@ -131,8 +149,11 @@ export class OverlayManager {
   recreateGL(gl: WebGL2RenderingContext): void {
     this.solid = new SolidBatch(gl);
     this.points = new PointBatch(gl);
-    while (gl.getError() !== gl.NO_ERROR) {
-      /* drain any stale error so the ring/heatmap rebuild's checkGLError is clean */
+    // Drain stale errors so the ring/heatmap rebuild's checkGLError is clean.
+    // Bounded like context.ts checkGLError: a driver that keeps reporting errors
+    // (or a mock) must not hang the main thread during context recovery.
+    for (let i = 0; i < 16 && gl.getError() !== gl.NO_ERROR; i += 1) {
+      /* drain */
     }
   }
 
@@ -151,7 +172,7 @@ export class OverlayManager {
    * Re-match both gutter backing stores to their OWN live CSS boxes at `dpr`
    * (pure 2D — no GL, no camera, no draw). Wired into the draw path so every
    * frame keeps the gutters sized, and exposed for the PriceAxis self-heal
-   * (QA9-1): a fresh boot could leave the gutter bitmap at the browser default
+   * A fresh boot could leave the gutter bitmap at the browser default
    * 300×150 with ZERO ink — labels and the last-price pill missing — until a
    * window resize forced a frame. The heal closes that gap by (a) reading the
    * canvas's own box (not a frame-time snapshot, which may predate layout) and
@@ -186,6 +207,11 @@ export class OverlayManager {
 
   setBubbleMinSize(minSize: number): void {
     this.bubbles.setOptions({ minSize });
+  }
+
+  /** Pixel chart style: stepped price line and square trade bubbles. */
+  setPixelStyle(on: boolean): void {
+    this.pixelStyle = on;
   }
 
   // --- stream routing -----------------------------------------------------------
@@ -290,7 +316,7 @@ export class OverlayManager {
    * the price line's `lastClose` (which derives the dashed level + axis pill) and
    * the channel BBO. A replaced session restarts `col_seq` at 0, so a surviving
    * max-cursor would keep `last()` frozen on the old session's price forever
-   * (survey S1 D5). `reset()` calls this; the renderer's cursor-only session
+   * `reset` calls this; the renderer's cursor-only session
    * reset can call it alone when it wants to keep data.
    */
   resetCursor(): void {
@@ -308,8 +334,8 @@ export class OverlayManager {
    * synchronously (pure 2D, safe while the GL context is lost). The renderer
    * calls this on a session reset and before its `drawOverlays` early returns,
    * which otherwise leave the previous frame/session's price line, badges, tick
-   * labels and price pill floating over a cleared or fresh chart (survey S3
-   * C-2/C-3/C-4). No GL state is touched.
+   * labels and price pill floating over a cleared or fresh chart.
+   * No GL state is touched.
    */
   clearInk(): void {
     this.text.clear();
@@ -366,7 +392,7 @@ export class OverlayManager {
 
   // --- draw ---------------------------------------------------------------------
 
-  // Reused per-draw scratch (micro GC, survey #8): a dirty frame must not
+  // Reused per-draw scratch (micro GC): a dirty frame must not
   // allocate. GridMap + OverlayFrame are refilled in place; the badge option
   // objects are mutated in place.
   private readonly gm = new GridMap(
@@ -375,16 +401,8 @@ export class OverlayManager {
     null,
     null,
   );
-  private readonly frameScratch: OverlayFrame = {
-    gm: this.gm,
-    solid: null as unknown as SolidBatch,
-    points: null as unknown as PointBatch,
-    text: null as unknown as TextLayer,
-    resident: null,
-    capability: null,
-    columnArrays: null as unknown as OverlayFrame['columnArrays'],
-    mipLevel: 0,
-  };
+  /** Filled in the constructor once the batches and text layer exist; draw() re-points the live ones each frame. */
+  private readonly frameScratch: OverlayFrame;
   private readonly volumeGm = new GridMap(
     { colOffset: 0, colScale: 0, rowOffset: 0, rowScale: 0 },
     { drawW: 0, drawH: 0, cssW: 0, cssH: 0 }, null, null,
@@ -411,6 +429,7 @@ export class OverlayManager {
     frame.dataVersion = ctx.dataVersion;
     frame.changed = ctx.changed;
     frame.mipLevel = ctx.mipLevel ?? 0;
+    frame.pixelStyle = this.pixelStyle;
 
     // Text layer: size to the viewport, clear once, draw faint gridlines behind.
     this.text.syncSize(ctx.dims.cssW, ctx.dims.cssH, ctx.dpr);
@@ -422,7 +441,7 @@ export class OverlayManager {
     // Its x transform is the exact same camera; only its local y origin differs.
     // Invert plotH = stageH - clamp(16, stageH * .07, 44), using the
     // ResizeObserver geometry. Reading the parent after drawing forces layout.
-    const stripH = volumeStripHeight(ctx.dims.cssH / (1 - VOLBAR_HEIGHT_FRAC));
+    const stripH = Math.round(volumeStripHeight(ctx.dims.cssH / (1 - VOLBAR_HEIGHT_FRAC)));
     const volumeCanvas = this.volumeText.canvas;
     volumeCanvas.style.display = this.visibility.volume ? '' : 'none';
     const height = `${stripH}px`;
@@ -430,7 +449,9 @@ export class OverlayManager {
     this.volumeText.syncSize(ctx.dims.cssW, stripH, ctx.dpr);
     this.volumeText.clear();
     if (this.visibility.volume) {
-      this.volumeText.rect(0, 0, ctx.dims.cssW, stripH, OVERLAY.volumeBg);
+      // A whole-CSS-px strip keeps its bitmap and the opaque fill on the same
+      // device rows; a fractional height left the last row partly see-through.
+      this.volumeText.rect(0, 0, ctx.dims.cssW, Math.ceil(stripH * ctx.dpr) / ctx.dpr, OVERLAY.volumeBg);
       this.volumeText.rect(0, 0, ctx.dims.cssW, 1, OVERLAY.grid.css);
       Object.assign(this.volumeDims, ctx.dims, { cssH: stripH, drawH: stripH * ctx.dpr });
       this.volumeGm.refill(ctx.view, this.volumeDims, ctx.time, ctx.price);
@@ -443,8 +464,8 @@ export class OverlayManager {
 
     // GL overlays in the effective z-order (each flushes its own geometry →
     // z-order). BBO draws BEFORE the price line so the near-white last-price
-    // core keeps the top layer where the inside quote touches it (survey S2 D4:
-    // the teal/red quote lines used to overpaint the 1.8px price core).
+    // core keeps the top layer where the inside quote touches it.
+    // The teal/red quote lines used to overpaint the 1.8px price core.
     if (this.visibility.profile) this.profile.draw(frame);
     if (this.visibility.vwap) vwap.draw(frame);
     if (this.visibility.bbo) {
@@ -456,13 +477,13 @@ export class OverlayManager {
     if (this.visibility.bubbles) this.bubbles.draw(frame);
     if (this.visibility.markers) this.markers.draw(frame);
 
-    // Honesty badges (§7): surface reduced-fidelity states on the text layer.
+    // Honesty badges: surface reduced-fidelity states on the text layer.
     this.drawHonestyBadges(ctx);
 
     // Axes into their gutters (share the viewport dimension → aligned). The
     // gutters are wiped on EVERY repaint: with axes off they would otherwise
     // keep the last tick labels and the price pill, and nothing else ever
-    // clears those canvases (survey S3 C-4). drawPriceAxis/drawTimeAxis clear
+    // clears those canvases. drawPriceAxis/drawTimeAxis clear
     // before they draw, so each path clears exactly once. Sizing goes through
     // `syncGutters()` so the SAME box math runs here and on the PriceAxis
     // self-heal path (a boot whose first frames predate layout, or a canvas
@@ -472,7 +493,7 @@ export class OverlayManager {
       if (this.priceAxis) {
         drawPriceAxis(this.priceAxis, this.gm, this.visibility.price ? priceLine.last() : null);
       }
-      if (this.timeAxis) drawTimeAxis(this.timeAxis, this.gm);
+      if (this.timeAxis) drawTimeAxis(this.timeAxis, this.gm, ctx.timeAxisClock ?? null);
     } else {
       this.priceAxis?.clear();
       this.timeAxis?.clear();
@@ -514,28 +535,28 @@ export class OverlayManager {
     if (this.visibility.bubbles && typeof cap.tape === 'string' && cap.tape !== 'tick') {
       const opts = this.badgeOpts[n++];
       opts.color = OVERLAY.event.css;
-      // R1-M1: `badgeOpts.bg` copied the string at construction; `applyChartInk`
+      // `badgeOpts.bg` copied the string at construction; `applyChartInk`
       // reassigns `OVERLAY.badgeBg`, so refresh it here (like `color`) or the
       // live badge plate stays the midnight box on light charts.
       opts.bg = OVERLAY.badgeBg;
-      this.text.badge(6, y, 'BUBBLES 1m AGG', opts);
+      this.text.badge(6, y, t('gl.badgeBubbles'), opts);
       y += 18;
     }
     if (this.visibility.vwap && cap.vwap === 'approx') {
       const opts = this.badgeOpts[n++];
       opts.color = OVERLAY.vwap.css;
       opts.bg = OVERLAY.badgeBg;
-      this.text.badge(6, y, 'VWAP approx', opts);
+      this.text.badge(6, y, t('gl.badgeVwapApprox'), opts);
       y += 18;
     } else if (this.visibility.vwap && cap.history === 'reconstructed') {
       // Reconstructed 1 m-candle history: the piecewise time map places the line
       // honestly in time, but its CUMULANTS were seeded from candles, not tape —
-      // say so (survey S2 D1 honesty; the `vwap:` capability badge above covers
+      // say so (the `vwap:` capability badge above covers
       // the keyless equity case).
       const opts = this.badgeOpts[n++];
       opts.color = OVERLAY.vwap.css;
       opts.bg = OVERLAY.badgeBg;
-      this.text.badge(6, y, 'VWAP ≈ reconstructed', opts);
+      this.text.badge(6, y, t('gl.badgeVwapReconstructed'), opts);
       y += 18;
     }
   }

@@ -1,10 +1,10 @@
 /**
- * Overlay geometry tests (survey S2 D3/D4 + CP2 consumers).
+ * Overlay geometry tests.
  *
  * Pins two classes of fixes:
  *   - the half-cell convention: the line family (price line, VWAP, BBO, axis
  *     pill) draws on the row-CELL CENTRE (+0.5) so it matches the density cell
- *     the heatmap paints and the bubbles/markers that already used it (S2 D3);
+ * the heatmap paints and the bubbles/markers that already used it;
  *   - the piecewise time map (`coords.ts` TimeMap.slots): the time axis,
  *     bubbles and markers consume it, so a reconstructed (60 s-spaced) history
  *     block maps real times instead of the affine's 240×-compressed ones.
@@ -44,7 +44,7 @@ function trade(ts: bigint, price: number): Trade {
   return { ts_ns: ts, price, size: 1, side: 1 } as unknown as Trade;
 }
 
-describe('half-cell convention — price line (S2 D3)', () => {
+describe('half-cell convention — price line', () => {
   it('draws the trace and the dashed level on the row-cell centre', () => {
     const g = gm();
     const pl = new PriceLine();
@@ -76,7 +76,7 @@ describe('half-cell convention — price line (S2 D3)', () => {
   });
 });
 
-describe('half-cell convention — VWAP / BBO / pill (S2 D3)', () => {
+describe('half-cell convention — VWAP / BBO / pill', () => {
   it.each([
     { p0: 100, step: .5, tick: .01, price: 100.39, expected: '100.39' },
     { p0: 0, step: 1e-7, tick: 1e-9, price: 1.01e-7, expected: '0.000000101' },
@@ -120,9 +120,11 @@ describe('half-cell convention — VWAP / BBO / pill (S2 D3)', () => {
     };
     v.draw({ gm: g, solid, resident: null } as unknown as OverlayFrame);
 
-    expect(lines).toHaveLength(1);
-    expect(lines[0][1]).toBeCloseTo(g.clipY(g.priceToRow(4) + 0.5));
-    expect(lines[0][3]).toBeCloseTo(g.clipY(g.priceToRow(5) + 0.5));
+    // One halo segment, then the violet core over the same endpoints.
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toEqual(lines[0]);
+    expect(lines[1][1]).toBeCloseTo(g.clipY(g.priceToRow(4) + 0.5));
+    expect(lines[1][3]).toBeCloseTo(g.clipY(g.priceToRow(5) + 0.5));
   });
 
   it('places the BBO lines and badges on the row-cell centre', () => {
@@ -173,7 +175,7 @@ describe('half-cell convention — VWAP / BBO / pill (S2 D3)', () => {
   });
 });
 
-describe('piecewise time map consumers (CP2, S2 D1)', () => {
+describe('piecewise time map consumers', () => {
   /** Cols 0..4 arrive 60 s apart (reconstructed 1 m candles), live dt = 250 ms. */
   const SLOTS: TimeMap = {
     anchorSeq: 4,
@@ -220,6 +222,20 @@ describe('piecewise time map consumers (CP2, S2 D1)', () => {
     expect(xs[1]).toBeCloseTo(g.clipX(1.0));
   });
 
+  it('a late print behind an out-of-view run is still drawn', () => {
+    // 1 column per second; the view covers columns 100..110 (times 100 s .. 110 s).
+    const g = new GridMap({ colOffset: 100, colScale: 10, rowOffset: 0, rowScale: 100 }, DIMS,
+      { anchorSeq: 100, anchorT0Ns: 100_000_000_000n, dtNs: 1_000_000_000 }, PRICE);
+    const b = new Bubbles();
+    b.add(trade(105_000_000_000n, 5)); // visible, in order
+    b.add(trade(10_000_000_000n, 5)); // arrives late and is far left of the view
+    b.add(trade(107_000_000_000n, 5)); // visible, in order
+    const points = { begin: () => {}, add: vi.fn(), flush: () => {} };
+    b.draw({ gm: g, points, resident: null } as unknown as OverlayFrame);
+    // The original walk broke on the far-left print and never reached 105 s.
+    expect(points.add).toHaveBeenCalledTimes(2);
+  });
+
   it('seeks a deep historical window without scanning newer retained prints', () => {
     const g = new GridMap({ ...VIEW, colOffset: 100, colScale: 4 }, DIMS,
       { anchorSeq: 0, anchorT0Ns: 0n, dtNs: 1_000_000_000 }, PRICE);
@@ -230,7 +246,9 @@ describe('piecewise time map consumers (CP2, S2 D1)', () => {
     const seek = vi.spyOn(g, 'tsToCol');
     const points = { begin: () => {}, add: vi.fn(), flush: () => {} };
     b.draw({ gm: g, points, resident: null } as unknown as OverlayFrame);
-    expect(seek.mock.calls.length).toBeLessThan(40);
+    // The binary seek (~17 probes for 120k prints) plus the bounded out-of-order
+    // walk (at most 2 × SCAN_BACKSTEP probes). A linear scan would make ~120k.
+    expect(seek.mock.calls.length).toBeLessThan(80);
     expect(points.add).toHaveBeenCalled();
   });
 
@@ -251,11 +269,34 @@ describe('piecewise time map consumers (CP2, S2 D1)', () => {
     mk.draw({
       gm: g,
       solid,
-      text: { text: () => {} },
+      text: { text: () => {}, measure: (str: string) => str.length * 5.6 },
       resident: null,
     } as unknown as OverlayFrame);
 
     expect(quads).toHaveLength(1);
     expect(quads[0]).toBeCloseTo(g.clipX(1.5)); // ts 60s → col 1, +0.5 centre
+  });
+});
+
+describe('BBO badge pitch on a one-tick spread', () => {
+  it('pushes the ask and bid badges apart when adjacent rows would overprint, ask above bid', () => {
+    // 2000 rows over the viewport: one tick is a fraction of a CSS pixel.
+    const g = new GridMap({ ...VIEW, rowScale: 2000 }, DIMS, TIME, { p0: 0, step: 1, tick: 1 });
+    const bbo = new Bbo();
+    bbo.set({ bidPx: 5, bidSz: 2, askPx: 6, askSz: 3, source: 'bbo' });
+    const badges: { y: number; label: string }[] = [];
+    const solid = { begin: () => {}, addThickLine: () => {}, flush: () => {} };
+    const text = {
+      badge: (_x: number, y: number, label: string) => {
+        badges.push({ y, label });
+      },
+    };
+    bbo.draw({ gm: g, solid, text } as unknown as OverlayFrame);
+    const ask = badges.find(b => b.label.startsWith('A'));
+    const bid = badges.find(b => b.label.startsWith('B'));
+    expect(ask).toBeDefined();
+    expect(bid).toBeDefined();
+    expect(ask!.y).toBeLessThan(bid!.y);
+    expect(bid!.y - ask!.y).toBeGreaterThanOrEqual(12 - 1e-6);
   });
 });

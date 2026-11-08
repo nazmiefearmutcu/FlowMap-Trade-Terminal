@@ -12,6 +12,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { IndicatorPicker, toggleIndicatorPicker } from './IndicatorPicker';
 import { resetIndicatorStoreForTest, useIndicatorStore, MAX_ACTIVE_INDICATORS } from '../indicators/store';
 import { setTimeframe, getSnapshot as getCandleSnapshot, resetForTest as resetCandles, CANDLE_TIMEFRAMES } from '../candles/store';
+import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
+import { pushOverlay, resetOverlays } from './overlayStack';
+import { setLocale, t } from '../i18n';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -73,7 +76,7 @@ describe('IndicatorPicker — open/close', () => {
     expect(q(container, '[data-testid="indi-picker"]')).toBeNull();
   });
 
-  it('toggleIndicatorPicker works with no React context (INT binding)', () => {
+  it('toggleIndicatorPicker works with no React context', () => {
     renderPicker();
     act(() => toggleIndicatorPicker());
     expect(useIndicatorStore.getState().pickerOpen).toBe(true);
@@ -81,7 +84,7 @@ describe('IndicatorPicker — open/close', () => {
     expect(useIndicatorStore.getState().pickerOpen).toBe(false);
   });
 
-  it('never fires while typing or with modifiers; a dialog-owned Esc is left alone', () => {
+  it('never fires while typing or with modifiers; `I` is left alone inside another dialog', () => {
     renderPicker();
     const input = document.createElement('input');
     document.body.appendChild(input);
@@ -91,15 +94,79 @@ describe('IndicatorPicker — open/close', () => {
     expect(useIndicatorStore.getState().pickerOpen).toBe(false);
     fireKey('i');
     expect(useIndicatorStore.getState().pickerOpen).toBe(true);
+    fireKey('i');
+    expect(useIndicatorStore.getState().pickerOpen).toBe(false);
     const dialog = document.createElement('div');
     dialog.setAttribute('role', 'dialog');
+    const button = document.createElement('button');
+    dialog.appendChild(button);
     document.body.appendChild(dialog);
-    fireKey('Escape', dialog); // a modal owns Escape
-    expect(useIndicatorStore.getState().pickerOpen).toBe(true);
-    fireKey('Escape', window);
+    fireKey('i', button); // a foreign dialog owns the I key
     expect(useIndicatorStore.getState().pickerOpen).toBe(false);
     input.remove();
     dialog.remove();
+  });
+
+  it('I is silent while single-key shortcuts are off, and Esc still closes an open picker', () => {
+    renderPicker();
+    setSingleKeyShortcutsEnabled(false);
+    try {
+      fireKey('i');
+      expect(useIndicatorStore.getState().pickerOpen).toBe(false);
+    } finally {
+      setSingleKeyShortcutsEnabled(true);
+    }
+    fireKey('i');
+    expect(useIndicatorStore.getState().pickerOpen).toBe(true);
+    setSingleKeyShortcutsEnabled(false);
+    try {
+      fireKey('Escape');
+      expect(useIndicatorStore.getState().pickerOpen).toBe(false);
+    } finally {
+      setSingleKeyShortcutsEnabled(true);
+    }
+  });
+
+  it('I toggles the picker shut when focus is on one of its own controls', () => {
+    const { container } = renderPicker();
+    fireKey('i');
+    const close = q(container, '[data-testid="indi-close"]') as HTMLElement;
+    fireKey('i', close);
+    expect(useIndicatorStore.getState().pickerOpen).toBe(false);
+  });
+
+  it('Esc closes the picker even when focus is inside its own dialog', () => {
+    const { container } = renderPicker();
+    fireKey('i');
+    const close = q(container, '[data-testid="indi-close"]') as HTMLElement;
+    fireKey('Escape', close);
+    expect(useIndicatorStore.getState().pickerOpen).toBe(false);
+  });
+
+  it('moves focus into the picker on open and returns it to the opener on close', () => {
+    const { container } = renderPicker();
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    fireKey('i');
+    expect(document.activeElement).toBe(q(container, '[data-testid="indi-close"]'));
+    fireKey('Escape');
+    expect(useIndicatorStore.getState().pickerOpen).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('Esc goes to the topmost overlay: a surface opened above the picker keeps it', () => {
+    renderPicker();
+    fireKey('i');
+    expect(useIndicatorStore.getState().pickerOpen).toBe(true);
+    const offAbove = pushOverlay('settings');
+    fireKey('Escape', window);
+    expect(useIndicatorStore.getState().pickerOpen).toBe(true);
+    offAbove();
+    fireKey('Escape', window);
+    expect(useIndicatorStore.getState().pickerOpen).toBe(false);
+    resetOverlays();
   });
 });
 
@@ -127,7 +194,7 @@ describe('IndicatorPicker — registry add/remove', () => {
     });
     const add = q(container, '[data-testid="indi-add-sma"]') as HTMLButtonElement;
     expect(add.disabled).toBe(true);
-    expect(container.textContent).toContain(`${MAX_ACTIVE_INDICATORS}/${MAX_ACTIVE_INDICATORS}`);
+    expect(container.textContent).toContain(t('indi.active', { count: MAX_ACTIVE_INDICATORS, max: MAX_ACTIVE_INDICATORS }));
   });
 });
 
@@ -150,6 +217,36 @@ describe('IndicatorPicker — params, colors, timeframe', () => {
     fireInput(input, '99999');
     // The store clamped to the schema max (500) regardless of raw input.
     expect(useIndicatorStore.getState().active[0].params.period).toBe(500);
+  });
+
+  it('lists parameters with the UI locale decimal separator and no digit grouping', () => {
+    act(() => setLocale('tr'));
+    try {
+      const { container } = renderPicker();
+      fireKey('i');
+      act(() => useIndicatorStore.getState().add('bb'));
+      const uid = useIndicatorStore.getState().active[0].uid;
+      act(() => useIndicatorStore.getState().setParam(uid, 'mult', 2.5));
+      const row = q(container, '[data-testid="indi-active-bb"]')!;
+      expect(row.textContent).toContain('(20 / 2,5)');
+    } finally {
+      act(() => setLocale('en'));
+    }
+  });
+
+  it('a series without an override shows the colour it is drawn in, not black', () => {
+    document.documentElement.style.setProperty('--indi-c1', '#123ABC');
+    try {
+      const { container } = renderPicker();
+      fireKey('i');
+      act(() => useIndicatorStore.getState().add('sma'));
+      const uid = useIndicatorStore.getState().active[0].uid;
+      const color = q(container, `[data-testid="indi-color-${uid}-sma"]`) as HTMLInputElement;
+      expect(useIndicatorStore.getState().active[0].colors.sma ?? null).toBeNull(); // no override
+      expect(color.value).toBe('#123abc');
+    } finally {
+      document.documentElement.style.removeProperty('--indi-c1');
+    }
   });
 
   it('color pick stores an override; the reset chip restores the theme default', () => {

@@ -1,6 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { attachGlobalKeys, classifyTarget, routeGlobalKey } from './keys';
+import {
+  parseSingleKeyShortcuts,
+  setSingleKeyShortcutsEnabled,
+  SINGLE_KEY_SHORTCUTS_STORAGE_KEY,
+} from './shortcutPrefs';
 
 const PLAIN = { editable: false, button: false, dialog: false };
 
@@ -30,11 +35,11 @@ describe('routeGlobalKey', () => {
     }
   });
 
-  it('routes the follow keys globally (S4 D3: they used to be dead when blurred)', () => {
+  it('routes the follow keys globally (they used to be dead when the chart was blurred)', () => {
     expect(routeGlobalKey('f', PLAIN)).toEqual({ type: 'toggle-follow' });
     expect(routeGlobalKey('F', PLAIN)).toEqual({ type: 'toggle-follow' });
     expect(routeGlobalKey('p', PLAIN)).toEqual({ type: 'toggle-price-follow' });
-    // Shift+P needs the MODIFIER, not just the shifted character (R2-L1):
+    // Shift+P needs the MODIFIER, not just the shifted character (CapsLock sends the same key without Shift):
     // CapsLock produces 'P' with no shift and must TOGGLE, not auto-fit.
     expect(routeGlobalKey('P', PLAIN, { meta: false, ctrl: false, shift: true })).toEqual({
       type: 'price-auto-fit',
@@ -68,7 +73,7 @@ describe('routeGlobalKey', () => {
     }
   });
 
-  it('routes the bare feature keys M / A / H / C (campaign 3)', () => {
+  it('routes the bare feature keys M / A / H / C', () => {
     expect(routeGlobalKey('m', PLAIN)).toEqual({ type: 'toggle-measure' });
     expect(routeGlobalKey('M', PLAIN)).toEqual({ type: 'toggle-measure' });
     expect(routeGlobalKey('a', PLAIN)).toEqual({ type: 'create-alert' });
@@ -312,6 +317,24 @@ describe('attachGlobalKeys', () => {
     t.fire('r', body);
     expect(onGoLive).toHaveBeenCalledOnce();
 
+    // Auto-repeat: the key is still consumed, but a held key fires its action once.
+    const onCreateAlert = vi.fn();
+    const onExportPng = vi.fn();
+    const r2 = fakeTarget();
+    const dispose2 = attachGlobalKeys(
+      { onSpace: vi.fn(), onFocusSearch: vi.fn(), onExportPng, onCreateAlert },
+      r2 as never,
+    );
+    const pdRepeat = r2.fire('e', body, { repeat: true });
+    expect(pdRepeat).toHaveBeenCalledOnce();
+    expect(onExportPng).not.toHaveBeenCalled();
+    r2.fire('e', body);
+    expect(onExportPng).toHaveBeenCalledOnce();
+    r2.fire('a', body, { repeat: true });
+    r2.fire('a', body, { repeat: true });
+    expect(onCreateAlert).not.toHaveBeenCalled();
+    dispose2();
+
     // On the chart canvas the router yields: the canvas listener owns them, and
     // a double-handled toggle would cancel itself out.
     const pdCanvas = t.fire('f', { tagName: 'CANVAS', getAttribute: () => null } as never);
@@ -319,5 +342,38 @@ describe('attachGlobalKeys', () => {
     expect(pdCanvas).not.toHaveBeenCalled();
 
     dispose();
+  });
+});
+
+describe('routeGlobalKey — single-character shortcut preference (WCAG 2.1.4)', () => {
+  afterEach(() => {
+    setSingleKeyShortcutsEnabled(true);
+  });
+
+  it('routes bare shortcuts by default', () => {
+    expect(routeGlobalKey('e', PLAIN)).toEqual({ type: 'export-png' });
+    expect(routeGlobalKey(' ', PLAIN)).toEqual({ type: 'space' });
+  });
+
+  it('drops every bare-character shortcut once switched off', () => {
+    setSingleKeyShortcutsEnabled(false);
+    for (const k of ['/', ' ', 'e', 'E', 'm', 'a', 'h', 'c', 'j', 'f', 'p', 'P', 'r']) {
+      expect(routeGlobalKey(k, PLAIN)).toBeNull();
+    }
+    expect(routeGlobalKey('P', PLAIN, { meta: false, ctrl: false, shift: true })).toBeNull();
+  });
+
+  it('keeps chords working while bare keys are off', () => {
+    setSingleKeyShortcutsEnabled(false);
+    expect(routeGlobalKey('k', PLAIN, { meta: true, ctrl: false })).toEqual({ type: 'focus-search' });
+    expect(routeGlobalKey('/', PLAIN, { meta: false, ctrl: true })).toEqual({ type: 'focus-search' });
+  });
+
+  it('persists the choice and reads the off marker back', () => {
+    setSingleKeyShortcutsEnabled(false);
+    expect(window.localStorage.getItem(SINGLE_KEY_SHORTCUTS_STORAGE_KEY)).toBe('0');
+    expect(parseSingleKeyShortcuts(window.localStorage.getItem(SINGLE_KEY_SHORTCUTS_STORAGE_KEY))).toBe(false);
+    setSingleKeyShortcutsEnabled(true);
+    expect(parseSingleKeyShortcuts(window.localStorage.getItem(SINGLE_KEY_SHORTCUTS_STORAGE_KEY))).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 /**
- * FlowMap shell styles (§9, T12). Consumes the design tokens in ui/theme.css.
+ * FlowMap shell styles. Consumes the design tokens in ui/theme.css.
  * The heatmap + panels are the star; this chrome frames them without crowding.
  */
 
@@ -47,11 +47,10 @@ body,
   gap: var(--sp-4);
   height: var(--topbar-h);
   padding: 0 var(--sp-4);
-  /* Bezel wash: a theme-relative top stop. The literal `#0c1017` was
-     dark-theme-only and painted a near-black smear across every light shell
-     (F7/W7: 17.9:1 vs --bg-1 on paper, 19.1 on swiss). The mix reproduces
-     midnight's shipped stop (Δ<1 channel) and stays a subtle wash on light
-     themes (paper 1.06:1, swiss 1.16:1). */
+  /* Bezel wash: a theme-relative top stop. A fixed near-black stop smeared
+     across every light shell, so the top stop mixes --line into --bg-1:
+     midnight keeps its shipped stop (within one channel value) and light
+     themes get a subtle wash (paper 1.06:1, swiss 1.16:1). */
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--bg-1) 92%, var(--line) 8%) 0%, var(--bg-1) 100%);
   border-bottom: 1px solid var(--line);
@@ -122,7 +121,7 @@ body,
   background: var(--accent);
 }
 .venue--equity .venue__dot {
-  background: #6f86e0;
+  background: var(--venue-equity);
 }
 .venue--sim .venue__dot {
   background: var(--warn);
@@ -150,7 +149,7 @@ body,
   border-color: var(--accent-line);
 }
 /* Tape-tier chip: was a baked periwinkle + navy border that read 2.05:1 on
-   the light shells (QA5 M3). `--accent-bright` is the theme's own
+   the light shells. `--accent-bright` is the theme's own
    overlay-grade accent (registry-mirrored, unchanged) and clears 4.5:1 on
    `--bg-2` in all 7 themes; the border follows the shared accent hairline. */
 .cap--tape {
@@ -207,7 +206,7 @@ body,
 .status--live .status__dot {
   background: var(--accent);
   box-shadow: 0 0 0 0 var(--accent-glow);
-  animation: pulse 2s ease-out infinite;
+  animation: pulse 1.6s ease-out 3;
 }
 
 .status--connecting,
@@ -217,7 +216,7 @@ body,
 .status--connecting .status__dot,
 .status--reconnecting .status__dot {
   background: var(--warn);
-  animation: pulse-warn 1.1s ease-out infinite;
+  animation: pulse-warn 1.1s ease-out 3;
 }
 
 .status--closed,
@@ -247,21 +246,21 @@ body,
     box-shadow: 0 0 0 0 var(--accent-glow);
   }
   70% {
-    box-shadow: 0 0 0 5px rgba(31, 182, 166, 0);
+    box-shadow: 0 0 0 5px transparent;
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(31, 182, 166, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 @keyframes pulse-warn {
   0% {
-    box-shadow: 0 0 0 0 rgba(214, 161, 58, 0.5);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 50%, transparent);
   }
   70% {
-    box-shadow: 0 0 0 4px rgba(214, 161, 58, 0);
+    box-shadow: 0 0 0 4px transparent;
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(214, 161, 58, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 
@@ -290,7 +289,7 @@ body,
   display: inline-flex;
   padding: 2px;
   background: var(--bg-inset);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-2);
 }
 .modeseg__btn {
@@ -311,7 +310,7 @@ body,
 }
 /* Active-mode ink: the shell ground token, not a baked near-black. `#06120f`
    was tuned for the dark accents and read 2.75–3.76:1 on the light themes'
-   deepened accents (QA5 H1). `--bg-1` clears the bar on all 7 accents
+   deepened accents. `--bg-1` clears the bar on all 7 accents
    (paper 4.76, swiss 6.59, paper-deut 6.52; dark themes keep the shipped
    dark-on-bright look: midnight 7.8, amber 9.1, contrast 11.4). */
 .modeseg__btn.is-on[data-mode='live'] {
@@ -399,7 +398,7 @@ body,
   font-family: inherit;
   color: var(--text-2, #c7d0da);
   background: var(--bg-inset);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-2);
   cursor: pointer;
   transition: border-color var(--t-fast), box-shadow var(--t-fast);
@@ -437,7 +436,7 @@ body,
   display: grid;
   place-items: start center;
   padding-top: 12vh;
-  background: rgba(4, 6, 9, 0.62);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
   animation: sympal-fade 0.12s ease-out;
 }
@@ -470,13 +469,13 @@ body,
 }
 .sympal__icon {
   color: var(--text-3);
-  font-size: 18px;
+  font-size: var(--fs-2xl);
 }
 .sympal__input {
   flex: 1 1 auto;
   min-width: 0;
   font-family: inherit;
-  font-size: 18px;
+  font-size: var(--fs-2xl);
   letter-spacing: 0.02em;
   color: var(--text, #e6ecf3);
   background: none;
@@ -536,7 +535,7 @@ body,
   color: var(--text-money);
 }
 .sympal__venuebtn-c {
-  font-size: 8px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
 }
 .sympal__scopenote {
@@ -582,7 +581,7 @@ body,
   box-shadow: inset 2px 0 0 var(--accent);
 }
 .sympal__grp {
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   text-align: center;
@@ -592,11 +591,11 @@ body,
   border: 1px solid var(--line);
 }
 /* Group tags: theme channels. The baked pastels measured 1.6/2.0:1 on the
-   light shells (swiss 1.60 crypto, 1.97 equity); the equity blue has no token,
-   so it rides a 60/40 mix toward the theme ink (dark on light shells, light
-   on dark shells) and keeps its blue identity in both modes. */
+   light shells (swiss 1.60 crypto, 1.97 equity); the equity blue is the
+   --venue-equity token, so it rides a 60/40 mix toward the theme ink (dark on
+   light shells, light on dark shells) and keeps its blue identity in both modes. */
 .sympal__grp--crypto { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent-bright) 40%, transparent); }
-.sympal__grp--equity { color: color-mix(in srgb, #6f86e0 60%, var(--text)); border-color: color-mix(in srgb, #6f86e0 45%, transparent); }
+.sympal__grp--equity { color: color-mix(in srgb, var(--venue-equity) 60%, var(--text)); border-color: color-mix(in srgb, var(--venue-equity) 45%, transparent); }
 .sympal__grp--sim { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 .sympal__grp--all { color: var(--text-2); border-color: var(--line-2); }
 
@@ -649,7 +648,7 @@ body,
   inset: 0 auto 0 0;
   width: 42%;
   background: var(--accent);
-  animation: sympal-scan 1.05s ease-in-out infinite;
+  animation: sympal-scan 1.05s ease-in-out 3;
 }
 @keyframes sympal-scan {
   from { transform: translateX(-100%); }
@@ -749,9 +748,9 @@ body,
   gap: 4px;
   overflow: hidden;
 }
-.sympal__pv-sym { font-size: 20px; font-weight: 700; color: var(--text, #e6ecf3); }
+.sympal__pv-sym { font-size: var(--fs-2xl); font-weight: 700; color: var(--text, #e6ecf3); }
 .sympal__pv-mkt { font-size: var(--fs-2xs); color: var(--text-3); letter-spacing: 0.06em; margin-bottom: 6px; }
-.sympal__pv-px { font-family: var(--font-mono); font-size: 24px; font-variant-numeric: tabular-nums; }
+.sympal__pv-px { font-family: var(--font-mono); font-size: var(--fs-3xl); font-variant-numeric: tabular-nums; }
 .sympal__pv-px.is-up, .sympal__pv-chg.is-up { color: var(--accent-bright); }
 .sympal__pv-px.is-down, .sympal__pv-chg.is-down { color: var(--sell-bright); }
 .sympal__pv-chg { font-family: var(--font-mono); font-size: var(--fs-md); font-variant-numeric: tabular-nums; margin-bottom: 8px; }
@@ -852,6 +851,20 @@ body,
   width: 100%;
   height: 100%;
 }
+/* Why the CVD pane is empty or unmeasurable: a DOM line over the canvas. */
+.cvd-pane__status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0 var(--sp-4);
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  pointer-events: none;
+}
 .cvd-corner {
   grid-area: cvdaxis;
   border-left: 1px solid var(--line);
@@ -859,7 +872,7 @@ body,
   background: var(--bg-2);
 }
 
-/* --- closed-market banner (§7.1) — near-black, amber accent, unobtrusive --- */
+/* --- closed-market banner — near-black, amber accent, unobtrusive --- */
 .closed-banner {
   position: absolute;
   top: 10px;
@@ -872,10 +885,10 @@ body,
   padding: 5px 12px;
   border: 1px solid var(--warn-line);
   border-radius: 5px;
-  background: rgba(10, 12, 16, 0.9);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  background: color-mix(in srgb, var(--bg-inset) 90%, transparent);
+  box-shadow: var(--shadow-pop);
   color: var(--warn);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   letter-spacing: 0.06em;
   pointer-events: none;
@@ -912,7 +925,7 @@ body,
   box-shadow: none;
 }
 
-/* --- in-chart live / follow affordance (§9) — bottom-centre popup --- */
+/* --- in-chart live / follow affordance — bottom-centre popup --- */
 .livectl {
   position: absolute;
   bottom: 12px;
@@ -937,7 +950,7 @@ body,
   background: var(--chart-chip-bg, rgba(10, 12, 16, 0.92));
   border: 1px solid var(--chart-chip-border, var(--line));
   border-radius: 999px;
-  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-pop);
   cursor: pointer;
   transition: border-color var(--t-fast, 0.12s), color var(--t-fast, 0.12s), transform var(--t-fast, 0.12s);
   font-variant-numeric: tabular-nums;
@@ -958,7 +971,7 @@ body,
   border-radius: 50%;
   background: var(--chart-sell, #e8635f);
   box-shadow: 0 0 7px color-mix(in srgb, var(--chart-sell, #e8635f) 70%, transparent);
-  animation: livectl-pulse 1.6s ease-in-out infinite;
+  animation: livectl-pulse 1.6s ease-in-out 3;
 }
 @keyframes livectl-pulse {
   0%, 100% { opacity: 1; }
@@ -969,7 +982,7 @@ body,
   grid-area: price;
   border-left: 1px solid var(--chart-chip-border);
   background: var(--chart-gutter-bg);
-  /* Control surface (§9): wheel = price zoom, vertical drag = price scale,
+  /* Control surface: wheel = price zoom, vertical drag = price scale,
      dblclick = re-fit. `position: relative` anchors the AUTO chip; touch-action
      stops a touchpad/touch drag from scrolling the page instead of scaling.
      NOTE the gutter is assumed to share the GL canvas's HEIGHT exactly (the
@@ -1043,10 +1056,6 @@ body,
    RIGHT RAIL — DOM ladder + tape
    ========================================================================= */
 
-:root {
-  --bid-bar: rgba(31, 182, 166, 0.42);
-  --ask-bar: rgba(211, 82, 79, 0.42);
-}
 
 .right-rail {
   /* Live tape/ladder mutations must not relayout the chart's sibling tree. */
@@ -1137,7 +1146,7 @@ body,
 }
 
 /* Synthetic depth: amber, matching the heatmap's SYNTH ramp — reads as
-   "not real resting liquidity" wherever it appears (spec §7 honesty). */
+   "not real resting liquidity" wherever it appears. */
 .panel__badge--synth {
   color: var(--warn);
   border-color: var(--warn-line);
@@ -1153,6 +1162,13 @@ body,
 .panel__badge--na {
   color: var(--sell);
   border-color: var(--sell-line);
+}
+
+/* Recorded depth density: a replay of a recorded book, in the caution tone (amber ink
+   on the bare surface), so it reads as provenance and not as a live tier. */
+.panel__badge--recorded-density {
+  color: var(--warn);
+  border-color: var(--warn-line);
 }
 
 .panel__lock {
@@ -1283,7 +1299,7 @@ body,
 
 .ladder__bar--profile {
   left: 0;
-  background: rgba(120, 130, 220, 0.34);
+  background: color-mix(in srgb, var(--ui-accent) 34%, transparent);
 }
 
 .ladder__sz {
@@ -1293,8 +1309,8 @@ body,
   z-index: 3;
   color: var(--text);
   /* Readout plate: a size whose bar reaches it sat directly on the bar cap
-     (same hue at 60%), which measured 1.6–2.3:1 in EVERY theme (F7 probe
-     worst-case 1.65 midnight … 2.31 swiss). The near-opaque shell ground puts
+     (same hue at 60%), which measured 1.6–2.3:1 in EVERY theme (worst case
+     1.65 midnight … 2.31 swiss). The near-opaque shell ground puts
      the glyph back on the chart surface — bid/ask inks clear 4.5:1 in all 7
      themes even over the brightest cap (worst: paper bid 4.60). */
   background: color-mix(in srgb, var(--bg-1) 96%, transparent);
@@ -1340,10 +1356,10 @@ body,
 }
 
 .ladder__row.is-bestbid {
-  background: rgba(31, 182, 166, 0.14);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(31, 182, 166, 0.42),
-    inset 0 -1px 0 rgba(31, 182, 166, 0.42);
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 42%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
 .ladder__row.is-bestbid .ladder__px {
@@ -1352,10 +1368,10 @@ body,
 }
 
 .ladder__row.is-bestask {
-  background: rgba(211, 82, 79, 0.14);
+  background: color-mix(in srgb, var(--sell) 14%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(211, 82, 79, 0.42),
-    inset 0 -1px 0 rgba(211, 82, 79, 0.42);
+    inset 0 1px 0 color-mix(in srgb, var(--sell) 42%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--sell) 42%, transparent);
 }
 
 /* Row tracking for the eye: a whisper of paper under the cursor on ordinary
@@ -1424,11 +1440,11 @@ body,
 }
 
 .tape__row--buy.is-large {
-  background: rgba(31, 182, 166, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .tape__row--sell.is-large {
-  background: rgba(211, 82, 79, 0.12);
+  background: color-mix(in srgb, var(--sell) 12%, transparent);
 }
 
 /* Persisted big-trade threshold (settings.bigTradeUsd): a static accent bar in
@@ -1610,7 +1626,7 @@ body,
   position: absolute;
   top: 0;
   bottom: 0;
-  background: linear-gradient(180deg, rgba(31, 182, 166, 0.05), rgba(31, 182, 166, 0.12));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent), color-mix(in srgb, var(--accent) 12%, transparent));
 }
 
 /* the current viewport window box */
@@ -1621,19 +1637,19 @@ body,
   top: -1px;
   bottom: -1px;
   min-width: 3px;
-  background: rgba(31, 182, 166, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   border: 1px solid var(--accent);
   border-radius: 2px;
   box-shadow: 0 0 8px var(--accent-glow);
   pointer-events: none;
 }
 .minimap--replay .minimap__extent {
-  background: linear-gradient(180deg, rgba(214, 161, 58, 0.05), rgba(214, 161, 58, 0.14));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warn) 5%, transparent), color-mix(in srgb, var(--warn) 14%, transparent));
 }
 .minimap--replay .minimap__window {
-  background: rgba(214, 161, 58, 0.16);
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
   border-color: var(--warn);
-  box-shadow: 0 0 8px rgba(214, 161, 58, 0.5);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 50%, transparent);
 }
 
 /* replay seek scrubber over the track */
@@ -1661,7 +1677,7 @@ body,
   background: var(--warn);
   border: none;
   border-radius: 1px;
-  box-shadow: 0 0 8px rgba(214, 161, 58, 0.7);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 70%, transparent);
 }
 .minimap__scrub:disabled::-webkit-slider-thumb {
   background: var(--text-3);
@@ -1735,6 +1751,8 @@ body,
   background: var(--bg-2);
 }
 .drawer__title {
+  /* A real heading: reset the UA heading margin so the header keeps its height. */
+  margin: 0;
   font-size: var(--fs-lg);
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -1754,10 +1772,53 @@ body,
   background: var(--bg-3);
 }
 
+/* Settings section label: an uppercase hairline heading that groups the
+   controls below it. It was an unstyled span, so the drawer had no structure. */
+.drawer__section {
+  display: block;
+  margin: var(--sp-4) 0 var(--sp-2);
+  padding-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* Drawer footer actions: ghost buttons that match the rest of the chrome. */
+.drawer__restore-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+.drawer__restore {
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast), border-color var(--t-fast);
+}
+.drawer__restore:hover {
+  color: var(--text);
+  background: var(--bg-3);
+}
+/* The armed state of a destructive action reads as a warning, not as a link. */
+.drawer__restore.is-armed {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-dim);
+}
+
 .drawer__body {
   flex: 1 1 auto;
   overflow-y: auto;
-  /* F15 (QA12 H-1): `overflow-y: auto` alone computes overflow-x to `auto`, so
+  /* `overflow-y: auto` alone computes overflow-x to `auto`, so
      an over-wide row became an undiscoverable horizontal scroll of the sheet.
      Nothing in the drawer may scroll sideways. */
   overflow-x: hidden;
@@ -1804,7 +1865,7 @@ body,
   font-size: var(--fs-sm);
   color: var(--text);
   background: var(--bg-inset);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-2);
   outline: none;
   transition: border-color var(--t-fast);
@@ -1818,7 +1879,7 @@ body,
   display: inline-flex;
   padding: 2px;
   background: var(--bg-inset);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-2);
   width: fit-content;
 }
@@ -1843,7 +1904,7 @@ body,
   box-shadow: inset 0 0 0 1px var(--ui-accent);
 }
 
-/* F15 (QA12 H-1): the theme picker carries 7 options; measured at the 340px
+/* The theme picker carries 7 options; measured at the 340px
    drawer it was 408px wide and `Paper Deut` / `High Contrast` were clipped
    behind the body's horizontal scroll. Drawer segment rows wrap at drawer
    width instead — buttons keep their natural size, the row grows downward
@@ -1860,7 +1921,7 @@ body,
   flex: 0 0 auto;
 }
 
-/* F15 (QA12 M-4): the tour hint is informative copy ("Esc hides this until
+/* The tour hint is informative copy ("Esc hides this until
    your next visit."), not decoration — the decorative --text-4 token measured
    2.96:1 midnight / 2.88:1 paper. --text-3 is the smallest AA ink; the
    doubled selector beats shell.css regardless of stylesheet order. The
@@ -1876,7 +1937,7 @@ body,
   width: 100%;
   height: 4px;
   background: var(--bg-inset);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-line);
   border-radius: 3px;
   outline: none;
 }
@@ -1954,7 +2015,7 @@ body,
   color: var(--text-3);
   padding: 4px 9px;
   background: var(--bg-inset);
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-1);
   cursor: pointer;
   transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
@@ -1969,7 +2030,7 @@ body,
 }
 
 /* ==========================================================================
-   UI overhaul (2026-07-19): honesty tint, spread readout, accessibility,
+   Honesty tint, spread readout, accessibility,
    reduced-motion, and micro-interaction feedback. Additive — layered after
    the base rules so nothing above changes.
    ========================================================================== */
@@ -2041,9 +2102,16 @@ body,
   outline-offset: 1px;
   border-radius: var(--r-1);
 }
+/* The chart is a Tab stop: an outline (not a box-shadow) so the ring survives
+   Windows High Contrast, which strips author shadows. */
 .gl-canvas:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.sympal__input:focus-visible,
+.setting__num:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 .range:focus-visible::-webkit-slider-thumb,
 .minimap__scrub:focus-visible::-webkit-slider-thumb {
@@ -2071,7 +2139,7 @@ body,
   transition: color var(--t-fast), background var(--t-fast), border-color var(--t-fast);
 }
 
-/* --- Reduced motion: kill the infinite status pulse + entrance transforms for
+/* --- Reduced motion: kill the status pulses, loading sweep and entrance transforms for
    users who ask for it (WCAG 2.3.3); keep sub-150ms functional transitions. --- */
 @media (prefers-reduced-motion: reduce) {
   .status__dot,
@@ -2093,11 +2161,14 @@ body,
   .reconnect-banner__dot {
     animation: none !important;
   }
+  .livectl__dot {
+    animation: none !important;
+  }
 }
 
-/* --- Heatmap liquidity legend (self-documenting colour scale, §9) --- */
+/* --- Heatmap liquidity legend (self-documenting colour scale) --- */
 /* Pinned INSIDE the always-dark chart viewport: uses the FIXED chart-island
-   tokens (--chart-*, ui/theme.css), never theme ink (fix 2026-09-10 F1-3). */
+   tokens (--chart-*, ui/theme.css), never theme ink. */
 .heat-legend {
   position: absolute;
   top: var(--sp-3);
@@ -2156,8 +2227,8 @@ body,
 }
 
 /* ==========================================================================
-   Degraded modes (F1 / F2, 2026-09-03 review): WebGL2 fallback panel, root
-   crash card, and the narrow-window topbar behavior.
+   Degraded modes: WebGL2 fallback panel, root crash card, and the
+   narrow-window topbar behavior.
    ========================================================================== */
 
 /* --- WebGL2 unavailable: the heatmap is dead but the app is not. Covers the
@@ -2187,6 +2258,23 @@ body,
   color: var(--text-2);
   font-size: var(--fs-sm);
   line-height: 1.55;
+}
+.gl-fallback__details {
+  max-width: 64ch;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.gl-fallback__technical {
+  margin: 6px 0 0;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+}
+.gl-fallback__copy-state {
+  min-height: 1em;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
 }
 
 /* --- Root error boundary card: any unrecovered render crash renders this
@@ -2219,7 +2307,8 @@ body,
   font-size: var(--fs-xs);
   font-family: var(--font-mono);
 }
-.app-crash__reload {
+.app-crash__reload,
+.app-crash__copy {
   font-family: inherit;
   font-size: var(--fs-sm);
   color: var(--accent);
@@ -2229,18 +2318,20 @@ body,
   padding: 6px 14px;
   cursor: pointer;
 }
-.app-crash__reload:hover {
+.app-crash__reload:hover,
+.app-crash__copy:hover {
   color: var(--bg);
   background: var(--accent);
 }
 
-/* --- Topbar at narrow widths (F2). Natural bar width is ~1.3k px; below that
+/* --- Topbar at narrow widths. Natural bar width is ~1.3k px; below that
    the right-hand controls clipped off-window (Settings was UNREACHABLE at
-   900px). Stepped de-scoping: capability chips first (their content is also
-   in the venue chip title), then the search width + ⌘K hint, then the
-   secondary clock lines, and finally a wrap to a second row. --- */
+   900px). Stepped de-scoping: the TAPE and SIDE capability chips first, then
+   the search width + ⌘K hint, then the secondary clock lines, and finally a
+   wrap to a second row. The depth-tier chip (the fidelity claim, also carried
+   by the venue title) stays visible; the pending placeholder too. --- */
 @media (max-width: 1180px) {
-  .caps {
+  .caps .cap:not(.cap--depth):not(.cap--synth):not(.cap--na):not(.cap--pending) {
     display: none;
   }
 }
@@ -2308,9 +2399,8 @@ body,
 }
 
 /* ============================================================================
-   A5 UI/UX pass — ladder change flash · reconnect banner · `?` shortcuts
-   overlay · palette Recent section · small-screen rail fix.
-   (Appended surgically; nothing above was rewritten.)
+   Ladder change flash, reconnect banner, `?` shortcuts overlay, palette
+   Recent section, and small-screen rail fix.
    ========================================================================= */
 
 /* --- DOM ladder: flash a size cell when its quantity CHANGES. The JSX keys the
@@ -2320,19 +2410,19 @@ body,
    it (see the media query above); the printed number carries the fact anyway.
    The pulse is a RING + GLOW around the readout plate, never a background
    fill: a fill would replace the plate mid-flash and leave the glyph bare on
-   its own depth bar (F7: 1.7–2.2:1 during the 0.45 s window). --- */
+   its own depth bar (measured 1.7–2.2:1 during the 0.45 s window). --- */
 .ladder__sz {
   animation: ladder-flash 0.45s ease-out;
 }
 @keyframes ladder-flash {
   0% {
-    box-shadow: 0 0 7px rgba(151, 168, 255, 0.45);
-    outline: 1px solid rgba(151, 168, 255, 0.9);
+    box-shadow: 0 0 7px color-mix(in srgb, var(--ui-accent) 45%, transparent);
+    outline: 1px solid color-mix(in srgb, var(--ui-accent) 90%, transparent);
     outline-offset: -1px;
   }
   100% {
-    box-shadow: 0 0 7px rgba(151, 168, 255, 0);
-    outline: 1px solid rgba(151, 168, 255, 0);
+    box-shadow: 0 0 7px transparent;
+    outline: 1px solid transparent;
     outline-offset: -1px;
   }
 }
@@ -2374,7 +2464,7 @@ body,
   height: 7px;
   border-radius: 50%;
   background: var(--warn);
-  animation: reconnect-pulse 1.1s ease-in-out infinite;
+  animation: reconnect-pulse 1.1s ease-in-out 3;
 }
 @keyframes reconnect-pulse {
   0%,
@@ -2410,6 +2500,17 @@ body,
   outline: 1px solid var(--warn);
   outline-offset: 1px;
 }
+/* Terminal states (protocol mismatch, refused subscription): no retry, so the
+   banner takes pointer events for text selection and reads as a notice. */
+.reconnect-banner--fatal {
+  max-width: min(90%, 72ch);
+  padding: 8px 14px;
+  border-radius: var(--r-2, 6px);
+  color: var(--text);
+  line-height: 1.45;
+  pointer-events: auto;
+  user-select: text;
+}
 
 /* --- `?` shortcuts overlay: a small centred dialog reusing the drawer's
    `.keysheet` rows, so the two surfaces share one visual language. --- */
@@ -2420,7 +2521,7 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
 }
 .keyshelp {
   width: min(430px, 92vw);
@@ -2502,15 +2603,14 @@ body,
   }
 }
 
-/* --- F13 · QA9-2: ≤960px (or short viewports) — the rail is a flex column
+/* --- ≤960px (or short viewports): the rail is a flex column
    whose panels carry CSS min-heights (watchlist auto + ladder 150px + tape
    140px). On small windows those exceed the rail, and with `overflow:hidden`
    the excess was unreachable: measured 100px cut at 620×480 with a populated
    watchlist (the whole T&S body below its header), 18px even with an empty
    watchlist. Let the RAIL scroll so every panel stays reachable; layouts that
    fit (960/720, tall windows) overflow nothing, so no scrollbar appears and
-   their geometry is unchanged. (Kept as its own block; parallel lane F-DRAWER
-   also touches App.css — this rule owns only `.right-rail` overflow.) --- */
+   their geometry is unchanged. (This block owns only `.right-rail` overflow.) --- */
 @media (max-width: 960px), (max-height: 560px) {
   .right-rail {
     overflow-y: auto;
@@ -2519,25 +2619,23 @@ body,
 }
 
 /* ============================================================================
-   F23 · PRINT STYLESHEET (QA13 M3, 2026-09-14) — appended after every earlier
-   block on purpose; nothing above is touched.
+   PRINT STYLESHEET
 
-   Before this block print media changed NOTHING (the stylesheet scan found 0
-   `@media print` / `@page` rules in the app): a midnight sheet printed as a
-   near-black page (measured 2026-09-14, full-viewport mean luma 25.5, 88.9% of
-   pixels below luma 40) — or, with background graphics off, as light ink at
-   ~1.2:1 on white. Interactive chrome printed with it in every theme.
+   Without this block, print media kept the dark theme: a midnight sheet printed
+   as a near-black page (full-viewport mean luma 25.5, 88.9% of pixels below
+   luma 40), or, with background graphics off, as light ink at ~1.2:1 on white.
+   Interactive chrome printed with it in every theme.
 
    Three moves, all print-only (screen rendering stays byte-identical):
 
-   1. FORCE THE LIGHT TOKEN SET. The `paper` theme's variables are re-declared
-      on <html> at `:root:root[...]` specificity — beats themes.css and its
-      legacy-ramp override regardless of import order — so the DOM chrome
-      (topbar, panels, legends, gutters) prints dark-on-light in every theme.
+   1. FORCE THE LIGHT TOKEN SET. A neutral light token set is re-declared on
+      <html> at `:root:root[...]` specificity, which beats the theme blocks in
+      themes.css regardless of import order, so the DOM chrome (topbar, panels,
+      legends, gutters) prints dark-on-light in every theme.
 
    2. INVERT THE DARK CHART. The GL canvas keeps painting its theme ramp (CSS
       cannot recolor canvas pixels), so everywhere the chart ground is DARK —
-      a dark theme with `colormap: theme`, or a legacy flow/inferno/classic
+      a dark theme with `colormap: theme`, or a fixed flow/inferno/classic
       ramp under ANY theme (the active theme ground) — the whole
       canvas stack prints through `invert(1) hue-rotate(180deg)`: the classic
       light-paper transform. Hue is preserved, lightness flips, so the field
@@ -2560,50 +2658,51 @@ body,
 }
 
 @media print {
-  /* --- 1) forced light token set — values copied from the `paper` theme ---- */
+  /* --- 1) the paper token set: the print sheet prints the paper theme, so a PDF or
+     printed chart matches the screen. Values are copied from themes.css [data-theme='paper'];
+     cssAccessibility.test.ts holds them equal. ---- */
   :root:root,
-  :root:root[data-theme],
-  :root:root[data-chart-ramp] {
-    --bg: #f3f1ea;
-    --bg-1: #f9f8f3;
-    --bg-2: #fffdf8;
-    --bg-3: #ece9df;
-    --bg-inset: #ebe8dd;
-    --scrim: rgba(28, 26, 18, 0.45);
-    --line: #d6d0c0;
-    --line-2: #bfb8a4;
-    --line-soft: rgba(214, 208, 192, 0.55);
-    --text: #24272d;
-    --text-2: #57606c;
-    --text-3: #5f6875;
-    --text-4: #8d949e;
-    --text-money: #101318;
-    --accent: #0e7c72;
-    --accent-bright: #0a6158;
-    --accent-dim: #dceeea;
-    --accent-line: #b8ddd7;
-    --accent-glow: rgba(14, 124, 114, 0.35);
-    --sell: #b3383d;
-    --sell-bright: #99272c;
-    --sell-dim: #f4dedd;
-    --sell-line: #e4bcb9;
-    --warn: #87610d;
-    --warn-dim: #f1e7cd;
-    --warn-line: #ddcea0;
+  :root:root[data-theme] {
+    --bg: #FFF4DC;
+    --bg-1: #F3E2BA;
+    --bg-2: #EEDBAD;
+    --bg-3: #E5CC9B;
+    --bg-inset: #FFFAED;
+    --scrim: rgba(42, 30, 10, 0.4);
+    --line: #AD8952;
+    --line-2: #584124;
+    --line-soft: #AD8952;
+    --text: #352818;
+    --text-2: #47351E;
+    --text-3: #584124;
+    --text-4: #6A5435;
+    --text-money: #352818;
+    --accent: #176149;
+    --accent-bright: #176149;
+    --accent-dim: #EEDBAD;
+    --accent-line: #AD8952;
+    --accent-glow: transparent;
+    --sell: #982F32;
+    --sell-bright: #982F32;
+    --sell-dim: #EEDBAD;
+    --sell-line: #AD8952;
+    --warn: #765012;
+    --warn-dim: #EEDBAD;
+    --warn-line: #AD8952;
     --replay: var(--warn);
     --live: var(--accent);
-    --chart-bg: #f3f1ea;
-    --chart-ink: #24272d;
-    --chart-ink-dim: #57606c;
-    --chart-chip-bg: rgba(255, 253, 248, 0.92);
-    --chart-chip-border: #d6d0c0;
-    --chart-accent: #0a6158;
-    --chart-gutter-bg: #ebe8dd;
-    --chart-grid: #5a6472;
-    --chart-axis: #3a414d;
-    --chart-price: #0a6158;
-    --chart-sell: #99272c;
-    --chart-warn: #8a6410;
+    --chart-bg: #FFF4DC;
+    --chart-ink: #352818;
+    --chart-ink-dim: #584124;
+    --chart-chip-bg: #EEDBAD;
+    --chart-chip-border: #AD8952;
+    --chart-accent: #7D4812;
+    --chart-gutter-bg: #EEDBAD;
+    --chart-grid: #584124;
+    --chart-axis: #584124;
+    --chart-price: #352818;
+    --chart-sell: #982F32;
+    --chart-warn: #765012;
     color-scheme: light;
   }
 
@@ -2659,11 +2758,11 @@ body,
     display: none !important;
   }
 
-  /* The closed-market banner is status, not chrome — keep it, but as a light
-     amber plate instead of its hardcoded near-black one. */
+  /* The closed-market banner is status, not chrome — keep it, but as a plain
+     light plate on the print ground instead of its near-black one. */
   .closed-banner {
-    background: #fdf6e3;
-    border-color: #ddcea0;
+    background: var(--bg-1);
+    border-color: var(--warn-line);
     box-shadow: none;
   }
   .closed-banner__dot {
@@ -2672,12 +2771,14 @@ body,
 }
 
 /* ============================================================================
-   MODERN POLISH WAVE — motion, focus, scrollbars, row entrances
+   POLISH — motion, focus, scrollbars, row entrances
    ========================================================================= */
 /* A restrained pass: nothing moves that isn't data entering the panel, every
    animation is sub-200ms on the shared decelerating curve, and everything
-   honors prefers-reduced-motion. The GL heatmap's own smoothness lives in the
-   renderer (eased live-edge scroll), not here. */
+   honors prefers-reduced-motion. The GL heatmap's eased live-edge scroll and
+   price glide are driven from JS: the renderer reads the same preference and
+   snaps instead of easing (gl/renderer.ts, gl/normalize.ts, gl/follow.ts),
+   so these CSS queries need not cover them. */
 
 /* --- keyboard focus: a calm accent ring, never the browser default --- */
 :focus-visible {
@@ -2721,9 +2822,6 @@ body,
 .ladder__row {
   animation: fm-row-in var(--t-fast) both;
 }
-.ladder__sz {
-  animation: fm-sz-in var(--t-fast) both;
-}
 
 @keyframes fm-row-in {
   from {
@@ -2733,15 +2831,6 @@ body,
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes fm-sz-in {
-  from {
-    opacity: 0.4;
-  }
-  to {
-    opacity: 1;
   }
 }
 
@@ -2760,8 +2849,43 @@ body,
 .appearance-choice.is-on { border-color:var(--ui-accent); box-shadow:inset 0 0 0 1px var(--ui-accent); }
 .appearance-choice:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
 .appearance-choice:disabled { opacity:.6; cursor:default; }
-.appearance-choice__name { display:flex; justify-content:space-between; gap:4px; width:100%; font-size:12px; line-height:1.2; }
+.appearance-choice__name { display:flex; justify-content:space-between; gap:4px; width:100%; font-size:var(--fs-md); line-height:1.2; }
 .appearance-choice__name > span { color:var(--ui-accent); font-weight:700; }
-.appearance-choice__hint { font-size:11px; line-height:1.25; color:var(--text-2); overflow-wrap:anywhere; }
+.appearance-choice__hint { font-size:var(--fs-sm); line-height:1.25; color:var(--text-2); overflow-wrap:anywhere; }
 .theme-preview { display:block; width:100%; height:auto; aspect-ratio:144 / 64; border:1px solid var(--line); }
 .palette-preview { display:block; width:100%; height:14px; border:1px solid var(--line); }
+
+/* --- Windows High Contrast (forced colors): author backgrounds and box-shadows are
+   stripped, so selected and on states keep an outline from the system palette
+   (WCAG 1.4.1, 1.4.11). The switch opts out of forcing, so its track and knob stay visible. --- */
+@media (forced-colors: active) {
+  .segrow__btn.is-on,
+  .tbtn.is-on,
+  .overlay-toggle.is-on,
+  .modeseg__btn.is-on,
+  .appearance-choice.is-on,
+  .axis-auto.is-on,
+  .panel__lock.is-on,
+  .sympal__row.is-active,
+  .sympal__vrow.is-active,
+  .sympal__venuebtn.is-on,
+  .watchlist__row.is-active,
+  .talent-badge.is-active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  .check__box,
+  .check__box::after {
+    forced-color-adjust: none;
+  }
+  .check.is-on .check__box {
+    border-color: Highlight;
+  }
+  .check.is-on .check__box::after {
+    background: Highlight;
+  }
+  .gl-canvas:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}

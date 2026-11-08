@@ -1,102 +1,51 @@
-# i18n MIGRATION.md — shell components → keys (lane CE, contract C7)
+# i18n notes
 
-The i18n module (`client/src/i18n/`) ships EN + TR tables for SHELL strings
-only. **No existing component was edited by lane CE** (out of zone). This file
-is the recipe for INT / future waves to convert each component. Pattern:
-
-```tsx
-import { useT } from '../i18n/useT';
-// inside the component:
-const t = useT();
-// <button aria-label={t('drawer.close')}>
-```
-
-Non-React modules (e.g. `closeReasonText`) import `{ t }` from `../i18n`
-directly. Fallback rules: missing TR entry → English; unknown key → the key
-itself, so conversion can proceed key-by-key without breakage.
-
-## Keys by component
-
-### `ui/TopBar.tsx`
-| Current literal | Key |
-|---|---|
-| search placeholder "Search symbols" | `topbar.searchPlaceholder` |
-| Live segment | `topbar.live` |
-| Replay segment | `topbar.replay` |
-| group aria "live or replay" | `topbar.liveOrReplay` |
-| "NO CAPS" chip | `topbar.noCaps` |
-| settings button title "settings" | `topbar.settings` |
-| "Export PNG" aria | `topbar.exportPng` |
-| "export chart as PNG (E)" title | `topbar.exportPngHint` |
-| "toggle DOM ladder / tape rail" title | `topbar.toggleRail` |
-| "dismiss export notice" aria | `topbar.dismissNotice` |
-
-### `ui/SettingsDrawer.tsx`
-| Current literal | Key |
-|---|---|
-| "Settings" title | `drawer.title` |
-| "close settings" aria | `drawer.close` |
-| "Colormap" label | `settings.colormap` |
-| "Heatmap contrast" aria | `settings.contrast` |
-| "Heatmap tolerance" aria | `settings.tolerance` |
-| "Normalization percentile" aria | `settings.normalization` |
-| "Tick grouping" aria | `settings.tickGrouping` |
-| "Bubble size threshold" aria | `settings.bubbleThreshold` |
-| "Big trade size (USD, 0 = off)" aria | `settings.bigTrade` |
-| "Price range" label | `settings.priceRange` |
-| "History on launch" label | `settings.historyDepth` |
-
-Suggested NEW drawer sections (INT): theme picker → `settings.theme`,
-language picker → `settings.language`, overlays → `settings.overlays`,
-follow → `settings.follow`.
-
-### `ui/ClosedBanner.tsx`
-| Current literal | Key |
-|---|---|
-| "Market closed" aria | `banner.closed` (label text is the same key) |
-| "No feed for this market" aria | `banner.noFeedDetail` |
-| "NO FEED" label | `banner.noFeed` |
-| "opens in HH:MM:SS" | `banner.opensIn` + `{time}` var |
-
-### `ui/ReconnectBanner.tsx`
-| Current literal (`closeReasonText`) | Key |
-|---|---|
-| "connection dropped" | `banner.reasonDropped` |
-| "server shut down" | `banner.reasonShutdown` |
-| "server closed the session" | `banner.reasonSession` |
-| "server overloaded" | `banner.reasonOverloaded` |
-| "server closed (code N)" | `banner.reasonCode` + `{code}` var |
-| "Reconnecting…" prefix | `banner.reconnecting` |
-
-### `ui/ShortcutsOverlay.tsx`
-| Current literal | Key |
-|---|---|
-| "Keyboard shortcuts" title | `shortcuts.title` |
-| "close shortcuts" aria | `shortcuts.close` |
-| "keyboard shortcuts" aria-label | `shortcuts.title` |
-
-### `ui/Toaster.tsx` (lane CE — already converted)
-- `toast.dismiss` — close-button aria label.
-
-### `ui/OnboardingCard.tsx` (lane CE — already converted)
-- `onboarding.title`, `onboarding.step.connect.title|body`,
-  `onboarding.step.mouse.title|body`, `onboarding.step.shortcuts.title|body`,
-  `onboarding.next`, `onboarding.done`, `onboarding.skip`,
-  `onboarding.stepOf` (`{current}`, `{total}`), `onboarding.hint`.
+The i18n module (`client/src/i18n/`) ships two tables, `en.ts` and `tr.ts`, and
+the helpers that read them. This file records the rules a change must follow.
 
 ## Rules
-- EN table (`i18n/en.ts`) is the source of truth: every key exists there.
-- TR table (`i18n/tr.ts`) may omit keys — never render a bare key.
-- Locale persists in `flowmap.locale`; boot calls `initLocale()` (see
-  MOUNT-SNIPPET-CE in `lane-CE.md`).
-- Feature panes (drawings, indicators, alerts…) stay English per C7.
 
-## Campaign 4 (lane D) — shell migration completed
-The shell surfaces listed above are now fully converted: SettingsDrawer sections
-+ every toggle/label/hint, TopBar visible text, ReconnectBanner framing, the
-keysheet (`keysheet.*`) in both the drawer and the `?` overlay, and the overlay
-footer. New key families: `drawer.section*`, `settings.*Hint`,
-`settings.channel.*`, `settings.band*`, `settings.history.*`,
-`settings.alertSound(|Hint)`, `banner.lostReconnecting|theFeed|attempt|retryNow(|Hint)`,
-`topbar.png|rail|settingsLabel|replayUnavailable(|Hint)`, `shortcuts.footer*`.
-`i18n/index.test.ts` pins every lane-D key as present in BOTH tables.
+- `en.ts` is the source of truth. Every key exists there.
+- `tr.ts` may omit a key. A missing Turkish entry falls back to English. A key
+  missing from both tables would render as the raw key, so `coverage.test.ts`
+  fails for every `t('...')` literal that has no English entry.
+- Every visible string goes through `t()`, including the feature panes
+  (drawings, indicators, alerts, the research drawer, the desk). A new key lands
+  in `en.ts` and `tr.ts` in the same change.
+- Placeholders (`{name}`) must match between the two tables. `coverage.test.ts`
+  checks this for every key that both tables define.
+- Components use `useT()`, so they re-render when the locale changes. Modules
+  that are not React components use `t()` from `index.ts`.
+- Count nouns: a `<key>.one` entry is used when the call's `count` is exactly 1
+  and its `total`, if passed, is 0 or 1, so "1 symbol" and "1 of 1 venue" read
+  correctly. Add the `.one` entry to both tables; Turkish repeats the same text.
+  Pass the count already formatted with `formatNumber`; the match is on the printed text.
+- Keys built at run time (for example `theme.<id>.name`) cannot be found by the
+  literal scan. Their families are listed in `coverage.test.ts`. Add the family
+  there when you add a new dynamic key.
+
+## Numbers, prices and time
+
+- `format.ts` owns number, size, date and clock formatting.
+- Prices use `formatPrice`: a `.` decimal point and no digit grouping, so a
+  price reads the same on every panel.
+- Other quantities use the UI locale: `formatNumber`, `formatFixed` (percentages,
+  rates, seconds) and `formatSizeCompact` (resting size). Turkish prints `4,00`.
+  Components must not call `toLocaleString` or `toFixed` for display text.
+- Clock times follow the time-zone preference (`formatClock`, `zoneLabel`). The
+  top-bar stream clock is always UTC. Session-relative simulation times are
+  never converted.
+
+## Stored preferences
+
+- Locale: `localStorage` key `flowmap.locale` (`en` or `tr`), restored by `initLocale()`
+  at boot from `client/src/main.tsx`.
+- Clock time zone: `flowmap.timeZone` (`local`, `utc` or `exchange`), restored when
+  `format.ts` loads.
+
+## Adding a string
+
+1. Add the English key to `en.ts`, next to related keys.
+2. Add the Turkish entry to `tr.ts` with the same placeholders.
+3. Call `t('key', vars)` at the call site.
+4. Run `npx vitest run src/i18n` from `client/`.

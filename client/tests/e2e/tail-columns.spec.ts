@@ -1,3 +1,4 @@
+import type { LooseProbe } from './probe';
 import { expect, test } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -32,7 +33,7 @@ test('level-0 field renders the FULL resident window — no fade past tile layer
 
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ true);
 
       const bid = new Array(cfg.rows).fill(0);
@@ -92,7 +93,7 @@ test('level-0 field renders the FULL resident window — no fade past tile layer
   expect(consoleErrors, `console/page errors: ${consoleErrors.join(' | ')}`).toEqual([]);
   // EVERY probed column across all four tile layers renders at wall brightness —
   // including the very last column (the blank-strip failure mode reads ~2.7
-  // luma; the campaign-4.1 dark-field default maps this probe's wall into the
+  // luma; the dark-field default maps this probe's wall into the
   // blue/indigo head, so the floor is 60 rather than the old 100).
   for (const [label, luma] of Object.entries({
     left: result.left,

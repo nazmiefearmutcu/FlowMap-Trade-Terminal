@@ -1,10 +1,9 @@
 """``feeds.router`` — the ONE place a ``Subscribe.market`` becomes a Feed.
 
-Routing used to be copy-pasted twice (``SessionManager._default_feed_factory``
-for the test path, ``api.app._server_feed_factory`` for the server path),
-differing only in the sim feed's ``realtime`` flag. With ~109 crypto venues
-instead of three, two copies is two places to drift, so the duplication was
-collapsed into this module and the flag became a parameter.
+Both the test path (``SessionManager._default_feed_factory``) and the server
+path (``api.app._server_feed_factory``) route through this module, so the two
+cannot drift apart. They differ only in the sim feed's ``realtime`` flag,
+which is a parameter.
 
 These tests pin BOTH halves of that claim:
 
@@ -60,8 +59,9 @@ def test_sim_routes_both_ways() -> None:
     assert paced._dt_ns == unpaced._dt_ns == cfg.dt_crypto_ns
     assert paced._seed == unpaced._seed
     assert paced._start_ns == unpaced._start_ns == 0
-    # SimFeed owns its own identity; the subscribe's symbol does not rename it.
-    assert paced.market == SIM_MARKET and paced.symbol == SimFeed.symbol
+    # The sim feed labels itself with the subscribed symbol (it was once pinned to
+    # SIM-DEMO regardless of the subscription), and stays market "sim".
+    assert paced.market == SIM_MARKET and paced.symbol == "X"
 
 
 def test_equity_routes_to_equity_feed() -> None:

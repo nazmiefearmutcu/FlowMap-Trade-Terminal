@@ -1,5 +1,5 @@
 /**
- * PriceAxis chip tests (campaign 2026-09-11, D2/D4):
+ * PriceAxis chip tests:
  *   - the label must reflect the renderer's mode as polled;
  *   - while tracking cannot act (`liveEdgeVisible === false` on a 'track' mode)
  *     the chip must NOT read TRACK — it reads TRK·WAIT and explains why;
@@ -15,6 +15,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 
 import type { PriceFollow } from '../gl/camera';
 import type { Renderer } from '../gl/renderer';
@@ -158,7 +160,7 @@ describe('PriceAxis chip', () => {
     expect(chip(container).textContent).toBe('TRACK');
   });
 
-  // --- QA9-1: born-blank gutter self-heal (no window resize) -----------------
+  // --- Born-blank gutter self-heal (no window resize) -----------------
 
   interface HealRenderer extends FakeRenderer {
     attachOverlaySurfaces: ReturnType<typeof vi.fn>;
@@ -198,6 +200,30 @@ describe('PriceAxis chip', () => {
     expect(r.overlays.syncGutters).toHaveBeenCalledWith(1);
   });
 
+  it('sizes the gutter with the renderer cached DPR, not the window ratio', () => {
+    const r = { ...healRenderer(), dpr: 2 };
+    const { container } = render(
+      <PriceAxis canvasRef={{ current: null }} rendererRef={{ current: r as unknown as Renderer }} />,
+    );
+    const canvas = container.querySelector('.axis-canvas') as HTMLCanvasElement;
+    // A bitmap sized for the 1x window ratio. jsdom's window ratio is 1, but the
+    // renderer draws at 2x, so the gutter must heal to 122 x 462 device pixels.
+    canvas.width = 61;
+    canvas.height = 231;
+    layoutBox(canvas, 61, 231);
+
+    poll();
+
+    expect(r.overlays.syncGutters).toHaveBeenCalledWith(2);
+  });
+
+  it('names the auto-scale button with its visible mode word', () => {
+    const { container } = render(
+      <PriceAxis canvasRef={{ current: null }} rendererRef={{ current: null }} />,
+    );
+    expect(chip(container).getAttribute('aria-label')).toBe('Price auto-scale: FIT');
+  });
+
   it('does not rebind while the gutter bitmap already matches its box', () => {
     const r = healRenderer();
     const { container } = render(
@@ -212,5 +238,20 @@ describe('PriceAxis chip', () => {
 
     expect(r.attachOverlaySurfaces).not.toHaveBeenCalled();
     expect(r.overlays.syncGutters).not.toHaveBeenCalled();
+  });
+});
+
+describe('PriceAxis auto-scale copy follows the single-key preference', () => {
+  afterEach(() => setSingleKeyShortcutsEnabled(true));
+
+  it('names the P key on the auto-scale button only while single-key shortcuts are on', () => {
+    const r = fakeRenderer('fit');
+    const { container } = render(
+      <PriceAxis canvasRef={{ current: null }} rendererRef={{ current: r as unknown as Renderer }} />,
+    );
+    poll();
+    expect(chip(container).getAttribute('title')).toContain('(P)');
+    act(() => setSingleKeyShortcutsEnabled(false));
+    expect(chip(container).getAttribute('title')).not.toContain('(P)');
   });
 });

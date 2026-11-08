@@ -1,6 +1,6 @@
 """First-launch history backfill: candles -> reconstructed grid columns.
 
-GOAL 1 (data plane). On a COLD subscribe (no Parquet tail to rehydrate) the
+Data plane. On a COLD subscribe (no Parquet tail to rehydrate) the
 grid ring is empty, so the client's eager ``requestHistory`` after the first
 snapshot returns nothing. This module fetches a bounded span of candles for the
 symbol and converts them into :class:`~flowmap_server.core.grid.FinalizedColumn`
@@ -46,7 +46,7 @@ Conversion rules (mirrors :meth:`Grid.preload`'s contract):
   — the ``history: 'reconstructed'`` badge is unaffected;
 - one global scale factor normalizes the densest bucket across ALL columns to
   ``PEAK_TARGET`` (bounded far below float16's ceiling, so a liquid name's
-  volume cannot overflow the ring — spec §8.1 — while cross-column and
+  volume cannot overflow the ring, while cross-column and
   cross-side ratios survive exactly);
 - bars carry the candle OHLC and (crypto only) a reconstructed
   ``vol_buy``/``vol_sell``/``cvd_cum`` from the taker split; equity bars have no
@@ -65,6 +65,7 @@ import concurrent.futures
 import logging
 import os
 import threading
+import time
 from collections.abc import Awaitable, Callable, Sequence
 
 import msgspec
@@ -121,7 +122,7 @@ BAND_WEIGHT_FLOOR = 0.15
 # rings). ``1`` restores the historical one-column-per-candle layout.
 DEFAULT_BACKFILL_STRETCH = 16
 _NAN = float("nan")
-# Total wall-clock timeout for every network client this module builds (A2-5):
+# Total wall-clock timeout for every network client this module builds:
 # the boot path holds the session's _start_lock while backfilling, so one hung
 # endpoint must cost seconds, not aiohttp's 5-minute default.
 _HTTP_TIMEOUT_S = 15.0
@@ -132,6 +133,34 @@ _HTTP_TIMEOUT_MS = int(_HTTP_TIMEOUT_S * 1000)
 _CA_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="backfill-ca")
 _CA_CONTEXT_FUTURES: dict[str, concurrent.futures.Future] = {}
 _CCXT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="backfill-ccxt")
+
+# A venue's ccxt market table is a large download. It used to be fetched on every
+# backfill miss (api-v1). The table is cached per (venue, market type)
+# for an hour and installed on each short-lived client with ``set_markets``. Only
+# plain data is shared: a ccxt client is bound to the loop that created it, so
+# clients are never reused across backfills. Guarded by a lock because the
+# backfill runs on executor threads.
+_MARKETS_TTL_S = 3600.0
+_MARKETS_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_MARKETS_LOCK = threading.Lock()
+
+
+def _cached_ccxt_markets(key: tuple[str, str]) -> dict | None:
+    with _MARKETS_LOCK:
+        hit = _MARKETS_CACHE.get(key)
+    if hit is None:
+        return None
+    stored_at, markets = hit
+    if time.monotonic() - stored_at > _MARKETS_TTL_S:
+        return None
+    return markets
+
+
+def _remember_ccxt_markets(key: tuple[str, str], markets: dict) -> None:
+    if not markets:
+        return  # an empty table is a failed or unlisted answer, never worth an hour
+    with _MARKETS_LOCK:
+        _MARKETS_CACHE[key] = (time.monotonic(), markets)
 
 
 async def _await_owned(future: asyncio.Future, *, cancel: Callable[[], None] | None = None):
@@ -146,7 +175,7 @@ async def _await_owned(future: asyncio.Future, *, cancel: Callable[[], None] | N
                 await asyncio.shield(future)
             except asyncio.CancelledError:
                 continue
-            except Exception:  # noqa: BLE001 — cancellation remains the caller's outcome
+            except Exception:  # cancellation remains the caller's outcome
                 break
         if not future.cancelled():
             error = future.exception()
@@ -328,7 +357,7 @@ def columns_from_candles(
         # Clamp BEFORE building the range: one candle with an absurd high/low
         # (mis-scaled venue, raw-unit quote, bad tick) yields a row span of
         # millions-billions and the list comprehension below would hang the
-        # boot inside _boot's _start_lock (M1).
+        # boot inside _boot's _start_lock.
         lo_r = max(lo_r, 0)
         hi_r = min(hi_r, rows - 1)
         band = list(range(lo_r, hi_r + 1)) if lo_r <= hi_r else []
@@ -336,7 +365,7 @@ def columns_from_candles(
             close_r = row_of(cd.c)
             if shape == "flat":
                 # Legacy byte-exact escape (FLOWMAP_BACKFILL_SHAPE=flat): the
-                # pre-campaign flat fill, kept untouched for A/B + golden runs.
+                # Legacy flat fill, kept untouched for A/B comparisons and golden runs.
                 per = float(cd.volume) / len(band)
                 for r in band:
                     # price(row) <= close -> bid channel, else ask channel.
@@ -454,7 +483,7 @@ async def default_backfill_fn(
             return await crypto_klines(market, symbol, max_bars=max_cols, now_ns=now_ns)
         if market in EQUITY_MARKETS:
             return await _equity_candles(symbol, max_cols=max_cols)
-    except Exception:  # noqa: BLE001 — backfill is best-effort; cold start on any error
+    except Exception:  # backfill is best-effort; cold start on any error
         logger.warning("backfill failed for %s:%s; cold start", market, symbol, exc_info=True)
     return []
 
@@ -488,7 +517,7 @@ async def crypto_klines(
     seg = seg or "spot"
     # Same translation the live feed does: a symbol in the other venue's
     # spelling must not silently cost us the native path (and with it the taker
-    # split) by failing the venue's REST call. Memoized (A2-5): a re-subscribe
+    # split) by failing the venue's REST call. Memoized: a re-subscribe
     # or restart must not re-download the venue's whole ccxt market table.
     symbol = await resolve_symbol_cached(market, symbol)
     kw = {"interval": interval, "max_bars": max_bars, "now_ns": now_ns}
@@ -498,7 +527,7 @@ async def crypto_klines(
         # flat. ccxt's unified OHLCV has no such column.
         try:
             native = await _native_candles(exchange, symbol, seg, **kw)
-        except Exception:  # noqa: BLE001 — fall through to ccxt below
+        except Exception:  # fall through to ccxt below
             logger.warning("native klines failed for %s; trying ccxt", market, exc_info=True)
         else:
             if native:
@@ -583,7 +612,7 @@ async def _hardened_backfill(exchange: str, seg: str) -> tuple[object | None, ob
             BinanceBackfill,
             _live_fetch_klines,
         )
-    except Exception:  # noqa: BLE001 — keep engine defaults if anything is absent
+    except Exception:  # keep engine defaults if anything is absent
         return None, None
     ctx = await _certifi_context(certifi.where())
     session = aiohttp.ClientSession(
@@ -598,7 +627,7 @@ async def _hardened_backfill(exchange: str, seg: str) -> tuple[object | None, ob
             fetch_open_interest=None,
             fetch_open_interest_hist=None,
         )
-    except Exception:  # noqa: BLE001 — never leak the session we just opened
+    except Exception:  # never leak the session we just opened
         await _await_owned(asyncio.ensure_future(session.close()))
         raise
     return bf, session
@@ -682,7 +711,7 @@ async def _ccxt_candles_owned(
     default_type = "swap" if seg in _SWAP_SEGMENTS else "spot"
     if cancelled.is_set():
         raise asyncio.CancelledError
-    # Explicit total timeout (A2-5) instead of relying on ccxt's per-request
+    # Explicit total timeout instead of relying on ccxt's per-request
     # default — the backfill runs under the session's boot lock.
     ex = getattr(ccxt_async, exchange)(
         {
@@ -696,7 +725,13 @@ async def _ccxt_candles_owned(
             raise asyncio.CancelledError
         if not ex.has.get("fetchOHLCV"):
             return []
-        markets = await ex.load_markets()
+        table_key = (exchange, default_type)
+        markets = _cached_ccxt_markets(table_key)
+        if markets is None:
+            markets = await ex.load_markets()
+            _remember_ccxt_markets(table_key, markets)
+        else:
+            ex.set_markets(markets)
         if cancelled.is_set():
             raise asyncio.CancelledError
         unified = CCXTConnector._resolve_symbol(symbol, markets, ex.markets_by_id)

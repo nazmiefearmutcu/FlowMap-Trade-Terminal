@@ -5,9 +5,10 @@
  * is lost (moves with no button held), not just on a clean pointerup.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { attachGestures, type CameraController } from './gestures';
+import { setSingleKeyShortcutsEnabled } from './shortcutPrefs';
 
 function makeController(): CameraController {
   return {
@@ -27,7 +28,10 @@ function makeController(): CameraController {
 }
 
 /** A KeyboardEvent plus a preventDefault spy (jsdom supports the real type). */
-function keyEvent(key: string, mods: { ctrl?: boolean; meta?: boolean; alt?: boolean } = {}): {
+function keyEvent(
+  key: string,
+  mods: { ctrl?: boolean; meta?: boolean; alt?: boolean; shift?: boolean; repeat?: boolean } = {},
+): {
   event: KeyboardEvent;
   prevented: ReturnType<typeof vi.fn>;
 } {
@@ -38,6 +42,8 @@ function keyEvent(key: string, mods: { ctrl?: boolean; meta?: boolean; alt?: boo
     ctrlKey: mods.ctrl ?? false,
     metaKey: mods.meta ?? false,
     altKey: mods.alt ?? false,
+    shiftKey: mods.shift ?? false,
+    repeat: mods.repeat ?? false,
   });
   const prevented = vi.fn();
   event.preventDefault = prevented as unknown as () => void;
@@ -106,11 +112,130 @@ describe('attachGestures keyboard — modifier guard', () => {
     expect(ctrl.goLive).toHaveBeenCalledOnce();
     expect(r.prevented).toHaveBeenCalledOnce();
 
-    // Shift is NOT the guard's business: Shift+P re-fits the price axis.
-    const bigP = keyEvent('P');
+    // Shift+P re-fits the price axis.
+    const bigP = keyEvent('P', { shift: true });
     canvas.dispatchEvent(bigP.event);
     expect(ctrl.setPriceFollow).toHaveBeenCalledWith('fit');
     expect(bigP.prevented).toHaveBeenCalledOnce();
+
+    // CapsLock 'P' arrives without Shift and must only toggle follow.
+    vi.mocked(ctrl.setPriceFollow).mockClear();
+    const capsP = keyEvent('P');
+    canvas.dispatchEvent(capsP.event);
+    expect(ctrl.togglePriceFollow).toHaveBeenCalledOnce();
+    expect(ctrl.setPriceFollow).not.toHaveBeenCalled();
+
+    // Held F/P/R do not toggle again on auto-repeat, but are still consumed.
+    vi.mocked(ctrl.toggleFollow).mockClear();
+    const heldF = keyEvent('f', { repeat: true });
+    canvas.dispatchEvent(heldF.event);
+    expect(ctrl.toggleFollow).not.toHaveBeenCalled();
+    expect(heldF.prevented).toHaveBeenCalledOnce();
+
+    // Held arrows keep panning: that is the point of auto-repeat.
+    const heldLeft = keyEvent('ArrowLeft', { repeat: true });
+    canvas.dispatchEvent(heldLeft.event);
+    expect(ctrl.panTimeSteps).toHaveBeenCalledWith(-1);
+    dispose();
+  });
+});
+
+describe('attachGestures keyboard — price zoom without a pointer', () => {
+  it('] zooms price in and [ zooms price out, both about the viewport centre', () => {
+    const canvas = document.createElement('canvas');
+    const ctrl = makeController();
+    const dispose = attachGestures(canvas, ctrl);
+
+    const zoomIn = keyEvent(']');
+    canvas.dispatchEvent(zoomIn.event);
+    expect(ctrl.zoomPriceAtFraction).toHaveBeenLastCalledWith(0.8, 0.5);
+    expect(zoomIn.prevented).toHaveBeenCalledOnce();
+
+    const zoomOut = keyEvent('[');
+    canvas.dispatchEvent(zoomOut.event);
+    expect(ctrl.zoomPriceAtFraction).toHaveBeenLastCalledWith(1.25, 0.5);
+    expect(zoomOut.prevented).toHaveBeenCalledOnce();
+
+    // Price zoom is the only effect: the time axis and the follow policy stay put.
+    expect(ctrl.zoomTimeCentered).not.toHaveBeenCalled();
+    expect(ctrl.togglePriceFollow).not.toHaveBeenCalled();
+    dispose();
+  });
+
+  it('Shift+ArrowUp and Shift+ArrowDown zoom price, and still work with the single-key switch off', () => {
+    const canvas = document.createElement('canvas');
+    const ctrl = makeController();
+    const dispose = attachGestures(canvas, ctrl);
+    const up = keyEvent('ArrowUp', { shift: true });
+    canvas.dispatchEvent(up.event);
+    expect(ctrl.zoomPriceAtFraction).toHaveBeenLastCalledWith(0.8, 0.5);
+    expect(up.prevented).toHaveBeenCalledOnce();
+    const down = keyEvent('ArrowDown', { shift: true });
+    canvas.dispatchEvent(down.event);
+    expect(ctrl.zoomPriceAtFraction).toHaveBeenLastCalledWith(1.25, 0.5);
+    expect(ctrl.panPriceSteps).not.toHaveBeenCalled();
+    setSingleKeyShortcutsEnabled(false);
+    try {
+      vi.mocked(ctrl.zoomPriceAtFraction).mockClear();
+      canvas.dispatchEvent(keyEvent('ArrowUp', { shift: true }).event);
+      expect(ctrl.zoomPriceAtFraction).toHaveBeenLastCalledWith(0.8, 0.5);
+      canvas.dispatchEvent(keyEvent('ArrowUp').event);
+      expect(ctrl.panPriceSteps).toHaveBeenCalledWith(1);
+    } finally {
+      setSingleKeyShortcutsEnabled(true);
+    }
+    dispose();
+  });
+
+  it('a chorded bracket is left to the browser and the app router', () => {
+    const canvas = document.createElement('canvas');
+    const ctrl = makeController();
+    const dispose = attachGestures(canvas, ctrl);
+    const { event, prevented } = keyEvent(']', { ctrl: true });
+    canvas.dispatchEvent(event);
+    expect(prevented).not.toHaveBeenCalled();
+    expect(ctrl.zoomPriceAtFraction).not.toHaveBeenCalled();
+    dispose();
+  });
+});
+
+describe('attachGestures keyboard — single-key switch', () => {
+  afterEach(() => setSingleKeyShortcutsEnabled(true));
+
+  it('leaves every character key to the page while the switch is off, and keeps the arrows', () => {
+    setSingleKeyShortcutsEnabled(false);
+    const canvas = document.createElement('canvas');
+    const ctrl = makeController();
+    const dispose = attachGestures(canvas, ctrl);
+
+    for (const [key, mods] of [
+      ['f', {}], ['F', {}], ['p', {}], ['P', {}], ['P', { shift: true }], ['r', {}], ['R', {}],
+      ['+', {}], ['-', {}], ['=', {}], ['_', {}], [']', {}], ['[', {}],
+    ] as const) {
+      const { event, prevented } = keyEvent(key, mods);
+      canvas.dispatchEvent(event);
+      expect(prevented, key).not.toHaveBeenCalled();
+    }
+    for (const fn of Object.values(ctrl)) expect(fn).not.toHaveBeenCalled();
+
+    const left = keyEvent('ArrowLeft');
+    canvas.dispatchEvent(left.event);
+    expect(ctrl.panTimeSteps).toHaveBeenCalledWith(-1);
+    expect(left.prevented).toHaveBeenCalledOnce();
+    dispose();
+  });
+
+  it('acts on the character keys again once the switch is back on', () => {
+    setSingleKeyShortcutsEnabled(false);
+    const canvas = document.createElement('canvas');
+    const ctrl = makeController();
+    const dispose = attachGestures(canvas, ctrl);
+    setSingleKeyShortcutsEnabled(true);
+
+    const r = keyEvent('r');
+    canvas.dispatchEvent(r.event);
+    expect(ctrl.goLive).toHaveBeenCalledOnce();
+    expect(r.prevented).toHaveBeenCalledOnce();
     dispose();
   });
 });

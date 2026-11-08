@@ -1,3 +1,4 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +8,7 @@ import type { Renderer } from '../../src/gl/renderer';
 import type { useFlowMapStore } from '../../src/state/store';
 
 /**
- * T8 verification — deep scroll-back: LRU full-res residency + HistoryRequest
+ * Deep scroll-back: LRU full-res residency + HistoryRequest
  * backfill + WebGL context-loss recovery, end-to-end against the REAL server.
  *
  * The page opens with `?scrollback=1&budget=512`: a SMALL full-res residency
@@ -28,7 +29,7 @@ import type { useFlowMapStore } from '../../src/state/store';
  *       renderer recreates its GL objects and renders again, with no permanent
  *       GL error.
  *
- * The §10 perf gate is unaffected: the per-frame "ensure visible populated"
+ * The perf gate is unaffected: the per-frame "ensure visible populated"
  * check is O(1) (visible-left vs resident-oldest), not O(history).
  */
 
@@ -39,6 +40,11 @@ const BUDGET = 512;
 /** Wait until the live edge is this far past the budget so there is a deep,
  *  fully-evicted history to scroll back into. */
 const OVERRUN_TARGET = BUDGET * 2 + 128; // ~1152 cols → ~29 s at 40 cols/s
+/** Longest time the live edge may stand still before the wait gives up. */
+const OVERRUN_STALL_MS = 60_000;
+/** Overall bound on the overrun wait, far above the unloaded ~30 s. */
+const OVERRUN_DEADLINE_MS = 300_000;
+const OVERRUN_SLICE_MS = 20_000;
 const THERMAL_LUMA = 25;
 const MIN_THERMAL_PIXELS = 150;
 // Functional completion allowance for full-ring history on software-rendered CI.
@@ -148,10 +154,66 @@ interface CanvasStats {
   checksum: number;
 }
 
+/**
+ * Waits until the live edge is `overrun` columns past the residency budget and the
+ * window is settled. Each slice is a condition wait. Between slices the newest
+ * column is read, and the wait fails only when that column has not advanced for
+ * OVERRUN_STALL_MS or the overall deadline passes.
+ */
+async function waitForLiveOverrun(page: Page, overrun: number): Promise<void> {
+  const settled = ({ target, budget }: { target: number; budget: number }) => {
+    const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
+    if (!live || !live.renderer) return false;
+    const r = live.renderer;
+    const range = r.residentRange();
+    return (
+      live.store.getState().status === 'live' &&
+      range !== null &&
+      range.count === r.residentBudgetCols &&
+      !r.historyStats().inFlight &&
+      r.newestColSeq > target &&
+      r.residentBudgetCols === budget
+    );
+  };
+  const newestColumn = () =>
+    page.evaluate(() => {
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
+      return live?.renderer ? live.renderer.newestColSeq : -1;
+    });
+  const started = Date.now();
+  let newest = -1;
+  let newestMovedAt = started;
+  for (;;) {
+    const met = await page
+      .waitForFunction(settled, { target: overrun, budget: BUDGET }, { timeout: OVERRUN_SLICE_MS })
+      .then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof Error && error.name === 'TimeoutError') return false;
+          throw error;
+        },
+      );
+    if (met) return;
+    const now = await newestColumn();
+    if (now > newest) {
+      newest = now;
+      newestMovedAt = Date.now();
+    }
+    if (Date.now() - newestMovedAt > OVERRUN_STALL_MS) {
+      throw new Error(`live edge stalled at column ${newest} for ${OVERRUN_STALL_MS} ms (target ${overrun})`);
+    }
+    if (Date.now() - started > OVERRUN_DEADLINE_MS) {
+      throw new Error(`live edge reached column ${newest} of ${overrun} within ${OVERRUN_DEADLINE_MS} ms`);
+    }
+  }
+}
+
 test('deep scroll-back: LRU residency + history backfill + context-loss recovery', async ({
   page,
 }) => {
-  test.setTimeout(360_000);
+  // The overrun wait may use up to OVERRUN_DEADLINE_MS on a loaded runner; the
+  // remaining steps need the rest of this allowance.
+  test.setTimeout(600_000);
 
   const consoleErrors: string[] = [];
   page.on('console', (m) => {
@@ -162,25 +224,12 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
   await page.goto(`/?scrollback=1&budget=${BUDGET}`);
 
   // Wait for live wiring AND for the live edge to overrun the budget by a wide
-  // margin (so there is a large evicted history below the resident window).
-  await page.waitForFunction(
-    (overrun) => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
-      if (!live || !live.renderer) return false;
-      const r = live.renderer;
-      const range = r.residentRange();
-      return (
-        live.store.getState().status === 'live' &&
-        range !== null &&
-        range.count === r.residentBudgetCols &&
-        !r.historyStats().inFlight &&
-        r.newestColSeq > overrun &&
-        r.residentBudgetCols === 512
-      );
-    },
-    OVERRUN_TARGET,
-    { timeout: 120_000 },
-  );
+  // margin (so there is a large evicted history below the resident window). The
+  // sim is paced by the wall clock, so under CPU load the target column arrives
+  // late. The wait therefore follows progress: each slice waits on the condition,
+  // and the test fails only when the newest column stops advancing, not after a
+  // fixed number of seconds.
+  await waitForLiveOverrun(page, OVERRUN_TARGET);
 
   const readStats = (): Promise<CanvasStats> =>
     page.evaluate((lumaThreshold) => {
@@ -204,7 +253,7 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
   // --- Baseline: a full ring follows live without further history requests. --
   // A warm SIM-DEMO session may need one startup page before its ring fills.
   const baseline = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     return {
       budget: r.residentBudgetCols,
       range: r.residentRange(),
@@ -230,7 +279,7 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
 
   // --- (A) Pan LEFT into the evicted history → backfill must fire. ------------
   const panInfo = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const oldest = r.residentRange().oldest;
     // Zoom time in so a mid-history window fits comfortably below `oldest`.
     let guard = 0;
@@ -251,7 +300,7 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
   // Wait for the backfill: a request fired AND the target column is now resident.
   await page.waitForFunction(
     ({ target, requests }) => {
-      const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+      const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
       const h = r.historyStats();
       return h.requestCount > requests && r.isResidentFullRes(target);
     },
@@ -260,7 +309,7 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
   );
 
   const afterBackfill = await page.evaluate((target) => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     return {
       history: r.historyStats(),
       range: r.residentRange(),
@@ -294,7 +343,7 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
   // --- (B) A full-budget older viewport must still reload its depth. ---------
   const reqBeforeZoom = afterBackfill.history.requestCount;
   const zoomState = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const start = 64;
     const budget = r.residentBudgetCols;
     const v = r.viewSnapshot;
@@ -306,7 +355,7 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
   );
   await waitForFullRingHistory(page, 'B', zoomState);
   const reqAfterZoom = await page.evaluate(
-    () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.historyStats().requestCount,
+    () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.historyStats().requestCount,
   );
   expect(
     reqAfterZoom,
@@ -328,24 +377,24 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
 
   // --- (D) WebGL context loss → recover and render again. ---------------------
   const restoredBefore = await page.evaluate(
-    () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.contextRestoredCount,
+    () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.contextRestoredCount,
   );
   const lost = await page.evaluate(
-    () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.loseContextForTest(),
+    () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.loseContextForTest(),
   );
   expect(lost, 'WEBGL_lose_context extension available under SwiftShader').toBe(true);
 
   await page.waitForFunction(
-    () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.contextLostCount > 0,
+    () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.contextLostCount > 0,
     undefined,
     { timeout: 10_000 },
   );
   await page.evaluate(
-    () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.restoreContextForTest(),
+    () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.restoreContextForTest(),
   );
   await page.waitForFunction(
     (before) =>
-      (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.contextRestoredCount >
+      (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.contextRestoredCount >
       before,
     restoredBefore,
     { timeout: 15_000 },
@@ -373,7 +422,7 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
   );
 
   const recovered = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     return { restored: r.contextRestoredCount, drawCount: r.drawCount };
   });
   expect(recovered.restored, 'context was restored').toBeGreaterThan(restoredBefore);

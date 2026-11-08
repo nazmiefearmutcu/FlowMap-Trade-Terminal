@@ -1,15 +1,15 @@
+import type { LooseProbe } from './probe';
 import { expect, test } from '@playwright/test';
 
 /**
- * Campaign 2026-09-11-chart, lane E (optional, NETWORK-DEPENDENT) — the
- * reconstructed-history time-warp fix (survey S2/D1, lane B1/B2 CP2).
+ * Reconstructed-history time-warp fix (optional, NETWORK-DEPENDENT).
  *
  * Attaching `binance-spot:BTCUSDT` in the `native` band makes the server seed a
  * RECONSTRUCTED 1 m-candle history block (the deep/wide bands refuse candle
- * reconstruction by design, so `native` is required). Before CP2 the overlay
+ * reconstruction by design, so `native` is required). Before the per-slot fix, the overlay
  * time map was one affine anchored on the live (250 ms) column, so every
  * reconstructed column was placed 250 ms apart — axis labels and trades in the
- * history zone were scattered. CP2's piecewise per-slot t0 table fixes the map.
+ * history zone were scattered. A piecewise per-slot t0 table fixes the map.
  *
  * Assertions (all through the public `__flowmapLive.renderer` getters):
  *  - the reconstructed→live cadence transition exists: a reconstructed column
@@ -32,7 +32,7 @@ test('BTC native: reconstructed history maps real candle times (network-dependen
   await page.goto('/?spy=1');
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       return !!live?.renderer;
     },
     undefined,
@@ -42,7 +42,7 @@ test('BTC native: reconstructed history maps real candle times (network-dependen
   // Attach the real Binance BTC session in the `native` band (band is a server
   // grid property: only native reconstructs candle history).
   await page.evaluate(() => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     live.store.getState().connectAndSubscribe('binance-spot', 'BTCUSDT', 'live', 'native');
   });
 
@@ -52,7 +52,7 @@ test('BTC native: reconstructed history maps real candle times (network-dependen
   const ready = await page
     .waitForFunction(
       () => {
-        const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+        const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
         const st = live.store.getState();
         const cap = st.capability as { history?: string } | null;
         if (!(st.status === 'live' && st.subscription?.symbol === 'BTCUSDT' && cap?.history === 'reconstructed')) {
@@ -81,7 +81,7 @@ test('BTC native: reconstructed history maps real candle times (network-dependen
     const diag = await page.evaluate(() => {
       // Dev-stack HMR can reload the page mid-test, dropping __flowmapLive;
       // degrade to the honest skip (status 'unavailable') instead of throwing.
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       const st = live?.store?.getState();
       return {
         status: (st?.status ?? 'unavailable') as string,
@@ -99,7 +99,7 @@ test('BTC native: reconstructed history maps real candle times (network-dependen
   }
 
   const probe = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const t = (c: number): bigint | null => r.colToTsForTest(c);
     const newest = r.newestColSeq as number;
 

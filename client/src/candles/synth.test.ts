@@ -46,35 +46,146 @@ describe('candle synth — golden sequences', () => {
     expect(s.candles()[0].c).toBe(101);
   });
 
-  it('is idempotent: re-delivering the exact same trade is a no-op', () => {
+  it('is idempotent: re-delivering a sequenced trade is a no-op', () => {
     const s = createCandleSynth(MIN);
-    const run: [bigint, number, number][] = [
-      [t(0, 0), 100, 2],
-      [t(0, 10), 104, 1],
-      [t(0, 20), 99, 3],
-      [t(1, 0), 103, 4],
+    const run: [bigint, number, number, number][] = [
+      [t(0, 0), 100, 2, 1],
+      [t(0, 10), 104, 1, 2],
+      [t(0, 20), 99, 3, 3],
+      [t(1, 0), 103, 4, 4],
     ];
-    for (const [ts, p, v] of run) s.push(ts, p, v);
+    for (const [ts, p, v, seq] of run) s.push(ts, p, v, seq);
     const before = s.candles().map((c) => ({ ...c }));
     const verBefore = s.version();
-    for (const [ts, p, v] of run) s.push(ts, p, v); // full replay of the last DUP_WINDOW trades
+    for (const [ts, p, v, seq] of run) s.push(ts, p, v, seq); // full replay of the last DUP_WINDOW trades
     expect(s.candles()).toEqual(before);
     expect(s.version()).toBe(verBefore);
     expect(s.stats().dupSkipped).toBe(run.length);
   });
 
+  it('two distinct fills at the same millisecond with the same price and size both merge', () => {
+    // Venue timestamps are millisecond resolution: a busy tape prints identical
+    // (ts, price, size) fills. Value equality is NOT a re-delivery signal.
+    const s = createCandleSynth(MIN);
+    const ts = t(0, 30);
+    s.push(ts, 60000.5, 0.001);
+    s.push(ts, 60000.5, 0.001);
+    const [c] = s.candles();
+    expect(c.trades).toBe(2);
+    expect(c.v).toBeCloseTo(0.002, 12);
+    expect(s.stats().dupSkipped).toBe(0);
+  });
+
+  it('same-millisecond fills with distinct sequences merge, and a repeated sequence is dropped', () => {
+    const s = createCandleSynth(MIN);
+    const ts = t(0, 30);
+    s.push(ts, 60000.5, 0.001, 101);
+    s.push(ts, 60000.5, 0.001, 102); // distinct fill, same value: merges
+    s.push(ts, 60000.5, 0.001, 102); // WS re-delivery of seq 102: dropped
+    const [c] = s.candles();
+    expect(c.trades).toBe(2);
+    expect(c.v).toBeCloseTo(0.002, 12);
+    expect(s.stats().dupSkipped).toBe(1);
+  });
+
+  it('an unsafe or non-integer sequence is ignored, so the trade always merges', () => {
+    const s = createCandleSynth(MIN);
+    s.push(t(0, 0), 100, 1, Number.NaN);
+    s.push(t(0, 0), 100, 1, Number.NaN);
+    s.push(t(0, 1), 101, 1, 1.5);
+    s.push(t(0, 1), 101, 1, 1.5);
+    expect(s.candles()[0].trades).toBe(4);
+    expect(s.stats().dupSkipped).toBe(0);
+  });
+
+  it('sequence 0 is the unknown marker: repeated zeros always merge', () => {
+    const s = createCandleSynth(MIN);
+    s.push(t(0, 0), 100, 1, 0);
+    s.push(t(0, 0), 100, 1, 0);
+    s.push(t(0, 0), 100, 1, -4);
+    expect(s.candles()[0].trades).toBe(3);
+    expect(s.stats().dupSkipped).toBe(0);
+  });
+
+  it('a repeated sequence at a different timestamp is a new fill, not a re-delivery', () => {
+    // A reconnect that restarts the counter, or a reused seq, must not swallow a fill:
+    // the identity is the exact (ts, seq) pair.
+    const s = createCandleSynth(MIN);
+    s.push(t(0, 30), 100, 1, 7);
+    s.push(t(0, 31), 101, 2, 7);
+    const [c] = s.candles();
+    expect(c.trades).toBe(2);
+    expect(c.v).toBe(3);
+    expect(s.stats().dupSkipped).toBe(0);
+  });
+
+  it('the open is the earliest trade by ts, not the first arrival', () => {
+    const s = createCandleSynth(MIN);
+    s.push(t(0, 20), 100, 1);
+    s.push(t(0, 5), 99, 1); // straggler older than the first arrival
+    s.push(t(0, 10), 101, 1);
+    expect(s.candles()[0]).toMatchObject({ o: 99, h: 101, l: 99, c: 100 });
+  });
+
+  it('same-timestamp fills keep the first arrival as the open and the last as the close', () => {
+    const s = createCandleSynth(MIN);
+    s.push(t(0, 30), 100, 1);
+    s.push(t(0, 30), 101, 1);
+    expect(s.candles()[0]).toMatchObject({ o: 100, c: 101 });
+  });
+
   it('dedup covers only the recent window — honest about its reach', () => {
     const s = createCandleSynth(MIN);
-    s.push(t(0, 0), 100, 1);
-    // Push DUP_WINDOW distinct trades, then re-deliver the FIRST trade: it has
-    // fallen out of the suppression window, so it merges again (volume doubles).
-    for (let i = 1; i <= DUP_WINDOW; i += 1) s.push(t(1, i), 100 + i, 1);
-    s.push(t(0, 0), 100, 1);
+    s.push(t(0, 0), 100, 1, 1);
+    // Push DUP_WINDOW distinct sequenced trades, then re-deliver the FIRST: it
+    // has fallen out of the suppression window, so it merges again (volume doubles).
+    for (let i = 2; i <= DUP_WINDOW + 1; i += 1) s.push(t(1, i), 100 + i, 1, i);
+    s.push(t(0, 0), 100, 1, 1);
     const cs = s.candles();
     expect(cs[0].v).toBe(2); // re-merged: documented, not hidden
     expect(s.stats().dupSkipped).toBe(0);
     // But the o stays intact (merge semantics) and h/l widen correctly.
     expect(cs[0]).toMatchObject({ o: 100, h: 100, l: 100, c: 100 });
+  });
+
+  it('a re-delivery inside the window is dropped even after other trades', () => {
+    const s = createCandleSynth(MIN);
+    s.push(t(0, 0), 100, 1, 1);
+    for (let i = 2; i <= DUP_WINDOW; i += 1) s.push(t(1, i), 100 + i, 1, i);
+    s.push(t(0, 0), 100, 1, 1); // still inside the window (511 trades since): dropped
+    expect(s.candles()[0].v).toBe(1);
+    expect(s.stats().dupSkipped).toBe(1);
+  });
+
+  it('a reconnect re-sends the 500-trade attach tail: every trade counts once', () => {
+    // The server's attach snapshot re-sends the last SNAPSHOT_TAPE (500) trades.
+    // The identity window must cover all of them, not only the last 64.
+    const s = createCandleSynth(MIN);
+    const tail: [bigint, number, number, number][] = Array.from({ length: 500 }, (_, i) => [
+      t(i, 0),
+      100 + (i % 9),
+      1 + (i % 4),
+      i + 1,
+    ]);
+    for (const [ts, p, v, seq] of tail) s.push(ts, p, v, seq);
+    const before = s.candles().map((c) => ({ ...c }));
+    const volume = before.reduce((n, c) => n + c.v, 0);
+    for (const [ts, p, v, seq] of tail) s.push(ts, p, v, seq);
+    const after = s.candles();
+    expect(after).toEqual(before);
+    expect(after.reduce((n, c) => n + c.v, 0)).toBe(volume);
+    expect(s.stats().dupSkipped).toBe(500);
+  });
+
+  it('replaying the newest DUP_WINDOW identities is fully suppressed', () => {
+    const s = createCandleSynth(MIN);
+    for (let i = 1; i <= DUP_WINDOW + 10; i += 1) s.push(t(i, 0), 100, 1, i);
+    const cs = s.candles();
+    const trades = cs.reduce((n, c) => n + c.trades, 0);
+    // Replaying the newest DUP_WINDOW trades is fully suppressed.
+    for (let i = 11; i <= DUP_WINDOW + 10; i += 1) s.push(t(i, 0), 100, 1, i);
+    expect(cs.reduce((n, c) => n + c.trades, 0)).toBe(trades);
+    expect(s.stats().dupSkipped).toBe(DUP_WINDOW);
   });
 
   it('drops trades older than the resident window instead of resurrecting buckets', () => {

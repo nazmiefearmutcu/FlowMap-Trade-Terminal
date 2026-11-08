@@ -1,11 +1,10 @@
 /**
- * Alerts popover (campaign 3, lane CD; campaign 4, lane C1) — the list surface
- * for the on-chart price alerts: every alert for the CURRENT symbol with its
- * state (armed / re-armed / firing-re-arm pending / fired at hh:mm:ss / muted),
- * a re-arm button for fired or muted alerts, a snooze button for armed ones, a
- * delete button, and a create form for typing an exact level. Presentational on
- * purpose: state lives in state/alertsStore.ts, mounting + data wiring in
- * ui/PriceAlerts.tsx (the only component INT mounts).
+ * Alerts popover — the list surface for the on-chart price alerts: every alert
+ * for the CURRENT symbol with its state (armed / re-armed / re-arm pending /
+ * fired at its clock time / muted), a re-arm button for fired or muted alerts, a
+ * snooze button for armed ones, a delete button, and a create form for typing an
+ * exact level. Presentational on purpose: state lives in state/alertsStore.ts,
+ * mounting + data wiring in ui/PriceAlerts.tsx (the only component that mounts it).
  *
  * Accessibility: the surface is a `role="dialog"` (so input/keys.ts classifies
  * its children as inside a dialog and background shortcuts yield) with a Tab
@@ -15,16 +14,12 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import type { PriceAlert } from '../state/alertsStore';
+import { exchangeZoneFor, formatClock, useTimeZone, zoneLabel } from '../i18n/format';
+import { useT } from '../i18n/useT';
+import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
+import { alertPriceText } from './alertPrice';
+import { draftPrice } from './alertDraft';
 import { isTopOverlay, pushOverlay } from './overlayStack';
-
-/** hh:mm:ss for a fired-at timestamp (local time — "when your screen showed"). */
-function fmtClock(ms: number): string {
-  try {
-    return new Date(ms).toLocaleTimeString('en-GB', { hour12: false });
-  } catch {
-    return '—';
-  }
-}
 
 /** Seconds left in a snooze, for the muted badge. */
 function mutedFor(snoozedUntil: number | null, now: number): number | null {
@@ -36,6 +31,16 @@ export interface AlertsPopoverProps {
   alerts: readonly PriceAlert[];
   /** Live market price — the reference the add-row hint compares against. */
   refPx: number | null;
+  /**
+   * Instrument group of the current symbol (`marketGroup` in ui/symbols): the
+   * exchange zone the fired-at clock reads in under the `exchange` preference.
+   */
+  group?: string;
+  /**
+   * Why a new alert cannot be added right now (for example replay mode), or null.
+   * While set, the add row is disabled and the reason is shown in its place.
+   */
+  addBlockedReason?: string | null;
   onClose: () => void;
   onCreate: (price: number) => void;
   onDelete: (id: string) => void;
@@ -52,6 +57,8 @@ export interface AlertsPopoverProps {
 export function AlertsPopover({
   alerts,
   refPx,
+  group = '',
+  addBlockedReason = null,
   onClose,
   onCreate,
   onDelete,
@@ -60,7 +67,17 @@ export function AlertsPopover({
   onClearFired,
   now,
 }: AlertsPopoverProps): JSX.Element {
+  const t = useT();
+  const singleKeys = useSingleKeyShortcuts();
+  // Clock times follow the Settings zone like every other clock on screen (the
+  // top bar, tape and crosshair); the zone hook re-renders this popover on change.
+  const zonePref = useTimeZone();
+  const exchangeZone = exchangeZoneFor(group);
+  const clockText = (ms: number): string =>
+    `${formatClock(ms, zonePref, exchangeZone)} ${zoneLabel(zonePref, exchangeZone, ms)}`;
   const [draft, setDraft] = useState('');
+  /** Why the last add was refused (the level sits on the market), or null. */
+  const [hint, setHint] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
@@ -91,7 +108,6 @@ export function AlertsPopover({
       opener?.focus?.(); // WCAG 2.4.3: focus returns to the bell chip
     };
     // Mount-only by design (see the ref comment above).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Trap Tab / Shift+Tab inside the dialog while it is open (the disabled "add"
@@ -100,8 +116,10 @@ export function AlertsPopover({
     if (e.key !== 'Tab') return;
     const root = sectionRef.current;
     if (!root) return;
+    // Disabled controls are skipped by the browser's own tab order, so the trap
+    // must skip them too: a disabled last stop would strand focus outside.
     const focusable = root.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
     );
     if (focusable.length === 0) return;
     const first = focusable[0];
@@ -119,14 +137,19 @@ export function AlertsPopover({
   };
 
   const firedCount = alerts.filter((a) => a.triggered).length;
-  const decimals = refPx !== null && refPx < 1 ? 6 : 2;
-  const fmtPx = (v: number): string =>
-    v.toLocaleString('en-US', { maximumFractionDigits: 8 });
 
+  const price = draftPrice(draft);
+  const addBlocked = addBlockedReason !== null;
   const submit = (): void => {
-    const v = Number(draft);
-    if (!Number.isFinite(v)) return;
-    onCreate(v);
+    if (price === null || addBlocked) return;
+    // A level exactly on the market is already crossed: it would fire at once.
+    // Say so instead of creating an alert that fires on the next tick.
+    if (refPx !== null && price === refPx) {
+      setHint(t('alerts.atMarketHint'));
+      return;
+    }
+    setHint(null);
+    onCreate(price);
     setDraft('');
     inputRef.current?.focus();
   };
@@ -138,12 +161,12 @@ export function AlertsPopover({
       data-testid="alerts-popover"
       role="dialog"
       aria-modal="true"
-      aria-label="price alerts"
+      aria-label={t('alerts.dialogLabel')}
       onKeyDown={onTrapKeyDown}
     >
       <header className="alerts-pop__head">
         <span className="alerts-pop__title">
-          Price alerts
+          {t('alerts.title')}
           <span className="alerts-chip__count"> · {alerts.length}</span>
         </span>
         {firedCount > 0 && (
@@ -153,7 +176,7 @@ export function AlertsPopover({
             data-testid="alerts-clear-fired"
             onClick={onClearFired}
           >
-            clear fired
+            {t('alerts.clearFired')}
           </button>
         )}
         <button
@@ -161,7 +184,7 @@ export function AlertsPopover({
           type="button"
           className="alert-row__btn"
           data-testid="alerts-close"
-          aria-label="close alerts"
+          aria-label={t('alerts.closeLabel')}
           onClick={onClose}
         >
           ✕
@@ -171,28 +194,25 @@ export function AlertsPopover({
       <div className="alerts-pop__body">
         {alerts.length === 0 ? (
           <div className="alerts-pop__empty" data-testid="alerts-empty">
-            No alerts for this symbol. Press <b>A</b> at the crosshair, or type a level below.
+            {singleKeys ? t('alerts.emptyHint', { key: 'A' }) : t('alerts.emptyHintNoKey')}
           </div>
         ) : (
           alerts.map((a) => {
             const muted = mutedFor(a.snoozedUntil, now);
-            // Five honest states (survey 3 #6): a fired alert now waits for the
+            // Five honest states: a fired alert now waits for the
             // hysteresis band; once price returns inside it the alert is
             // RE-ARMED (has fired before, currently armed); a manual re-arm
             // while price is still beyond shows the band it is waiting for.
+            const dir = a.above ? '↑' : '↓';
             const state = a.triggered
-              ? `fired ${a.triggeredAt !== null ? fmtClock(a.triggeredAt) : ''}`
+              ? t('alerts.state.fired', { time: a.triggeredAt !== null ? clockText(a.triggeredAt) : '—' })
               : muted !== null
-                ? `muted ${muted}s`
+                ? t('alerts.state.muted', { seconds: muted })
                 : a.rearmPx !== null
-                  ? `re-arming @ ${fmtPx(a.rearmPx)}`
+                  ? t('alerts.state.rearming', { price: alertPriceText(a.rearmPx) })
                   : a.triggeredAt !== null
-                    ? a.above
-                      ? 're-armed ↑'
-                      : 're-armed ↓'
-                    : a.above
-                      ? 'armed ↑'
-                      : 'armed ↓';
+                    ? t('alerts.state.rearmed', { dir })
+                    : t('alerts.state.armed', { dir });
             const stateCls = a.triggered
               ? ' alert-row__state--fired'
               : muted !== null
@@ -202,7 +222,7 @@ export function AlertsPopover({
             return (
               <div className="alert-row" key={a.id} data-testid="alert-row">
                 <span className="alert-row__px">
-                  {a.above ? '↑' : '↓'} {fmtPx(a.price)}
+                  {a.above ? '↑' : '↓'} {alertPriceText(a.price)}
                 </span>
                 <span className={`alert-row__state${stateCls}`} data-testid="alert-state">
                   {state}
@@ -214,7 +234,7 @@ export function AlertsPopover({
                     data-testid={`alert-rearm-${a.id}`}
                     onClick={() => onRearm(a.id)}
                   >
-                    re-arm
+                    {t('alerts.rearm')}
                   </button>
                 ) : (
                   <button
@@ -223,14 +243,14 @@ export function AlertsPopover({
                     data-testid={`alert-snooze-${a.id}`}
                     onClick={() => onSnooze(a.id)}
                   >
-                    snooze
+                    {t('alerts.snooze')}
                   </button>
                 )}
                 <button
                   type="button"
                   className="alert-row__btn"
                   data-testid={`alert-delete-${a.id}`}
-                  aria-label={`delete alert at ${fmtPx(a.price)}`}
+                  aria-label={t('alerts.deleteAria', { price: alertPriceText(a.price) })}
                   onClick={() => onDelete(a.id)}
                 >
                   ✕
@@ -249,10 +269,16 @@ export function AlertsPopover({
           type="number"
           step="any"
           min="0"
-          placeholder={`level ${refPx !== null ? `(mid ${fmtPx(Number(refPx.toFixed(decimals)))})` : ''}`}
-          aria-label="new alert price"
+          disabled={addBlocked}
+          placeholder={`${t('alerts.levelPlaceholder')}${
+            refPx !== null ? ` ${t('alerts.midPlaceholder', { price: alertPriceText(refPx) })}` : ''
+          }`}
+          aria-label={t('alerts.newPriceLabel')}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setHint(null);
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') submit();
           }}
@@ -261,12 +287,17 @@ export function AlertsPopover({
           type="button"
           className="alerts-add__go"
           data-testid="alerts-add-go"
-          disabled={!Number.isFinite(Number(draft)) || draft === ''}
+          disabled={price === null || addBlocked}
           onClick={submit}
         >
-          add
+          {t('alerts.add')}
         </button>
       </div>
+      {(addBlockedReason ?? hint) !== null && (
+        <div className="alerts-pop__empty" role="status" data-testid="alerts-add-hint">
+          {addBlockedReason ?? hint}
+        </div>
+      )}
     </section>
   );
 }

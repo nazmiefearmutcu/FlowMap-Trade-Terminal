@@ -136,6 +136,7 @@ export function makeFakeGL(opts: FakeGLOptions = {}): FakeGL {
     uniform1i: record('uniform1i'),
     uniform1f: record('uniform1f'),
     uniform4f: record('uniform4f'),
+    uniform2f: record('uniform2f'),
 
     createTexture: () => ({}),
     bindTexture: record('bindTexture'),
@@ -152,6 +153,7 @@ export function makeFakeGL(opts: FakeGLOptions = {}): FakeGL {
     createBuffer: () => ({}),
     bindBuffer: record('bindBuffer'),
     bufferData: record('bufferData'),
+    bufferSubData: record('bufferSubData'),
     deleteBuffer: record('deleteBuffer'),
 
     createVertexArray: () => ({}),

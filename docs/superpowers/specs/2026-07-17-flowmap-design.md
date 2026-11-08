@@ -1,4 +1,5 @@
 > Historical design note (2026-09-03): superseded — wire depth tiles are f32, see docs/architecture.md.
+> **Historical design note — the engine names below are retired.** Crypcodile is now the Crocodile engine (a vendored wheel, `server/vendor/`), and stockodile's providers live in `server/src/flowmap_server/feeds/`. The body is kept as the 2026-07-17 record; current facts are in [architecture.md](../../architecture.md).
 
 # FlowMap — Dual-Market Order-Flow Visualizer
 
@@ -23,13 +24,13 @@ FlowMap v1 (PyQt6, ~14.7k LOC) has two fatal, *structural* problems:
    smoothing, and colormapping is NumPy on the GUI thread.
 
 Additionally v1 is crypto-only, and the UI design quality is poor. Incremental fixes were mapped in
-`bug_hunt/` (R01, R09) and never landed; the architecture makes them palliative. v2 is a ground-up
+an earlier bug-hunt review and never landed; the architecture makes them palliative. v2 is a ground-up
 rebuild.
 
 ## 2. Goals
 
 - **G1 — Perf:** 60 fps pan/zoom/scale at any history depth. Interaction cost must be
-  **independent of history size** (transform-only rendering). Hard gates in §10.
+  **independent of history size** (transform-only rendering). Hard gates in the performance budget.
 - **G2 — Order-flow standard:** liquidity heatmap, DOM ladder, volume bubbles, time & sales,
   CVD, VWAP, volume profile, imbalance, large-lot/iceberg markers, event markers, crosshair
   liquidity readout, auto-follow, replay.
@@ -85,7 +86,7 @@ Tauri + sidecar route if a native shell is wanted later; nothing in this design 
 
 One server process. Sessions are keyed by `session_id`; a session wraps a shared
 (feed, grid) for one `(market, symbol, mode[, recording])` and is refcounted by subscribing
-clients (§11). The client is a pure renderer of the canonical stream; it contains no
+clients (see error handling and lifecycle). The client is a pure renderer of the canonical stream; it contains no
 market-specific logic. Note: stockodile's `YahooClient` is a plain REST client, not a Sink
 provider — `feeds/equity.py` drives Sink providers for streaming *and* direct YahooClient calls
 for 1 m-bar warmup/refresh.
@@ -95,7 +96,7 @@ for 1 m-bar warmup/refresh.
 ### 6.1 Events
 
 msgspec structs are the **in-process representation only**; the wire encoding is hand-packed
-binary per §6.2 (msgspec does msgpack/JSON, not C layout). Canonical events:
+binary per the framing section (msgspec does msgpack/JSON, not C layout). Canonical events:
 
 - `Hello {protocol_version, session_id, grid_epoch, epoch_params, capability_descriptor, norm_seed}`
   — first message after subscribe; server rejects mismatched protocol majors.
@@ -105,7 +106,7 @@ binary per §6.2 (msgspec does msgpack/JSON, not C layout). Canonical events:
 - `Trade {ts_ns, price, size, side(buy|sell|unknown), side_src(exchange|inferred|na), venue}`
 - `BBO {ts_ns, bid_px, bid_sz, ask_px, ask_sz}`
 - `DepthColumn {epoch, t0_ns, col_seq, mode(L2|L1_BAND|SYNTH_PROFILE), final, bid[f32×n], ask[f32×n]}`
-  — density is **time-weighted resting size** over the interval (§8.1). In `SYNTH_PROFILE` mode
+  — density is **time-weighted resting size** over the interval (see the server grid section). In `SYNTH_PROFILE` mode
   only `bid[]` is filled (single-channel density) and the client renders it with a distinct
   non-bid/ask colormap.
 - `BarColumn {epoch, t0_ns, col_seq, ohlc, vol_buy, vol_sell, cvd_cum, vwap_num_cum, vwap_den_cum}`
@@ -130,13 +131,13 @@ ranges: 0x01–0x3F data, 0x40–0x7F control, 0x80+ reserved. Bulk f32 payloads
 4-byte alignment within the frame so the client can create zero-copy `Float32Array` views
 (little-endian assumed; `DataView(littleEndian=true)` for headers). The protocol table lives in
 one source (`server/src/flowmap_server/proto/protocol.py`) and is mirrored to
-`client/src/proto/protocol.ts`; cross-language **golden-vector tests** (§12) keep them in lockstep.
+`client/src/proto/protocol.ts`; cross-language **golden-vector tests** (see the testing strategy) keep them in lockstep.
 `permessage-deflate` is enabled (depth payloads are sparse and highly compressible).
 
 ### 6.3 Sessions, snapshot, resync
 
 - **Identity:** every column message carries `(epoch, t0_ns, col_seq)`. `grid_epoch` increments on
-  any change to `(tick, tick_multiple, dt, p0 basis)` — including re-anchoring (§8.2) and replay
+  any change to `(tick, tick_multiple, dt, p0 basis)` — including re-anchoring (see price grid, epochs and drift) and replay
   seeks; each is announced in-stream by `EpochStart`. Columns for an epoch the client has no
   `EpochStart` for are buffered briefly, then a re-snapshot is requested; a `Seek`-induced epoch
   clears live tiles and re-snapshots. Dedupe key: `(epoch, col_seq)`.
@@ -204,10 +205,10 @@ in the time axis (order-flow-style compressed gap). Crypto runs 24/7 with no ses
 
 ### 8.1 Server grid (`core/grid.py`)
 
-Per session: a NumPy ring of columns at fixed cadence dt (§7) and fixed price grid per epoch.
+Per session: a NumPy ring of columns at fixed cadence dt (see the server grid section) and fixed price grid per epoch.
 Density semantics: **time-weighted resting size** — each book update adds
 `prev_depth × (t_now − t_prev)` into the current column; finalize divides by dt. Two different
-update cadences over the same book must produce byte-identical columns (golden test, §12); this
+update cadences over the same book must produce byte-identical columns (golden test, see the testing strategy); this
 prevents venue update-rate from masquerading as liquidity. Accumulation is vectorized
 (`np.add.at` on level-index arrays); no per-level Python loops. Current column accumulates in
 f32; finalized columns are stored f16 in the ring.
@@ -247,7 +248,7 @@ rejected).
   converts to f16).
 - **Value encoding:** per-instrument fixed scale from the capability descriptor, chosen so p99.9
   level size ≈ 1e2 (uniform-carried; f16 max 65 504 then survives ×256 sum-mips). Golden
-  round-trip test bounds the encode error (§12).
+  round-trip test bounds the encode error (see the testing strategy).
 - **Mips are SUMS, not averages** (a 500-lot wall must stay a 500-lot wall zoomed out):
   incremental GPU downsample passes (ping-pong FBO, 4×4 SUM) into level-1/-2 array textures on
   every 4th/16th column append. `EXT_color_buffer_float` is a **hard requirement** checked at
@@ -257,7 +258,7 @@ rejected).
   downsample shader saturates sums at 60 000 (f16 max is 65 504; an extreme wall ×256 at level 2
   can overflow — saturation is visually inert because the normalization percentile sits far
   below, and numeric readouts come from the CPU cache, not texels).
-- **Residency policy (the §10 memory gate assumes this):** full-res tiles for a recent window of
+- **Residency policy (the performance budget's memory gate assumes this):** full-res tiles for a recent window of
   ~16 k columns (≈256 MB at 4 096 rows); older ranges resident at mip levels only; LRU eviction
   of full-res tiles, re-fetch via `HistoryRequest` on deep-scroll zoom-in. Deep zoom-out renders
   exclusively from mips, so full extent never needs native residency. `webglcontextlost` →
@@ -295,7 +296,7 @@ architecture only.
 | Continuous wheel zoom (time & price) | ≥55 fps sustained |
 | Input → frame latency (CDP input timestamp → presentation, harness pinned to the built-in 120 Hz display) | <32 ms p95 (<2 vsync of active refresh) |
 | Live append stress (dt=50 ms columns, 2 000-level book — explicit stress config, not the shipped default) | server grid update <2 ms; client decode+upload+mip-pass+frame <8 ms |
-| Client GPU memory under the §8.3 residency policy | ≤300 MB |
+| Client GPU memory under the residency policy of the client renderer section | ≤300 MB |
 | Cold start to first heatmap (sim source) | <3 s |
 
 Measured by a Playwright/CDP harness driving synthetic input against the sim feed with a
@@ -307,7 +308,7 @@ pre-loaded 10 k-column history; runs headed on this Mac; results written to `per
   (`Provider.run` supervision); gaps surface as `Marker{kind=gap}` + visual hatching, never
   silent interpolation.
 - Sessions: refcounted by subscribers; feed+grid shared; **send queues, lag and drop state are
-  strictly per-client** (§6.3); teardown after last unsubscribe + 60 s grace. A crashed session
+  strictly per-client** (see sessions, snapshot and resync); teardown after last unsubscribe + 60 s grace. A crashed session
   restarts with backoff and reports via `Status`; other sessions unaffected.
 - Replay is a session variant `(market, symbol, mode=replay, source)` with its own `session_id` —
   live and replay of the same symbol coexist. The server owns the replay clock and re-emits the
@@ -330,10 +331,10 @@ pre-loaded 10 k-column history; runs headed on this Mac; results written to `per
   protocol decode against the same golden vectors (cross-language lockstep), histogram/
   normalization, LUT.
 - **E2E (Playwright):** boots server (sim feed), asserts heatmap pixels change, exercises every
-  feature; **perf gates of §10**; visual snapshots per pane; context-loss recovery test.
+  feature; **perf gates of the performance budget**; visual snapshots per pane; context-loss recovery test.
 - **Parity matrix (the G3 gate):** every feature × {crypto-sim, equity-sim(keyless-shaped),
   equity-sim(alpaca-shaped), crypto-live(Binance BTCUSDT), equity-live(keyless AAPL)} — each cell
-  asserts the *specified* state: full, badged-reduced, or explicit N/A per §7's table. Automated
+  asserts the *specified* state: full, badged-reduced, or explicit N/A per the capability model's table. Automated
   where possible; live cells verified in a headed browser session with screenshots before
   declaring done.
 - **Live verification:** real Binance WS and real keyless equity session observed ≥5 min each,
@@ -374,7 +375,7 @@ flowmap/  (branch v2)
 ```
 
 Old v1 package remains untouched on `main`; the `v2` branch adds the new tree alongside and
-removes v1 files only when v2 passes all gates (§10, §12).
+removes v1 files only when v2 passes all gates (the performance budget and the testing strategy).
 
 Milestones: **M1** upstream dep-splits + server core (sim feed, grid+epochs, protocol,
 golden vectors) → **M2** client GL renderer (tile array, sum-mips, residency, 60 fps gates on
@@ -382,4 +383,4 @@ sim) → **M3** overlays/DOM/tape/profile/detectors → **M4** equity adapter + 
 session model + parity matrix → **M5** record/replay both markets → **M6** polish, live
 verification, packaging script, README.
 
-Implementation proceeds via subagent-driven development with referee gates before merges.
+Implementation proceeds in parallel workstreams, with review gates before merges.

@@ -48,13 +48,20 @@ class HeadcountVelocityTracker:
             await self._session.close()
 
     async def fetch_company_headcount(self, symbol: str) -> dict[str, Any]:
-        """Fetch active job openings and breakdown by department."""
+        """Fetch active job openings for a mapped company and count them by department.
+
+        Only tickers in COMPANY_BOARD_MAP are queried. Any other ticker is reported
+        as having no verified board, rather than guessing one from the symbol.
+        """
         sym_clean = symbol.upper()
-        board_slug = COMPANY_BOARD_MAP.get(sym_clean, sym_clean.lower())
+        board_slug = COMPANY_BOARD_MAP.get(sym_clean)
+        if board_slug is None:
+            return _unavailable(sym_clean, source=None, reason="no_board_mapped")
 
         url = _GREENHOUSE_BASE.format(company=board_slug)
         session = await self._get_session()
         jobs: list[dict[str, Any]] | None = None
+        reason: str | None = None
 
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
@@ -63,22 +70,20 @@ class HeadcountVelocityTracker:
                     candidate = data.get("jobs") if isinstance(data, dict) else None
                     if isinstance(candidate, list) and all(isinstance(job, dict) for job in candidate):
                         jobs = candidate
+                    else:
+                        reason = "malformed_response"
+                elif resp.status == 404:
+                    reason = "board_not_found"
+                elif resp.status == 429:
+                    reason = "rate_limited"
+                else:
+                    reason = f"http_{resp.status}"
         except Exception as exc:
+            reason = "unreachable"
             log.debug("Greenhouse query for %s failed: %s", board_slug, exc)
 
         if jobs is None:
-            return {
-                "symbol": sym_clean,
-                "available": False,
-                "source": url,
-                "total_openings": None,
-                "rd_engineering_openings": None,
-                "sales_openings": None,
-                "ga_openings": None,
-                "talent_index_delta_pct": None,
-                "signal": "UNAVAILABLE",
-                "department_classification": "title_and_department_keyword_heuristic",
-            }
+            return _unavailable(sym_clean, source=url, reason=reason or "unknown")
 
         rd_count = 0
         sales_count = 0
@@ -92,7 +97,7 @@ class HeadcountVelocityTracker:
 
             if re.search(r"\b(engineer(?:ing)?|developer|research|software|ai|hardware)\b", comb):
                 rd_count += 1
-            elif any(k in comb for k in ["sales", "account", "marketing", "business dev"]):
+            elif _SALES_TERMS.search(comb):
                 sales_count += 1
             else:
                 ga_count += 1
@@ -102,6 +107,8 @@ class HeadcountVelocityTracker:
             "symbol": sym_clean,
             "available": True,
             "source": url,
+            "board": board_slug,
+            "reason": None,
             "total_openings": total,
             "rd_engineering_openings": rd_count,
             "sales_openings": sales_count,
@@ -110,3 +117,26 @@ class HeadcountVelocityTracker:
             "signal": "CURRENT_OPENINGS",
             "department_classification": "title_and_department_keyword_heuristic",
         }
+
+
+# Whole words only: "Accountant", "Accounting" and "Accounts Payable" are G&A roles.
+_SALES_TERMS = re.compile(
+    r"\b(sales|marketing|business development|business dev|account (?:executive|manager|representative|director))\b"
+)
+
+
+def _unavailable(symbol: str, *, source: str | None, reason: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "available": False,
+        "source": source,
+        "board": None,
+        "reason": reason,
+        "total_openings": None,
+        "rd_engineering_openings": None,
+        "sales_openings": None,
+        "ga_openings": None,
+        "talent_index_delta_pct": None,
+        "signal": "UNAVAILABLE",
+        "department_classification": "title_and_department_keyword_heuristic",
+    }

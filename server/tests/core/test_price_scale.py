@@ -1,4 +1,4 @@
-"""Price scale (spec §8.1) — the row<->price map, both kinds.
+"""Price scale — the row<->price map, both kinds.
 
 The hybrid scale exists so range and resolution stop being the same knob. These
 tests pin the two properties everything downstream leans on — CONTINUITY at the

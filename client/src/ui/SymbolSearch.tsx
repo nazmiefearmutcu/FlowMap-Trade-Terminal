@@ -1,6 +1,6 @@
 /**
- * Dual-market symbol palette (§9 top bar) — a big, centre-screen search modal in
- * the shape traders expect from TradingView / an exchange search box.
+ * Dual-market symbol palette (top bar) — a big, centre-screen search modal in the
+ * shape traders expect from TradingView / an exchange search box.
  *
  * - A compact TRIGGER lives in the top bar (current symbol + a ⌘K hint). Clicking
  *   it — or the `/` and ⌘K / Ctrl-K global shortcuts (see input/keys.ts + App) —
@@ -30,11 +30,15 @@
  * things — a venue that listed nothing says so, a listing that failed says THAT
  * and offers a retry, and neither looks like an empty search.
  *
- * Symmetry / honesty (§7, §14): capability chips are shown verbatim off the
- * feed's descriptor, so an equity symbol that cannot reach L2 depth or a true CVD
- * reads `SYNTH` / `SIDE NA` rather than pretending parity with crypto, and a
- * ccxt-served venue reads `L2-SNAPSHOT` rather than borrowing a native feed's
- * `L2`. A symbol whose quote provider is unreachable shows "data unavailable".
+ * Symmetry / honesty: capability chips are shown verbatim off the feed's
+ * descriptor, so an equity symbol that cannot reach L2 depth or a true CVD reads
+ * `SYNTH` / `SIDE NA` rather than pretending parity with crypto, and a ccxt-served
+ * venue reads `L2-SNAPSHOT` rather than borrowing a native feed's `L2`. A symbol
+ * whose quote provider is unreachable shows "data unavailable".
+ *
+ * The parts live beside this file: data hooks in SymbolSearchHooks.ts, pure
+ * helpers in SymbolSearchModel.ts, rows in SymbolSearchRows.tsx, the result list
+ * in SymbolSearchResults.tsx and the preview in SymbolSearchPreview.tsx.
  */
 
 import {
@@ -45,31 +49,28 @@ import {
   useMemo,
   useRef,
   useState,
-  Fragment,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useT } from '../i18n/useT';
+import { formatNumber } from '../i18n/format';
+import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 
-import { apiBase } from '../net/serverBase';
-import { BUNDLED_DIRECTORY } from './bundledDirectory';
 import {
   ALL_VENUES,
   capabilityChipClass,
   capabilityChipTitle,
-  capabilityChips,
   fuzzyRank,
-  marketGroup,
   rankVenueOptions,
-  setVenueCatalog,
   venueOptions,
-  type SymbolEntry,
-  type VenueInfo,
   type VenueOption,
 } from './symbols';
 import { loadRecents, pushRecent, type RecentPick } from './recents';
 import { pushOverlay } from './overlayStack';
-import { fmtPct, fmtPrice, sparkDirection, sparkPath } from './spark';
-import { PreviewQuotes, type PreviewQuote } from './previewQuotes';
+import { useMoversWarmup, usePreviewQuotes, usePreviewWarmup, useScopeListing, useUniverse, useVenueCatalog, useWarmSymbols } from './SymbolSearchHooks';
+import { searchChord, trapFocusKeyDown, venueText, type Row } from './SymbolSearchModel';
+import { PreviewPane } from './SymbolSearchPreview';
+import { SymbolSearchResults } from './SymbolSearchResults';
 
 export interface SymbolSearchHandle {
   /** Open the palette (bound to the `/` and ⌘K/Ctrl-K global shortcuts). */
@@ -84,116 +85,38 @@ interface SymbolSearchProps {
   onSelect: (market: string, symbol: string) => void;
 }
 
-const GROUP_LABEL: Record<string, string> = {
-  crypto: 'Crypto',
-  equity: 'Equity',
-  sim: 'Sim',
-  all: 'All',
-};
-/** Live venue enumeration is uncapped-ish; the server clamps `limit` at 1000. */
-const VENUE_LIMIT = 1000;
-
-/** A single search result: a directory entry, optionally enriched with a quote. */
-interface Row {
-  entry: SymbolEntry;
-  quote?: PreviewQuote;
-}
-
-interface PreviewWarmup {
-  total: number;
-  completed: number;
-  ready: number;
-  warming: boolean;
-}
-
-interface PreviewSnapshot extends PreviewWarmup {
-  quotes: PreviewQuote[];
-  revision: number;
-  generation: string;
-}
-
-function validPreviewSnapshot(value: PreviewSnapshot | null): value is PreviewSnapshot {
-  return value !== null && Array.isArray(value.quotes)
-    && Number.isSafeInteger(value.revision) && value.revision >= 0
-    && typeof value.generation === 'string' && value.generation.length > 0 && value.generation.length <= 64
-    && typeof value.warming === 'boolean'
-    && Number.isInteger(value.total) && value.total >= 0 && value.total <= 512
-    && Number.isInteger(value.completed) && value.completed >= 0 && value.completed <= value.total
-    && Number.isInteger(value.ready) && value.ready >= 0 && value.ready <= value.total;
-}
-
-/**
- * Where the current scope's symbol list stands. `idle` = the bundled `all` scope.
- *
- * `empty` and `failed` are DIFFERENT facts and must never collapse into one:
- * `empty` is a 200 that listed no symbols (a reachable venue with nothing to
- * offer), `failed` is a request that never produced an answer at all.
- */
-type ScopeState = 'idle' | 'loading' | 'ready' | 'empty' | 'failed';
-
-async function getJson<T>(path: string, signal: AbortSignal): Promise<T | null> {
-  try {
-    const r = await fetch(`${apiBase()}${path}`, { signal });
-    if (!r.ok) return null;
-    return (await r.json()) as T;
-  } catch (err) {
-    if ((err as { name?: string })?.name !== 'AbortError') {
-      console.warn('[flowmap] palette fetch failed', path, err);
-    }
-    return null;
-  }
-}
-
-function previewStorage(): Storage | null {
-  try {
-    return typeof window === 'undefined' ? null : window.localStorage;
-  } catch {
-    return null;
-  }
-}
-
 export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
   function SymbolSearch({ current, onSelect }, ref) {
+    const t = useT();
+    const singleKeys = useSingleKeyShortcuts();
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
     // Raw highlight index; the RENDER-time `active` below clamps it to the current
     // row count so a shrinking result set can never reference an out-of-bounds row
     // for a frame (a post-commit clamp effect would leave one bad frame committed).
     const [activeState, setActive] = useState(0);
-    const [universe, setUniverse] = useState<SymbolEntry[]>(BUNDLED_DIRECTORY);
-    const universeLoaded = useRef(false);
-    const [, setQuoteRevision] = useState(0);
-    const [previewQuotes] = useState(() => new PreviewQuotes({
-      storage: previewStorage(),
-      fetchQuote: (market, symbol, signal) => getJson<PreviewQuote>(
-        `/api/quote?market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}`,
-        signal,
-      ),
-      onChange: () => setQuoteRevision((revision) => revision + 1),
-    }));
-    const [previewWarmup, setPreviewWarmup] = useState<PreviewWarmup | null>(null);
-    // Venue scope: `all` = the bundled directory (instant), else a market string
-    // enumerated live. `venues === null` means /api/venues has not answered yet.
-    const [venues, setVenues] = useState<VenueInfo[] | null>(null);
+    const [quoteRevision, setQuoteRevision] = useState(0);
+    const previewQuotes = usePreviewQuotes(() => setQuoteRevision((revision) => revision + 1));
+    const previewWarmup = usePreviewWarmup(previewQuotes);
     // Recent picks (localStorage, max 5, most recent first) — shown as their own
     // section above the directory when the query is empty. Read once at mount; a
     // pick rewrites both the persisted list and this state.
     const [recents, setRecents] = useState<RecentPick[]>(() =>
       loadRecents(typeof window !== 'undefined' ? window.localStorage : null),
     );
+    const universe = useUniverse(open);
+    useWarmSymbols(current, recents, universe, previewQuotes);
+    // Venue scope: `all` = the bundled directory (instant), else a market string
+    // enumerated live. `venues === null` means /api/venues has not answered yet.
+    const venues = useVenueCatalog(open);
     const [scope, setScope] = useState<string>(ALL_VENUES);
     const [pickingVenue, setPickingVenue] = useState(false);
-    const [scopeRows, setScopeRows] = useState<SymbolEntry[] | null>(null);
-    const [scopeState, setScopeState] = useState<ScopeState>('idle');
     // Bumped on every venue pick (even a re-pick of the CURRENT scope) and by the
     // retry control, so a failed listing is re-issuable without first switching
     // away to another venue and back — `scope` alone would be a no-op dep there.
     const [scopeAttempt, setScopeAttempt] = useState(0);
-    // Per-venue memo so re-picking a venue this session is instant, not another
-    // multi-second listing. Held in a ref: it must survive closing the palette.
-    // Holds ANSWERS ONLY — a failed listing is deliberately absent, so the next
-    // attempt refetches instead of inheriting a fabricated empty list forever.
-    const scopeCache = useRef(new Map<string, SymbolEntry[]>());
+    const { scopeRows, scopeState, forgetScope } = useScopeListing(open, scope, scopeAttempt);
+    useMoversWarmup(previewQuotes);
     const inputRef = useRef<HTMLInputElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
@@ -210,187 +133,20 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
     useImperativeHandle(ref, () => ({ open: doOpen, focus: doOpen }), [doOpen]);
 
     useEffect(() => {
-      previewQuotes.resume();
-      return () => previewQuotes.dispose();
-    }, [previewQuotes]);
-
-    // The server prepares the entire catalog from startup. Pull only newly
-    // completed observations while this menu is closed too; this endpoint
-    // reads memory and never starts provider work. A generation token recovers
-    // the cursor if the desktop sidecar restarts without reloading the UI.
-    useEffect(() => {
-      let stopped = false;
-      let revision = 0;
-      let generation = '';
-      let timer: number | undefined;
-      let timeout: number | undefined;
-      let controller: AbortController | undefined;
-      const poll = async () => {
-        const requestedAt = Date.now();
-        controller = new AbortController();
-        const currentController = controller;
-        timeout = window.setTimeout(() => currentController.abort(), 3_000);
-        const body = await getJson<PreviewSnapshot>(
-          `/api/previews?after=${revision}${generation ? `&generation=${encodeURIComponent(generation)}` : ''}`,
-          currentController.signal,
-        );
-        window.clearTimeout(timeout);
-        if (stopped) return;
-        let next = 3_000;
-        if (validPreviewSnapshot(body)) {
-          // Limit untrusted responses even though the server also caps its cache.
-          for (const quote of body.quotes.slice(0, 512)) previewQuotes.put(quote, requestedAt);
-          revision = body.revision;
-          generation = body.generation;
-          setPreviewWarmup((previous) => previous && previous.total === body.total
-            && previous.completed === body.completed && previous.ready === body.ready
-            && previous.warming === body.warming ? previous : {
-              total: body.total, completed: body.completed, ready: body.ready, warming: body.warming,
-            });
-          next = body.warming ? 500 : 30_000;
-        }
-        timer = window.setTimeout(() => void poll(), next);
-      };
-      void poll();
-      return () => {
-        stopped = true;
-        controller?.abort();
-        window.clearTimeout(timer);
-        window.clearTimeout(timeout);
-      };
-    }, [previewQuotes]);
-
-    // Prepare the current and recent symbols before the trader opens search.
-    // The bounded scheduler shares requests with hover and never clears a good
-    // chart while it refreshes. Sim has no provider preview to warm.
-    useEffect(() => {
-      const separator = current.indexOf(':');
-      const picks = separator > 0
-        ? [{ market: current.slice(0, separator), symbol: current.slice(separator + 1) }, ...recents]
-        : recents;
-      for (const pick of picks) {
-        if (marketGroup(pick.market) !== 'sim') previewQuotes.request(pick.market, pick.symbol, true);
-      }
-      for (const entry of universe.slice(0, 6)) previewQuotes.request(entry.market, entry.symbol);
-    }, [current, recents, universe, previewQuotes]);
-
-    // Refresh the bundled symbols with the server's active capabilities once.
-    // The local directory already renders and searches on the very first visit;
-    // even an unavailable server cannot turn it into a loading/empty screen.
-    useEffect(() => {
-      if (!open || universeLoaded.current) return;
-      const ctrl = new AbortController();
-      void getJson<{ symbols: SymbolEntry[] }>('/api/universe?market=all&limit=1000', ctrl.signal).then(
-        (b) => {
-          if (ctrl.signal.aborted || !b?.symbols?.length) return;
-          universeLoaded.current = true;
-          // Keep known symbols in their first-paint order while adopting fresh
-          // capabilities. Server-only entries (e.g. sim) append, rather than
-          // inserting above the row a keyboard user is about to select.
-          setUniverse((previous) => {
-            const refreshed = new Map(b.symbols.map((entry) => [`${entry.market}:${entry.symbol}`, entry]));
-            const retained = previous.flatMap((entry) => {
-              const key = `${entry.market}:${entry.symbol}`;
-              const fresh = refreshed.get(key);
-              refreshed.delete(key);
-              return fresh ? [fresh] : [];
-            });
-            return [...retained, ...refreshed.values()];
-          });
-        },
-      );
-      return () => ctrl.abort();
-    }, [open]);
-
-    // Fetch the venue catalog ONCE. /api/venues is pure server-side (module
-    // constants, no network), so this never delays the rows above — and it makes
-    // `marketGroup` answer from the server's assetClass instead of guessing.
-    useEffect(() => {
-      if (!open || venues !== null) return;
-      const ctrl = new AbortController();
-      void getJson<{ venues: VenueInfo[] }>('/api/venues', ctrl.signal).then((b) => {
-        if (!b) return; // leave `venues` null so the next open retries
-        const list = b.venues ?? [];
-        setVenueCatalog(list);
-        setVenues(list);
-      });
-      return () => ctrl.abort();
-    }, [open, venues]);
-
-    // Enumerate the chosen venue. This is the OPT-IN slow path: the first listing
-    // of a venue is a live REST round trip (~1-7 s), so it renders a loading
-    // state rather than an empty list, and the result is memoised per venue.
-    useEffect(() => {
-      if (!open || scope === ALL_VENUES) {
-        setScopeRows(null);
-        setScopeState('idle');
-        return;
-      }
-      const cached = scopeCache.current.get(scope);
-      if (cached) {
-        setScopeRows(cached);
-        setScopeState(cached.length > 0 ? 'ready' : 'empty');
-        return;
-      }
-      setScopeRows(null);
-      setScopeState('loading');
-      const ctrl = new AbortController();
-      void getJson<{ symbols: SymbolEntry[] }>(
-        `/api/universe?market=${encodeURIComponent(scope)}&limit=${VENUE_LIMIT}`,
-        ctrl.signal,
-      ).then((b) => {
-        if (ctrl.signal.aborted) return; // a newer scope superseded this listing
-        if (!b) {
-          // Non-2xx or a network error: we learned NOTHING about this venue.
-          // Leave the cache untouched (mirroring the `/api/venues` effect above,
-          // which leaves `venues` null so the next open retries) — memoising `[]`
-          // here would freeze one transient 502 into a venue that is dead for the
-          // whole session AND indistinguishable from a genuinely empty one.
-          setScopeState('failed');
-          return;
-        }
-        const list = b.symbols ?? [];
-        scopeCache.current.set(scope, list);
-        setScopeRows(list);
-        // An unreachable venue degrades to an empty body server-side rather than
-        // erroring, so "no rows" is the honest signal to surface, not a spinner.
-        setScopeState(list.length > 0 ? 'ready' : 'empty');
-      });
-      return () => ctrl.abort();
-    }, [open, scope, scopeAttempt]);
-
-    // Warm display data while search is closed too. Retain completed answers
-    // across visits and feed the same cache used by the highlighted preview.
-    useEffect(() => {
-      const ctrl = new AbortController();
-      const refresh = () => {
-        const requestedAt = Date.now();
-        for (const market of ['crypto', 'equity'] as const) {
-          void getJson<{ movers: PreviewQuote[] }>(`/api/movers?market=${market}&limit=100`, ctrl.signal).then((b) => {
-            if (ctrl.signal.aborted || !b) return;
-            for (const quote of b.movers ?? []) previewQuotes.put(quote, requestedAt);
-          });
-        }
-      };
-      refresh();
-      const interval = window.setInterval(refresh, 30_000);
-      return () => {
-        ctrl.abort();
-        window.clearInterval(interval);
-      };
-    }, [previewQuotes]);
-
-    useEffect(() => {
       if (!open) return;
-      const t = window.setTimeout(() => inputRef.current?.focus(), 0);
-      return () => window.clearTimeout(t);
+      const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
+      return () => window.clearTimeout(timer);
     }, [open]);
 
     // The visible rows. Scoped to a venue: that venue's own listing, browsable on
     // an empty query. Scoped to `all`: recent picks + the COMPLETE directory on
     // an empty query, deduped. Movers only fill quote columns, keeping keyboard
     // targets stable while either provider is slow or unavailable.
-    const rows: Row[] = (() => {
+    // Memoized: a quote landing bumps `quoteRevision` and rebuilds the rows; an
+    // unrelated render, such as a keystroke-free highlight move, reuses them.
+    const rows = useMemo<Row[]>(() => {
+      // The preview cache is read in place, so the revision is what tells this memo a quote changed.
+      void quoteRevision;
       if (scope !== ALL_VENUES) {
         return fuzzyRank(scopeRows ?? [], query, 120).map((entry) => ({
           entry,
@@ -413,7 +169,7 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
         entry,
         quote: previewQuotes.get(`${entry.market}:${entry.symbol}`),
       }));
-    })();
+    }, [scope, scopeRows, query, universe, recents, previewQuotes, quoteRevision]);
 
     // How many LEADING rows are the Recent section (0 unless the empty-query
     // bundled-directory view) — the render uses it to place section headers.
@@ -441,9 +197,8 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
 
     // The stable identity of the highlighted row. `rows` is rebuilt whenever the
     // movers or the universe resolves, so a row OBJECT changes identity on every
-    // such recompute — an effect keyed on it aborts the in-flight quote every
-    // time (QA12 M-5: first request always wasted, preview 4–8 s late). The
-    // preview follows `market:symbol`; the latest row is read through a ref.
+    // such recompute — an effect keyed on it would abort the in-flight quote every
+    // time. The preview follows `market:symbol`; the latest row is read through a ref.
     const activeKey = !pickingVenue && activeRow
       ? `${activeRow.entry.market}:${activeRow.entry.symbol}`
       : null;
@@ -459,12 +214,17 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
       if (row) previewQuotes.request(row.entry.market, row.entry.symbol, true);
     }, [open, activeKey, previewQuotes]);
 
+    // The rows inside the highlight's prefetch window. The effect is keyed on their
+    // identities (`visibleKey`), not on `rows`: a quote landing rebuilds `rows` and
+    // must not re-issue every preview request.
+    const visibleRows = rows.slice(Math.max(0, active - 1), active + 4);
+    const visibleKey = visibleRows.map((row) => `${row.entry.market}:${row.entry.symbol}`).join('\n');
+    const visibleRowsRef = useRef<Row[]>(visibleRows);
+    visibleRowsRef.current = visibleRows;
     useEffect(() => {
       if (!open || pickingVenue) return;
-      for (const row of rows.slice(Math.max(0, active - 1), active + 4)) {
-        previewQuotes.request(row.entry.market, row.entry.symbol);
-      }
-    }, [open, pickingVenue, active, rows, previewQuotes]);
+      for (const row of visibleRowsRef.current) previewQuotes.request(row.entry.market, row.entry.symbol);
+    }, [open, pickingVenue, visibleKey, previewQuotes]);
 
     const close = useCallback(() => {
       setOpen(false);
@@ -514,9 +274,11 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
 
     /** Re-issue the current venue's listing (the failure state's retry). */
     const retryScope = useCallback(() => {
+      // A retry must reach the network, not the remembered (possibly outage-era) answer.
+      forgetScope(scope);
       setScopeAttempt((n) => n + 1);
       inputRef.current?.focus();
-    }, []);
+    }, [scope, forgetScope]);
 
     const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
       const last = count - 1;
@@ -554,31 +316,6 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
       }
     };
 
-    // Trap Tab / Shift+Tab within the palette (same contract as the settings
-    // drawer and the shortcuts overlay): without it, Tab past the last focusable
-    // lands on the page BEHIND the modal backdrop and focus is lost out of the
-    // dialog.
-    const onTrapKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
-      if (e.key !== 'Tab') return;
-      const panel = e.currentTarget;
-      const focusable = panel.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      if (e.shiftKey) {
-        if (active === first || !panel.contains(active)) {
-          e.preventDefault();
-          last.focus();
-        }
-      } else if (active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
     // Reset the highlight to the top whenever the query or the mode changes.
     // Shrinking result sets are handled by the render-time clamp on `active`, not
     // a post-commit effect, so no out-of-bounds frame can commit.
@@ -590,35 +327,34 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
     }, [active, open]);
 
     const shownPreview = activeKey ? previewQuotes.get(activeKey) : undefined;
-    const previewDir = shownPreview ? sparkDirection(shownPreview.spark) : 0;
-    const previewDate = shownPreview?.asOf ? new Date(shownPreview.asOf / 1e6) : null;
-    const previewAsOf = previewDate && Number.isFinite(previewDate.getTime())
-      ? previewDate.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-      : null;
-    const scopeLabel = scopeOption?.label ?? scope;
+    const scopeLabel = scopeOption ? venueText(t, scopeOption) : scope;
     const scopeDepth = scopeOption?.depth ? scopeOption.depth.toUpperCase() : '';
     const placeholder = pickingVenue
-      ? 'Filter venues…'
+      ? t('search.placeholderVenue')
       : scope === ALL_VENUES
-        ? 'Search all markets — symbol or venue…'
-        : `Search ${scope} — in its own symbol spelling`;
+        ? t('search.placeholderAll')
+        : t('search.placeholderScope', { scope });
 
     /** The honest one-liner for the current scope, beside the venue button. */
     const scopeNote = pickingVenue
       ? venues === null
-        ? 'reading venue list…'
-        : `${venueRows.length} of ${allVenues.length} venues`
+        ? t('search.readingVenues')
+        : t('search.venuesOf', { count: formatNumber(venueRows.length), total: formatNumber(allVenues.length) })
       : scope === ALL_VENUES
         ? previewWarmup && previewWarmup.total > 0
-          ? `${universe.length} symbols — ${previewWarmup.warming ? 'preparing previews' : 'previews ready'} ${previewWarmup.ready}/${previewWarmup.total}`
-          : `${universe.length} symbols — prices update separately`
+          ? t(previewWarmup.warming ? 'search.symbolsPreparing' : 'search.symbolsPreviewsReady', {
+            count: formatNumber(universe.length),
+            ready: formatNumber(previewWarmup.ready),
+            total: formatNumber(previewWarmup.total),
+          })
+          : t('search.symbolsPricesSeparate', { count: formatNumber(universe.length) })
         : scopeState === 'loading'
-          ? 'listing…'
+          ? t('search.listing')
           : scopeState === 'failed'
-            ? 'listing failed'
+            ? t('search.listingFailed')
             : scopeState === 'empty'
-              ? 'no listing'
-              : `${scopeRows?.length ?? 0} symbols`;
+              ? t('search.noListing')
+              : t('search.symbolCount', { count: formatNumber(scopeRows?.length ?? 0) });
 
     return (
       <>
@@ -628,15 +364,17 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
           className="symsearch__trigger"
           data-testid="symbol-search-trigger"
           onClick={doOpen}
-          aria-label="Search symbols"
-          title="Search symbols ( / or ⌘K )"
+          aria-label={t('search.openAria')}
+          title={singleKeys
+            ? t('search.openTitle', { chord: searchChord() })
+            : t('search.openTitleChord', { chord: searchChord() })}
         >
           <span className="symsearch__icon" aria-hidden="true">
             ⌕
           </span>
           <span className="symsearch__current">{current}</span>
           <span className="symsearch__kbd" aria-hidden="true">
-            ⌘K
+            {searchChord()}
           </span>
         </button>
 
@@ -653,8 +391,8 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
                 className="sympal"
                 role="dialog"
                 aria-modal="true"
-                aria-label="Symbol search"
-                onKeyDown={onTrapKeyDown}
+                aria-label={t('search.dialogAria')}
+                onKeyDown={trapFocusKeyDown}
               >
                 <div className="sympal__head">
                   <span className="sympal__icon" aria-hidden="true">
@@ -676,9 +414,9 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
                     aria-expanded
                     aria-controls="sympal-listbox"
                     aria-activedescendant={count ? `sympal-opt-${active}` : undefined}
-                    aria-label="symbol search"
+                    aria-label={t('search.inputAria')}
                   />
-                  <button type="button" className="sympal__esc" onClick={close} aria-label="close search">
+                  <button type="button" className="sympal__esc" onClick={close} aria-label={t('search.closeAria')}>
                     esc
                   </button>
                 </div>
@@ -695,7 +433,7 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
                       inputRef.current?.focus();
                     }}
                   >
-                    <span className="sympal__venuebtn-k">venue</span>
+                    <span className="sympal__venuebtn-k">{t('search.venueLabel')}</span>
                     <span className="sympal__venuebtn-v" data-testid="venue-scope">
                       {scopeLabel}
                     </span>
@@ -704,7 +442,7 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
                     </span>
                   </button>
                   {scopeDepth ? (
-                    <span className={capabilityChipClass(scopeDepth)} title={capabilityChipTitle(scopeDepth)}>
+                    <span className={capabilityChipClass(scopeDepth)} title={capabilityChipTitle(scopeDepth, t)}>
                       {scopeDepth}
                     </span>
                   ) : null}
@@ -712,241 +450,38 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
                 </div>
 
                 <div className="sympal__body">
-                  <div
-                    className="sympal__list"
-                    ref={listRef}
-                    id="sympal-listbox"
-                    role="listbox"
-                    aria-label={pickingVenue ? 'venues' : 'symbols'}
-                  >
-                    {pickingVenue ? (
-                      <>
-                        <div className="sympal__section">Venues · {allVenues.length - 1} reachable</div>
-                        {venueRows.length === 0 ? (
-                          <div className="sympal__empty">
-                            {venues === null ? 'loading venues…' : `no venue matches “${query}”`}
-                          </div>
-                        ) : (
-                          venueRows.map((v, idx) => (
-                            <div
-                              key={v.market}
-                              id={`sympal-opt-${idx}`}
-                              className={`sympal__vrow${idx === active ? ' is-active' : ''}`}
-                              role="option"
-                              aria-selected={idx === active}
-                              data-testid="venue-row"
-                              data-market={v.market}
-                              onMouseEnter={() => setActive(idx)}
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                chooseVenue(v.market);
-                              }}
-                            >
-                              <span className={`sympal__grp sympal__grp--${v.group}`}>
-                                {GROUP_LABEL[v.group] ?? v.group}
-                              </span>
-                              <span className="sympal__sym">{v.label}</span>
-                              <span className="sympal__vmeta">
-                                {v.depth ? (
-                                  <span
-                                    className={capabilityChipClass(v.depth.toUpperCase())}
-                                    title={capabilityChipTitle(v.depth.toUpperCase())}
-                                  >
-                                    {v.depth.toUpperCase()}
-                                  </span>
-                                ) : null}
-                              </span>
-                            </div>
-                          ))
-                        )}
-                      </>
-                    ) : scopeState === 'loading' ? (
-                      // The opt-in slow path: a venue's FIRST listing is a live REST
-                      // round trip. Say which venue and that seconds are expected —
-                      // an unexplained empty list would read as "no symbols".
-                      <div className="sympal__loading" data-testid="venue-loading" role="status" aria-live="polite">
-                        <span className="sympal__loadbar" aria-hidden="true" />
-                        listing {scope} — a venue's first read can take a few seconds
-                      </div>
-                    ) : scopeState === 'failed' ? (
-                      // A FAILED listing, which is not the same claim as "this
-                      // venue has no symbols" — we never got an answer, so we
-                      // assert nothing about the venue and cached nothing.
-                      <div className="sympal__failed" data-testid="venue-failed" role="status" aria-live="polite">
-                        <span className="sympal__failed-h">{scope} could not be read</span>
-                        <span className="sympal__failed-s">
-                          The listing request failed — this says nothing about whether {scope} has
-                          symbols. Nothing was cached, so it is worth another try.
-                        </span>
-                        <button
-                          type="button"
-                          className="sympal__retry"
-                          data-testid="venue-retry"
-                          onClick={retryScope}
-                        >
-                          retry listing
-                        </button>
-                      </div>
-                    ) : rows.length === 0 ? (
-                      <div className="sympal__empty">
-                        {scope !== ALL_VENUES
-                          ? scopeState === 'empty'
-                            ? `${scope} listed no symbols — the venue may be unreachable right now`
-                            : `no ${scope} symbol matches “${query}”`
-                          : `no symbols match “${query}”`}
-                      </div>
-                    ) : (
-                      <>
-                        {query.trim() === '' && scope !== ALL_VENUES && (
-                          <div className="sympal__section">{`${scope} · ${scopeRows?.length ?? 0} symbols`}</div>
-                        )}
-                        {query.trim() === '' && scope === ALL_VENUES && recentCount === 0 && rows.length > 0 && (
-                          <div className="sympal__section">All markets</div>
-                        )}
-                        {rows.map((row, idx) => {
-                        const g = marketGroup(row.entry.market);
-                        const chg = row.quote?.changePct ?? null;
-                        const dir = sparkDirection(row.quote?.spark ?? []);
-                        return (
-                          <Fragment key={`${row.entry.market}:${row.entry.symbol}`}>
-                          {/* Section headers ride INSIDE the map so they scroll with
-                              their rows: Recent first, then All markets. */}
-                          {idx === 0 && recentCount > 0 && (
-                            <div className="sympal__section" data-testid="recent-section">
-                              Recent
-                            </div>
-                          )}
-                          {idx === recentCount && recentCount > 0 && (
-                            <div className="sympal__section">All markets</div>
-                          )}
-                          <div
-                            id={`sympal-opt-${idx}`}
-                            className={`sympal__row${idx === active ? ' is-active' : ''}`}
-                            role="option"
-                            aria-selected={idx === active}
-                            data-testid="symbol-row"
-                            data-market={row.entry.market}
-                            data-symbol={row.entry.symbol}
-                            data-recent={idx < recentCount ? 'true' : undefined}
-                            onMouseEnter={() => setActive(idx)}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              commit(row);
-                            }}
-                          >
-                            <span className={`sympal__grp sympal__grp--${g}`}>{GROUP_LABEL[g] ?? g}</span>
-                            <span className="sympal__sym">{row.entry.symbol}</span>
-                            {row.quote?.spark?.length ? (
-                              <svg className="sympal__spark" viewBox="0 0 56 18" preserveAspectRatio="none" aria-hidden="true">
-                                <path
-                                  d={sparkPath(row.quote.spark, 56, 18)}
-                                  className={dir >= 0 ? 'spark-up' : 'spark-down'}
-                                  fill="none"
-                                />
-                              </svg>
-                            ) : (
-                              // The DEPTH chip only — it is the fidelity claim that
-                              // decides whether a row is worth opening, and the
-                              // 11-character `L2-SNAPSHOT` would wrap the full set to
-                              // three lines per row. The complete honest set is in the
-                              // preview panel, which follows the highlighted row.
-                              <span className="sympal__caps">
-                                {capabilityChips(row.entry.capability)
-                                  .slice(0, 1)
-                                  .map((c) => (
-                                    <span key={c} className={capabilityChipClass(c)} title={capabilityChipTitle(c)}>
-                                      {c}
-                                    </span>
-                                  ))}
-                              </span>
-                            )}
-                            <span className="sympal__px">{fmtPrice(row.quote?.price)}</span>
-                            <span
-                              className={`sympal__chg${chg == null ? '' : chg >= 0 ? ' is-up' : ' is-down'}`}
-                            >
-                              {fmtPct(chg)}
-                            </span>
-                          </div>
-                          </Fragment>
-                        );
-                        })}
-                      </>
-                    )}
-                  </div>
-
-                  <aside className="sympal__preview" aria-label="preview">
-                    {pickingVenue ? (
-                      activeVenue ? (
-                        <>
-                          <div className="sympal__pv-sym">{activeVenue.label}</div>
-                          <div className="sympal__pv-mkt">
-                            {activeVenue.market === ALL_VENUES ? 'bundled directory' : activeVenue.group}
-                          </div>
-                          <div className="sympal__pv-note">
-                            {activeVenue.market === ALL_VENUES
-                              ? 'The curated cross-venue shortlist. Pure and instant — no venue round trip.'
-                              : activeVenue.native
-                                ? 'Native connector: true incremental book diffs, streamed.'
-                                : 'Served through ccxt: the book is re-read whole each tick, so depth is a snapshot.'}
-                          </div>
-                          <div className="sympal__pv-caps">
-                            {activeVenue.depth ? (
-                              <span
-                                className={capabilityChipClass(activeVenue.depth.toUpperCase())}
-                                title={capabilityChipTitle(activeVenue.depth.toUpperCase())}
-                              >
-                                {activeVenue.depth.toUpperCase()}
-                              </span>
-                            ) : null}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="sympal__pv-note">pick the venue to search</div>
-                      )
-                    ) : activeRow ? (
-                      <>
-                        <div className="sympal__pv-sym">{activeRow.entry.symbol}</div>
-                        <div className="sympal__pv-mkt">{activeRow.entry.market}</div>
-                        <div className={`sympal__pv-px ${previewDir >= 0 ? 'is-up' : 'is-down'}`}>
-                          {fmtPrice(shownPreview?.price)}
-                        </div>
-                        <div className={`sympal__pv-chg ${(shownPreview?.changePct ?? 0) >= 0 ? 'is-up' : 'is-down'}`}>
-                          {fmtPct(shownPreview?.changePct)}
-                        </div>
-                        {shownPreview?.spark?.length ? (
-                          <svg className="sympal__pv-spark" viewBox="0 0 220 60" preserveAspectRatio="none" aria-hidden="true">
-                            <path d={sparkPath(shownPreview.spark, 220, 60, 3)} className={previewDir >= 0 ? 'spark-up' : 'spark-down'} fill="none" />
-                          </svg>
-                        ) : (
-                          <div className="sympal__pv-note">
-                            {shownPreview?.reachable === false ? 'data unavailable' : 'loading preview…'}
-                          </div>
-                        )}
-                        <div className="sympal__pv-caps">
-                          {capabilityChips(activeRow.entry.capability).map((c) => (
-                            <span key={c} className={capabilityChipClass(c)} title={capabilityChipTitle(c)}>
-                              {c}
-                            </span>
-                          ))}
-                        </div>
-                        {shownPreview?.stale && <div className="sympal__pv-stale">stale — market closed or last known</div>}
-                        {previewAsOf && <div className="sympal__pv-note">As of {previewAsOf}</div>}
-                      </>
-                    ) : (
-                      <div className="sympal__pv-note">
-                        {scope === ALL_VENUES
-                          ? 'type to search all crypto + equity symbols'
-                          : `type to search ${scope}`}
-                      </div>
-                    )}
-                  </aside>
+                  <SymbolSearchResults
+                    listRef={listRef}
+                    pickingVenue={pickingVenue}
+                    venuesLoaded={venues !== null}
+                    venueRows={venueRows}
+                    venueTotal={allVenues.length}
+                    rows={rows}
+                    recentCount={recentCount}
+                    scope={scope}
+                    scopeState={scopeState}
+                    scopeRowCount={scopeRows?.length ?? 0}
+                    query={query}
+                    active={active}
+                    onHover={setActive}
+                    onChooseVenue={chooseVenue}
+                    onCommit={commit}
+                    onRetry={retryScope}
+                  />
+                  <PreviewPane
+                    pickingVenue={pickingVenue}
+                    activeVenue={activeVenue}
+                    activeRow={activeRow}
+                    shown={shownPreview}
+                    scope={scope}
+                  />
                 </div>
 
                 <div className="sympal__foot">
-                  <span><kbd>↑↓</kbd> navigate</span>
-                  <span><kbd>Home/End</kbd> first/last</span>
-                  <span><kbd>↵</kbd> select</span>
-                  <span><kbd>esc</kbd> {pickingVenue ? 'back' : 'close'}</span>
+                  <span><kbd>↑↓</kbd> {t('search.hintNavigate')}</span>
+                  <span><kbd>Home/End</kbd> {t('search.hintEdges')}</span>
+                  <span><kbd>↵</kbd> {t('search.hintSelect')}</span>
+                  <span><kbd>esc</kbd> {pickingVenue ? t('search.hintBack') : t('search.hintClose')}</span>
                 </div>
               </div>
             </div>,

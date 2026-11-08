@@ -1,5 +1,5 @@
 /**
- * Viewport-percentile normalization (§8.3, M2 T9).
+ * Viewport-percentile normalization.
  *
  * The heatmap's contrast must normalize to the VISIBLE window, not the live edge.
  * If you pan into an overnight, low-liquidity region it should renormalize so the
@@ -29,18 +29,18 @@
  *      60 fps) so the divisor glides into a new regime instead of flickering.
  *      `Hello.norm_seed` seeds frame 0.
  *
- *   4. **Mip coordination (the T7 seam).** Level-L mip texels SUM a 4^L×4^L block,
+ *   4. **Mip coordination.** Level-L mip texels SUM a 4^L×4^L block,
  *      so a naive normalization would have to multiply the percentile by the sum
  *      factor `4^L` to keep a coarser level's brighter texels inside [0,1]. BUT
- *      the T7 heatmap fragment shader already folds the *wall-preserving* `1/4^L`
+ *      the heatmap fragment shader already folds the *wall-preserving* `1/4^L`
  *      (`/blk`) back out of `intensity` BEFORE dividing by `u_norm`
- *      (`intensity = (accR+accG)*decodeScale/blk`). The sum factor and T7's
- *      rescale therefore CANCEL: the level-0 density percentile is already on the
+ *      (`intensity = (accR+accG)*decodeScale/blk`). The sum factor and the
+ *      shader rescale therefore CANCEL: the level-0 density percentile is already on the
  *      shader's per-pixel intensity scale for the dominant (p99, wall-like)
  *      structure, so the net mip scaling applied here is **unity**. Multiplying by
- *      `4^L` on top of T7's `1/4^L` would double-apply and make walls vanish on
+ *      `4^L` on top of the shader's `1/4^L` would double-apply and make walls vanish on
  *      zoom-out — the exact bug the SUM-mip exists to prevent. See
- *      {@link mipSumFactor} / {@link t7ShaderRescale} / {@link normMipScale}: the
+ *      {@link mipSumFactor} / {@link shaderRescale} / {@link normMipScale}: the
  *      `mipLevel` argument is honored, the two factors are made explicit, and
  *      their product is 1.
  *
@@ -48,17 +48,18 @@
  * eviction are all unit-testable without a WebGL context (see normalize.test.ts).
  */
 
+import { systemClock, type GlClock } from './clock';
 import { priceToRow, rowToPrice, type PriceScale } from './priceScale';
 import { ViewWorker } from './viewWorker';
 
-export const DEFAULT_BINS = 256;
+const DEFAULT_BINS = 256;
 const ROW_BAND = 64;
 interface SpatialHistogram { scale: PriceScale; bands: Map<number, Int32Array[]>; counts: Map<number, number>; columns: Set<number> }
 interface ColumnContribution { histogram: Int32Array; key: string | null; scale: PriceScale | null; rows: Uint16Array | Uint32Array }
 export const PHYSICAL_NORM_FLOOR = 1e-8;
 export interface NormalizeSource { bid: Float32Array; ask: Float32Array | null; scale?: PriceScale | null }
 /**
- * Default viewport KNEE percentile (Bookmap-class overhaul, lane F). The knee is
+ * Default viewport KNEE percentile (Bookmap-class overhaul). The knee is
  * the transfer curve's segment boundary — below it the field is lifted by the
  * display gamma, above it log-compressed so wall cores differentiate instead of
  * all clamping to the same top. p97 was the historical white point; it stays the
@@ -67,7 +68,7 @@ export interface NormalizeSource { bid: Float32Array; ask: Float32Array | null; 
  */
 export const DEFAULT_PERCENTILE = 97;
 /**
- * Default viewport WHITE point (Bookmap-class overhaul, lane F): what feeds the
+ * Default viewport WHITE point (Bookmap-class overhaul): what feeds the
  * EMA → `u_norm`. p99.7 makes the top of the ramp reachable only around the
  * heavy-tail's p99.7, so the wall band (p97..p99.7) spreads across LUT entries
  * instead of clamping early. `Hello.norm_seed` is still p99 (server, untouched)
@@ -80,16 +81,31 @@ export const DEFAULT_HIST_MIN = 1e-8;
 /** Log-bin range high edge (density above this clamps into the top bin). */
 export const DEFAULT_HIST_MAX = 1e15; // venue base units, including low-price coins
 /** Per-call EMA weight on the fresh percentile (~90% settle in ~15 calls ≈ 0.25 s @60fps). */
-export const DEFAULT_EMA_ALPHA = 0.15;
+const DEFAULT_EMA_ALPHA = 0.15;
 /** Floor on the returned norm so a tiny seed / empty viewport can't blow out intensity. */
 export const DEFAULT_NORM_FLOOR = 4;
 /** Default cap on retained per-tile histograms (≥ ring layers + margin). */
-export const DEFAULT_MAX_TILES = 128;
+const DEFAULT_MAX_TILES = 128;
 /** EMA is "settled" once |raw − ema| ≤ this fraction of ema (drives redraw-until-settled). */
 const SETTLE_EPS = 0.02;
+/** A moving window keeps its held norm; the new window merges after this quiet period. */
+const NORM_SETTLE_MS = 150;
+/** Worker merge failures retried for one window before the merge stays failed until the window changes. */
+const NORM_MAX_RETRIES = 3;
+const NORM_RETRY_BASE_MS = 2000;
+const NORM_RETRY_MAX_MS = 30_000;
 
-/** Slider 100 targets p90; sampler/quantization margins preserve visible walls. */
-export const TOLERANCE_MAX_PERCENTILE = 90;
+/** Stable key of a native price scale, memoized per object (no JSON per column). */
+const scaleKeys = new WeakMap<PriceScale, string>();
+function scaleKeyOf(scale: PriceScale): string {
+  let key = scaleKeys.get(scale);
+  if (key === undefined) {
+    key = JSON.stringify(scale);
+    scaleKeys.set(scale, key);
+  }
+  return key;
+}
+
 /** Keep the cut below the full-density endpoint when the distribution has ties. */
 export const TOLERANCE_MAX_NORMALIZED_FLOOR = 0.85;
 
@@ -132,6 +148,8 @@ export interface NormalizeConfig {
   maxSpatialBytes?: number;
   useWorker?: boolean;
   onAsyncReady?: () => void;
+  /** Time source for the settle and retry timers (default: the system clock). */
+  clock?: GlClock;
 }
 
 /** The SUM-mip sum factor for level L: level-L texels sum a 4^L×4^L block. */
@@ -140,35 +158,35 @@ export function mipSumFactor(level: number): number {
 }
 
 /**
- * The rescale T7's heatmap shader already folds into `intensity` (`/blk` where
+ * The rescale the heatmap shader already folds into `intensity` (`/blk` where
  * blk = 4^L), reduced from the spec's naive `1/16^L` to the wall-preserving
  * `1/4^L`. This is DONE IN THE SHADER, not here — exposed so the coordination is
  * explicit and checkable.
  */
-export function t7ShaderRescale(level: number): number {
+export function shaderRescale(level: number): number {
   return 1 / mipSumFactor(level);
 }
 
 /**
  * Net mip scaling applied to the viewport percentile so it lands on the shader's
- * per-pixel intensity scale. Equals `mipSumFactor(L) × t7ShaderRescale(L) === 1`
- * for every L: the sum factor is exactly cancelled by T7's in-shader `/4^L`
- * (§8.3 "fold the block rescale into normalization", coordinated so it is NOT
+ * per-pixel intensity scale. Equals `mipSumFactor(L) × shaderRescale(L) === 1`
+ * for every L: the sum factor is exactly cancelled by the in-shader `/4^L`
+ * ("fold the block rescale into normalization", coordinated so it is NOT
  * double-applied). Kept as a function so a future averaging-mip convention has a
  * single place to reintroduce a real factor.
  */
 export function normMipScale(level: number): number {
-  return mipSumFactor(level) * t7ShaderRescale(level);
+  return mipSumFactor(level) * shaderRescale(level);
 }
 
 export class ViewportNormalizer {
   readonly bins: number;
-  /** KNEE percentile (lane F): the transfer curve's segment boundary. Mutable —
+  /** KNEE percentile: the transfer curve's segment boundary. Mutable —
    *  the Settings "Saturation" control retunes it live; read fresh off the CDF
    *  every frame. The historical white point (p99) semantics moved to
    *  {@link whitePercentile}. */
   percentile: number;
-  /** WHITE-point percentile (lane F, default {@link DEFAULT_WHITE_PERCENTILE}):
+  /** WHITE-point percentile (default {@link DEFAULT_WHITE_PERCENTILE}):
    *  the rank that feeds the EMA → `u_norm`. Mutable like {@link percentile};
    *  included in the memo key so a change re-merges. */
   whitePercentile: number;
@@ -203,7 +221,7 @@ export class ViewportNormalizer {
    * Bumped on EVERY histogram-affecting mutation (a column fold, a tile
    * eviction, reset). The viewport-percentile memo below keys on it, so a dirty
    * frame with an unchanged visible window and unchanged histograms skips the
-   * tile merge entirely (survey #6a: updateNormalization runs every dirty
+   * tile merge entirely (updateNormalization runs every dirty
    * frame; the merge was the only O(tiles·bins) part of it).
    */
   private versionN = 0;
@@ -231,17 +249,29 @@ export class ViewportNormalizer {
   private lastRaw = 0;
   private lastRawKnee = 0;
   /**
-   * Test-only pin (R2-M2): while frozen, {@link updateNorm} returns the pinned
+   * Test-only pin: while frozen, {@link updateNorm} returns the pinned
    * floored norm without stepping the EMA, so repeated grabs of a sealed frame
    * are deterministic. {@link reset} clears it.
    */
   private frozen = false;
+  /** Reduced motion: adopt each raw percentile at once instead of easing. */
+  private snap = false;
   private readonly useWorker: boolean;
   private readonly onAsyncReady?: () => void;
+  private readonly clock: GlClock;
   private worker: ViewWorker | null = null;
+  /** The window the screen should merge (the latest view). */
+  private workerKey = '';
+  /** The window the merged histogram currently holds (set when a merge lands). */
   private workerView = '';
   private workerVersion = -1;
   private workerGeneration = 0;
+  /** Worker failures since the last success or window change (bounded retry, gl-v1). */
+  private workerFailures = 0;
+  /** Earliest clock time a merge may start (settle period or retry backoff). */
+  private workerNotBefore = 0;
+  private workerWakeAt = Infinity;
+  private workerWakeTimer: unknown = null;
   calculationState: 'idle' | 'pending' | 'ready' | 'failed' = 'idle';
 
   constructor(cfg: NormalizeConfig = {}) {
@@ -256,6 +286,7 @@ export class ViewportNormalizer {
     this.maxSpatialBytes = cfg.maxSpatialBytes ?? 16 * 1024 * 1024;
     this.useWorker = cfg.useWorker ?? false;
     this.onAsyncReady = cfg.onAsyncReady;
+    this.clock = cfg.clock ?? systemClock;
 
     const histMin = cfg.histMin ?? DEFAULT_HIST_MIN;
     const histMax = cfg.histMax ?? DEFAULT_HIST_MAX;
@@ -320,7 +351,7 @@ export class ViewportNormalizer {
   }
 
   /**
-   * Current EMA-smoothed KNEE/WHITE pair (lane F) for the per-frame shader
+   * Current EMA-smoothed KNEE/WHITE pair for the per-frame shader
    * `u_knee = clamp(knee / white, 0.05, 0.95)`. Both ranks share the same merge
    * and EMA alpha, so the ratio is a stable per-frame constant; `white` equals
    * {@link current}. Before the first real merge (seed only) the pair is the
@@ -375,11 +406,11 @@ export class ViewportNormalizer {
     if (!hist) { this.evictIfFull(tile); hist = new Int32Array(this.bins); this.tiles.set(tile, hist); }
     const retain = remember || (scale !== null && !this.sourceColumn);
     const contribution: ColumnContribution | null = retain ? { histogram: new Int32Array(this.bins),
-      key: scale ? JSON.stringify(scale) : null, scale, rows: new Uint16Array(0) } : null;
+      key: scale ? scaleKeyOf(scale) : null, scale, rows: new Uint16Array(0) } : null;
     const compact: number[] | null = retain ? [] : null;
     let spatial: SpatialHistogram | null = null;
     if (scale && !this.directTiles.has(tile)) {
-      const key = JSON.stringify(scale);
+      const key = scaleKeyOf(scale);
       let parts = this.spatialTiles.get(tile);
       if (!parts) { parts = new Map(); this.spatialTiles.set(tile, parts); }
       spatial = parts.get(key) ?? null;
@@ -504,7 +535,7 @@ export class ViewportNormalizer {
   }
 
   /**
-   * RAW merged viewport KNEE + WHITE percentiles (lane F): TWO rank reads off
+   * RAW merged viewport KNEE + WHITE percentiles: TWO rank reads off
    * ONE merged CDF. MEMOIZED on {visible col range, knee percentile, white
    * percentile, mip level, tilesVersion}: repeated calls with an unchanged
    * window and no histogram mutation (the every-dirty-frame case while columns
@@ -516,7 +547,7 @@ export class ViewportNormalizer {
    * Both ranks carry the mip scaling ({@link normMipScale}, = 1) and the norm
    * floor. `O(tiles in view)`, executed at most once per memo-key change.
    *
-   * `row` is accepted per the T9 contract but NOT used to sub-filter: the coarse
+   * `row` is accepted per the contract but NOT used to sub-filter: the coarse
    * per-tile histograms are deliberately not row-partitioned (that would cost
    * O(rows) storage per tile and break the O(tiles) budget), and non-zero-only
    * binning already restricts the distribution to the active price band.
@@ -526,7 +557,7 @@ export class ViewportNormalizer {
     row: RowRange,
     mipLevel: number,
   ): { knee: number; white: number } {
-    if (this.useWorker && this.sourceColumn && [...this.directTiles].some(t => t >= this.tileOf(col.oldest) && t <= this.tileOf(col.newest))) {
+    if (this.useWorker && this.sourceColumn && this.hasDirectTileIn(this.tileOf(col.oldest), this.tileOf(col.newest))) {
       return this.workerPercentiles(col, row, mipLevel);
     }
     const m = this.memoKey;
@@ -556,35 +587,73 @@ export class ViewportNormalizer {
     return { knee: ranks.knee, white: ranks.white };
   }
 
+  /** True when a direct (un-spatialized) tile lies in [lo, hi]; a plain loop, no per-read copy. */
+  private hasDirectTileIn(lo: number, hi: number): boolean {
+    for (const t of this.directTiles) if (t >= lo && t <= hi) return true;
+    return false;
+  }
+
   private workerPercentiles(col: ColRange, row: RowRange, mipLevel: number): { knee: number; white: number } {
     const key = JSON.stringify([col, row, mipLevel, this.channel, this.percentile, this.whitePercentile]);
-    if (key !== this.workerView) {
-      this.worker?.dispose(); this.worker = null; this.workerGeneration++;
-      this.workerView = key; this.workerVersion = -1; this.merged.fill(0); this.mergedTotal = 0;
-      this.calculationState = 'idle';
+    // A window change no longer kills the merge in flight or blanks the held
+    // ranks: the run keeps its captured columns, the last completed merge
+    // keeps the norm steady, and the new window is merged once the view is still.
+    const now = this.clock.now();
+    if (key !== this.workerKey) {
+      this.workerKey = key; this.workerFailures = 0;
+      // The first merge (nothing held yet) starts at once; a held norm waits for the view to settle.
+      this.workerNotBefore = this.workerView === '' ? now : now + NORM_SETTLE_MS;
+      if (this.workerNotBefore > now) this.wakeWorkerLater(this.workerNotBefore);
     }
-    if (this.calculationState !== 'failed' && !this.worker?.busy && this.workerVersion !== this.versionN) {
-      this.worker ??= new ViewWorker(); this.calculationState = 'pending';
-      const generation = this.workerGeneration, version = this.versionN, read = this.sourceColumn!;
-      const oldest = col.oldest, newest = col.newest, admitted = this.admittedColumns, width = this.colsPerTile;
-      const columns = function* () {
-        for (let c = oldest; c <= newest; c++) {
-          const source = admitted.get(Math.floor(c / width))?.has(c) ? read(c) : null;
-          yield source ? { ...source, scale: source.scale ?? null } : null;
-        }
-      };
-      void this.worker.run({ kind: 'histogram', rowLo: row.lo, rowHi: row.hi, priceLo: row.priceLo,
-        priceHi: row.priceHi, referenceStep: row.referenceStep, channel: this.channel,
-        bins: this.bins, histMin: Math.exp(this.logMin), histMax: Math.exp(this.logMax) }, columns()).then(value => {
-        if (generation !== this.workerGeneration) return;
-        this.merged.set(value.bins); this.mergedTotal = value.total; this.workerVersion = version;
-        this.mergeCountN++; this.calculationState = 'ready'; this.onAsyncReady?.();
-      }).catch(() => { if (generation === this.workerGeneration) { this.calculationState = 'failed'; this.onAsyncReady?.(); } });
+    const stale = this.workerView !== key || this.workerVersion !== this.versionN;
+    if (stale && this.workerFailures <= NORM_MAX_RETRIES && !this.worker?.busy) {
+      if (now < this.workerNotBefore) this.wakeWorkerLater(this.workerNotBefore);
+      else this.startWorkerMerge(col, row, key);
     }
     const hold = Math.max(this.ema, this.floor);
     if (!this.mergedTotal) return { knee: hold, white: hold };
     return { knee: Math.max(this.floor, this.readRank(this.merged, this.mergedTotal, this.percentile)),
       white: Math.max(this.floor, this.readRank(this.merged, this.mergedTotal, this.whitePercentile)) };
+  }
+
+  /** Start one off-thread merge for a window; a failed worker is dropped and retried later. */
+  private startWorkerMerge(col: ColRange, row: RowRange, key: string): void {
+    this.worker ??= new ViewWorker(this.clock); this.calculationState = 'pending';
+    const worker = this.worker;
+    const generation = this.workerGeneration, version = this.versionN, read = this.sourceColumn!;
+    const oldest = col.oldest, newest = col.newest, admitted = this.admittedColumns, width = this.colsPerTile;
+    const columns = function* () {
+      for (let c = oldest; c <= newest; c++) {
+        const source = admitted.get(Math.floor(c / width))?.has(c) ? read(c) : null;
+        yield source ? { ...source, scale: source.scale ?? null } : null;
+      }
+    };
+    void worker.run({ kind: 'histogram', rowLo: row.lo, rowHi: row.hi, priceLo: row.priceLo,
+      priceHi: row.priceHi, referenceStep: row.referenceStep, channel: this.channel,
+      bins: this.bins, histMin: Math.exp(this.logMin), histMax: Math.exp(this.logMax) }, columns()).then(value => {
+      if (generation !== this.workerGeneration) return;
+      this.merged.set(value.bins); this.mergedTotal = value.total;
+      this.workerView = key; this.workerVersion = version; this.workerFailures = 0;
+      this.mergeCountN++; this.calculationState = 'ready'; this.onAsyncReady?.();
+    }).catch(() => {
+      if (generation !== this.workerGeneration) return;
+      if (worker === this.worker) { worker.dispose(); this.worker = null; }
+      this.workerFailures += 1; this.calculationState = 'failed';
+      this.workerNotBefore = this.clock.now() + Math.min(NORM_RETRY_MAX_MS, NORM_RETRY_BASE_MS * 2 ** (this.workerFailures - 1));
+      this.wakeWorkerLater(this.workerNotBefore);
+      this.onAsyncReady?.();
+    });
+  }
+
+  /** Ask for a redraw at `at` (clock time) so a deferred merge starts without new input. */
+  private wakeWorkerLater(at: number): void {
+    if (this.onAsyncReady === undefined || at >= this.workerWakeAt) return;
+    if (this.workerWakeTimer !== null) this.clock.clearTimer(this.workerWakeTimer);
+    this.workerWakeAt = at;
+    this.workerWakeTimer = this.clock.setTimer(() => {
+      this.workerWakeTimer = null; this.workerWakeAt = Infinity;
+      this.onAsyncReady?.();
+    }, Math.max(0, at - this.clock.now()));
   }
 
   /**
@@ -683,7 +752,7 @@ export class ViewportNormalizer {
       const source = this.sourceColumn?.(col) ?? null;
       const contribution = source ? null : this.replaceableColumns.get(col);
       const scale = source?.scale ?? contribution?.scale ?? null;
-      if (key && (scale ? JSON.stringify(scale) : null) !== key) continue;
+      if (key && (scale ? scaleKeyOf(scale) : null) !== key) continue;
       if (!source && !contribution) continue;
       const lo = scale && row.priceLo !== undefined ? priceToRow(scale, row.priceLo) : row.lo;
       const hi = scale && row.priceHi !== undefined ? priceToRow(scale, row.priceHi) : row.hi;
@@ -723,10 +792,16 @@ export class ViewportNormalizer {
       Math.min((scale?.rows ?? Infinity) - 1, physical ? Math.ceil(hi + .5 - epsilon) - 1 : Math.floor(hi + .5))];
   }
 
+  /** Motion preference (WCAG 2.3.3): `true` snaps the EMA to each raw value. */
+  setSnap(on: boolean): void {
+    this.snap = on;
+  }
+
   /**
    * Recompute the raw viewport KNEE+WHITE pair (one memoized merge) and
    * EMA-step BOTH toward it, returning the smoothed, floored WHITE norm to feed
-   * `u_norm` (lane F: `updateNorm` keeps returning the EMA of the white value).
+   * `u_norm` (the EMA of the white value; see {@link ViewportNormalizer.setSnap}
+   * for the reduced-motion snap).
    * The knee EMA rides the same alpha so {@link currentPercentiles} gives a
    * stable per-frame ratio for the shader's `u_knee`. Call once per dirty frame
    * (or on view-settle). O(tiles in view).
@@ -741,14 +816,15 @@ export class ViewportNormalizer {
       this.emaKnee = raw.knee;
       this.seeded = true;
     } else {
-      this.ema += this.alpha * (raw.white - this.ema);
-      this.emaKnee += this.alpha * (raw.knee - this.emaKnee);
+      const alpha = this.snap ? 1 : this.alpha;
+      this.ema += alpha * (raw.white - this.ema);
+      this.emaKnee += alpha * (raw.knee - this.emaKnee);
     }
     return Math.max(this.ema, this.floor);
   }
 
   /**
-   * Test-only (R2-M2): pin the norm so repeated grabs of a sealed frame cannot
+   * Test-only: pin the norm so repeated grabs of a sealed frame cannot
    * drift through the EMA glide. Sets the EMA (and its raw target, so `settled`
    * reads true) to `value ?? current`, both floored, and makes {@link updateNorm}
    * return it without stepping until {@link reset}.
@@ -773,6 +849,9 @@ export class ViewportNormalizer {
 
   reset(): void {
     this.workerGeneration++; this.worker?.dispose(); this.worker = null;
+    if (this.workerWakeTimer !== null) this.clock.clearTimer(this.workerWakeTimer);
+    this.workerWakeTimer = null; this.workerWakeAt = Infinity;
+    this.workerKey = ''; this.workerFailures = 0; this.workerNotBefore = 0;
     this.workerView = ''; this.workerVersion = -1; this.calculationState = 'idle';
     this.tiles.clear();
     this.spatialTiles.clear();

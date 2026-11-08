@@ -1,5 +1,5 @@
 /**
- * Global (app-level) keyboard routing (§9, T12).
+ * Global (app-level) keyboard routing.
  *
  * App-wide shortcuts that live ABOVE the canvas gestures:
  *   - `Space` → play/pause in replay mode, toggle follow in live mode.
@@ -8,16 +8,23 @@
  *   - `M`     → toggle the measure tool (ui/MeasureTool).
  *   - `A`     → create a price alert at the crosshair price (ui/PriceAlerts).
  *   - `H`     → toggle the perf-HUD chip (ui/PerfHud).
- *   - `C`     → cycle the depth display channel, contract C2.
- *   - `F` / `P` / `Shift+P` / `R` → follow-axis keys, global like Space (they
- *     used to be dead unless the chart canvas was focused — survey S4 D3).
+ *   - `C`     → cycle the depth display channel.
+ *   - `J`     → toggle the research drawer.
+ *   - `F` / `P` / `Shift+P` / `R` → follow-axis keys, global like Space.
  *
  * The canvas keeps its own keys (arrows / +- / F / P / Shift+P / R — see
  * input/gestures) when it is focused, so the follow keys YIELD to it (the target
  * classification carries `canvas`); double-handling them would toggle twice.
  * The routing decision is a pure function ({@link routeGlobalKey}) taking only
  * the key and a small target classification, so it is unit-tested without a DOM.
+ *
+ * Every bare-character shortcut above honours the single-key preference
+ * (input/shortcutPrefs, WCAG 2.1.4): when the user has switched them off, only
+ * chords reach the app. The canvas keys are focus-scoped (active only while the
+ * chart canvas has focus), which WCAG 2.1.4 also accepts.
  */
+
+import { isSingleKeyShortcutsEnabled } from './shortcutPrefs';
 
 export type GlobalKeyAction =
   | { type: 'space' }
@@ -49,8 +56,8 @@ export interface KeyTargetContext {
 }
 
 /** Modifier state relevant to chord shortcuts (⌘K / Ctrl-K) and CapsLock-safe
- *  follow keys (R2-L1: a bare Shift-less 'P' can come from CapsLock, so the
- *  router distinguishes it from a real Shift+P by the modifier flags). */
+ *  follow keys (a bare Shift-less 'P' can come from CapsLock, so the router
+ *  distinguishes it from a real Shift+P by the modifier flags). */
 export interface KeyModifiers {
   meta: boolean;
   ctrl: boolean;
@@ -72,6 +79,10 @@ export function routeGlobalKey(
   if ((mods.meta || mods.ctrl) && (key === 'k' || key === 'K')) return { type: 'focus-search' };
   if (ctx.editable) return null; // never hijack plain typing
   if (ctx.dialog) return null; // a modal owns the keyboard while it is open
+  // WCAG 2.1.4: the user can switch every bare-character shortcut off. Chords
+  // keep their meaning either way.
+  const bare = !mods.meta && !mods.ctrl && !mods.alt;
+  if (bare && !isSingleKeyShortcutsEnabled()) return null;
   if (key === '/') return { type: 'focus-search' };
   if (key === ' ' || key === 'Spacebar') {
     if (ctx.button) return null; // let a focused button take its own Space
@@ -79,14 +90,13 @@ export function routeGlobalKey(
   }
   // Bare-key shortcuts below all yield when a browser/app chord owns the key:
   // Ctrl+R reload, Ctrl+P print, Ctrl+F find must keep their engine semantics;
-  // Alt combos are reserved for the OS/browser (R2-L1).
-  if (mods.meta || mods.ctrl || mods.alt) return null;
-  // Follow keys (S4 D3): F = toggle time follow, P = toggle price follow,
-  // Shift+P = price auto-fit, R = go live. Global like Space (a blurred chart
-  // used to make them dead), but never inside an input/dialog (guarded above)
-  // and never over the chart canvas, where input/gestures.ts owns them — a
-  // double-handled toggle would cancel itself out. Shift is consulted so
-  // CapsLock's 'P' cannot masquerade as Shift+P (R2-L1).
+  // Alt combos are reserved for the OS/browser.
+  if (!bare) return null;
+  // Follow keys: F = toggle time follow, P = toggle price follow, Shift+P = price
+  // auto-fit, R = go live. Global like Space, but never inside an input/dialog
+  // (guarded above) and never over the chart canvas, where input/gestures.ts owns
+  // them — a double-handled toggle would cancel itself out. Shift is consulted so
+  // CapsLock's 'P' cannot masquerade as Shift+P.
   if (key === 'f' || key === 'F' || key === 'p' || key === 'P' || key === 'r' || key === 'R') {
     if (ctx.canvas) return null;
     if (key === 'f' || key === 'F') return { type: 'toggle-follow' };
@@ -99,15 +109,13 @@ export function routeGlobalKey(
   // semantics (unlike Space on a button), so it is safe to take everywhere the
   // bare shortcuts reach — including a focused chart canvas (gestures.ts only
   // owns arrows / +- / F / P / Shift+P / R and leaves every other bare key to
-  // bubble). Chords stay with the browser: the modifier guard above already let
-  // Ctrl+E / ⌘E through to the engine, matching gestures.ts's canvas-side guard.
+  // bubble).
   if (key === 'e' || key === 'E') {
     return { type: 'export-png' };
   }
-  // Feature-tool keys (campaign 3). Same discipline as `E`: bare keys only —
-  // any modifier leaves the chord to the browser (guard above). Each is consumed
-  // by the component that owns the feature (MeasureTool M, PriceAlerts A,
-  // PerfHud H, depth-channel cycle C), which routes through THIS function so the
+  // Feature-tool keys. Same discipline as `E`: bare keys only. Each is consumed by
+  // the component that owns the feature (MeasureTool M, PriceAlerts A, PerfHud H,
+  // depth-channel cycle C), which routes through THIS function so the
   // editable/dialog guards live in exactly one place.
   if (key === 'm' || key === 'M') return { type: 'toggle-measure' };
   if (key === 'a' || key === 'A') return { type: 'create-alert' };
@@ -147,7 +155,7 @@ export interface GlobalKeyHandlers {
   onCreateAlert?: () => void;
   /** `H` — toggle the PerfHud chip (owned by ui/PerfHud). */
   onToggleHud?: () => void;
-  /** `C` — cycle the depth display channel (contract C2; App-level setting). */
+  /** `C` — cycle the depth display channel (an App-level setting). */
   onCycleDepthChannel?: () => void;
   /** `F` — toggle TIME follow (live-edge auto-follow). */
   onToggleFollow?: () => void;
@@ -183,6 +191,11 @@ export function attachGlobalKeys(
     });
     if (!action) return;
     e.preventDefault();
+    // A held key fires OS auto-repeat keydowns. Every global action here is a
+    // one-shot (export a PNG, create an alert, toggle a mode, play/pause), so a
+    // repeat keydown is consumed but never acted on: holding E must not export a
+    // stream of files and holding A must not flood the alert list.
+    if (e.repeat) return;
     switch (action.type) {
       case 'space':
         handlers.onSpace();

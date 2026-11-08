@@ -1,4 +1,4 @@
-"""Crocodile live bridge: crypto venue streams -> canonical FeedEvents (M1 T9).
+"""Crocodile live bridge: crypto venue streams -> canonical FeedEvents.
 
 :class:`CryptoFeed` implements the :class:`~flowmap_server.feeds.base.Feed`
 protocol on top of a Crocodile connector. The moving parts:
@@ -15,9 +15,11 @@ protocol on top of a Crocodile connector. The moving parts:
   universal ccxt connector, which re-reads the whole book each tick instead of
   streaming diffs. That difference is carried honestly in
   ``capability["depth"]`` (``L2`` vs ``L2-snapshot``) rather than hidden — see
-  :attr:`CryptoFeed.native`. The engine has ten hand-written connectors; the
-  other five are not order-flow readers at all (see ``NOT_STREAMABLE``).
-- :class:`_BridgeSink` — the testable translation seam — receives Crocodile
+  :attr:`CryptoFeed.native`. The engine has ten hand-written connectors in
+  total: these five streamable ones plus five that are not order-flow readers at
+  all (see ``NOT_STREAMABLE``).
+- :class:`_BridgeSink` — the testable translation seam (defined in
+  :mod:`~flowmap_server.feeds.crypto_sink`) — receives Crocodile
   records, maintains the live L2 book, and emits canonical events:
 
   ============================  =======================================
@@ -40,7 +42,7 @@ protocol on top of a Crocodile connector. The moving parts:
   anything else                 ignored (not in the canonical dialect)
   ============================  =======================================
 
-Book maintenance note (deviation from the plan's "engine ``OrderBook``"):
+Book maintenance note (the engine's ``OrderBook`` is deliberately not used):
 ``OrderBook._check_gap`` re-runs sequence-continuity rules that *spuriously*
 fire on the first delta after every Binance snapshot — the exchange contract
 is snapshot OVERLAP (first event has ``U <= sid <= u``; ``pu``/``seq``
@@ -61,28 +63,15 @@ import asyncio
 import contextlib
 import logging
 import math
-import time
-from pathlib import Path
 import uuid
-from bisect import bisect_left, insort
 from collections.abc import AsyncIterator, Callable
-
-import numpy as np
+from pathlib import Path
+from typing import Any, cast
 
 from crocodile.core.connector import Connector
 from crocodile.core.config import Settings
 from crocodile.core.errors import ConfigError
 from crocodile.core.ingest.transport import Transport
-from crocodile.core.schema.enums import Side
-from crocodile.core.schema.records import (
-    BookDelta,
-    BookSnapshot,
-    BookTicker,
-    Level,
-    Liquidation,
-    Record,
-)
-from crocodile.core.schema.records import Trade as CTrade
 from crocodile.core.sink.base import Sink
 from crocodile.crypto.exchanges.factory import (
     list_all_exchanges,
@@ -92,17 +81,12 @@ from crocodile.crypto.exchanges.factory import (
 from crocodile.crypto.instruments.registry import InstrumentRegistry
 
 from flowmap_server.config import Config
-from flowmap_server.feeds.base import BookState, BoundedFeedQueue, FeedEvent, ts_ns_sane
-from flowmap_server.proto.events import (
-    BBO,
-    SIDE_BUY,
-    SIDE_SELL,
-    SIDE_SRC_EXCHANGE,
-    SIDE_SRC_NA,
-    SIDE_UNKNOWN,
-    Marker,
-    Trade,
+from flowmap_server.feeds.base import (
+    BoundedFeedQueue,
+    DropCounters,
+    FeedEvent,
 )
+from flowmap_server.feeds.crypto_sink import BOOK_TOP_N, _BridgeSink, _PolledCCXTConnector
 
 __all__ = [
     "BOOK_TOP_N",
@@ -121,7 +105,7 @@ logger = logging.getLogger(__name__)
 # "<exchange>-<segment>" (segment forwarded to the connector, e.g. Binance spot
 # vs USD-M futures ws endpoints) or bare "<exchange>".
 #
-# The venue set is no longer a hand-kept shortlist. `list_all_exchanges()` is
+# The venue set is not a hand-kept shortlist. `list_all_exchanges()` is
 # the union of the engine's hand-written connectors and every ccxt venue the
 # installed ccxt can reach; `make_connector` falls through to the universal
 # ccxt connector for anything without a native reader. Both lists are read once
@@ -148,11 +132,11 @@ CRYPTO_EXCHANGES = frozenset(list_all_exchanges()) - NOT_STREAMABLE
 # segment lives in the symbol (OKX "BTC-USDT-SWAP", Deribit "BTC-PERPETUAL",
 # ccxt "BTC/USDC:USDC").
 #
-# The allowed-set is load-bearing, not decorative. `<exchange>-<anything>` used
-# to pass validation on the exchange alone, so a caller could mint unbounded
-# distinct market strings — each one a fresh session key, a fresh cache entry, a
-# fresh directory under the recording root, and an outbound request to the
-# venue. Segments are now a closed set, and a venue that cannot use one rejects
+# The allowed-set is load-bearing, not decorative. Segments form a closed set:
+# `<exchange>-<anything>` would pass validation on the exchange alone, so a
+# caller could mint unbounded distinct market strings — each one a fresh session
+# key, a fresh cache entry, a fresh directory under the recording root, and an
+# outbound request to the venue. A venue that cannot use a listed segment rejects
 # it instead of silently dropping it (which would have shown the client a
 # `bitget-swap` label over spot data).
 _SEGMENT_KWARG: dict[str, str] = {"binance": "market", "bybit": "category"}
@@ -162,8 +146,8 @@ SEGMENTS: dict[str, frozenset[str]] = {
 }
 
 # Venue/segment pairs whose forced-liquidation topic this build can ACTUALLY
-# subscribe. Not "which venues have liquidations" — which channel names the
-# pinned engine spells the way the venue spells them today. Measured against the
+# subscribe. Not "which venues have liquidations" but which channel names the
+# engine's connector sends that the venue accepts today. Measured against the
 # live public sockets rather than read off the venue docs:
 #
 #   binance usdm  `btcusdt@forceOrder`          -> accepted
@@ -174,8 +158,9 @@ SEGMENTS: dict[str, frozenset[str]] = {
 #
 # So OKX and Bybit are deliberately absent: subscribing there would spend a
 # topic slot on a channel the venue rejects AND advertise a `liquidation` marker
-# that could never fire. Both are engine-side spellings — re-measure and add
-# them back when the pinned engine is bumped past the fix.
+# that could never fire. Both are channel-name mismatches in the engine's
+# connector: re-measure and add them back once the engine names the topic the
+# way the venue does.
 _LIQUIDATION: dict[str, frozenset[str]] = {
     "binance": frozenset({"usdm", "coinm"}),
 }
@@ -183,9 +168,8 @@ _LIQUIDATION: dict[str, frozenset[str]] = {
 # Venues that deliver liquidations WITHOUT a dedicated channel: Deribit flags
 # them on the ordinary `trades` stream, which we already subscribe, and the
 # engine yields a `Liquidation` record for each. Declaring the marker here keeps
-# the capability honest in the other direction — under-promising is a lie too,
-# and this one had the client told a marker kind could not appear seconds before
-# it did.
+# the capability honest in the other direction: under-promising misleads the
+# client just as over-promising does.
 _LIQUIDATION_VIA_TRADES: frozenset[str] = frozenset({"deribit"})
 
 
@@ -207,7 +191,7 @@ def is_crypto_market(market: str) -> bool:
     return not segment or segment in SEGMENTS.get(exchange, frozenset())
 
 
-# -- symbol translation, memoized for the server process lifetime (A2-5) --------
+# -- symbol translation, memoized for the server process lifetime --------
 #
 # `data.venues.resolve_symbol` downloads the venue's full ccxt market table on
 # every miss; before this cache every feed restart and every kline backfill
@@ -261,27 +245,9 @@ async def _resolve_and_cache(market: str, symbol: str) -> str:
     return out
 
 
-# Default cap per side on emitted BookState arrays; the closest-to-touch levels
-# win. Overridable via Config.book_top_n / FLOWMAP_BOOK_TOP_N.
-#
-# This cap — not the grid — is what actually decides how far from the touch a
-# resting order can be and still reach the client. At 2000 levels BTCUSDT is
-# truncated a few hundred dollars from mid (well under 1%), so the wide/full
-# price bands would render an empty far field no matter how tall the grid was.
-# The sort below is over the FULL book either way, so raising the cap costs only
-# a larger array build, not a bigger sort.
-#
-# Be honest about the remaining limit: venues also enforce order price-band
-# filters (Binance PERCENT_PRICE / PERCENT_PRICE_BY_SIDE), so on the majors
-# resting orders at +1000% of mid mostly cannot legally exist. A wide band shows
-# what IS there; it cannot conjure liquidity the venue does not accept.
-BOOK_TOP_N = 20_000
-
-_SIDE_MAP = {Side.BUY: SIDE_BUY, Side.SELL: SIDE_SELL}
-
-# Trade ids remembered per polled session for dedup. Comfortably larger than any
-# venue's recent-trades window (ccxt returns at most a few hundred per fetch).
-_SEEN_TRADE_IDS = 4096
+# Book levels per side the ccxt/poll path requests (see CryptoFeed._connector_kwargs).
+# Only a native connector's book is bounded by BOOK_TOP_N.
+_CCXT_BOOK_DEPTH = 100
 
 
 class _FeedEnd:
@@ -293,273 +259,8 @@ class _FeedEnd:
         self.exc = exc
 
 
-class _BridgeSink(Sink):
-    """Translate Crocodile records into canonical FeedEvents.
-
-    Maintains the live L2 book as price->size dicts (absolute exchange sizes,
-    inherently aggregated per price level). Sequencing is NOT re-checked here
-    — see the module docstring. A ``BookSnapshot`` arriving while the book is
-    already initialized is the connector's resync signature: emit
-    ``Marker{kind=gap}`` first, then snapshot-replace.
-    """
-
-    def __init__(
-        self,
-        emit: Callable[[FeedEvent], None],
-        book_top_n: int = BOOK_TOP_N,
-        *,
-        snapshot_driven: bool = False,
-        now_ns: Callable[[], int] | None = None,
-        stats: object | None = None,
-        metadata: dict[str, object] | None = None,
-    ) -> None:
-        self._emit = emit
-        self._metadata = metadata if metadata is not None else {}
-        self._record: BookSnapshot | BookDelta | None = None
-        self._revision = 0
-        self._book_top_n = max(1, book_top_n)
-        # Server-wide telemetry aggregate (campaign C1; duck-typed —
-        # ``SessionStats`` is not imported so feeds stay import-light).
-        self._stats = stats
-        # Live-ingest timestamp sanity gate (A2-2). A venue clock in the wrong
-        # unit (ms/s stamped into the ns field) or wedged far ahead must not
-        # write 1970-era / absurdly-future columns into the ring or the
-        # recording. Injected for tests; production uses the wall clock.
-        self._now_ns = now_ns or time.time_ns
-        self.dropped_ts = 0
-        self._bids: dict[float, float] = {}
-        self._asks: dict[float, float] = {}
-        # Incrementally-maintained ASCENDING price indexes, one per side. They
-        # are kept in lockstep with the dicts by ``_apply_levels`` — the only
-        # production mutation path — so a book DELTA costs a few O(log N)
-        # bisects + C memmoves instead of the old full O(N log N) Python sort
-        # per delta. ``None`` means "dirty: rebuild at next emit" (snapshot
-        # replace, out-of-band dict mutation). ``_emit_book`` re-checks
-        # ``len()`` so any index/dict divergence degrades to a one-shot
-        # re-sort, never to a stale book.
-        self._bid_px: list[float] | None = None
-        self._ask_px: list[float] | None = None
-        self._initialized = False
-        # On a delta venue a re-snapshot means the connector lost sequence, so
-        # it earns a gap marker. On a snapshot-driven venue (the ccxt path has
-        # no incremental diff — it re-reads the whole book every tick) a
-        # snapshot IS the normal update, and marking each one a gap would
-        # invent a stream of resyncs that never happened.
-        self._snapshot_driven = snapshot_driven
-        # The ccxt REST poll has no `since` cursor and no dedup of its own: it
-        # re-reads the venue's recent-trades window every interval, so the same
-        # print arrives once per poll. Left alone that multiplies tape volume
-        # and CVD under a `tape: "tick"` badge. Only polled feeds need this, and
-        # a bounded ring keeps it O(1) — a venue that reuses trade ids across a
-        # long session would at worst drop one print, which is the safer error.
-        self._seen_ids: dict[str, None] = {}
-
-    async def put(self, record: Record) -> None:
-        if not ts_ns_sane(self._ts(record), now_ns=self._now_ns()):
-            self.dropped_ts += 1
-            if self.dropped_ts == 1:
-                # First bad stamp is worth one warning (a clock that slips
-                # back to sane must not be missed); the rest only count.
-                logger.warning(
-                    "crypto bridge: dropped sample with implausible ts_ns=%r "
-                    "(outside [2010, now+24h]); dropped_ts=%d",
-                    self._ts(record),
-                    self.dropped_ts,
-                )
-            if self._stats is not None:
-                self._stats.inc_snapshot_drops()
-            return
-        if isinstance(record, BookDelta):
-            if not self._initialized:
-                return  # pre-snapshot deltas carry no anchored state
-            self._observe_book(record, snapshot=False)
-            self._bid_px = self._apply_levels(record.bids, self._bids, self._bid_px)
-            self._ask_px = self._apply_levels(record.asks, self._asks, self._ask_px)
-            self._emit_book(self._ts(record))
-        elif isinstance(record, BookSnapshot):
-            self._observe_book(record, snapshot=True)
-            if self._initialized and not self._snapshot_driven:
-                self._emit(
-                    Marker(
-                        ts_ns=self._ts(record),
-                        kind="gap",
-                        text=f"book resync: snapshot seq={record.sequence_id}",
-                    )
-                )
-            self._bids.clear()
-            self._asks.clear()
-            # Full replace: the incremental indexes are invalid wholesale —
-            # mark dirty and rebuild once at emit (one sort, same as before).
-            self._bid_px = None
-            self._ask_px = None
-            self._apply_levels(record.bids, self._bids, None)
-            self._apply_levels(record.asks, self._asks, None)
-            self._initialized = True
-            self._emit_book(self._ts(record))
-        elif isinstance(record, CTrade):
-            # The side is exchange-true only when the venue actually published
-            # one. ccxt's unified trade `side` is optional, and its normalizer
-            # maps anything that is not "buy"/"sell" to Side.UNKNOWN — stamping
-            # SIDE_SRC_EXCHANGE on that would tell the client an unknown
-            # aggressor was venue-confirmed, and the grid drops those prints
-            # from CVD anyway. Say NA and let the tape show it.
-            if self._snapshot_driven and self._is_duplicate(record.id):
-                return
-            side = _SIDE_MAP.get(record.side)
-            self._emit(
-                Trade(
-                    ts_ns=self._ts(record),
-                    price=record.price,
-                    size=record.amount,
-                    side=side if side is not None else SIDE_UNKNOWN,
-                    side_src=SIDE_SRC_EXCHANGE if side is not None else SIDE_SRC_NA,
-                    venue=record.source,
-                )
-            )
-        elif isinstance(record, BookTicker):
-            self._emit(
-                BBO(
-                    ts_ns=self._ts(record),
-                    bid_px=record.bid_px,
-                    bid_sz=record.bid_sz,
-                    ask_px=record.ask_px,
-                    ask_sz=record.ask_sz,
-                )
-            )
-        elif isinstance(record, Liquidation):
-            self._emit(
-                Marker(
-                    ts_ns=self._ts(record),
-                    kind="liquidation",
-                    text=f"liquidation {record.side} {record.amount:g} @ {record.price:g}",
-                    price=record.price,
-                    size=record.amount,
-                )
-            )
-        # Funding / DerivativeTicker / OpenInterest / ...: not part of the
-        # canonical M1 dialect — dropped silently by design.
-
-    def _observe_book(self, record: BookSnapshot | BookDelta, *, snapshot: bool) -> None:
-        changed = not self._initialized
-        for levels, side in ((record.bids, self._bids), (record.asks, self._asks)):
-            valid = {
-                p: q
-                for p, q in levels
-                if math.isfinite(p) and math.isfinite(q) and p > 0 and q >= 0
-            }
-            if snapshot:
-                changed |= {p: q for p, q in valid.items() if q > 0} != side
-            else:
-                changed |= any(side.get(p, 0.0) != q for p, q in valid.items())
-        self._record = record
-        self._metadata["source_book_events"] = int(self._metadata.get("source_book_events", 0)) + 1
-        if changed:
-            self._revision += 1
-            self._metadata["unique_book_changes"] = (
-                int(self._metadata.get("unique_book_changes", 0)) + 1
-            )
-
-    def _is_duplicate(self, trade_id: str) -> bool:
-        """True when this polled feed already emitted *trade_id*."""
-        if not trade_id:
-            return False  # a venue that publishes no id cannot be deduped
-        if trade_id in self._seen_ids:
-            return True
-        self._seen_ids[trade_id] = None
-        if len(self._seen_ids) > _SEEN_TRADE_IDS:
-            # dicts preserve insertion order, so this evicts the oldest.
-            del self._seen_ids[next(iter(self._seen_ids))]
-        return False
-
-    async def flush(self) -> None:
-        return None
-
-    @staticmethod
-    def _ts(record: Record) -> int:
-        # Merged-engine header: the venue/provider clock is `source_ts` for both
-        # asset classes (it was `exchange_ts` on the crypto fork). Still optional
-        # — a venue that stamps nothing falls back to our receive clock.
-        ts = record.source_ts
-        return ts if ts is not None else record.local_ts
-
-    def _apply_levels(
-        self,
-        levels: list[Level],
-        side: dict[float, float],
-        index: list[float] | None,
-    ) -> list[float] | None:
-        """Canonical level semantics (mirrors OrderBook._apply_levels):
-        amount==0 removes the price level, amount>0 sets the absolute size.
-        Malformed levels are skipped, never raised — one bad level must not
-        DLQ a whole depth message and silently desync the book.
-
-        When *index* is not ``None`` (the DELTA path) it is maintained
-        incrementally: each inserted price is ``insort``-ed, each removed one
-        bisect-popped — O(log N) search + a C memmove per level instead of
-        re-sorting the whole side. A ``None`` index (snapshot replace) leaves
-        the book dirty; ``_emit_book`` rebuilds the index with one sort."""
-        for price, amount in levels:
-            if (
-                not math.isfinite(price)
-                or not math.isfinite(amount)
-                or not (price > 0.0)
-                or amount < 0.0
-            ):
-                logger.debug("skipping malformed level (%r, %r)", price, amount)
-                continue
-            if amount == 0.0:
-                if side.pop(price, None) is not None and index is not None:
-                    i = bisect_left(index, price)
-                    if i < len(index) and index[i] == price:
-                        del index[i]
-            else:
-                if price not in side and index is not None:
-                    insort(index, price)
-                side[price] = amount
-        return index
-
-    def _emit_book(self, ts_ns: int) -> None:
-        # Best-first, closest-to-touch BOOK_TOP_N levels per side. The price
-        # ORDER comes from the incrementally-maintained indexes (rebuilt by a
-        # single sort here when dirty); sizes are read from the dicts at emit
-        # time, so the emitted arrays are exactly what the old
-        # sort-the-whole-dict-per-delta path produced — at delta rates the
-        # sort (up to BOOK_TOP_N=20000 entries, twice per tick) is gone.
-        cap = self._book_top_n
-        bid_index = self._bid_px
-        if bid_index is None or len(bid_index) != len(self._bids):
-            bid_index = sorted(self._bids)
-            self._bid_px = bid_index
-        ask_index = self._ask_px
-        if ask_index is None or len(ask_index) != len(self._asks):
-            ask_index = sorted(self._asks)
-            self._ask_px = ask_index
-        # Bids descend (reversed ascending tail = highest price first), asks
-        # ascend — the exact ordering the full sort produced (dict keys are
-        # unique, so no tie-breaking existed to preserve).
-        top_bids = bid_index[-cap:] if cap < len(bid_index) else bid_index
-        top_asks = ask_index[:cap]
-        bids = [(p, self._bids[p]) for p in reversed(top_bids)]
-        asks = [(p, self._asks[p]) for p in top_asks]
-        bid = np.array(bids, dtype=np.float64).reshape(-1, 2)
-        ask = np.array(asks, dtype=np.float64).reshape(-1, 2)
-        self._emit(
-            BookState(
-                ts_ns=ts_ns,
-                bid_px=bid[:, 0],
-                bid_sz=bid[:, 1],
-                ask_px=ask[:, 0],
-                ask_sz=ask[:, 1],
-                sequence_id=getattr(
-                    self._record, "seq_id", getattr(self._record, "sequence_id", None)
-                ),
-                prev_sequence_id=getattr(self._record, "prev_seq_id", None),
-                source=self._record.source if self._record else None,
-                provenance=self._record.prov.value if self._record else None,
-                observed_ns=self._record.local_ts if self._record else None,
-                revision=self._revision,
-            )
-        )
+# What the connector task puts on the feed queue: a translated event or the end.
+_CryptoItem = FeedEvent | _FeedEnd
 
 
 def _harden_rest_ssl(conn: Connector) -> None:
@@ -600,7 +301,9 @@ def _harden_rest_ssl(conn: Connector) -> None:
             url, params=params, max_retries=max_retries, timeout_sec=timeout_sec
         )
 
-    conn.http_get = http_get  # type: ignore[method-assign]
+    # The engine declares http_get as a method; this instance-level replacement is
+    # the TLS wrapper, which the static method signature does not describe.
+    cast(Any, conn).http_get = http_get
 
 
 class CryptoFeed:
@@ -633,7 +336,7 @@ class CryptoFeed:
         *,
         connector_factory: Callable[[Sink], Connector] | None = None,
         transport_factory: Callable[[str], Transport] | None = None,
-        stats: object | None = None,
+        stats: DropCounters | None = None,
         event_timeout_s: float = 45.0,
         engine_settings: Settings | None = None,
     ) -> None:
@@ -658,8 +361,8 @@ class CryptoFeed:
         self._owns_connector = connector_factory is None
         self.preferred_tick: float | None = None
         self._transport_factory = transport_factory
-        self._prepared_connection: tuple[Connector, BoundedFeedQueue] | None = None
-        # Server-wide telemetry aggregate (campaign C1; duck-typed). Its drop
+        self._prepared_connection: tuple[Connector, BoundedFeedQueue[_CryptoItem]] | None = None
+        # Server-wide telemetry aggregate (duck-typed). Its drop
         # counters are fed at the source: queue evictions here, sink ts-gate
         # drops in the bridge sink.
         self._stats = stats
@@ -674,8 +377,9 @@ class CryptoFeed:
         # a channel.
         self._liquidation = market in _LIQUIDATION.get(exchange, frozenset())
         emits_liquidation = self._liquidation or exchange in _LIQUIDATION_VIA_TRADES
-        # markers reflect what the client can actually receive (spec §7 honesty
-        # rule), and a snapshot-driven venue cannot detect a sequence gap.
+        # markers reflect what the client can actually receive (claiming less than
+        # the venue delivers is as misleading as claiming more), and a snapshot-driven
+        # venue cannot detect a sequence gap.
         markers: list[str] = ["gap"] if self.native else []
         if emits_liquidation:
             markers.insert(0, "liquidation")
@@ -683,10 +387,12 @@ class CryptoFeed:
             "depth": "L2" if self.native else "L2-snapshot",
             "tape": "tick",
             "trade_side": "exchange",
-            # Exchange-true aggressor side -> honest per-bar CVD (spec §7 parity).
+            # Exchange-true aggressor side -> honest per-bar CVD.
             "cvd": "exchange",
             "markers": markers,
-            "book_top_n": self._cfg.book_top_n,
+            # The depth the book really holds: the ccxt path is requested at
+            # _CCXT_BOOK_DEPTH levels, not the configured native cap.
+            "book_top_n": self._cfg.book_top_n if self.native else _CCXT_BOOK_DEPTH,
             "raw_capture": self._engine_settings.raw_capture,
             "source_book_events": 0,
             "unique_book_changes": 0,
@@ -697,10 +403,19 @@ class CryptoFeed:
     async def prepare(self) -> None:
         """Resolve geometry before a grid or reconstructed history is created."""
         if self._owns_connector:
-            from flowmap_server.data.venues import venue_price_tick
+            from flowmap_server.data.venues import venue_price_tick, venue_symbols
 
-            self._connector_symbol = await resolve_symbol_cached(self.market, self.symbol)
-            self.preferred_tick = await venue_price_tick(self.market, self._connector_symbol)
+            # A cold subscribe does two independent venue fetches before Hello:
+            # the symbol translation and the venue listing that carries the tick.
+            # Run them together so the wait is the slower one, not both stacked
+            # (each is bounded by LIST_TIMEOUT_S). The listing is cached by the
+            # time the tick lookup runs, so that lookup costs no second fetch.
+            resolved, _ = await asyncio.gather(
+                resolve_symbol_cached(self.market, self.symbol),
+                venue_symbols(self.market),
+            )
+            self._connector_symbol = resolved
+            self.preferred_tick = await venue_price_tick(self.market, resolved)
         if self._prepared_connection is None:
             # Constructors are network-free. The exact selected connector's
             # public mode/source metadata must exist before Session Hello.
@@ -719,11 +434,11 @@ class CryptoFeed:
             channels.append("liquidation")
         return channels
 
-    def _connector_kwargs(self) -> dict[str, object]:
+    def _connector_kwargs(self) -> dict[str, Any]:
         if not self.native:
             # Stream where the venue supports it; ccxt.pro falls back to REST
             # polling per channel on its own when it does not.
-            return {"use_ws": True, "book_depth": 100}
+            return {"use_ws": True, "book_depth": _CCXT_BOOK_DEPTH}
         kwarg = _SEGMENT_KWARG.get(self.exchange)
         if kwarg is not None and self._market_kw:
             return {kwarg: self._market_kw}
@@ -733,14 +448,32 @@ class CryptoFeed:
         # Binance's bare @depth stream defaults to one batch per second.
         # Request its fastest common spot/futures cadence via the public
         # subscription seam; upstream still owns resync and sequence checks.
+        if not self.native:
+            # Built directly, not through make_connector, so the trade polls are
+            # bracketed on the sink (see _PolledCCXTConnector). make_connector's
+            # universal fall-through builds the same connector otherwise, and the
+            # venue id has already been checked against CRYPTO_EXCHANGES.
+            conn: Connector = _PolledCCXTConnector(
+                symbols=[self._connector_symbol],
+                channels=self._channels(),
+                out=sink,
+                registry=InstrumentRegistry(),
+                ccxt_id=self.exchange,
+                **self._connector_kwargs(),
+            )
+            _harden_rest_ssl(conn)
+            return conn
+
         from flowmap_server.feeds.binance import RealtimeBinanceConnector
 
         json_binance = (
             self.exchange == "binance" and self._engine_settings.binance_wire_format == "json"
         )
-        factory = RealtimeBinanceConnector if json_binance else make_connector
-        args = () if json_binance else (self.exchange,)
-        settings_kw = {} if json_binance else {"settings": self._engine_settings}
+        factory: Callable[..., Connector] = (
+            RealtimeBinanceConnector if json_binance else make_connector
+        )
+        args: tuple[Any, ...] = () if json_binance else (self.exchange,)
+        settings_kw: dict[str, Any] = {} if json_binance else {"settings": self._engine_settings}
         conn = factory(
             *args,
             symbols=[self._connector_symbol],
@@ -753,11 +486,11 @@ class CryptoFeed:
         _harden_rest_ssl(conn)
         return conn
 
-    def _make_connection(self) -> tuple[Connector, BoundedFeedQueue]:
-        # Bounded fan-in (A2-3): a stalled consumer drops OLDEST events (counted
+    def _make_connection(self) -> tuple[Connector, BoundedFeedQueue[_CryptoItem]]:
+        # Bounded fan-in: a stalled consumer drops OLDEST events (counted
         # on the queue) instead of growing RSS without limit. The connector's
         # end sentinel is never the dropped item (see BoundedFeedQueue).
-        queue = BoundedFeedQueue(
+        queue: BoundedFeedQueue[_CryptoItem] = BoundedFeedQueue(
             on_drop=self._stats.inc_feed_drops if self._stats is not None else None
         )
         sink = _BridgeSink(
@@ -869,12 +602,12 @@ class CryptoFeed:
                 }
 
     @staticmethod
-    async def _drive(conn: Connector, queue: BoundedFeedQueue) -> None:
+    async def _drive(conn: Connector, queue: BoundedFeedQueue[_CryptoItem]) -> None:
         try:
             await conn.run()
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 — forwarded to the consumer
+        except Exception as exc:  # forwarded to the consumer
             queue.put_nowait(_FeedEnd(exc))
         else:
             queue.put_nowait(_FeedEnd(None))

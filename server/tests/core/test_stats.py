@@ -1,15 +1,15 @@
-"""SessionStats (campaign contract C1) — producer shape, hooks, and wiring.
+"""SessionStats — producer shape, hooks, and wiring.
 
 Pins:
-- the FROZEN snapshot dict shape (SB's /api/health v3 renders it verbatim),
+- the frozen snapshot dict shape (the /api/health stats key renders it verbatim),
 - every counter increments from its real source: BoundedFeedQueue drop-oldest,
   ClientTx lag evictions, bridge ts-gate drops, feed crash restarts, recording
   flush failures, refused subscribes,
 - the EMA latency / latest-wins skew hooks,
 - staleness_ms per-session semantics (ages from creation, resets on events,
   entry removed when the session leaves the manager),
-- SessionManager mounting at ``.stats`` (the SB consumption point) and
-  Session.conn_stats being consumed by Status broadcasts (NEEDS-CORE #1).
+- SessionManager mounting at ``.stats`` (the consumption point) and
+  Session.conn_stats being consumed by Status broadcasts.
 """
 
 from __future__ import annotations
@@ -121,6 +121,9 @@ def test_snapshot_shape_is_frozen():
         "staleness_ms",
         "clock_skew_ms",
         "recording",
+        "trades",
+        "feeds",
+        "orphaned_work",
     }
     assert set(snap["drops"]) == {"feed", "tx_lag", "snapshot"}
     assert set(snap["sessions"]) == {"active", "rejected"}
@@ -131,7 +134,10 @@ def test_snapshot_shape_is_frozen():
         "flush_stalls",
         "last_flush_age_s",
         "stalled",
+        "dropped_rows",
+        "wedged",
     }
+    assert set(snap["feeds"]) == {"poll_failures", "markers_dropped", "quotes_dropped", "collectors"}
     assert snap == {
         "drops": {"feed": 0, "tx_lag": 0, "snapshot": 0},
         "restarts": 0,
@@ -146,8 +152,56 @@ def test_snapshot_shape_is_frozen():
             "flush_stalls": 0,
             "last_flush_age_s": None,
             "stalled": False,
+            "dropped_rows": 0,
+            "wedged": 0,
         },
+        "trades": {"out_of_interval": 0},
+        "feeds": {"poll_failures": 0, "markers_dropped": 0, "quotes_dropped": 0, "collectors": {}},
+        "orphaned_work": 0,
     }
+
+
+def test_feed_producer_counters_and_collector_status_reach_the_snapshot():
+    """Feeds report poll failures, dropped markers/quotes and each collector's
+    last_status into the health snapshot."""
+    s = SessionStats()
+    s.inc_poll_failures()
+    s.inc_poll_failures(2)
+    s.inc_markers_dropped()
+    s.inc_quotes_dropped(4)
+    s.note_collector_status("macro", "ok")
+    s.note_collector_status("macro", "stale")  # latest wins
+    s.note_collector_status("darkpool", "unavailable")
+    feeds = s.snapshot()["feeds"]
+    assert feeds == {
+        "poll_failures": 3,
+        "markers_dropped": 1,
+        "quotes_dropped": 4,
+        "collectors": {"macro": "stale", "darkpool": "unavailable"},
+    }
+
+
+def test_wedged_writers_and_refused_rows_are_per_session_and_forgotten_with_it():
+    s = SessionStats()
+    s.note_flush_stall("a")
+    s.note_flush_stall("b")
+    s.note_recording_dropped("a", 3)
+    s.note_recording_dropped("b", 4)
+    rec = s.snapshot()["recording"]
+    assert rec["wedged"] == 2 and rec["flush_stalls"] == 2
+    assert rec["dropped_rows"] == 7
+
+    s.clear_flush_wedged("a")
+    assert s.snapshot()["recording"]["wedged"] == 1
+    s.note_recording_dropped("b", -5)  # a bogus negative total never subtracts
+    assert s.snapshot()["recording"]["dropped_rows"] == 3
+
+    s.forget_session("b")
+    rec = s.snapshot()["recording"]
+    assert rec["wedged"] == 0 and rec["dropped_rows"] == 3  # session "a" still counts
+    assert rec["flush_stalls"] == 2  # the cumulative stall count is not per session
+    s.forget_session("a")
+    assert s.snapshot()["recording"]["dropped_rows"] == 0
 
 
 def test_record_rtt_is_ema_and_skew_is_latest():
@@ -308,7 +362,7 @@ async def test_manager_mounts_stats_and_counts_rejected():
         timer=FakeTimer(),
         feed_factory=lambda sub: DrivenFeed(),
     )
-    # Mount point per contract C1 / NEEDS-CORE #3: manager.stats.snapshot().
+    # Mount point: manager.stats.snapshot().
     assert isinstance(mgr.stats, SessionStats)
     assert callable(mgr.stats.snapshot)
 
@@ -360,7 +414,7 @@ async def test_manager_stats_staleness_tracks_sessions():
 
 
 # ---------------------------------------------------------------------------
-# NEEDS-CORE #1: conn_stats consumed by Status broadcasts
+# conn_stats is consumed by Status broadcasts
 
 
 async def test_conn_stats_flows_into_status_frames():

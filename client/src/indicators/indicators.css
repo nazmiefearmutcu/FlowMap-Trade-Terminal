@@ -1,25 +1,20 @@
 /*
- * Indicator lane styles (campaign 3, lane CG).
+ * Indicator styles.
  *
- * Default SERIES palette lives in CSS variables so themes own it (override
- * --indi-c1..c6 anywhere); the canvas resolves them at paint time with literal
- * fallbacks for hosts without a stylesheet. All UI chrome uses the app's theme
- * tokens (--bg-*, --line*, --text*, --fs-*, --r-*, --shadow-pop).
+ * The SERIES palette lives in CSS variables so themes own it (--indi-c1..c6, set
+ * per theme in theme/themes.css); the canvas resolves them at paint time with
+ * literal fallbacks for hosts without a stylesheet. All UI chrome uses the app's
+ * theme tokens (--bg-*, --line*, --text*, --fs-*, --r-*, --shadow-pop).
  *
- * CANVAS RULE (campaign contract): every new canvas lives in a POSITIONED
+ * CANVAS RULE: every canvas lives in a POSITIONED
  * wrapper. .indi-host is position:absolute (a positioned containing block)
  * inside the chart viewport and never participates in layout; the canvas is
  * display:block at 100% of its host.
  */
 
-:root {
-  --indi-c1: #4cc2b5; /* teal — SMA / MACD line */
-  --indi-c2: #e0a94e; /* amber — EMA / MACD signal */
-  --indi-c3: #9a86e8; /* violet — VWAP / OBV */
-  --indi-c4: #5aa2e0; /* blue — Bollinger bands */
-  --indi-c5: #e8635f; /* red — RSI / MACD histogram */
-  --indi-c6: #67c96a; /* green — ATR */
-}
+/* The series palette (--indi-c1..c6) is NOT declared here: theme/themes.css
+   gives every theme its own set, tuned for that theme's chart ground (WCAG
+   1.4.11). The overlay canvas falls back to FALLBACK_COLORS when a token is unset. */
 
 /* --- chart overlay canvas ----------------------------------------------------- */
 
@@ -192,6 +187,13 @@
   align-items: center;
   gap: 6px;
   padding: 2px 4px 6px 14px;
+}
+
+/* Note under a param row when the store moved the paired field. */
+.indi-hint {
+  flex-basis: 100%;
+  font-size: 11px;
+  opacity: 0.85;
 }
 
 .indi-param {

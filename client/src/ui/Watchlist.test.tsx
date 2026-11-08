@@ -20,7 +20,7 @@ import { LIVE_QUOTE_STALE_MS, Watchlist, quoteChangeText, quoteDirection, quoteP
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-// The panel consumes lane C1's frozen P2 feed via this module; tests drive it
+// The panel consumes the shared quote feed via this module; tests drive it
 // directly so quote timing is deterministic and no network/poller is involved.
 vi.mock('../state/quoteFeed', () => ({
   subscribeQuotes: vi.fn(() => () => {}),
@@ -251,7 +251,7 @@ describe('Watchlist panel', () => {
     const { container } = render(<Watchlist activeKey="sim:A" onSelect={vi.fn()} />);
     emit('sim:A', { price: 61234.5, changePct: 2.5, spark: [1, 2, 3], stale: false, reachable: true });
 
-    expect(text(container, 'watchlist-price-sim:A')).toBe('61,234.5');
+    expect(text(container, 'watchlist-price-sim:A')).toBe('61234.50');
     expect(text(container, 'watchlist-change-sim:A')).toBe('+2.50%');
     const chg = container.querySelector('[data-testid="watchlist-change-sim:A"]') as HTMLElement;
     expect(chg.classList.contains('is-up')).toBe(true);
@@ -304,10 +304,30 @@ describe('Watchlist panel', () => {
     act(() => rowA.click());
     expect(onSelect).toHaveBeenCalledWith('sim:A');
 
-    act(() => {
-      rowA.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+    // The symbol button is the keyboard control: it selects and carries aria-current.
+    const selectB = container.querySelector('[data-testid="watchlist-select-sim:B"]') as HTMLButtonElement;
+    expect(selectB.getAttribute('aria-current')).toBe('true');
+    act(() => selectB.click());
+    expect(onSelect).toHaveBeenLastCalledWith('sim:B');
     expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it('exposes rows as list items; the symbol is the only row button that selects', () => {
+    addToWatchlist('sim:A');
+    const { container } = render(<Watchlist activeKey="sim:A" onSelect={vi.fn()} />);
+    const row = container.querySelector('[data-testid="watchlist-row-sim:A"]') as HTMLElement;
+    expect(row.tagName).toBe('LI');
+    expect(row.getAttribute('role')).toBeNull();
+    expect(row.hasAttribute('tabindex')).toBe(false);
+    const select = container.querySelector('[data-testid="watchlist-select-sim:A"]') as HTMLButtonElement;
+    expect(select.tagName).toBe('BUTTON');
+    expect(select.textContent).toBe('A');
+    // Star and remove are siblings of the select button, each with its own label.
+    const star = container.querySelector('[data-testid="watchlist-star-sim:A"]') as HTMLButtonElement;
+    const remove = container.querySelector('[data-testid="watchlist-remove-sim:A"]') as HTMLButtonElement;
+    expect(star.parentElement).toBe(select.parentElement?.parentElement);
+    expect(star.getAttribute('aria-label')).not.toBe(remove.getAttribute('aria-label'));
+    expect(remove.getAttribute('aria-label')).toBe('Remove A from the watchlist');
   });
 
   it('star toggle removes the favorite (row disappears from the store)', () => {
@@ -319,7 +339,7 @@ describe('Watchlist panel', () => {
     expect(container.querySelector('[data-testid="watchlist-row-sim:A"]')).toBeNull();
   });
 
-  it('nested controls keep their own Enter/Space activation (R2-M2)', () => {
+  it('nested controls keep their own Enter/Space activation', () => {
     addToWatchlist('sim:A');
     addToWatchlist('sim:B');
     const onSelect = vi.fn();

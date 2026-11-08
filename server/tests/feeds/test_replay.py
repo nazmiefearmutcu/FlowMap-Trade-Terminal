@@ -15,7 +15,8 @@ import numpy as np
 import pytest
 
 from flowmap_server.core.record import Recorder
-from flowmap_server.feeds.replay import ReplayFeed
+from flowmap_server.feeds.equity import _CAPABILITY
+from flowmap_server.feeds.replay import ReplayFeed, unrecorded_capability
 from flowmap_server.feeds.sim import SimFeed
 from flowmap_server.proto import events
 from flowmap_server.proto.events import EpochParams
@@ -27,7 +28,7 @@ P0 = round((100.0 - ROWS * 0.5 / 2.0) / 0.5) * 0.5
 EPOCH0 = EpochParams(epoch=0, tick=0.5, tick_multiple=1, dt_ns=DT_NS, p0=P0, rows=ROWS)
 
 
-def _make_feed(tmp_path, n_cols: int, speed: float = 1.0) -> ReplayFeed:
+def _recorded_tail(tmp_path, n_cols: int):
     cols = SimFeed.generate_history(seed=7, n_cols=n_cols)
     rec = Recorder(tmp_path / "rec", 20.0)
     s = rec.open_session(MARKET, SYMBOL)
@@ -38,6 +39,11 @@ def _make_feed(tmp_path, n_cols: int, speed: float = 1.0) -> ReplayFeed:
     s.close()
     tail = rec.load_all(MARKET, SYMBOL)
     assert tail is not None and len(tail.columns) == n_cols
+    return tail
+
+
+def _make_feed(tmp_path, n_cols: int, speed: float = 1.0) -> ReplayFeed:
+    tail = _recorded_tail(tmp_path, n_cols)
     return ReplayFeed(market=MARKET, symbol=SYMBOL, tail=tail, speed=speed)
 
 
@@ -147,3 +153,94 @@ async def test_mid_stream_forward_seek_skips_ahead(tmp_path):
     ev = await _next_book(gen)
     assert ev.ts_ns == 8 * DT_NS
     await gen.aclose()
+
+
+def test_unrecorded_keyless_equity_replays_as_synth_never_real_l2(tmp_path):
+    """A keyless equity recording stored before its capability was persisted
+    must not replay as the real L2 ramp with exchange-side trades."""
+    feed = ReplayFeed(market="equity", symbol="AAPL", tail=_recorded_tail(tmp_path, 4))
+    assert feed.capability["depth"] == "SYNTH"
+    assert feed.capability["trade_side"] == "na"
+    assert feed.capability["cvd"] == "na"
+    assert feed.capability["replay"] is True
+    assert feed.capability["depth_provenance"] == "recorded-density"
+
+
+def test_unrecorded_crypto_recording_never_claims_exchange_side(tmp_path):
+    feed = ReplayFeed(market="binance-spot", symbol="BTCUSDT", tail=_recorded_tail(tmp_path, 4))
+    assert feed.capability["depth"] != "L2"
+    assert feed.capability["trade_side"] == "na"
+    assert feed.capability["cvd"] == "na"
+
+
+def test_replayed_sim_recording_is_flagged_synthetic_even_with_recorded_l2(tmp_path):
+    # The sim declares a full L2 book (its wire mode depends on it), so the
+    # honesty flag, not the depth tier, is what marks a replayed sim as generated.
+    recorded = {"depth": "L2", "tape": "tick", "trade_side": "exchange", "cvd": "exchange"}
+    feed = ReplayFeed(
+        market="sim", symbol="SIM-DEMO", tail=_recorded_tail(tmp_path, 4),
+        recorded_capability=recorded,
+    )
+    assert feed.capability["depth"] == "L2"
+    assert feed.capability["synthetic"] is True
+
+
+def test_replayed_keyless_equity_recording_is_flagged_synthetic(tmp_path):
+    feed = ReplayFeed(market="equity", symbol="AAPL", tail=_recorded_tail(tmp_path, 4))
+    assert feed.capability["synthetic"] is True
+
+
+def test_replayed_crypto_recording_is_not_flagged_synthetic(tmp_path):
+    feed = ReplayFeed(market="binance-spot", symbol="BTCUSDT", tail=_recorded_tail(tmp_path, 4))
+    assert feed.capability["synthetic"] is False
+
+
+def test_replayed_keyed_equity_recording_is_not_flagged_synthetic(tmp_path):
+    recorded = {"depth": "L1", "tape": "tick", "trade_side": "inferred", "cvd": "inferred"}
+    feed = ReplayFeed(
+        market="equity", symbol="AAPL", tail=_recorded_tail(tmp_path, 4),
+        recorded_capability=recorded,
+    )
+    assert feed.capability["depth"] == "L1"
+    assert feed.capability["synthetic"] is False
+
+
+def test_unrecorded_stand_in_matches_keyless_equity_tier():
+    """The equity stand-in is the keyless tier's own honesty fields, so the two
+    cannot drift apart."""
+    keyless = _CAPABILITY["keyless"]
+    stand_in = unrecorded_capability("equity")
+    for key in ("depth", "tape", "trade_side", "cvd"):
+        assert stand_in[key] == keyless[key]
+
+
+def test_stored_live_capability_is_replayed_as_recorded(tmp_path):
+    recorded = {
+        "depth": "L1",
+        "tape": "tick",
+        "trade_side": "inferred",
+        "cvd": "inferred",
+        "markers": ["session_break"],
+        "replay": False,
+    }
+    feed = ReplayFeed(
+        market="equity", symbol="AAPL", tail=_recorded_tail(tmp_path, 4),
+        recorded_capability=recorded,
+    )
+    assert feed.capability["depth"] == "L1"
+    assert feed.capability["tape"] == "tick"
+    assert feed.capability["trade_side"] == "inferred"
+    assert feed.capability["cvd"] == "inferred"
+    assert "markers" not in feed.capability, "markers are the server's, not the recording's"
+    assert feed.capability["replay"] is True, "the replay flag is this server's statement"
+
+
+def test_partial_stored_capability_keeps_honest_defaults_for_missing_keys(tmp_path):
+    feed = ReplayFeed(
+        market="equity", symbol="AAPL", tail=_recorded_tail(tmp_path, 4),
+        recorded_capability={"depth": "L1"},
+    )
+    assert feed.capability["depth"] == "L1"
+    assert feed.capability["tape"] == "poll"
+    assert feed.capability["trade_side"] == "na"
+    assert feed.capability["cvd"] == "na"

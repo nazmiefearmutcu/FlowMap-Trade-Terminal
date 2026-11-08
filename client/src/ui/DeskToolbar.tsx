@@ -3,6 +3,7 @@ import type { Renderer } from '../gl/renderer';
 import type { OverlayVisibility } from '../gl/overlays/frame';
 import { useT } from '../i18n/useT';
 import { useFlowMapStore } from '../state/store';
+import { formatNumber } from '../i18n/format';
 import type { DeskLayout } from './deskPreferences';
 import { DEPTH_CHANNELS, type FlowMapSettings } from './settings';
 
@@ -24,7 +25,7 @@ export function DeskToolbar({ rendererRef, settings, layout, onLayout, onChange,
       const rate = r.stats().fps; setFps(Number.isFinite(rate) && rate > 0 ? Math.round(rate) : null);
       const overview = r.overviewStats?.();
       setHistory(overview?.error ? t('desk.historyRetry') : overview && overview.progress.loaded < overview.progress.total
-        ? `${t('desk.historyLoading')} ${overview.progress.loaded}/${overview.progress.total}` : '');
+        ? `${t('desk.historyLoading')} ${formatNumber(overview.progress.loaded)}/${formatNumber(overview.progress.total)}` : '');
     }, 500);
     return () => window.clearInterval(id);
   }, [rendererRef, t]);
@@ -50,6 +51,6 @@ export function DeskToolbar({ rendererRef, settings, layout, onLayout, onChange,
       <button type="button" onClick={onFit} data-testid="desk-fit">{t('desk.fit')}</button>
     </div>
     {history && <span className="desk-toolbar__history" role="status" data-testid="history-loading">{history}</span>}
-    <span className="desk-toolbar__performance" data-mode={mode} title={t('desk.fpsHint')}>{fps === null ? '—' : fps} FPS</span>
+    <span className="desk-toolbar__performance" data-mode={mode} title={t('desk.fpsHint')}>{t('desk.fpsValue', { fps: fps === null ? '—' : formatNumber(fps) })}</span>
   </div>;
 }

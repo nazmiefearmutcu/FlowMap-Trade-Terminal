@@ -21,12 +21,15 @@ import { useIntelligenceStore } from './intelligenceStore';
 
 import {
   Connection,
+  pruneEpochs,
   type CloseInfo,
   type ConnStatus,
   type ConnectionOptions,
   type StreamMsg,
   type SubscribeWindow,
 } from '../net/connection';
+import { recordingDegraded } from '../net/recordingState';
+import { holdWhileSidecarDown } from '../net/sidecarHold';
 import { playbackFromCapability, type ReplayPlayback, type EpochParams, type FeedState, type HistoryResponse, type StreamMode } from '../proto/types';
 
 export interface Subscription {
@@ -36,8 +39,8 @@ export interface Subscription {
   /** Server price-grid coverage preset ('native' | 'wide' | 'full' | 'deep'). */
   band: string;
   /**
-   * OPTIONAL replay window (contract P6): inclusive start / exclusive end in
-   * wall-clock ns. Absent (the default, and every pre-P6 caller) means the
+   * OPTIONAL replay window: inclusive start / exclusive end in
+   * wall-clock ns. Absent (the default, and every caller without a window) means the
    * unbounded recording; the fields are only materialized when a caller actually
    * supplies one, so the store's observable subscription shape is unchanged for
    * existing consumers and tests.
@@ -61,15 +64,25 @@ export interface Subscription {
  * market:symbol left the renderer holding a ring sized for the old grid, which
  * is exactly the geometry mismatch gl/sessionGate.ts then has to survive.
  *
- * A replay WINDOW (contract P6) is included too: a different slice is a
+ * A replay WINDOW is included too: a different slice is a
  * different server session whose col_seq restarts at 0, so it needs the same
- * tear-down. An unbounded subscription (no window) keeps the exact pre-P6 key.
+ * tear-down. An unbounded subscription (no window) keeps the exact pre-window key.
  */
 export function sessionResetKey(sub: Subscription | null): string | null {
   if (sub === null) return null;
   const base = `${sub.market}:${sub.symbol}:${sub.band}:${sub.mode}`;
   if (sub.startNs == null && sub.endNs == null) return base;
   return `${base}:${sub.startNs ?? ''}-${sub.endNs ?? ''}`;
+}
+
+/**
+ * The GRID a subscription renders, for the revision counter: market, symbol,
+ * band and replay window, but NOT mode. A live⇄replay toggle keeps the grid, so
+ * it must not bump {@link FlowMapState.sessionRevision} (scroll-back survives).
+ */
+function gridIdentity(sub: Subscription | null): string | null {
+  if (sub === null) return null;
+  return `${sub.market}:${sub.symbol}:${sub.band}:${sub.startNs ?? ''}-${sub.endNs ?? ''}`;
 }
 
 export interface FlowMapState {
@@ -79,7 +92,20 @@ export interface FlowMapState {
   /** Next RTH open (UTC ns) from a `Status{feed_state='closed'}`; else null. Drives the closed banner countdown. */
   nextOpenTs: bigint | null;
   capability: Record<string, unknown> | null;
+  /**
+   * The server reports that this session's recording has stopped persisting
+   * (its writer is wedged): a replay of it would have a gap. Set from every
+   * Status; cleared with the rest of the session on a new subscription.
+   */
+  recordingDegraded: boolean;
   sessionId: string | null;
+  /**
+   * Bumped on every Hello, including a same-session reconnect. Each Hello is
+   * followed by an attach snapshot that re-sends the session's recent tape, so
+   * anything that accumulates from the stream (candles, indicator inputs) must
+   * restart when this changes or the re-sent trades are counted twice.
+   */
+  attachEpoch: number;
   /**
    * Wire protocol version from Hello. Deliberately NOT cleared on a
    * re-subscribe, unlike the rest of the Hello-asserted fields: it describes the
@@ -97,15 +123,29 @@ export interface FlowMapState {
   subscription: Subscription | null;
   /**
    * The server refused a replay subscribe with the unsupported close (1003) —
-   * there is NO recording for this symbol/session (§7: the server refuses
+   * there is NO recording for this symbol/session (the server refuses
    * honestly). The store already fell back to live mode when this is set; the
    * TopBar surfaces it as an explanatory badge until the next successful
    * handshake clears it.
    */
   replayUnavailable: boolean;
-  /** Legacy revision surface; mode/window identity and replay Hello now reset
-   * buffers directly, including refused-replay fallback. */
+  /**
+   * Bumped whenever the GRID identity changes (`sessionResetKey`: market, symbol,
+   * band or replay window). A live⇄replay toggle does NOT bump it (same grid,
+   * scroll-back kept), and neither does the refused-replay live fallback.
+   */
   sessionRevision: number;
+  /**
+   * The server refused the LIVE subscription with a terminal 1003 (degraded) —
+   * e.g. an invalid symbol. `reason` is the server's own text when it sent one.
+   * Null while no refusal is outstanding; cleared by a different subscription.
+   */
+  refusal: { reason: string | null } | null;
+  /**
+   * The server speaks another wire protocol version: nothing can be decoded, so
+   * the connection parks instead of retrying. Null when the versions agree.
+   */
+  protocolMismatch: { got: number; expected: number } | null;
   /**
    * TERMINAL: the server refused this subscription with a pre-close Status
    * naming feed_state='closed' + close 1003 — NO feed exists for this market at
@@ -130,10 +170,16 @@ export interface FlowMapState {
     symbol: string,
     mode?: StreamMode,
     band?: string,
-    /** Optional P6 replay window; omitted/null = unbounded (today's behavior). */
+    /** Optional replay window; omitted/null = unbounded (today's behavior). */
     window?: SubscribeWindow,
   ) => void;
-  requestHistory: (before_t: bigint, n: number, overview?: import('../proto/types').HistoryOverviewRequest) => Promise<HistoryResponse>;
+  requestHistory: (
+    before_t: bigint,
+    n: number,
+    overview?: import('../proto/types').HistoryOverviewRequest,
+    /** Aborts the request when the caller no longer wants the page. */
+    signal?: AbortSignal,
+  ) => Promise<HistoryResponse>;
   /** Replay transport controls — send the matching control message + track UI state. */
   setSpeed: (x: number) => void;
   pause: () => void;
@@ -149,6 +195,8 @@ export interface FlowMapState {
 // --- module-scoped transport (never in React state) ----------------------------
 
 let conn: Connection | null = null;
+/** Stops following the desktop shell's sidecar status for the live connection. */
+let sidecarHoldStop: (() => void) | null = null;
 let replayEntryPending = false;
 const streamListeners = new Set<(msg: StreamMsg) => void>();
 
@@ -188,7 +236,9 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
   feedState: null,
   nextOpenTs: null,
   capability: null,
+  recordingDegraded: false,
   sessionId: null,
+  attachEpoch: 0,
   protocolVersion: null,
   gridEpoch: null,
   normSeed: null,
@@ -198,6 +248,8 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
   subscription: null,
   replayUnavailable: false,
   sessionRevision: 0,
+  refusal: null,
+  protocolMismatch: null,
   noFeed: false,
   lastClose: null,
   reconnectAttempts: 0,
@@ -222,8 +274,10 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
           const changed = get().sessionId !== hello.session_id;
           const epochs = changed ? new Map<number, EpochParams>() : new Map(get().epochs);
           epochs.set(hello.epoch_params.epoch, hello.epoch_params);
+          pruneEpochs(epochs, hello.grid_epoch);
           set({
             sessionId: hello.session_id,
+            attachEpoch: get().attachEpoch + 1,
             protocolVersion: hello.protocol_version,
             capability: hello.capability,
             normSeed: hello.norm_seed,
@@ -260,7 +314,7 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
           // Advance the grid epoch to the newest re-anchored frame so the price
           // axis + overlays follow it (e.g. an equity grid re-anchoring from its
           // nominal $100 p0 to the symbol's real price mid-stream). Only ever
-          // advance: history responses batch EpochStarts for OLDER epochs (§6.3)
+          // advance: history responses batch EpochStarts for OLDER epochs
           // and must not regress the live price frame.
           const cur = get().gridEpoch;
           const gridEpoch = cur === null ? ev.epoch : Math.max(cur, ev.epoch);
@@ -272,16 +326,24 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
           if (get().epochs.has(ev.epoch) && gridEpoch === cur) return;
           const epochs = new Map(get().epochs);
           epochs.set(ev.epoch, ev.epoch_params);
+          // Bounded like the transport's own map: the copy above is O(n) per
+          // re-anchor, so an unbounded session would turn it quadratic.
+          pruneEpochs(epochs, gridEpoch);
           set({ epochs, gridEpoch });
         },
         onStatus: (status) => {
           const playback = playbackFromCapability(status.capability);
           set({
-            feedState: status.feed_state,
+            // The server sends feed_state 'reconnecting' only as a pre-Hello progress
+            // Status while a subscribe prepares, never for a real reconnect (that is the
+            // transport's connection status). Surfacing it would make the startup gate
+            // read "reconnecting" on a healthy cold subscribe, so it is not a feed state.
+            feedState: status.feed_state === 'reconnecting' ? null : status.feed_state,
             // Only a closed Status carries a next open; a live/degraded Status
             // clears any stale countdown target.
             nextOpenTs: status.next_open_ts ?? null,
             capability: status.capability,
+            recordingDegraded: recordingDegraded(status.capability),
             latencyMs: status.latency_ms,
             clockSkewMs: status.clock_skew_ms,
             replayPlayback: playback,
@@ -302,6 +364,11 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
         // variant state the truth. A DIFFERENT subscription from the user is
         // the only way forward, and it clears the flag in the reset below.
         onNoFeed: () => set({ noFeed: true }),
+        // A live subscription the server refused for good (1003 + degraded): the
+        // transport has stopped retrying. Surface the server's reason.
+        onRefused: (reason) => set({ refusal: { reason } }),
+        // Another wire version: parked, not retried. The banner names both.
+        onProtocolMismatch: (info) => set({ protocolMismatch: info }),
         // The server honestly refused the replay subscribe (1003 — no recording
         // for this session). Fall back to LIVE right away so the user is not
         // stranded on a "reconnecting · degraded" loop that can never succeed,
@@ -317,6 +384,7 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
           }
         },
       });
+      sidecarHoldStop = holdWhileSidecarDown(conn);
     }
     // A DIFFERENT stream is a different server session, so nothing the previous
     // one asserted may survive into it. Critical for the Status-derived fields:
@@ -339,14 +407,18 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
       (prev.endNs ?? null) !== endNs
     ) {
       // Materialize the window fields ONLY when one was supplied: an unbounded
-      // subscription keeps the exact pre-P6 state shape every consumer sees.
+      // subscription keeps the exact pre-window state shape every consumer sees.
       const subscription: Subscription = { market, symbol, mode, band };
       if (startNs !== null || endNs !== null) {
         subscription.startNs = startNs;
         subscription.endNs = endNs;
       }
+      // A grid-identity change is a new revision; a mode-only change is not
+      // (`sessionResetKey` excludes the mode on purpose).
+      const gridChanged = gridIdentity(prev) !== gridIdentity(subscription);
       set({
         subscription,
+        sessionRevision: get().sessionRevision + (gridChanged ? 1 : 0),
         replayPlayback: null,
         speed: 1,
         paused: false,
@@ -357,8 +429,12 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
         // Re-asserted by the new session's Hello on attach.
         sessionId: null,
         capability: null,
+        recordingDegraded: false,
         epochs: new Map(),
         gridEpoch: null,
+        // A different stream is a new question: its refusal (if any) is not ours.
+        refusal: null,
+        protocolMismatch: null,
         // normSeed belongs to this list for the same reason and matters more
         // than most of it: gl/renderer.ts latches the seed ONCE behind a
         // one-shot flag, so a survivor is not a stale frame — the new session
@@ -390,11 +466,11 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
     conn.subscribe(market, symbol, mode, band, window);
   },
 
-  requestHistory(before_t, n, overview) {
+  requestHistory(before_t, n, overview, signal) {
     if (conn === null) {
       return Promise.reject(new Error('flowmap: not connected'));
     }
-    return conn.requestHistory(before_t, n, overview);
+    return conn.requestHistory(before_t, n, overview, signal);
   },
 
   setSpeed(x) {
@@ -423,6 +499,8 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
   disconnect() {
     conn?.close();
     conn = null;
+    sidecarHoldStop?.();
+    sidecarHoldStop = null;
     replayEntryPending = false;
     set({ status: 'closed', subscription: null });
   },
@@ -434,8 +512,3 @@ export const useFlowMapStore = create<FlowMapState>((set, get) => ({
     };
   },
 }));
-
-/** Test seam: current Connection instance (or null). Not for production use. */
-export function __getConnection(): Connection | null {
-  return conn;
-}

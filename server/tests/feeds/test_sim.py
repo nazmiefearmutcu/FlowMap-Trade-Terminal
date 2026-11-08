@@ -1,6 +1,6 @@
-"""SimFeed tests (M1 plan Task 6).
+"""SimFeed tests.
 
-The first six tests are the frozen contract from the plan: determinism,
+The first six tests pin the feed's core contract: determinism,
 wall persistence through a Grid, generate_history speed/shape, trade
 semantics + stream hygiene, liquidation marker, and no-sleep consumption.
 """
@@ -121,12 +121,10 @@ def test_generate_history_10k_columns_fast():
     cols = SimFeed.generate_history(seed=1, n_cols=10_000)
     elapsed = time.perf_counter() - t0
     assert len(cols) == 10_000
-    # Wall-clock PERF SMOKE, not an SLA. Measured ~2.2 s (stable, 3 runs) on
-    # the Windows dev box where the original 2 s budget flaked under load
-    # (parallel build/test campaigns on the same machine). No code regression
-    # was involved (the grid's f16-saturation fix added one negligible
-    # vectorized op per column), so the BOUND was wrong, not the code: 8 s
-    # still fails a >=4x slowdown loudly while tolerating a loaded box.
+    # Wall-clock smoke check, not an SLA. A typical run takes about 2.2 s on a
+    # Windows developer machine. A 2 s bound flaked when test runs shared the
+    # machine, so the bound is 8 s: a 4x slowdown still fails loudly, and a loaded
+    # machine still passes.
     assert elapsed < 8.0, f"generate_history took {elapsed:.2f}s (budget 8s)"
     seqs = [c.col_seq for c in cols]
     assert seqs == list(range(seqs[0], seqs[0] + 10_000)), "col_seq not contiguous"
@@ -249,8 +247,22 @@ def test_simfeed_satisfies_feed_protocol():
     assert isinstance(feed.capability, dict)
 
 
+def test_simfeed_honours_the_subscribed_symbol_and_is_flagged_synthetic():
+    # The subscribed symbol must reach the feed label, or every sim subscription
+    # would show as SIM-DEMO. The label follows the subscription, and the feed says
+    # its data is generated rather than observed.
+    assert SimFeed(seed=0, symbol="AAPL").symbol == "AAPL"
+    assert SimFeed(seed=0).symbol == "SIM-DEMO"
+    assert SimFeed(seed=0).capability["synthetic"] is True
+
+
+def test_simfeed_capability_advertises_only_markers_it_emits():
+    # events() never yields a gap marker, so advertising one was a false promise.
+    assert SimFeed(seed=0).capability["markers"] == ["liquidation"]
+
+
 def test_simfeed_capability_advertises_exchange_cvd():
-    # GOAL 3 symmetry: sim has exchange-true aggressor side, so its per-bar CVD
+    # Symmetry: sim has exchange-true aggressor side, so its per-bar CVD
     # is honest -> cvd == "exchange" (like crypto, unlike keyless equity's "na").
     feed = SimFeed(seed=0)
     assert feed.capability["trade_side"] == "exchange"

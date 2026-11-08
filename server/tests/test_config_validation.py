@@ -1,4 +1,4 @@
-"""Config.from_env range validation (campaign item: a typo'd env var must die
+"""Config.from_env range validation (a typo'd env var must die
 at boot with one clear ValueError naming the var and its allowed range, not
 become an opaque supervised crash loop inside Grid/numpy)."""
 

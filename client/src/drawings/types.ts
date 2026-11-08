@@ -1,6 +1,5 @@
 /**
- * Chart-drawing types (campaign 3, lane CF — ported from the old branch's
- * drawings/types.ts, re-anchored).
+ * Chart-drawing types.
  *
  * WHY DATA-SPACE ANCHORS (time-ns + price), NEVER PIXELS
  * An anchor stored in pixels dies three ways at once: pan once and the line no
@@ -26,6 +25,8 @@
  * system cannot watch mouse events, so {@link isComplete} polices that
  * boundary at runtime instead.
  */
+
+import { DRAWING_INK_DEFAULT } from '../theme/drawInks';
 
 /**
  * Every drawing tool the toolbar offers. Persisted verbatim in DrawingsDoc.
@@ -165,8 +166,11 @@ export function isDrawingTool(value: unknown): value is DrawingTool {
 export const MIN_WIDTH = 1;
 export const MAX_WIDTH = 6;
 
-/** The default new-drawing style: the theme's teal accent, hairline weight. */
-export const DEFAULT_STYLE: DrawStyle = { color: '#33d6c4', width: 2 };
+/**
+ * The default new-drawing style: the drawing ink default (theme/drawInks.ts),
+ * which clears WCAG 1.4.11 (3:1) on every chart ground, hairline weight.
+ */
+export const DEFAULT_STYLE: DrawStyle = { color: DRAWING_INK_DEFAULT, width: 2 };
 
 /** Clamp a stroke width into {@link MIN_WIDTH}..{@link MAX_WIDTH}. */
 export function clampWidth(w: number): number {

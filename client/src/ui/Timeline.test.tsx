@@ -1,9 +1,9 @@
 /**
- * Timeline transport honesty tests (QA11 H1/H2/M1/M2, F12 lane).
+ * Timeline transport honesty tests.
  *
  * The transport pill/readout/controls may describe the CURRENT subscription
  * only after it has ATTACHED (a Hello for it landed + the connection is live).
- * The QA11 repro this locks down: a replay click against a session-capacitated
+ * The repro this locks down: a replay click against a session-capacitated
  * server (close 1013) kept the old pill `REPLAY 1× PLAYING`, printed the dead
  * previous session's span (`00:02:07 / 00:02:07`) and left an enabled, inert
  * pause button over a frozen chart — and the 1003 fallback left a naked
@@ -21,7 +21,7 @@ import { Timeline, transportDisplay } from './Timeline';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-/** 1 s per column keeps the QA11 numbers exact: 127 cols → 00:02:07.000. */
+/** 1 s per column keeps the numbers exact: 127 cols → 00:02:07.000. */
 const DT_NS = 1_000_000_000;
 const SPAN_COLS = 127;
 
@@ -167,7 +167,7 @@ describe('Timeline drawn-window subscription', () => {
     act(() => vi.advanceTimersByTime(200));
     expect(q('[data-testid="transport-state"]')!.textContent).toBe('SCROLLED BACK');
     expect(q('[data-testid="time-readout"]')!.textContent).toBe('00:03:20.000');
-    expect(q('.go-live__behind')!.textContent).toBe('−00:02:20');
+    expect(q('.go-live__behind')).toBeNull();
   });
 
   it('skips CSS writes for duplicate and vertical-only notifications and a quiet fallback poll', () => {
@@ -385,18 +385,14 @@ describe('Timeline drawn-window subscription', () => {
     expect(q<HTMLInputElement>('[data-testid="seek-scrubber"]')!.value).toBe('500');
   });
 
-  it('keeps focus on the transport pill when GO LIVE removes its button after a hot view change', () => {
+  it('renders no footer GO LIVE button when scrolled back: the in-chart chip owns that action', () => {
     const r = fakeRenderer(100); r.following = false;
     useFlowMapStore.setState({ status: 'live', sessionId: 'live' });
-    const onGoLive = vi.fn(() => { r.following = true; });
-    render(r, { onGoLive }); poll();
+    render(r); poll();
     act(() => { r.drawn.colOffset = 30; r.emitViewChanged(); });
-    const goLive = q<HTMLButtonElement>('[data-testid="go-live"]')!;
-    goLive.focus();
-    act(() => goLive.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    expect(onGoLive).toHaveBeenCalledTimes(1);
     expect(q('[data-testid="go-live"]')).toBeNull();
-    expect(document.activeElement).toBe(q('[data-testid="transport-state"]'));
+    expect(q('.go-live')).toBeNull();
+    expect(q('[data-testid="transport-state"]')!.textContent).toBe('SCROLLED BACK');
   });
 });
 
@@ -447,14 +443,20 @@ describe('Timeline attach honesty', () => {
     act(() => vi.advanceTimersByTime(250));
     expect(seek).toHaveBeenCalledWith(start + 450_000_000_000n); seek.mockRestore();
   });
-  it('a terminal recorded column remains visible with an honest ended transport', () => {
+  it('a terminal recorded column remains visible with an honest ended transport; play restarts it', () => {
+    const seek = vi.spyOn(useFlowMapStore.getState(), 'seek');
     useFlowMapStore.setState({ status: 'live', sessionId: 'end', paused: true, speed: 7,
       replayPlayback: { startNs: 0n, endNs: 250_000_000n, positionNs: 0n, columns: 1,
         paused: true, speed: 7, ended: true, generation: 0 } });
     setReplay(); render(fakeRenderer(0)); poll();
     expect(q('[data-testid="transport-state"]')!.textContent).toBe('REPLAY 7× ENDED');
     expect(q('[data-testid="time-readout"]')!.textContent).toBe('00:00:00.000 / 00:00:00.250');
-    expect(q<HTMLButtonElement>('[data-testid="transport-play"]')!.disabled).toBe(true);
+    const play = q<HTMLButtonElement>('[data-testid="transport-play"]')!;
+    expect(play.disabled).toBe(false);
+    expect(play.title).toBe('restart replay from the beginning');
+    act(() => play.click());
+    expect(seek).toHaveBeenCalledWith(0n);
+    seek.mockRestore();
     expect(q<HTMLInputElement>('[data-testid="seek-scrubber"]')!.disabled).toBe(false);
   });
   it('attached replay: pill + readout describe the real replay clock, controls enabled', () => {
@@ -474,8 +476,8 @@ describe('Timeline attach honesty', () => {
     expect(q('[data-testid="transport-progress"]')).toBeNull();
   });
 
-  it('pre-attach replay claim: NO crying "PLAYING" over the previous session frame (QA11 M1)', () => {
-    // The exact QA11 shape: the mode toggle ran (sessionId cleared) while the
+  it('pre-attach replay claim: NO crying "PLAYING" over the previous session frame', () => {
+    // The exact shape: the mode toggle ran (sessionId cleared) while the
     // renderer still holds the OLD live session's 127 s extent.
     useFlowMapStore.setState({ status: 'live', sessionId: null, lastClose: null });
     setReplay();
@@ -492,7 +494,7 @@ describe('Timeline attach honesty', () => {
     expect(q('[data-testid="transport-waiting"]')!.textContent).toContain('waiting for the feed');
   });
 
-  it('1013 session-cap refusal: honest REFUSED state + reason + muted controls (QA11 H1)', () => {
+  it('1013 session-cap refusal: honest REFUSED state + reason + muted controls', () => {
     useFlowMapStore.setState({
       status: 'reconnecting',
       sessionId: null,
@@ -514,7 +516,7 @@ describe('Timeline attach honesty', () => {
     expect((q<HTMLInputElement>('[data-testid="seek-scrubber"]')!).disabled).toBe(true);
   });
 
-  it('1003 fallback while CONNECTING: progress + empty-state, never a fabricated FOLLOWING (QA11 H2)', () => {
+  it('1003 fallback while CONNECTING: progress + empty-state, never a fabricated FOLLOWING', () => {
     useFlowMapStore.setState({
       status: 'connecting',
       sessionId: null,

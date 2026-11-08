@@ -1,5 +1,5 @@
 /**
- * FlowMap book/tape buffer (M2 T11) — the module-scoped high-frequency store
+ * FlowMap book/tape buffer — the module-scoped high-frequency store
  * for the DOM ladder + time & sales panels.
  *
  * The panels update at high frequency (book ~4-20/s, trades ~5-120/s). Pushing
@@ -23,11 +23,12 @@
  */
 
 import type { StreamMsg } from '../net/connection';
+import { toBigNs } from '../candles/bigNs';
 import { MsgType, type BBO, type BookUpdate, type DepthColumn, type Trade } from '../proto/types';
 import { sessionResetKey, useFlowMapStore, type FlowMapState } from './store';
 import { LIVE_UPDATE_MS } from './cadence';
 
-/** Max trades retained for the tape (spec §9: "last ~200"); ring is a touch larger. */
+/** Max trades retained for the tape (the last ~200 prints); the ring is a touch larger. */
 export const TRADE_RING = 256;
 /** Panel notify cadence — coalesce the high-freq stream within one frame. */
 export const THROTTLE_MS = LIVE_UPDATE_MS;
@@ -97,7 +98,7 @@ let pendingReplayBbo: BboBuffer | null = null;
  * slot write (no Array.shift memmove, no growth, no per-trade garbage) and the
  * eviction of the oldest trade falls out of the modulo. The panel-facing
  * snapshot materializes it newest-FIRST by iterating the ring BACKWARD — the
- * old `trades.slice().reverse()` per flush allocated TWO arrays at ~10 Hz
+ * old `trades.slice().reverse()` per flush allocated TWO arrays every flush
  * (the slice, then the reversed copy); this allocates exactly the one
  * immutable array the snapshot needs.
  */
@@ -120,17 +121,6 @@ const listeners = new Set<(s: BookSnapshot) => void>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 /** Unsubscribe handle for the single store.onStream subscription (lazy). */
 let streamUnsub: (() => void) | null = null;
-
-/**
- * Coerce a canonical ns field to bigint (cold-JSON small ints decode as number).
- * NaN/±Inf quarantined to 0n at the boundary: `BigInt(NaN)` THROWS, so one
- * corrupt field would otherwise tear down the whole fan-out loop mid-frame.
- */
-function toBigNs(x: bigint | number): bigint {
-  if (typeof x === 'bigint') return x;
-  if (!Number.isFinite(x)) return 0n;
-  return BigInt(Math.round(x));
-}
 
 /**
  * NaN quarantine for depth densities. A non-finite entry is corrupt wire data
@@ -326,7 +316,8 @@ export function getSnapshot(): BookSnapshot {
 }
 
 /**
- * Register a panel listener (notified at ~10 Hz max). Lazily opens the single
+ * Register a panel listener (notified at most once per THROTTLE_MS, one frame
+ * of the cadence in state/cadence.ts). Lazily opens the single
  * store.onStream subscription on first subscriber. Returns an unsubscribe fn that
  * stops the throttle timer once the last panel leaves.
  */

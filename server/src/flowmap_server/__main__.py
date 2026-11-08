@@ -1,4 +1,4 @@
-"""``python -m flowmap_server`` — run the app under uvicorn (spec §11).
+"""``python -m flowmap_server`` — run the app under uvicorn.
 
 Config is env-first via :meth:`Config.from_env`; the loopback-only bind is
 enforced twice: ``from_env`` raises on a non-loopback ``FLOWMAP_HOST``, and
@@ -9,6 +9,9 @@ the explicit check below keeps the invariant visible at the entrypoint
 from __future__ import annotations
 
 import os
+import sys
+import threading
+from typing import IO, Any
 
 import uvicorn
 
@@ -18,43 +21,76 @@ from flowmap_server.logging_setup import configure_logging, shutdown_logging
 
 __all__ = ["main", "configure_logging"]
 
+# Set to "1" by the desktop shell. The shell keeps this process's stdin open
+# for its whole life; EOF means the shell is gone (quit, crash, or a closed
+# window), so the server must stop and run its lifespan flush.
+EXIT_ON_STDIN_EOF_ENV = "FLOWMAP_EXIT_ON_STDIN_EOF"
+BENCHMARK_PROVENANCE_ENV = "FLOWMAP_BENCHMARK_PROVENANCE"
+
+# Inbound WebSocket message cap. uvicorn's default is 16 MiB, and every frame
+# is copied and decoded in full before any check runs. The FlowMap client sends
+# only small control messages, so 256 KiB is generous.
+WS_MAX_MESSAGE_BYTES = 256 * 1024
+# Upper bound on concurrent HTTP and WebSocket connections handled by uvicorn.
+HTTP_WS_CONCURRENCY = 512
+
+
 def _benchmark_provenance() -> None:
-    report = os.environ.get("FLOWMAP_BENCHMARK_PROVENANCE")
-    if not report:
+    """Benchmark-only hook. The module loads only when the env var is set."""
+    if not os.environ.get(BENCHMARK_PROVENANCE_ENV):
         return
-    import json
-    import sys
-    from pathlib import Path
-    import flowmap_server
-    path = Path(report).resolve()
-    owner = os.environ.get("FLOWMAP_BENCHMARK_OWNER")
-    profile = os.environ.get("FLOWMAP_BENCHMARK_PROFILE")
-    try:
-        same_profile = bool(profile) and path.parent.is_dir() and Path(profile).is_dir() and path.parent.samefile(profile)
-    except (OSError, ValueError):
-        same_profile = False
-    if (not owner or not same_profile
-            or path.name != "sidecar-provenance.json"
-            or (path.parent / ".flowmap-benchmark-owner").read_text(encoding="utf-8") != owner
-            or not sys.flags.isolated or not sys.dont_write_bytecode):
-        raise RuntimeError("Invalid benchmark provenance ownership/isolation")
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"pid": os.getpid(), "owner": owner,
-        "executable": str(Path(sys.executable).resolve()),
-        "package_origin": str(Path(flowmap_server.__file__).resolve())}), encoding="utf-8")
-    temporary.replace(path)
+    from flowmap_server.benchmark_provenance import write_provenance
+
+    write_provenance()
+
+
+def _watch_stdin_eof(server: Any, stream: IO[Any]) -> threading.Thread:
+    """Ask *server* to exit once *stream* reaches EOF (a read error counts too).
+
+    A daemon thread blocks on the read, so the event loop is never touched from
+    it. Setting ``should_exit`` is uvicorn's own graceful path: the lifespan
+    shutdown runs, which flushes recordings before the process ends."""
+
+    def _watch() -> None:
+        try:
+            while stream.read(1024):
+                pass
+        except (OSError, ValueError):
+            pass  # a broken pipe is the same signal as EOF
+        server.should_exit = True
+
+    thread = threading.Thread(target=_watch, name="flowmap-stdin-eof", daemon=True)
+    thread.start()
+    return thread
+
+
+def _run_server(app: Any, **kwargs: Any) -> None:
+    """``uvicorn.run`` unless the shell asked to exit with its stdin.
+
+    The EOF watcher needs the ``Server`` object (its ``should_exit`` flag), which
+    ``uvicorn.run`` does not expose. ``uvicorn.run`` is just ``Server(Config).run()``,
+    so the two paths are the same server."""
+    if os.environ.get(EXIT_ON_STDIN_EOF_ENV) != "1":
+        uvicorn.run(app, **kwargs)
+        return
+    server = uvicorn.Server(uvicorn.Config(app, **kwargs))
+    if sys.stdin is not None:
+        _watch_stdin_eof(server, sys.stdin)
+    server.run()
 
 
 def main() -> None:
     _benchmark_provenance()
     cfg = Config.from_env(os.environ)
     if cfg.host not in ("127.0.0.1", "localhost"):  # survives python -O, unlike assert
-        raise SystemExit(f"loopback only (spec §11): refusing to bind {cfg.host!r}")
+        raise SystemExit(f"loopback only: refusing to bind {cfg.host!r}")
     log_level = os.environ.get("FLOWMAP_LOG_LEVEL", "info")
     configure_logging(log_level, os.environ.get("FLOWMAP_LOG_FILE") or None)
     try:
-        uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port,
-                    log_level=log_level, log_config=None)
+        _run_server(create_app(cfg), host=cfg.host, port=cfg.port,
+                    log_level=log_level, log_config=None,
+                    ws_max_size=WS_MAX_MESSAGE_BYTES,
+                    limit_concurrency=HTTP_WS_CONCURRENCY)
     finally:
         shutdown_logging()
 

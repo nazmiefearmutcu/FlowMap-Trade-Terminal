@@ -1,5 +1,5 @@
 /**
- * Trade bubbles overlay (§2 G2, §8.3, M2 T10).
+ * Trade bubbles overlay.
  *
  * One round sprite per recent trade, positioned at (col from `ts_ns`, row from
  * `price`), radius ∝ √size (so area ≈ size), colored by aggressor side
@@ -7,7 +7,7 @@
  * (oldest evicted first — the off-screen-left tail), and only the ones inside the
  * viewport are emitted, so the draw is O(visible) not O(history).
  *
- * SIZE POLICY (F25, Bookmap reference H5). Bookmap sizes dots by aggregated
+ * SIZE POLICY (Bookmap reference). Bookmap sizes dots by aggregated
  * volume *relative to the instrument's own tape* ("algorithm scales vs average
  * trade volume"), and its dots read ~10–24 px at default zoom. A fixed reference
  * cannot serve both BTC (median print ≈ 5e-4) and an instrument whose prints are
@@ -17,23 +17,23 @@
  * radius band spans 6–24 px diameter (`minRadiusPx` 3 … `maxRadiusPx` 12) with
  * `baseRadiusPx` 5 landing exactly on the p90 print.
  *
- * Measured anchor (owner's BTCUSDT recordings, n=278 prints):
+ * Measured anchor (BTCUSDT recordings, n=278 prints):
  *   p50 5.3e-4 · p75 6.4e-3 · p90 3.0e-2 · p95 6.9e-2 · p99 2.5e-1 · max 1.07
  * → p75 = 6 px (floor) · p90 = 10 px · p95 = 15 px · p99+ = 24 px (cap).
- * Before F25 every print under ~2 BTC sat on the 6 px floor (2–4 px of ink),
- * which is exactly the "invisible specks" defect QA19 scored 3/10.
+ * Before every print under ~2 BTC sat on the 6 px floor (2–4 px of ink),
+ * which is exactly the "invisible specks" defect scored 3/10.
  *
- * CLUTTER (F25): bigger dots overlap; the draw thins them newest-first against
+ * CLUTTER: bigger dots overlap; the draw thins them newest-first against
  * an 8 px occupancy grid (O(1) per print, no second pass, no merge) so a dense
  * chain along the trace reads as one mark instead of a row of specks.
  *
- * Capability honesty (§7): when the tape is not real tick data
+ * Capability honesty: when the tape is not real tick data
  * (`capability.tape !== 'tick'`, e.g. equity keyless 1-minute aggregates) the
  * overlay still plots what the feed gives but the renderer shows a "1m AGG"
  * badge; a feed with no trades at all renders nothing (never fabricated).
  */
 
-import { toBigNs } from './coords';
+import { toBigNs } from '../../candles/bigNs';
 import type { OverlayFrame } from './frame';
 import { OVERLAY } from './palette';
 import type { RGBA } from './primitives';
@@ -43,7 +43,7 @@ import { SIDE_BUY, SIDE_SELL } from '../../proto/types';
 export interface BubbleOptions {
   /** Ring capacity (recent trades retained). */
   capacity?: number;
-  /** Min trade size drawn (default 0 = show all). Configurable per §9 settings. */
+  /** Min trade size drawn (default 0 = show all). Configurable per settings. */
   minSize?: number;
   /** Fixed reference size override (controlled tests / fixed-scale callers).
    *  Omitted = the overlay adapts to the session tape (p90, see the header). */
@@ -79,7 +79,7 @@ const DEFAULTS: ResolvedOptions = {
   minSize: 0,
   // Adaptive reference (p90 of the session tape); a fixed `refSize` overrides.
   refSize: undefined,
-  // Radius band = 6–24 px diameter for meaningful sizes (Bookmap H5). The
+  // Radius band = 6–24 px diameter for meaningful sizes. The
   // reference print (p90) draws at the base radius; the cap keeps the biggest
   // prints from burying the price line and the heatmap.
   baseRadiusPx: 5,
@@ -94,6 +94,13 @@ const LOG_MAX = 8;
 /** Log-size histogram resolution (16 decades / 48 ≈ 1/3 decade per bucket). */
 export const HIST_BUCKETS = 48;
 const LOG_STEP = (LOG_MAX - LOG_MIN) / HIST_BUCKETS;
+/**
+ * Out-of-order tolerance of the bubble scan: how far past the
+ * binary-search seek, and how many consecutive out-of-view prints on the left,
+ * the walk still looks at. In-order data never needs more than the seek itself.
+ */
+const SCAN_BACKSTEP = 16;
+
 /** Decay cadence: every N adds the counts shrink ×0.75 (never below 1 while
  *  present), so a regime shift is followed instead of averaged forever. */
 const HIST_DECAY_EVERY = 4096;
@@ -132,7 +139,7 @@ export function bubbleRadiusPx(size: number, opts: BubbleScale): number {
  * tape can never bury the field — bubbles stay context, not the protagonist.
  * Pure; rgb never touched.
  */
-export const BUBBLE_MAX_ALPHA = 0.85;
+const BUBBLE_MAX_ALPHA = 0.85;
 
 export function bubbleAlpha(c: RGBA): number {
   return Math.min(c[3], BUBBLE_MAX_ALPHA);
@@ -261,12 +268,21 @@ export class Bubbles {
       if (gm.tsToCol(this.ts[(oldest + mid) % n]) <= rightCol) lo = mid + 1;
       else hi = mid;
     }
-    for (let i = lo - 1; i >= 0; i--) {
+    // The ring is arrival-ordered, so a late print can sit past the seek point
+    // or among older-than-view prints. The scan therefore reaches SCAN_BACKSTEP
+    // entries beyond the seek and tolerates as many consecutive out-of-view
+    // entries on the left before it stops.
+    let leftMisses = 0;
+    for (let i = Math.min(this.count, lo + SCAN_BACKSTEP) - 1; i >= 0; i--) {
       const idx = (oldest + i) % n;
       const colf = gm.tsToCol(this.ts[idx]) + 0.5; // center within the column
       const cx = gm.clipX(colf);
       if (cx > 1.04) continue; // newer than the right edge (scrolled back): keep scanning
-      if (cx < -1.04) break; // older than the left edge: all remaining are older too
+      if (cx < -1.04) {
+        if (++leftMisses > SCAN_BACKSTEP) break; // a run of older prints: the rest are older
+        continue;
+      }
+      leftMisses = 0;
       const size = this.size[idx];
       if (size < minSize) continue;
       const rowf = gm.priceEventToRow(this.price[idx]);
@@ -290,7 +306,12 @@ export class Bubbles {
       ink[3] = bubbleAlpha(base);
       points.add(cx, cy, gm.pxToDevice(rPx * 2), ink);
     }
+    // Pixel chart style: the same bubbles as flat squares. Normal style
+    // never touches the flag, so its batch calls are unchanged.
+    const square = frame.pixelStyle === true;
+    if (square) points.setSquare(true);
     points.flush();
+    if (square) points.setSquare(false);
   }
 
   /** Reset the occupancy grid generation for a frame (no clearing pass). */

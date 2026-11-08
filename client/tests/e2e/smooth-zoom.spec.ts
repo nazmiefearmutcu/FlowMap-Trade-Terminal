@@ -1,7 +1,8 @@
+import type { LooseProbe } from './probe';
 import { expect, test } from '@playwright/test';
 
 /**
- * Lane F (Bookmap-class overhaul) — the width-scaled Gaussian field sampler.
+ * The width-scaled Gaussian field sampler.
  *
  * Replaces crisp-zoom.spec.ts. The level-0 display sampler is now ONE kernel on
  * the time axis: `sigma = clamp(2.5 px × cpp, 0.12, 2.0)` columns, 9 fixed taps
@@ -16,7 +17,7 @@ import { expect, test } from '@playwright/test';
  *       3-tap kernel smeared edges over 40–200 px at deep zoom;
  *   (c) the row-only path (rpp 3.05, cpp 0.25) keeps the time-axis stripe
  *       structure (no 4-column block averaging) with luma variance ≫ flat;
- *   (d) the vertical (row) convention, wave-2 barcode fix (F1 2026-09-14): dy
+ *   (d) the vertical (row) convention, barcode fix: dy
  *       is PIXEL-denominated and active at every zoom (the old `rpp >= 2 → 0`
  *       cutoff is gone), so the half-row boundary widens into a soft band
  *       (≥2.5 px, ≤8 px mush bar) both at rpp 2.2 (level-0 triple) and at the
@@ -27,7 +28,7 @@ import { expect, test } from '@playwright/test';
  *
  * All fixtures are synthetic, driven through the ?test=heatmap hook
  * (window.__flowmapTest) and read back with gl.readPixels — deterministic.
- * Calibrated against the frozen sigma law (lane F probe, 2026-09-12); bars sit
+ * Calibrated against the frozen sigma law; bars sit
  * ~1.3–2× above the measured values.
  */
 
@@ -97,7 +98,7 @@ test('deep zoom (cpp 0.5) shows no hard column steps — Gaussian plan active', 
   // at this contrast); the Gaussian spreads each edge over ~6 px.
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, false);
       const dim = new Array(cfg.rows).fill(0.2);
       const bright = new Array(cfg.rows).fill(1.0);
@@ -139,7 +140,7 @@ test('column-edge transition widens with cpp but never smears multi-cell', async
 
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, false);
       const dim = new Array(cfg.rows).fill(0.2);
       const bright = new Array(cfg.rows).fill(1.0);
@@ -166,7 +167,7 @@ test('column-edge transition widens with cpp but never smears multi-cell', async
 
   expect(consoleErrors, `console/page errors: ${consoleErrors.join(' | ')}`).toEqual([]);
 
-  // Calibrated bars (lane F probe, 2026-09-12): measured 5/6/4/2 px for
+  // Calibrated bars: measured 5/6/4/2 px for
   // cpp 0.25/0.5/1/2. sigma is pinned at 2.5 SCREEN pixels, so the edge is
   // ~6.4 px (10–90) at deep zoom and sharpens as the 2-column cap engages —
   // never the 40–200 px multi-cell smear of the old kernel.
@@ -198,7 +199,7 @@ test('row-only path (rpp 3.05, cpp 0.25) keeps the time-axis stripe structure', 
   // toward flat). The Gaussian (sigma 0.625 cols) keeps most of the contrast.
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       const caps = api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ true);
       if (!caps.colorBufferFloat || !caps.mipsEnabled) return { skipped: true as const, caps };
 
@@ -243,12 +244,12 @@ test('vertical soft band at rpp 2.2: the level-0 triple is ACTIVE (no dy=0 freez
   await page.waitForFunction(() => '__flowmapTest' in window, undefined, { timeout: 30_000 });
 
   // One column profile: dim lower half (rows 0..31), bright upper half (32..63).
-  // rpp 2.2 (the OLD dy=0 ceiling): under the wave-2 law dy = 2.2 × 2.2 = 4.84
+  // rpp 2.2 (the earlier dy=0 ceiling): under the current law dy = 2.2 × 2.2 = 4.84
   // rows ≈ 2.2 SCREEN px, so this view MUST soften — the "dy=0 freeze at
-  // rpp >= 2" was the exact defect the barcode campaign proved at the default.
+  // rpp >= 2" was the exact defect the barcode probe proved at the default.
   const strip = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ false);
 
       const bid = new Array(cfg.rows).fill(0);
@@ -269,9 +270,8 @@ test('vertical soft band at rpp 2.2: the level-0 triple is ACTIVE (no dy=0 freez
 
   expect(consoleErrors, `console/page errors: ${consoleErrors.join(' | ')}`).toEqual([]);
   const edge = transition10to90(strip as number[]);
-  // eslint-disable-next-line no-console
-  console.log(`[F1] rpp 2.2 vertical 10-90 edge: ${edge} px`);
-  // Measured 4 px (wave-2 F1, 2026-09-14): mandatory ≥3 px bar with 25% headroom.
+  console.log(`[zoom-edge] rpp 2.2 vertical 10-90 edge: ${edge} px`);
+  // Measured 4 px: mandatory ≥3 px bar with 25% headroom.
   expect(edge, `vertical 10-90 edge ${edge} px (soft band at rpp 2.2)`).toBeGreaterThanOrEqual(3);
   expect(edge, `vertical 10-90 edge ${edge} px (no mush > 8 px)`).toBeLessThanOrEqual(8);
 });
@@ -294,7 +294,7 @@ test('vertical soft band: dy>0 (rpp 0.5) widens the half-row boundary but never 
   // bar (< 8 px) — price levels stay distinguishable.
   const strip = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ false);
 
       const bid = new Array(cfg.rows).fill(0);
@@ -329,16 +329,16 @@ test('vertical default (rpp 3.05, row-mip path): the rowMipSoft triple widens th
   await page.goto('/?test=heatmap');
   await page.waitForFunction(() => '__flowmapTest' in window, undefined, { timeout: 30_000 });
 
-  // THE default-view case the barcode campaign kept failing: rpp 3.05 rides
+  // THE default-view case the barcode probe kept failing: rpp 3.05 rides
   // the row-mip path (`fetchRowMipGauss` + its isolated-wall keep), where the
-  // FIRST fix left single levels crisp. Wave 2 wraps that fetch in the same
+  // first fix left single levels crisp. The second pass wraps that fetch in the same
   // pixel-denominated 0.25/0.5/0.25 triple (rowMipSoft, offset dy/4 texels):
   // a level boundary must widen into the 3–8 px band — soft, not a hairline,
   // not mush. A dim/bright half-grid boundary keeps the fixture simple; the
   // isolated single-row spike amplitude contract stays with mips.spec.ts.
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       const caps = api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ true);
       if (!caps.colorBufferFloat || !caps.mipsEnabled) return { skipped: true as const, caps };
 
@@ -373,19 +373,18 @@ test('vertical default (rpp 3.05, row-mip path): the rowMipSoft triple widens th
 
   expect(result.info.rowOnly, 'draw selected the row-only mip').toBe(true);
   expect(result.info.rowFade).toBe(1);
-  // The wave-2 mandate: the pixel-denominated triple is ACTIVE at the default
+  // The pixel-denominated triple is ACTIVE at the default
   // (dy = 2.2 × 3.05 ≈ 6.71 ROW units; sampleInfo reports it additively).
   if (typeof result.info.rowDy === 'number') {
     expect(result.info.rowDy).toBeCloseTo(2.2 * 3.05, 3);
   }
   const edge = transition10to90(result.strip as number[]);
-  // eslint-disable-next-line no-console
-  console.log(`[F1] rpp 3.05 (row-mip) vertical 10-90 edge: ${edge} px`);
+  console.log(`[zoom-edge] rpp 3.05 (row-mip) vertical 10-90 edge: ${edge} px`);
   expect(edge, `default-view vertical 10-90 edge ${edge} px (no hairline)`).toBeGreaterThanOrEqual(3);
   expect(edge, `default-view vertical 10-90 edge ${edge} px (no mush > 8 px)`).toBeLessThanOrEqual(8);
 });
 
-test('vertical rpp 2.2 (D4 in-one-notch zone): the row-mip engages and softens the boundary', async ({
+test('vertical rpp 2.2 (in-one-notch zone): the row-mip engages and softens the boundary', async ({
   page,
 }) => {
   const consoleErrors: string[] = [];
@@ -397,7 +396,7 @@ test('vertical rpp 2.2 (D4 in-one-notch zone): the row-mip engages and softens t
   await page.goto('/?test=heatmap');
   await page.waitForFunction(() => '__flowmapTest' in window, undefined, { timeout: 30_000 });
 
-  // Wave 3 / F10: D4 measured one wheel notch in from the default (rpp 2.07) as
+  // Measured one wheel notch in from the default (rpp 2.07) as
   // a barcode dead zone — the old rowFade renormalization zeroed the row-mip
   // path through [2.0, 2.5] while the sparse level-0 triple (±dy 4.55 rows)
   // painted three disconnected hairlines. The edge now starts at 1.5, so this
@@ -405,7 +404,7 @@ test('vertical rpp 2.2 (D4 in-one-notch zone): the row-mip engages and softens t
   // read as a 3–8 px soft band.
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       const caps = api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ true);
       if (!caps.colorBufferFloat || !caps.mipsEnabled) return { skipped: true as const, caps };
 
@@ -436,19 +435,18 @@ test('vertical rpp 2.2 (D4 in-one-notch zone): the row-mip engages and softens t
   if (result.skipped) return;
 
   expect(result.info.rowOnly, 'draw selected the row-only mip at rpp 2.2').toBe(true);
-  // The F10 ramp: (2.2 − 1.5) / 1.0 = 0.7.
+  // The ramp: (2.2 − 1.5) / 1.0 = 0.7.
   expect(result.info.rowFade).toBeCloseTo(0.7, 3);
   if (typeof result.info.rowDy === 'number') {
     expect(result.info.rowDy).toBeCloseTo(2.2 * 2.2, 3);
   }
   const edge = transition10to90(result.strip as number[]);
-  // eslint-disable-next-line no-console
-  console.log(`[F10] rpp 2.2 (row-mip mix) vertical 10-90 edge: ${edge} px`);
+  console.log(`[zoom-edge] rpp 2.2 (row-mip mix) vertical 10-90 edge: ${edge} px`);
   expect(edge, `rpp 2.2 vertical 10-90 edge ${edge} px (no hairline)`).toBeGreaterThanOrEqual(3);
   expect(edge, `rpp 2.2 vertical 10-90 edge ${edge} px (no mush > 8 px)`).toBeLessThanOrEqual(8);
 });
 
-test('vertical rpp 6.1 multi-tap footprint: per-tap softening (D4 zoom-out zone a)', async ({
+test('vertical rpp 6.1 multi-tap footprint: per-tap softening (zoom-out zone a)', async ({
   page,
 }) => {
   const consoleErrors: string[] = [];
@@ -460,13 +458,13 @@ test('vertical rpp 6.1 multi-tap footprint: per-tap softening (D4 zoom-out zone 
   await page.goto('/?test=heatmap');
   await page.waitForFunction(() => '__flowmapTest' in window, undefined, { timeout: 30_000 });
 
-  // D4 zone a (rpp > 4): the historical bare block sum had NO vertical kernel,
-  // so 88–90% of bands stayed sub-3-px needles. Wave 3 / F10 routes every tap
+  // Zone a (rpp > 4): the historical bare block sum had NO vertical kernel,
+  // so 88–90% of bands stayed sub-3-px needles. The soft-edge path routes every tap
   // of the multi-tap footprint through the same Gaussian + triple; at rpp 6.1
   // (nRowTaps 2) the boundary must soften into the 3–8 px band.
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       const caps = api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ true);
       if (!caps.colorBufferFloat || !caps.mipsEnabled) return { skipped: true as const, caps };
 
@@ -504,8 +502,7 @@ test('vertical rpp 6.1 multi-tap footprint: per-tap softening (D4 zoom-out zone 
     expect(result.info.rowMipSoften).toBe(1);
   }
   const edge = transition10to90(result.strip as number[]);
-  // eslint-disable-next-line no-console
-  console.log(`[F10] rpp 6.1 (multi-tap soft) vertical 10-90 edge: ${edge} px`);
+  console.log(`[zoom-edge] rpp 6.1 (multi-tap soft) vertical 10-90 edge: ${edge} px`);
   expect(edge, `rpp 6.1 vertical 10-90 edge ${edge} px (no hairline)`).toBeGreaterThanOrEqual(3);
   expect(edge, `rpp 6.1 vertical 10-90 edge ${edge} px (no mush > 8 px)`).toBeLessThanOrEqual(8);
 });

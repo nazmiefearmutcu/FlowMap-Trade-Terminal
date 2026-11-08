@@ -1,4 +1,4 @@
-"""Canonical FlowMap events (design spec §6.1).
+"""Canonical FlowMap events.
 
 These msgspec Structs are the **in-process representation only**. The wire
 encoding lives in :mod:`flowmap_server.proto.wire`:
@@ -127,20 +127,20 @@ class Subscribe(msgspec.Struct):
     start_t: int | None = None
     # Price-grid coverage preset ("native" | "wide" | "full"). Appended LAST so
     # the golden cold-Subscribe field order is otherwise unchanged. Unknown /
-    # missing values are canonicalized to the default AT THE WS BOUNDARY, before
-    # the value can reach the SessionManager key (see api/ws.py).
+    # missing values are canonicalized to the default before the value can
+    # reach the SessionManager key: SessionManager._subscribe calls
+    # core.session.canonical_band for it.
     band: str | None = None
     # OPTIONAL wall-clock ns read at the CLIENT when it built this Subscribe
-    # (campaign SB item 4). Appended LAST; old clients omit it (the JSON simply
+    # Appended LAST; old clients omit it (the JSON simply
     # lacks the key or carries null) and the derived skew stays 0 — fully
     # backward-compatible in both directions: msgspec decodes a payload without
     # the key to the default, and an old server ignores the extra key. The WS
     # layer derives clock_skew_ms = (client_ts_ns - server_wall_ns) / 1e6
     # (positive = the client clock is ahead) and reports it in Status frames.
     client_ts_ns: int | None = None
-    # OPTIONAL exclusive window END for replay subscriptions (campaign
-    # NEEDS-CORE #2). Consumed by ``SessionManager._replay_feed``: the replay
-    # feed is built from ``Recorder.load_tail`` over ``[start_t, end_t)``
+    # OPTIONAL exclusive window END for replay subscriptions. Consumed by
+    # ``SessionManager._replay_feed``: the replay feed is built from ``Recorder.load_tail`` over ``[start_t, end_t)``
     # instead of the whole recording (``start_t`` was previously a dead wire
     # field). Appended LAST with a default, mirroring the ``client_ts_ns``
     # addition: msgspec decodes a payload without the key to the default and
@@ -227,6 +227,9 @@ class Trade(msgspec.Struct):
     side: int  # SIDE_BUY | SIDE_SELL | SIDE_UNKNOWN
     side_src: int  # SIDE_SRC_EXCHANGE | SIDE_SRC_INFERRED | SIDE_SRC_NA
     venue: str  # wire: u8 length + UTF-8 bytes (<= 255 bytes)
+    # Per-session ingest sequence, uint16 on the wire (see proto/wire.py TRADE).
+    # 0 means unknown: legacy encoders and recordings that predate it.
+    seq: int = 0
 
 
 class BBO(msgspec.Struct):

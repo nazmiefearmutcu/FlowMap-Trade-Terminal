@@ -1,6 +1,6 @@
 /**
  * Bollinger Bands kernel — SMA basis ± mult·σ over the trailing window.
- * Ported math contract from the old branch's `bollinger()`:
+ * Math contract of the reference implementation's `bollinger()`:
  *  - σ is the POPULATION standard deviation (ddof=0) — the market-standard
  *    default, pinned there by a naive-reference test;
  *  - bands are null EXACTLY where the basis is null (unfilled or NaN-poisoned
@@ -12,7 +12,7 @@
 import { createRolling } from './rolling';
 import { intParam, posParam, type CandleInput, type IndicatorKernel, type KernelValues } from './types';
 
-/** Relative cancellation-guard floor (old branch SIGMA_EPS_REL). */
+/** Relative cancellation-guard floor (reference implementation SIGMA_EPS_REL). */
 const SIGMA_EPS_REL = 1e-12;
 
 export function createBollinger(period: number, mult: number): IndicatorKernel {

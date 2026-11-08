@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MODE_L2, MODE_SYNTH_PROFILE, MsgType } from '../proto/types';
 import { bookStore } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
+import { setLocale } from '../i18n';
+import { tr } from '../i18n/tr';
 import {
   MeasureTool,
   fmtDeltaPct,
@@ -13,7 +15,18 @@ import {
   fmtDeltaTime,
   priceAtRow,
   sumDepthInBand,
+  type DeltaTimeUnits,
 } from './MeasureTool';
+
+/** The Turkish unit suffixes exactly as the component builds them from the table. */
+const TR_UNITS: DeltaTimeUnits = {
+  ns: tr['unit.ns'],
+  ms: tr['unit.ms'],
+  s: tr['unit.s'],
+  m: tr['unit.min'],
+  h: tr['unit.h'],
+  d: tr['unit.d'],
+};
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -123,10 +136,32 @@ describe('MeasureTool pure helpers', () => {
     expect(fmtDeltaPct(1, 0)).toBe('—');
   });
 
+  it('localizes the Δtime units and the decimal comma, but never the price point', () => {
+    setLocale('tr');
+    try {
+      expect(fmtDeltaTime(250_000_000n, TR_UNITS)).toBe('250ms');
+      expect(fmtDeltaTime(1_250_000_000n, TR_UNITS)).toBe('1,3sn');
+      expect(fmtDeltaTime(61_000_000_000n, TR_UNITS)).toBe('1dk 1sn');
+      expect(fmtDeltaTime(7_300_000_000_000n, TR_UNITS)).toBe('2sa 1dk');
+      expect(fmtDeltaTime(90_000_000_000_000n, TR_UNITS)).toBe('1g 1sa');
+      expect(fmtDeltaPct(4, 100)).toBe('+4,00%');
+      expect(fmtDeltaPrice(-2.25, 2)).toBe('−2.25');
+    } finally {
+      setLocale('en');
+    }
+  });
+
   it('priceAtRow maps rows through the epoch scale with grid decimals', () => {
     expect(priceAtRow(10, LIN_EPOCH)).toEqual({ price: 105, decimals: 1 });
     expect(priceAtRow(18, LIN_EPOCH)).toEqual({ price: 109, decimals: 1 });
     expect(priceAtRow(10, null)).toBeNull();
+  });
+
+  it('prints a quarter-tick grid with exact two-place precision, not a ceil-of-log guess', () => {
+    // ceil(-log10(0.25)) would print one place and turn 100.25 into "100.2".
+    const quarter = { ...LIN_EPOCH, tick: 0.25 };
+    expect(priceAtRow(10, quarter)?.decimals).toBe(2);
+    expect(fmtDeltaPrice(0.25, priceAtRow(10, quarter)?.decimals ?? 0)).toBe('+0.25');
   });
 
   it('sumDepthInBand sums the half-open row band of the current book', () => {
@@ -187,6 +222,20 @@ describe('MeasureTool interaction (affine map)', () => {
 
     firePointer(overlay, 'pointerup', 150, 180);
     expect(container.querySelector('[data-testid="measure-rect"]')).not.toBeNull(); // persists
+  });
+
+  it('a map that cannot place the point yet starts no measurement (never raw CSS pixels as grid)', () => {
+    publishEpoch();
+    installBook();
+    const host = document.createElement('div');
+    // The renderer is not up yet: rendererChartMap answers null, not a coordinate.
+    const unplaced = { fromChart: () => null, toChart: SCALE_MAP.toChart };
+    const { container } = render(<MeasureTool containerRef={{ current: host }} map={unplaced} />);
+    fireKey('m');
+    const overlay = container.querySelector('[data-testid="measure-overlay"]')!;
+    firePointer(overlay, 'pointerdown', 100, 100);
+    firePointer(overlay, 'pointermove', 150, 180);
+    expect(container.querySelector('[data-testid="measure-rect"]')).toBeNull();
   });
 
   it('works with the default identity map (no map prop at all)', async () => {
@@ -277,5 +326,62 @@ describe('MeasureTool interaction (affine map)', () => {
     expect(readout.querySelector('[data-testid="measure-dprice"]')!.textContent).toBe('—');
     expect(readout.querySelector('[data-testid="measure-dtime"]')!.textContent).toBe('—');
     expect(readout.querySelector('[data-testid="measure-ddepth"]')!.textContent).toBe('—');
+  });
+});
+
+describe('MeasureTool keyboard', () => {
+  it('arrows move a cursor, Enter sets the two corners, and the readout is the same as a drag', () => {
+    publishEpoch();
+    installBook();
+    const host = document.createElement('div');
+    const { container } = render(<MeasureTool containerRef={{ current: host }} map={SCALE_MAP} />);
+    fireKey('m');
+    // The cursor starts mid-chart (0,0 in jsdom); five presses put it on column 5.
+    for (let i = 0; i < 5; i += 1) fireKey('ArrowRight');
+    fireKey('Enter'); // first corner at column 5
+    expect(container.querySelector('[data-testid="measure-rect"]')).not.toBeNull();
+    for (let i = 0; i < 3; i += 1) fireKey('ArrowRight'); // column 8
+    for (let i = 0; i < 3; i += 1) fireKey('ArrowUp'); // row 3
+    fireKey('Enter'); // opposite corner
+
+    const rectEl = container.querySelector('[data-testid="measure-rect"]') as HTMLElement;
+    expect(rectEl.style.width).toBe('30px');
+    expect(rectEl.style.height).toBe('30px');
+    // Three columns of 250 ms each.
+    expect(container.querySelector('[data-testid="measure-dtime"]')!.textContent).toBe('750ms');
+    const status = container.querySelector('[data-testid="measure-mode"]')!;
+    expect(status.getAttribute('role')).toBe('status');
+    expect(status.getAttribute('aria-live')).toBe('polite');
+  });
+
+  it('Shift with an arrow moves the cursor ten cells', () => {
+    publishEpoch();
+    installBook();
+    const host = document.createElement('div');
+    const { container } = render(<MeasureTool containerRef={{ current: host }} map={SCALE_MAP} />);
+    fireKey('m');
+    fireKey('Enter'); // starts at the cursor's start cell (0,0)
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="measure-rect"]')!.getAttribute('style')).toContain('width: 100px');
+  });
+
+  it('keys pressed on a control do not drive the measurement', () => {
+    publishEpoch();
+    installBook();
+    const host = document.createElement('div');
+    const { container } = render(<MeasureTool containerRef={{ current: host }} map={SCALE_MAP} />);
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    try {
+      fireKey('m');
+      act(() => {
+        button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      });
+      expect(container.querySelector('[data-testid="measure-rect"]')).toBeNull();
+    } finally {
+      button.remove();
+    }
   });
 });

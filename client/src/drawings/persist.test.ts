@@ -1,5 +1,5 @@
 /**
- * Persistence tests (lane CF): versioned localStorage documents — exact
+ * Persistence tests: versioned localStorage documents — exact
  * bigint round-trip through decimal strings, total parsing (garbage reads as
  * empty), wholesale future-version rejection, entry-wise validation, and the
  * bounded per-symbol cap (200, newest kept).
@@ -10,8 +10,8 @@ import { describe, expect, it } from 'vitest';
 import {
   DRAWINGS_SCHEMA_VERSION,
   MAX_DRAWINGS_PER_SYMBOL,
-  capDrawings,
   drawingsKey,
+  hasDrawingRoom,
   loadDrawings,
   parseDoc,
   saveDrawings,
@@ -105,26 +105,50 @@ describe('parseDoc is total', () => {
   });
 });
 
-describe('cap (bounded 200/symbol)', () => {
-  it('keeps the NEWEST 200 drawings by createdAt, preserving paint order', () => {
-    const items: Drawing[] = [];
-    for (let i = 0; i < MAX_DRAWINGS_PER_SYMBOL + 5; i += 1) {
-      items.push(trend(`d${i}`, i)); // ascending createdAt; d0 oldest
-    }
-    const capped = capDrawings(items);
-    expect(capped.length).toBe(MAX_DRAWINGS_PER_SYMBOL);
-    expect(capped[0].id).toBe('d5'); // the 5 oldest evicted
-    expect(capped[capped.length - 1].id).toBe(`d${MAX_DRAWINGS_PER_SYMBOL + 4}`);
+describe('limit (bounded 200/symbol, refuses instead of evicting)', () => {
+  it('refuses a placement at the limit and admits one below it', () => {
+    expect(hasDrawingRoom(MAX_DRAWINGS_PER_SYMBOL - 1)).toBe(true);
+    expect(hasDrawingRoom(MAX_DRAWINGS_PER_SYMBOL)).toBe(false);
+    expect(hasDrawingRoom(MAX_DRAWINGS_PER_SYMBOL + 5)).toBe(false);
   });
 
-  it('enforces the cap on load too', () => {
+  it('keeps every stored drawing on load, even above the limit (no silent eviction)', () => {
     const items: Drawing[] = [];
     for (let i = 0; i < MAX_DRAWINGS_PER_SYMBOL + 1; i += 1) items.push(trend(`d${i}`, i));
     const raw = serializeDoc({
       version: DRAWINGS_SCHEMA_VERSION,
       drawings: items,
     });
-    expect(parseDoc(raw).length).toBe(MAX_DRAWINGS_PER_SYMBOL);
+    const loaded = parseDoc(raw);
+    expect(loaded.length).toBe(MAX_DRAWINGS_PER_SYMBOL + 1);
+    expect(loaded[0].id).toBe('d0'); // the oldest is still there
+  });
+
+  it('saves every drawing rather than trimming the oldest', () => {
+    const st = memStorage();
+    const items: Drawing[] = [];
+    for (let i = 0; i < MAX_DRAWINGS_PER_SYMBOL + 2; i += 1) items.push(trend(`d${i}`, i));
+    saveDrawings(st, 'crypto', 'BTC', items);
+    expect(loadDrawings(st, 'crypto', 'BTC').map((d) => d.id)).toEqual(items.map((d) => d.id));
+  });
+});
+
+describe('digit-only text labels', () => {
+  it('a 13+ digit label survives a reload as text and the drawing is kept', () => {
+    const base = label('n');
+    if (base.tool !== 'text') throw new Error('fixture must be a text label');
+    const raw = serializeDoc({
+      version: DRAWINGS_SCHEMA_VERSION,
+      drawings: [{ ...base, text: '12345678901234' }],
+    });
+    const [d] = parseDoc(raw);
+    expect(d).toMatchObject({ tool: 'text', text: '12345678901234' });
+  });
+
+  it('epoch tNs strings still revive to exact bigints', () => {
+    const raw = serializeDoc({ version: DRAWINGS_SCHEMA_VERSION, drawings: [trend('a', 1)] });
+    const [d] = parseDoc(raw);
+    expect(d.points[0].tNs).toBe(1_000_000_000_000n);
   });
 });
 

@@ -1,4 +1,4 @@
-"""/api/export (campaign SB item 5, contract C5): CSV + JSON streaming of the
+"""/api/export: CSV + JSON streaming of the
 last-N finalized columns of an active session.
 
 Sessions are real `Session` objects whose Grid is seeded via the PUBLIC
@@ -39,10 +39,10 @@ class _StubFeed:
         self.symbol = symbol
 
 
-def _make_grid(n_cols: int, ring: int = RING) -> Grid:
+def _make_grid(n_cols: int, ring: int = RING, grid_mode: int = events.MODE_L2) -> Grid:
     cfg = GridCfg(
         tick=TICK, tick_multiple=1, dt_ns=DT_NS, p0=P0, rows=ROWS,
-        ring_columns=ring, mode=events.MODE_L2,
+        ring_columns=ring, mode=grid_mode,
     )
     grid = Grid(cfg)
     cols = []
@@ -63,11 +63,12 @@ def _make_grid(n_cols: int, ring: int = RING) -> Grid:
 
 
 def _attach(app, symbol: str, n_cols: int = 5, *, mode: str = "live",
-            market: str = "sim", ring: int = RING) -> Session:
+            market: str = "sim", ring: int = RING,
+            grid_mode: int = events.MODE_L2) -> Session:
     session = Session(
         f"{market}:{symbol}:{mode}:test",
         feed=_StubFeed(symbol, market),
-        grid=_make_grid(n_cols, ring),
+        grid=_make_grid(n_cols, ring, grid_mode),
     )
     app.state.manager._sessions[(market, symbol, mode, None, "0")] = session
     return session
@@ -163,7 +164,7 @@ async def test_json_export_shape(app, client):
 
 async def test_adaptive_tick_is_reported_in_export_metadata(app, client):
     """A price-adaptive grid (DOGE-class) reports its ACTIVE tick, not the
-    nominal fallback the GridCfg still carries (QA20 C1 export truth)."""
+    nominal fallback the GridCfg still carries."""
     active = 1e-6
     close = 0.0825
     p0 = close - ROWS * active / 2.0
@@ -253,7 +254,7 @@ async def test_export_404_no_sessions(app, client):
     r = await client.get("/api/export", params={"format": "json"})
     assert r.status_code == 404
     body = r.json()
-    assert body["error"]["code"] == "not_found"
+    assert body["error"]["code"] == "no_active_session"
     assert "no active session" in body["error"]["message"]
 
 
@@ -263,7 +264,7 @@ async def test_export_404_unknown_symbol(app, client):
         "/api/export", params={"format": "json", "symbol": "NOPE"}
     )
     assert r.status_code == 404
-    assert r.json()["error"]["code"] == "not_found"
+    assert r.json()["error"]["code"] == "no_active_session"
     assert "NOPE" in r.json()["error"]["message"]
 
 
@@ -275,6 +276,7 @@ async def test_export_404_no_finalized_columns(app, client):
         "/api/export", params={"format": "json", "symbol": "SIM-EMPTY"}
     )
     assert r.status_code == 404
+    assert r.json()["error"]["code"] == "no_finalized_columns"
     assert "finalized columns" in r.json()["error"]["message"]
 
 
@@ -283,7 +285,7 @@ async def test_export_400_nonpositive_columns(app, client):
     for bad in ("0", "-5"):
         r = await client.get("/api/export", params={"format": "csv", "columns": bad})
         assert r.status_code == 400
-        assert r.json()["error"]["code"] == "bad_request"
+        assert r.json()["error"]["code"] == "invalid_columns"
 
 
 async def test_export_422_bad_format_and_columns(app, client):
@@ -301,11 +303,11 @@ async def test_export_payload_cap_refuses_up_front(app, client, monkeypatch):
     r = await client.get("/api/export", params={"format": "json", "columns": 5})
     assert r.status_code == 400
     body = r.json()
-    assert body["error"]["code"] == "bad_request"
+    assert body["error"]["code"] == "export_too_large"
     assert "cap" in body["error"]["message"]
 
 
-# --- key-shape + symbol-text robustness (R1 review) --------------------------
+# --- key-shape + symbol-text robustness --------------------------
 
 
 async def test_sessions_with_none_and_str_source_still_sort(app, client):
@@ -358,3 +360,52 @@ async def test_hostile_symbol_cannot_break_headers_or_inject_csv_rows(app, clien
     assert len(lines) == 4
     assert "EV_IL_SYM_B0" in lines[0]
     assert "\r" not in r.text.split("\n")[0]
+
+
+async def test_oversized_export_is_refused_before_any_column_is_copied(app, monkeypatch):
+    # The size refusal happens before any requested column is copied.
+    _attach(app, "AAA", n_cols=5)
+    monkeypatch.setattr(export_mod, "EXPORT_MAX_BYTES", 100)
+    copies = []
+    real_history = Grid.history
+
+    def counting_history(self, *args, **kwargs):
+        copies.append(args)
+        return real_history(self, *args, **kwargs)
+
+    monkeypatch.setattr(Grid, "history", counting_history)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://127.0.0.1:8720") as client:
+        response = await client.get("/api/export", params={"symbol": "AAA", "columns": 5})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "export_too_large"
+    assert "export too large" in response.json()["error"]["message"]
+    # _pick_session probes one newest column per session; no window copy at all.
+    assert [args for args in copies if args[1] > 1] == []
+
+
+async def test_export_body_is_one_consistent_snapshot(app):
+    # The body is built from copies taken on the loop: its header count, its
+    # row count and the grid's own column count agree.
+    _attach(app, "AAA", n_cols=6)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://127.0.0.1:8720") as client:
+        response = await client.get("/api/export", params={"symbol": "AAA", "columns": 4})
+    assert response.status_code == 200
+    lines = response.text.strip().splitlines()
+    assert "columns=4" in lines[0]
+    assert len(lines) == 2 + 4  # comment, header, one row per column
+
+
+async def test_synth_profile_export_keeps_the_grid_ask_instead_of_failing(app, client):
+    # A SYNTH_PROFILE grid drops ask on the wire (to_depth returns ask=None).
+    # The export used to call .tolist() on that None and answer 500.
+    _attach(app, "SYN", n_cols=3, grid_mode=events.MODE_SYNTH_PROFILE)
+    response = await client.get("/api/export", params={"symbol": "SYN", "columns": 3, "format": "json"})
+    assert response.status_code == 200
+    columns = response.json()["columns"]
+    assert len(columns) == 3
+    assert all(len(col["asks"]) == ROWS and len(col["bids"]) == ROWS for col in columns)
+    csv_response = await client.get("/api/export", params={"symbol": "SYN", "columns": 3})
+    assert csv_response.status_code == 200
+    assert len(csv_response.text.strip().splitlines()) == 2 + 3

@@ -1,11 +1,11 @@
 /**
- * Export composition tests (QA13 H1+H2, F11): the exported PNG must carry the
+ * Export composition tests: the exported PNG must carry the
  * WHOLE chart — GL heat + 2D ink + both gutters + legend chips + provenance —
  * at native DPR, and the honest null path must still refuse a download.
  *
  * jsdom has no 2D canvas, so the composition runs against a recording 2D mock
- * (like gl/textLayer.test.ts) and fake layer canvases; the live bitmaps are
- * proven in the swarm kit (swarm2/F11-*.json).
+ * (like gl/textLayer.test.ts) and fake layer canvases; the live bitmaps need a
+ * real browser to check.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -121,7 +121,8 @@ describe('pngStamp / pngFilename', () => {
   });
 
   it('the footer display stamp is the same instant, readable', () => {
-    expect(pngDisplayStamp(NOW)).toBe('2026-09-09 14:30:05');
+    // UTC is fixed, so the expected text does not depend on the machine's zone.
+    expect(pngDisplayStamp(new Date('2026-09-09T11:30:05Z'), 'utc')).toBe('2026-09-09 11:30:05 UTC');
   });
 });
 
@@ -204,7 +205,7 @@ describe('composeExportLayers', () => {
     for (const label of ['Last price', 'VWAP', 'BBO', 'Trades', 'more', 'less', 'L2']) {
       expect(t).toContain(label);
     }
-    expect(t).toContain('flowmap · binance-spot:BTCUSDT · live · 2026-09-09 14:30:05');
+    expect(t).toContain(`flowmap · binance-spot:BTCUSDT · live · ${pngDisplayStamp(NOW)}`);
     expect(t).toContain('history ≈ reconstructed');
     // The ramp chip paints a real gradient from the shared stop list.
     const stops = ctx.calls.filter((c) => c.op === 'addColorStop');
@@ -330,6 +331,13 @@ describe('collectExportLayers', () => {
     expect(collectExportLayers(null, document)).toBeNull();
     expect(collectExportLayers({ snapshot: () => 'x' }, null)).toBeNull();
     expect(collectExportLayers({ snapshot: () => 'x' }, document)).toBeNull(); // empty body
+  });
+});
+
+describe('runPngExport honesty', () => {
+  it('reports no filename when the download anchor was never created', () => {
+    const filename = runPngExport('data:image/png;base64,XYZ', 'sim', 'SIM-DEMO', NOW, () => null);
+    expect(filename).toBeNull();
   });
 });
 

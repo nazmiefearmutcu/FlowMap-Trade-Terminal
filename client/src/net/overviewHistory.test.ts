@@ -73,6 +73,28 @@ describe('independent historical level of detail', () => {
     expect(deps.reset).toHaveBeenCalledTimes(2);
   });
 
+  it('a zoom starts its page at once even while the superseded request is still on the wire', async () => {
+    const { loader, deps } = harness();
+    const signals: AbortSignal[] = [];
+    const original = deps.request;
+    let calls = 0;
+    deps.request = vi.fn<OverviewHistoryDeps['request']>((before, count, request, signal) => {
+      calls += 1;
+      if (signal) signals.push(signal);
+      // The first page hangs and ignores its signal: only the zoom can unblock the view.
+      if (calls === 1) return new Promise(() => {});
+      return original(before, count, request);
+    });
+    loader.ensure({ colOffset: 0, colScale: 4096, rowOffset: 0, rowScale: 10 }, 8000, 0);
+    expect(deps.request).toHaveBeenCalledTimes(1);
+    loader.ensure({ colOffset: 0, colScale: 8000, rowOffset: 0, rowScale: 10 }, 8000, 1);
+    await vi.waitFor(() => expect(deps.request).toHaveBeenCalledTimes(2));
+    expect(signals[0].aborted).toBe(true); // the superseded page was told to stop
+    await vi.waitFor(() => expect(loader.inFlight).toBe(false));
+    expect(loader.cachedBuckets).toBeGreaterThan(0);
+    loader.dispose();
+  });
+
   it('marks genuine absence covered instead of spinning requests on each frame', async () => {
     const { loader, deps } = harness();
     deps.request = vi.fn<OverviewHistoryDeps['request']>(async () => ({ type: MsgType.HISTORY_RESP, req_id: 1, epoch: 1,

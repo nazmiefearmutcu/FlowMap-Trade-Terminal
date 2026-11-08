@@ -5,11 +5,20 @@ import { MODE_L2, MsgType, SIDE_BUY, SIDE_SRC_EXCHANGE, type EpochParams } from 
 import type { StreamMsg } from '../net/connection';
 import { useFlowMapStore } from '../state/store';
 import { type BookSnapshot } from '../state/bookStore';
-import { nearbyDepth, OrderFlowPanel } from './OrderFlowPanel';
+import { nearbyDepth, OrderFlowPanel, sameFlowSummary } from './OrderFlowPanel';
+import type { TradeFlowSummary } from '../state/tradeFlow';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => vi.useRealTimers());
 const epoch: EpochParams = { epoch: 1, dt_ns: 250_000_000, tick: 1, tick_multiple: 1, p0: 90, rows: 32 };
+
+it('treats an identical summary as unchanged, so an idle poll does not re-render the panel', () => {
+  const summary: TradeFlowSummary = { buy: 1, sell: 2, unknown: 0, delta: -1, notional: 3, count: 2,
+    exchange: 3, inferred: 0, durationMs: 30000, coverageMs: 5000 };
+  expect(sameFlowSummary(summary, { ...summary })).toBe(true);
+  expect(sameFlowSummary(summary, { ...summary, count: 3 })).toBe(false);
+  expect(sameFlowSummary(null, summary)).toBe(false);
+});
 const snapshot: BookSnapshot = { version: 1, trades: [], bbo: { tsNs: 1n, bidPx: 99, askPx: 101, bidSz: 1, askSz: 2 },
   book: { instant: true, epoch: 1, colSeq: 0, t0Ns: 1n, mode: MODE_L2, bid: new Float32Array(32).fill(1), ask: new Float32Array(32).fill(2) } };
 it('reports precisely scoped instantaneous liquidity and rejects averaged/synthetic books', () => {
@@ -17,6 +26,12 @@ it('reports precisely scoped instantaneous liquidity and rejects averaged/synthe
   expect(nearbyDepth({ ...snapshot, book: { ...snapshot.book!, instant: false } }, epoch)).toBeNull();
   expect(nearbyDepth({ ...snapshot, book: { ...snapshot.book!, mode: 2 } }, epoch)).toBeNull();
   expect(nearbyDepth({ ...snapshot, bbo: { ...snapshot.bbo!, bidPx: 200, askPx: 201 } }, epoch)).toBeNull();
+});
+
+it('reports no nearby depth instead of NaN bounds when the mid price cannot be placed on the grid', () => {
+  // A zero tick makes priceToRow NaN, the same path a non-positive hybrid price takes.
+  const degenerate: EpochParams = { ...epoch, tick: 0 };
+  expect(nearbyDepth(snapshot, degenerate)).toBeNull();
 });
 it('changing the window retains accumulated prints and a new instrument clears them', () => {
   vi.useFakeTimers();
@@ -33,9 +48,9 @@ it('changing the window retains accumulated prints and a new instrument clears t
         side: SIDE_BUY, side_src: SIDE_SRC_EXCHANGE, venue: 'binance' });
       vi.advanceTimersByTime(250);
     });
-    expect(el.querySelector('[data-testid="flow-count"]')?.textContent).toBe((1000).toLocaleString());
+    expect(el.querySelector('[data-testid="flow-count"]')?.textContent).toBe('1,000');
     act(() => (Array.from(el.querySelectorAll('button')).find(b => b.textContent === '60s') as HTMLButtonElement).click());
-    expect(el.querySelector('[data-testid="flow-count"]')?.textContent).toBe((1000).toLocaleString());
+    expect(el.querySelector('[data-testid="flow-count"]')?.textContent).toBe('1,000');
     act(() => useFlowMapStore.setState({ subscription: { market: 'binance-spot', symbol: 'RUNEUSDT', mode: 'live', band: 'deep' } }));
     expect(el.querySelector('[data-testid="flow-count"]')?.textContent).toBe('—');
     act(() => vi.advanceTimersByTime(250));

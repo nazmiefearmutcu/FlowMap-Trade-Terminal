@@ -1,16 +1,16 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FlowMap",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "identifier": "com.nazmiefearmutcu.flowmap",
   "build": {
     "frontendDist": "../../client/dist",
-    "beforeBuildCommand": ""
+    "beforeBuildCommand": "npm --prefix ../../client run build"
   },
   "app": {
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; media-src 'none'; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'"
     }
   },
   "bundle": {
@@ -19,6 +19,15 @@
       "app"
     ],
     "category": "Finance",
+    "publisher": "Nazmi Efe Armutcu",
+    "copyright": "Copyright 2026 Nazmi Efe Armutcu",
+    "homepage": "https://github.com/nazmiefearmutcu/flowmap",
+    "shortDescription": "FlowMap dual-market order-flow terminal",
+    "longDescription": "FlowMap is a dual-market order-flow terminal. It runs its market-data server on this computer, and the window talks to that server over the loopback interface only.",
+    "resources": {
+      "resources/LICENSE": "LICENSE",
+      "resources/NOTICE": "NOTICE"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

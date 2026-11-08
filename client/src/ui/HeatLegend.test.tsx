@@ -1,5 +1,5 @@
 /**
- * HeatLegend depth-channel tests (fix 2026-09-10 F1-5): the legend must mirror
+ * HeatLegend depth-channel tests: the legend must mirror
  * the channel the chart renders — divergent row + ask/bid caps in `imbalance`
  * mode, the density ramp labelled "bid depth"/"ask depth" in the side channels,
  * and the unchanged more/less sum legend by default. SYNTH honesty outranks
@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RAMP_CLASSIC, RAMP_FLOW, RAMP_IMBALANCE, RAMP_SYNTH, RAMP_THEME, RAMP_THEME_SYNTH, rampCssGradient, rampCssGradientReversed } from '../gl/lut';
 import { useFlowMapStore } from '../state/store';
 import { setTheme, THEMES } from '../theme';
+import { setLocale } from '../i18n';
 import { HeatLegend, legendForChannel } from './HeatLegend';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -82,7 +83,7 @@ describe('legendForChannel (pure selection)', () => {
     expect(l.rampName).toBe('synthetic amber colormap');
   });
 
-  it('theme + SYNTH paints the theme synth row, legacy keeps amber (R1-M2)', () => {
+  it('theme + SYNTH paints the theme synth row, legacy keeps amber', () => {
     const synthStops = THEMES.paper.chart.synth;
     const l = legendForChannel('sum', 'theme', true, undefined, synthStops);
     expect(l.row).toBe(RAMP_THEME_SYNTH);
@@ -94,7 +95,7 @@ describe('legendForChannel (pure selection)', () => {
     expect(legacy.gradient).toBe(l.gradient);
   });
 
-  it('theme mode paints the active theme density ramp (F6)', () => {
+  it('theme mode paints the active theme density ramp', () => {
     const stops = THEMES.paper.chart.density;
     const l = legendForChannel('sum', 'theme', false, stops);
     expect(l.row).toBe(RAMP_THEME);
@@ -102,6 +103,22 @@ describe('legendForChannel (pure selection)', () => {
     expect(l.gradient.startsWith(`rgb(${stops[0].rgb.join(', ')}) 0.0%`)).toBe(true);
     // Legacy families never take the theme branch, even with stops handed in.
     expect(legendForChannel('sum', 'flow', false, stops).row).toBe(RAMP_THEME);
+  });
+});
+
+describe('legend captions follow the locale', () => {
+  afterEach(() => setLocale('en'));
+
+  it('translates the caps, ramp name and channel note, and English stays the default', () => {
+    setLocale('tr');
+    const imbalance = legendForChannel('imbalance', 'flow', false);
+    expect(imbalance.topCap).toBe('satış ağırlıklı');
+    expect(imbalance.bottomCap).toBe('alış ağırlıklı');
+    expect(imbalance.rampName).toContain('ayrışan');
+    expect(legendForChannel('bid', 'classic', false).channelNote).toBe('alış derinliği');
+    setLocale('en');
+    expect(legendForChannel('imbalance', 'flow', false).topCap).toBe('ask-heavy');
+    expect(legendForChannel('bid', 'classic', false).channelNote).toBe('bid depth');
   });
 });
 
@@ -145,7 +162,7 @@ describe('HeatLegend (mounted)', () => {
     expect(legend.getAttribute('aria-label')).not.toContain('channel');
   });
 
-  it('theme mode: the bar follows the active theme ramp and re-ramps on switch (F6)', () => {
+  it('theme mode: the bar follows the active theme ramp and re-ramps on switch', () => {
     setTheme('midnight');
     const el = mountLegend('theme', 'sum');
     const legend = el.querySelector('[data-testid="heat-legend"]')!;
@@ -160,7 +177,7 @@ describe('HeatLegend (mounted)', () => {
     expect(bar.getAttribute('style')).not.toContain('rgb(8, 27, 55) 0.0%');
   });
 
-  it('theme + SYNTH: the bar follows the active theme synth ramp (R1-M2)', () => {
+  it('theme + SYNTH: the bar follows the active theme synth ramp', () => {
     useFlowMapStore.setState({ capability: { depth: 'SYNTH_PROFILE', replay: false } });
     setTheme('paper');
     const el = mountLegend('theme', 'sum');
@@ -169,5 +186,32 @@ describe('HeatLegend (mounted)', () => {
     const synth0 = THEMES.paper.chart.synth[0].rgb.join(', ');
     expect(bar.getAttribute('style')).toContain(`rgb(${synth0}) 0.0%`);
     expect(bar.getAttribute('style')).not.toContain(rampCssGradient(RAMP_SYNTH).split(', ')[0]);
+  });
+});
+
+describe('HeatLegend replay honesty', () => {
+  it('a replayed synthetic recording reads SYNTH even when it is marked recorded-density', () => {
+    useFlowMapStore.setState({ capability: { depth: 'SYNTH', replay: true, playback: {}, depth_provenance: 'recorded-density' } });
+    const el = mountLegend('flow', 'sum');
+    const legend = el.querySelector('[data-testid="heat-legend"]')!;
+    expect(legend.classList.contains('heat-legend--synth')).toBe(true);
+    expect(el.querySelector('[data-testid="heat-legend-tier"]')?.textContent).toBe('SYNTH');
+    expect(el.querySelector('[data-testid="heat-legend-tier"]')?.getAttribute('title')).toContain('recorded');
+    expect(legend.getAttribute('aria-label')).toContain('synthetic amber colormap');
+  });
+
+  it('a replay that does not claim recorded density is synthetic, matching the renderer ramp', () => {
+    useFlowMapStore.setState({ capability: { depth: 'L2', replay: true, playback: {} } });
+    const el = mountLegend('flow', 'sum');
+    expect(el.querySelector('[data-testid="heat-legend"]')?.classList.contains('heat-legend--synth')).toBe(true);
+    expect(el.querySelector('[data-testid="heat-legend-tier"]')?.textContent).toBe('SYNTH');
+  });
+
+  it('a recorded real-depth replay keeps its real tier and ramp, with the recording named in the title', () => {
+    useFlowMapStore.setState({ capability: { depth: 'L2', replay: true, playback: {}, depth_provenance: 'recorded-density' } });
+    const el = mountLegend('flow', 'sum');
+    expect(el.querySelector('[data-testid="heat-legend"]')?.classList.contains('heat-legend--synth')).toBe(false);
+    expect(el.querySelector('[data-testid="heat-legend-tier"]')?.textContent).toBe('L2');
+    expect(el.querySelector('[data-testid="heat-legend-tier"]')?.getAttribute('title')).toContain('recorded');
   });
 });

@@ -75,9 +75,11 @@ function snapshot(id: string, equity: boolean, columns = 60): Buffer {
     epoch_params: params, capability, norm_seed: 25 }),
   cold(2, { epoch: 0, epoch_params: params })];
   for (let col = 0; col < columns; col++) parts.push(column(col, equity), bar(col, equity));
+  // Status carries numeric latency and skew (0 before the first ping), as the server
+  // sends them; the client decoder drops a Status whose numbers are null.
   parts.push(cold(8, { feed_state: equity ? 'closed' : 'live', capability,
     next_open_ts: equity ? Date.parse('2026-10-19T13:30:00Z') * 1e6 : null,
-    latency_ms: null, clock_skew_ms: null }));
+    latency_ms: 0, clock_skew_ms: 0 }));
   return Buffer.concat(parts);
 }
 
@@ -138,7 +140,7 @@ async function ready(page: Page, market: string): Promise<void> {
     return live?.store.getState().subscription?.market === market
       && live.renderer.marketFrameReady && live.renderer.timeline()?.newestSeq === 59;
   }, market);
-  await expect(page.getByTestId('chart-startup-gate')).toBeHidden();
+  await expect(page.getByTestId('chart-startup-gate')).toBeHidden({ timeout: 30_000 });
 }
 
 async function lineProbe(page: Page, equity: boolean) {

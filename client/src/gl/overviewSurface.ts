@@ -152,6 +152,7 @@ export class OverviewSurface {
     heatmap.toleranceValue = template.toleranceValue;
     heatmap.channel = template.channel;
     heatmap.levelFloor = template.levelFloor;
+    heatmap.dpr = template.dpr;
     heatmap.encoding.decodeScale = template.encoding.decodeScale;
     heatmap.encoding.ramp = template.encoding.ramp;
     if (template.normalizer) {

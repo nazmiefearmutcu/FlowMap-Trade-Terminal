@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MsgType, MODE_L2 } from '../proto/types';
 import { TradeFlowAccumulator, type TradeFlowSummary } from '../state/tradeFlow';
 import { getSnapshot, type BookSnapshot } from '../state/bookStore';
@@ -7,11 +7,16 @@ import { priceToRow, rowToPrice, scaleFromEpoch } from '../gl/priceScale';
 import { fmtSz, priceDecimals } from './DomLadder';
 import type { EpochParams } from '../proto/types';
 import { useT } from '../i18n/useT';
+import { formatFixed, formatNumber, formatPrice } from '../i18n/format';
 
 export function nearbyDepth(snap: BookSnapshot, params: EpochParams | undefined): { bid: number; ask: number; low: number; high: number } | null {
   if (!params || !snap.book?.instant || snap.book.mode !== MODE_L2 || !snap.book.ask || !snap.bbo) return null;
   const scale = scaleFromEpoch(params);
-  const center = Math.floor(priceToRow(scale, (snap.bbo.bidPx + snap.bbo.askPx) / 2));
+  const centerRow = priceToRow(scale, (snap.bbo.bidPx + snap.bbo.askPx) / 2);
+  // A mid price off a log-winged grid maps to NaN; Math.max/min would then
+  // carry NaN into the bounds and print 'NaN–NaN'. Report it as unavailable.
+  if (!Number.isFinite(centerRow)) return null;
+  const center = Math.floor(centerRow);
   const lo = Math.max(0, center - 8), hi = Math.min(snap.book.bid.length - 1, center + 8);
   if (hi < lo) return null;
   let bid = 0, ask = 0;
@@ -19,12 +24,25 @@ export function nearbyDepth(snap: BookSnapshot, params: EpochParams | undefined)
   return { bid, ask, low: rowToPrice(scale, lo - .5), high: rowToPrice(scale, hi + .5) };
 }
 
+/**
+ * True when two flow summaries carry the same values. `summary()` builds a new
+ * object on every call, so the poll compares fields and keeps the previous
+ * object when nothing changed: an idle tape then no longer re-renders the panel
+ * every 250 ms.
+ */
+export function sameFlowSummary(a: TradeFlowSummary | null, b: TradeFlowSummary): boolean {
+  if (a === null) return false;
+  return (Object.keys(b) as Array<keyof TradeFlowSummary>).every((key) => a[key] === b[key]);
+}
+
 export function OrderFlowPanel(): JSX.Element {
   const t = useT();
   const [seconds, setSeconds] = useState(30);
   const [flow, setFlow] = useState<TradeFlowSummary | null>(null);
   const [snap, setSnap] = useState(getSnapshot);
-  const accumulator = useRef(new TradeFlowAccumulator());
+  // One ref-shaped accumulator for the component's lifetime: the constructor runs
+  // once, not on every render.
+  const [accumulator] = useState(() => ({ current: new TradeFlowAccumulator() }));
   const sub = useFlowMapStore(s => s.subscription);
   const scope = `${sub?.market}:${sub?.symbol}:${sub?.mode}`;
   const mode = sub?.mode ?? 'live';
@@ -48,15 +66,16 @@ export function OrderFlowPanel(): JSX.Element {
       a.ingest(msg, performance.now());
     });
     return () => { streamOff(); stateOff(); };
-  }, [scope]);
+  }, [scope, accumulator]);
   useEffect(() => {
     const id = window.setInterval(() => {
       const a = accumulator.current;
-      setFlow(a.summary(seconds * 1000, performance.now(), mode === 'replay'));
+      const next = a.summary(seconds * 1000, performance.now(), mode === 'replay');
+      setFlow((prev) => (sameFlowSummary(prev, next) ? prev : next));
       setSnap(getSnapshot());
     }, 250);
     return () => window.clearInterval(id);
-  }, [mode, seconds]);
+  }, [accumulator, mode, seconds]);
   const params = epochs.get(snap.book?.epoch ?? -1);
   const depth = flow ? nearbyDepth(snap, params) : null;
   const known = flow ? flow.buy + flow.sell : 0;
@@ -70,24 +89,24 @@ export function OrderFlowPanel(): JSX.Element {
       <div className="desk-window" role="group" aria-label={t('desk.flowWindow')}>
         {[5, 30, 60].map(n => <button type="button" key={n} aria-pressed={seconds === n} onClick={() => {
           setSeconds(n); setFlow(accumulator.current.summary(n * 1000, performance.now(), mode === 'replay'));
-        }}>{n}s</button>)}
+        }}>{n}{t('unit.s')}</button>)}
       </div>
     </header>
     <div className="flow-panel__body">
       <div className="flow-panel__context"><span>{mode === 'replay' ? t('desk.replayFlow') : t('desk.receivedFlow')}</span><span>{status === 'live' ? source : t('desk.flowOffline')}</span></div>
       <div className="flow-panel__delta"><span>{t('desk.delta')}</span><strong data-testid="flow-delta" data-side={flow && flow.delta < 0 ? 'sell' : 'buy'}>{flow && known > 0 ? `${flow.delta < 0 ? '−' : flow.delta > 0 ? '+' : ''}${fmtSz(Math.abs(flow.delta))}` : '—'}</strong>
-        <span>{warming ? `${t('desk.collecting')} ${((flow?.coverageMs ?? 0) / 1000).toFixed(0)}/${seconds}s` : `${flow?.count ?? 0} ${t('desk.prints')}`}</span></div>
-      <div className="flow-panel__balance" role="img" aria-label={`${t('desk.buyShare')} ${buyShare.toFixed(0)}%`}><span style={{ width: `${buyShare}%` }} /></div>
+        <span>{warming ? `${t('desk.collecting')} ${formatFixed((flow?.coverageMs ?? 0) / 1000, 0)}/${seconds}${t('unit.s')}` : `${formatNumber(flow?.count ?? 0)} ${t('desk.prints')}`}</span></div>
+      <div className="flow-panel__balance" role="img" aria-label={`${t('desk.buyShare')} ${formatFixed(buyShare, 0)}%`}><span style={{ width: `${buyShare}%` }} /></div>
       <dl className="flow-panel__facts">
         <div><dt>{t('desk.buyVolume')}</dt><dd className="is-buy" data-testid="flow-buy">{flow ? fmtSz(flow.buy) : '—'}</dd></div>
         <div><dt>{t('desk.sellVolume')}</dt><dd className="is-sell" data-testid="flow-sell">{flow ? fmtSz(flow.sell) : '—'}</dd></div>
-        <div><dt>{t('desk.prints')}</dt><dd data-testid="flow-count">{flow?.count.toLocaleString() ?? '—'}</dd></div>
-        <div><dt>{t('desk.printRate')}</dt><dd>{flow && !warming ? (flow.count / seconds).toFixed(1) : '—'}</dd></div>
+        <div><dt>{t('desk.prints')}</dt><dd data-testid="flow-count">{flow ? formatNumber(flow.count) : '—'}</dd></div>
+        <div><dt>{t('desk.printRate')}</dt><dd>{flow && !warming ? formatFixed(flow.count / seconds, 1) : '—'}</dd></div>
         {flow && flow.unknown > 0 && <div className="flow-panel__unknown"><dt>{t('desk.unknownVolume')}</dt><dd>{fmtSz(flow.unknown)}</dd></div>}
       </dl>
-      <div className="flow-panel__depth"><span>{t('desk.nearbyDepth')}</span><span>{depth && params ? `${depth.low.toFixed(priceDecimals(params.tick))}–${depth.high.toFixed(priceDecimals(params.tick))}` : t('desk.depthUnavailable')}</span></div>
+      <div className="flow-panel__depth"><span>{t('desk.nearbyDepth')}</span><span>{depth && params ? `${formatPrice(depth.low, priceDecimals(params.tick))}–${formatPrice(depth.high, priceDecimals(params.tick))}` : t('desk.depthUnavailable')}</span></div>
       {depth && <><div className="flow-panel__balance flow-panel__balance--depth"><span style={{ width: `${depthShare}%` }} /></div>
-        <div className="flow-panel__depth-values"><span className="is-buy">{fmtSz(depth.bid)}</span><span>{depthShare.toFixed(0)}% {t('desk.bidShare')}</span><span className="is-sell">{fmtSz(depth.ask)}</span></div></>}
+        <div className="flow-panel__depth-values"><span className="is-buy">{fmtSz(depth.bid)}</span><span>{formatFixed(depthShare, 0)}% {t('desk.bidShare')}</span><span className="is-sell">{fmtSz(depth.ask)}</span></div></>}
       {capability?.tape !== 'tick' && <div className="flow-panel__note">{t('desk.sampledTape')}</div>}
     </div>
   </section>;

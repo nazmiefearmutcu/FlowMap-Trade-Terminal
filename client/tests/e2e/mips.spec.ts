@@ -1,3 +1,4 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 /**
- * T7 verification — SUM-mips keep liquidity walls bright when you zoom OUT.
+ * SUM-mips keep liquidity walls bright when you zoom OUT.
  *
  * The failure this guards against: with a plain average-downsampled mip, a
  * 500-lot wall surrounded by empty ticks renders as ~500/16 when price zooms out
@@ -73,7 +74,7 @@ test('SUM-mips keep a liquidity wall bright when zoomed out (not diluted ~1/16)'
 
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       const caps = api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ true);
 
       // Single isolated wall row, everything else exactly zero. The ask channel
@@ -168,7 +169,6 @@ test('SUM-mips keep a liquidity wall bright when zoomed out (not diluted ~1/16)'
       note: 'An average mip would render the wall at 500/16=31.25 -> t≈0.05 -> luma≈11 (near the black floor). SUM keeps it at the native brightness.',
     },
   };
-  // eslint-disable-next-line no-console
   console.log('[mips] ' + JSON.stringify(summary, null, 2));
 
   // --- Assertions -----------------------------------------------------------------
@@ -188,7 +188,7 @@ test('SUM-mips keep a liquidity wall bright when zoomed out (not diluted ~1/16)'
   // samples the field with row-bilinear interpolation, and this wall is ONE row:
   // the brightest pixel straddles the wall row and its zero neighbour, landing
   // at ~0.5 × wall density → t ≈ 0.375 of NORM → the aurora ramp's BLUE/INDIGO
-  // head (campaign 4.1: ~98 luma measured at this probe). That is the
+  // head (~98 luma measured at this probe). That is the
   // energy-preserving spread of the wall over its 2 device pixels, not dilution
   // — the SUM assertions below compare against THIS measured native brightness,
   // so the invariant (zoomed ≥ 0.8 × native) is unchanged. The absolute floor

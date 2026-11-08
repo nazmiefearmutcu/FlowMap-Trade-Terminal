@@ -1,3 +1,4 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 /**
- * T4 verification — the WebGL2 heatmap actually renders in a real browser.
+ * The WebGL2 heatmap actually renders in a real browser.
  *
  * GL cannot be meaningfully unit-mocked, so this drives the real renderer via
  * the `?test=heatmap` hook (window.__flowmapTest) and reads pixels back:
@@ -49,7 +50,7 @@ test('heatmap renders resident columns with a bright wall and black voids', asyn
 
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       const caps = api.init(cfg.rows, cfg.layers, cfg.width, cfg.height);
 
       // Build a synthetic column: bright wall across [wallLo..wallHi], a

@@ -1,5 +1,5 @@
 /**
- * Symbol palette — the venue scope (§9). The picker reaches ~106 venues, and the
+ * Symbol palette — the venue scope. The picker reaches ~106 venues, and the
  * two behaviours worth pinning are (a) opening it never waits on a venue, and
  * (b) enumerating one is explicit, slow, and honest about both.
  *
@@ -14,6 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SymbolSearch, type SymbolSearchHandle } from './SymbolSearch';
 import { resetVenueCatalog, type VenueInfo } from './symbols';
 import { PREVIEW_QUOTES_KEY } from './previewQuotes';
+import { setLocale } from '../i18n';
+import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 // jsdom has no layout, so the palette's keep-the-highlight-visible effect needs a stub.
@@ -162,6 +164,14 @@ async function open(): Promise<HTMLElement> {
   return container;
 }
 
+/** Like open(), for a test that runs on fake timers: settles with the clock, not a real timeout. */
+async function openWithFakeTimers(): Promise<HTMLElement> {
+  const container = render();
+  click(container.querySelector('[data-testid="symbol-search-trigger"]'));
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  return container;
+}
+
 async function openVenueList(): Promise<HTMLElement> {
   const container = await open();
   click(palette().querySelector('[data-testid="venue-picker-toggle"]'));
@@ -229,7 +239,7 @@ describe('SymbolSearch venue scope — the fast path stays fast', () => {
     ] }));
     await settle();
     expect(identities()).toEqual(before);
-    expect(palette().querySelector('[data-symbol="BTCUSDT"] .sympal__px')!.textContent).toBe('81,234');
+    expect(palette().querySelector('[data-symbol="BTCUSDT"] .sympal__px')!.textContent).toBe('81234.00');
   });
 
   it('ignores a delayed universe response from an earlier closed visit', async () => {
@@ -298,21 +308,26 @@ describe('SymbolSearch venue scope — the fast path stays fast', () => {
     await settle();
     click(palette().querySelector('.sympal__esc'));
     click(container.querySelector('[data-testid="symbol-search-trigger"]'));
-    expect(palette().querySelector('[data-symbol="BTCUSDT"] .sympal__px')!.textContent).toBe('81,000');
+    expect(palette().querySelector('[data-symbol="BTCUSDT"] .sympal__px')!.textContent).toBe('81000.00');
     expect(palette().querySelector('.sympal__pv-spark path')).not.toBeNull();
     expect(releases).toHaveLength(2);
   });
 
   it('bounds cold preview requests while all 260 initial symbols are visible', async () => {
-    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
-      calls.push(String(input));
-      return new Promise(() => {});
-    }) as unknown as typeof fetch;
-    await open();
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 220)); });
-    expect(palette().querySelectorAll('[data-testid="symbol-row"]')).toHaveLength(260);
-    expect(calls.filter((url) => url.includes('/api/quote'))).toHaveLength(3);
-    expect(calls.filter((url) => url.includes('/api/movers'))).toHaveLength(2);
+    vi.useFakeTimers();
+    try {
+      globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+        calls.push(String(input));
+        return new Promise(() => {});
+      }) as unknown as typeof fetch;
+      await openWithFakeTimers();
+      await act(async () => { await vi.advanceTimersByTimeAsync(220); });
+      expect(palette().querySelectorAll('[data-testid="symbol-row"]')).toHaveLength(260);
+      expect(calls.filter((url) => url.includes('/api/quote'))).toHaveLength(3);
+      expect(calls.filter((url) => url.includes('/api/movers'))).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('opens on the bundled market=all universe without enumerating any venue', async () => {
@@ -568,6 +583,28 @@ describe('SymbolSearch venue enumeration — a failed listing', () => {
     expect(listings('gateio')).toBe(1);
     expect(palette().querySelector('.sympal__empty')!.textContent).toContain('listed no symbols');
   });
+
+  it('re-asks an empty listing once its 30 s trust window passes, and retry bypasses the cache', async () => {
+    const realNow = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(realNow);
+    try {
+      await openVenueList();
+      await pick('gateio');
+      expect(listings('gateio')).toBe(1);
+      clock.mockReturnValue(realNow + 31_000);
+      await reopenVenueList();
+      await pick('all');
+      await reopenVenueList();
+      await pick('gateio');
+      expect(listings('gateio')).toBe(2);
+      // The empty state offers a retry, which must reach the network at once.
+      click(palette().querySelector('[data-testid="venue-retry"]'));
+      await settle();
+      expect(listings('gateio')).toBe(3);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });
 
 // --- A5: recent symbols (localStorage, max 5) + Home/End navigation ---
@@ -638,12 +675,12 @@ describe('SymbolSearch recents + keyboard navigation', () => {
   });
 });
 
-// --- F18 / QA12 M-5: the preview must survive row-identity churn -------------
+// --- The preview must survive row-identity churn -------------
 // `rows` is rebuilt whenever the movers or the universe resolves, so every row
 // changes object identity on each such recompute. Keying the preview effect on
 // that identity aborted the in-flight `/api/quote` (request #1 always wasted;
 // BTCUSDT's preview arrived 4-8 s late). These tests pin the keyed keep-alive.
-describe('SymbolSearch preview keep-alive (QA12 M-5)', () => {
+describe('SymbolSearch preview keep-alive', () => {
   it('collects never-opened catalogue previews while search is closed', async () => {
     let releaseSnapshot: ((value: unknown) => void) | undefined;
     globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
@@ -689,8 +726,13 @@ describe('SymbolSearch preview keep-alive (QA12 M-5)', () => {
       }
       return Promise.resolve({ ok: true, json: async () => body(url) } as Response);
     }) as unknown as typeof fetch;
-    render();
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1_100)); });
+    vi.useFakeTimers();
+    try {
+      render();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_100); });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(snapshotCalls[0]).toContain('after=0');
     expect(snapshotCalls[1]).toContain('after=10&generation=server-a');
     expect(snapshotCalls[2]).toContain('after=20&generation=server-b');
@@ -711,10 +753,14 @@ describe('SymbolSearch preview keep-alive (QA12 M-5)', () => {
     expect(palette().querySelector('.sympal__pv-sym')!.textContent).toBe('AAPL');
     expect(palette().querySelector('.sympal__pv-px')!.textContent).toBe('343.46');
     expect(palette().querySelector('.sympal__pv-stale')).not.toBeNull();
+    // An equity is closed for the night; the reason is the market, not the preview.
+    expect(palette().querySelector('.sympal__pv-stale')!.textContent).toBe('Market closed · last known');
     const equityPath = palette().querySelector('.sympal__pv-spark path')!.getAttribute('d');
     key(palette().querySelector('input')!, 'ArrowDown');
     expect(palette().querySelector('.sympal__pv-sym')!.textContent).toBe('BTCUSDT');
-    expect(palette().querySelector('.sympal__pv-px')!.textContent).toBe('81,000');
+    // Crypto trades 24/7: "market closed" would be a false reason, so the copy names the preview age.
+    expect(palette().querySelector('.sympal__pv-stale')!.textContent).toMatch(/^Open 24\/7 · updated \d+ s ago$/);
+    expect(palette().querySelector('.sympal__pv-px')!.textContent).toBe('81000.00');
     expect(palette().querySelector('.sympal__pv-spark path')!.getAttribute('d')).not.toBe(equityPath);
     click(palette().querySelector('.sympal__esc'));
     click(container.querySelector('[data-testid="symbol-search-trigger"]'));
@@ -799,7 +845,7 @@ describe('SymbolSearch preview keep-alive (QA12 M-5)', () => {
       quoteWaiters[0]?.({ market: 'binance-spot', symbol: 'BTCUSDT', price: 76824, changePct: 1.5, spark: [1, 2] });
     });
     await settle();
-    expect(palette().querySelector('.sympal__pv-px')!.textContent).toBe('76,824');
+    expect(palette().querySelector('.sympal__pv-px')!.textContent).toBe('76824.00');
   });
 
   it('serves a re-highlighted symbol from the visit memo instead of refetching', async () => {
@@ -862,5 +908,100 @@ describe('SymbolSearch preview keep-alive (QA12 M-5)', () => {
     await settle();
     expect(quoteCalls).toBe(2);
     expect(palette().querySelector('.sympal__pv-px')!.textContent).toBe('1.50');
+  });
+});
+
+describe('SymbolSearch chord hint and sidecar requests', () => {
+  afterEach(() => {
+    delete (window as { __FLOWMAP_SESSION_TOKEN__?: string }).__FLOWMAP_SESSION_TOKEN__;
+  });
+
+  function setPlatform(platform: string): () => void {
+    const original = Object.getOwnPropertyDescriptor(navigator, 'platform');
+    Object.defineProperty(navigator, 'platform', { value: platform, configurable: true });
+    return () => {
+      if (original) Object.defineProperty(navigator, 'platform', original);
+      else delete (navigator as { platform?: string }).platform;
+    };
+  }
+
+  it('names Ctrl K in the visible hint and title off Apple platforms', async () => {
+    const restore = setPlatform('Win32');
+    try {
+      const container = render();
+      await settle();
+      const trigger = container.querySelector('[data-testid="symbol-search-trigger"]') as HTMLButtonElement;
+      expect(trigger.querySelector('.symsearch__kbd')!.textContent).toBe('Ctrl K');
+      expect(trigger.title).toContain('Ctrl K');
+      expect(trigger.title).not.toContain('⌘');
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps the ⌘K spelling on Apple platforms', async () => {
+    const restore = setPlatform('MacIntel');
+    try {
+      const container = render();
+      await settle();
+      const trigger = container.querySelector('[data-testid="symbol-search-trigger"]') as HTMLButtonElement;
+      expect(trigger.querySelector('.symsearch__kbd')!.textContent).toBe('⌘K');
+      expect(trigger.title).toContain('⌘K');
+    } finally {
+      restore();
+    }
+  });
+
+  it('sends the packaged session token on every palette request', async () => {
+    const token = 'ab'.repeat(32);
+    (window as { __FLOWMAP_SESSION_TOKEN__?: string }).__FLOWMAP_SESSION_TOKEN__ = token;
+    const seen: Array<{ url: string; token: string | null }> = [];
+    globalThis.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, token: new Headers(init?.headers).get('X-FlowMap-Token') });
+      return Promise.resolve({ ok: true, json: async () => ({ symbols: BUNDLED }) } as unknown as Response);
+    }) as unknown as typeof fetch;
+    await open();
+    const palettes = seen.filter((r) => r.url.includes('/api/universe') || r.url.includes('/api/venues'));
+    expect(palettes.length).toBeGreaterThan(0);
+    for (const r of palettes) expect(r.token).toBe(token);
+  });
+});
+
+describe('SymbolSearch copy', () => {
+  afterEach(() => setLocale('en'));
+
+  it('reads a one-symbol venue in the singular', async () => {
+    await openVenueList();
+    press(palette().querySelector('[data-testid="venue-row"][data-market="binance-usdm"]'));
+    await settle();
+    expect(palette().querySelector('.sympal__scopenote')!.textContent).toBe('1 symbol');
+  });
+
+  it('spells the stale-quote age with the Turkish seconds unit', () => {
+    setLocale('tr');
+    const fetchedAt = Date.now() - 60_000;
+    window.localStorage.setItem('flowmap.recents', JSON.stringify(['binance-spot:BTCUSDT']));
+    window.localStorage.setItem(PREVIEW_QUOTES_KEY, JSON.stringify({ version: 1, entries: [
+      { fetchedAt, quote: { market: 'binance-spot', symbol: 'BTCUSDT', price: 81000, changePct: -1,
+        spark: [82000, 81500, 81000], asOf: fetchedAt * 1e6 } },
+    ] }));
+    globalThis.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
+    const container = render();
+    click(container.querySelector('[data-testid="symbol-search-trigger"]'));
+    expect(palette().querySelector('.sympal__pv-stale')!.textContent).toMatch(/^7\/24 açık · \d+ sn önce güncellendi$/);
+  });
+});
+
+describe('SymbolSearch trigger hint follows the single-key preference', () => {
+  afterEach(() => setSingleKeyShortcutsEnabled(true));
+
+  it('names the / key only while single-key shortcuts are on', () => {
+    const container = render();
+    const trigger = container.querySelector('[data-testid="symbol-search-trigger"]')!;
+    expect(trigger.getAttribute('title')).toContain('/');
+    act(() => setSingleKeyShortcutsEnabled(false));
+    expect(trigger.getAttribute('title')).not.toContain('/');
+    expect(trigger.getAttribute('title')).toContain('Ctrl K');
   });
 });

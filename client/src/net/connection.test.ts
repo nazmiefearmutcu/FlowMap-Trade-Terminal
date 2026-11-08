@@ -6,7 +6,16 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { decodeFrame } from '../proto/decode';
 import { MsgType, type Msg } from '../proto/types';
-import { Connection, type ConnectionOptions, type SocketLike } from './connection';
+import {
+  Connection,
+  HANDSHAKE_MAX_MS,
+  MAX_RETAINED_EPOCHS,
+  SUBSCRIBE_HANDSHAKE_MAX_MS,
+  TRADE_DEDUP_WINDOW,
+  SUBSCRIBE_HANDSHAKE_TIMEOUT_MS,
+  type ConnectionOptions,
+  type SocketLike,
+} from './connection';
 
 // The fixed ns timestamp baked into the server's golden fixture
 // (2025-07-17T00:00:00Z); the hot_ping golden carries server_send_ns = T0 + 4000.
@@ -116,6 +125,22 @@ function buildBarCol(epoch: number, colSeq: number): Uint8Array {
 // --- fakes --------------------------------------------------------------------
 
 /** Captures sent frames; lets a test drive open/close/message lifecycle. */
+/** A hot TRADE frame: 28-byte header (ts, price, size, side, side_src, seq) and a one-byte venue. */
+function buildTrade(index: number, seq: number): Uint8Array {
+  const venue = new TextEncoder().encode('XNY');
+  const payload = new Uint8Array(28 + 1 + venue.length);
+  const dv = new DataView(payload.buffer);
+  dv.setBigInt64(0, T0 + BigInt(index) * 1_000n, true);
+  dv.setFloat64(8, 100.0, true);
+  dv.setFloat64(16, 1.0, true);
+  dv.setUint8(24, 1);
+  dv.setUint8(25, 0);
+  dv.setUint16(26, seq, true);
+  dv.setUint8(28, venue.length);
+  payload.set(venue, 29);
+  return frameBytes(MsgType.TRADE, payload, 0);
+}
+
 class FakeWebSocket implements SocketLike {
   binaryType = 'blob';
   onopen: ((ev?: unknown) => void) | null = null;
@@ -124,6 +149,8 @@ class FakeWebSocket implements SocketLike {
   onerror: ((ev?: unknown) => void) | null = null;
   readonly sent: Uint8Array[] = [];
   closed = false;
+  /** Browser readyState; tests set 2 (CLOSING) to model a socket that drops sends. */
+  readyState?: number;
 
   constructor(readonly url: string) {}
 
@@ -225,6 +252,44 @@ const URL = 'wss://test.invalid/ws';
 
 // --- tests --------------------------------------------------------------------
 
+describe('Connection — session token transport', () => {
+  it('offers the token as a subprotocol and keeps it out of the URL', () => {
+    const token = 'cd'.repeat(32);
+    (window as { __FLOWMAP_SESSION_TOKEN__?: string }).__FLOWMAP_SESSION_TOKEN__ = token;
+    const seen: { url: string; protocols: string[] }[] = [];
+    const { makeConn } = harness();
+    try {
+      const conn = makeConn({
+        wsFactory: (url, protocols) => {
+          seen.push({ url, protocols });
+          return new FakeWebSocket(url);
+        },
+      });
+      conn.subscribe('crypto', 'BTCUSDT', 'live');
+      expect(seen).toHaveLength(1);
+      expect(seen[0].url).toBe(URL);
+      expect(seen[0].protocols).toEqual(['flowmap.v1', `flowmap.auth.${token}`]);
+      conn.close();
+    } finally {
+      delete (window as { __FLOWMAP_SESSION_TOKEN__?: string }).__FLOWMAP_SESSION_TOKEN__;
+    }
+  });
+
+  it('offers only the wire version in dev (no injected token)', () => {
+    const seen: string[][] = [];
+    const { makeConn } = harness();
+    const conn = makeConn({
+      wsFactory: (url, protocols) => {
+        seen.push([...protocols]);
+        return new FakeWebSocket(url);
+      },
+    });
+    conn.subscribe('crypto', 'BTCUSDT', 'live');
+    expect(seen).toEqual([['flowmap.v1']]);
+    conn.close();
+  });
+});
+
 describe('Connection — subscription lifecycle', () => {
   it('sends Subscribe on open with the requested market/symbol/mode', () => {
     const { sockets, makeConn } = harness();
@@ -262,7 +327,7 @@ describe('Connection — subscription lifecycle', () => {
     expect(frames[2].symbol).toBe('AAPL');
   });
 
-  // --- P6: the optional replay window (start_t/end_t) ---------------------------
+  // --- the optional replay window (start_t/end_t) ---------------------------
 
   it('carries a replay window on the wire and re-sends it across a reconnect', () => {
     const { sockets, clock, makeConn } = harness();
@@ -389,7 +454,7 @@ describe('Connection — subscription lifecycle', () => {
     // but a brand-new server session whose col_seq restarts at 0. The old
     // cursor must die with session A, or every finalized column of the
     // replacement is swallowed as a "reconnect re-send" and the heatmap stays
-    // dead until col_seq crawls past 900 (survey-4 H-1).
+    // dead until col_seq crawls past 900.
     sockets[0].drop();
     clock.advance(500);
     sockets[1].open();
@@ -628,6 +693,84 @@ describe('Connection — reconnect', () => {
 
     clock.advance(60_000); // the armed backoff must NOT open a third socket
     expect(sockets).toHaveLength(2);
+  });
+});
+
+describe('Connection — reconnect tape re-delivery', () => {
+  /** The TRADE messages the stream consumer has received. */
+  function tradesIn(onStream: ReturnType<typeof vi.fn>): Msg[] {
+    return onStream.mock.calls.map((c) => c[0] as Msg).filter((m) => m.type === MsgType.TRADE);
+  }
+
+  it('drops the tape tail a same-session reconnect re-sends', () => {
+    const { sockets, clock, makeConn } = harness();
+    const onStream = vi.fn();
+    const conn = makeConn({ onStream });
+
+    conn.subscribe('crypto', 'BTCUSDT', 'live');
+    sockets[0].open();
+    sockets[0].deliver(buildHello('s1', 3));
+    for (let i = 1; i <= 500; i += 1) sockets[0].deliver(buildTrade(i, i));
+    expect(tradesIn(onStream)).toHaveLength(500);
+
+    sockets[0].drop();
+    clock.advance(500);
+    sockets[1].open();
+    sockets[1].deliver(buildHello('s1', 3));
+    for (let i = 1; i <= 500; i += 1) sockets[1].deliver(buildTrade(i, i)); // the tape tail again
+    expect(tradesIn(onStream)).toHaveLength(500);
+
+    sockets[1].deliver(buildTrade(501, 501)); // a print after the reattach still flows
+    expect(tradesIn(onStream)).toHaveLength(501);
+  });
+
+  it('forwards the same prints again once the session was replaced', () => {
+    const { sockets, clock, makeConn } = harness();
+    const onStream = vi.fn();
+    const conn = makeConn({ onStream });
+
+    conn.subscribe('crypto', 'BTCUSDT', 'live');
+    sockets[0].open();
+    sockets[0].deliver(buildHello('s1', 3));
+    for (let i = 1; i <= 3; i += 1) sockets[0].deliver(buildTrade(i, i));
+
+    sockets[0].drop();
+    clock.advance(500);
+    sockets[1].open();
+    sockets[1].deliver(buildHello('s2', 3));
+    for (let i = 1; i <= 3; i += 1) sockets[1].deliver(buildTrade(i, i));
+    expect(tradesIn(onStream)).toHaveLength(6);
+  });
+
+  it('never drops a print that carries no seq', () => {
+    const { sockets, makeConn } = harness();
+    const onStream = vi.fn();
+    const conn = makeConn({ onStream });
+
+    conn.subscribe('crypto', 'BTCUSDT', 'live');
+    sockets[0].open();
+    sockets[0].deliver(buildHello('s1', 3));
+    sockets[0].deliver(buildTrade(1, 0));
+    sockets[0].deliver(buildTrade(1, 0));
+    expect(tradesIn(onStream)).toHaveLength(2);
+  });
+
+  it('remembers only the last TRADE_DEDUP_WINDOW prints', () => {
+    const { sockets, makeConn } = harness();
+    const onStream = vi.fn();
+    const conn = makeConn({ onStream });
+
+    conn.subscribe('crypto', 'BTCUSDT', 'live');
+    sockets[0].open();
+    sockets[0].deliver(buildHello('s1', 3));
+    const total = TRADE_DEDUP_WINDOW + 88;
+    for (let i = 1; i <= total; i += 1) sockets[0].deliver(buildTrade(i, i % 0xffff || 1));
+    expect(tradesIn(onStream)).toHaveLength(total);
+
+    sockets[0].deliver(buildTrade(total, total % 0xffff || 1)); // newest: still remembered
+    expect(tradesIn(onStream)).toHaveLength(total);
+    sockets[0].deliver(buildTrade(1, 1)); // oldest: evicted, so it passes again
+    expect(tradesIn(onStream)).toHaveLength(total + 1);
   });
 });
 
@@ -986,7 +1129,7 @@ void sockets_reconnect_scheduled;
 
 // --- session-cap refusal contract (close 1013 while a replay was desired) -----
 //
-// QA11 H1 (F12 lane): a REPLAY subscribe refused at the session cap closes with
+// A REPLAY subscribe refused at the session cap closes with
 // 1013 — NOT 1003. The two refusals mean different things and the transport must
 // not conflate them: 1003 = "no recording for this session" (the store's honest
 // live fallback), 1013 = "server at capacity, try again later" (retry with
@@ -1085,12 +1228,35 @@ describe('Connection — closeInfo, attempts, reconnectNow', () => {
     expect(h.sockets).toHaveLength(2);
     h.clock.advance(60_000);
     expect(h.sockets).toHaveLength(2);
-    // While a socket exists, retry is a no-op (never two live sockets).
-    conn.reconnectNow();
-    expect(h.sockets).toHaveLength(2);
     // The replacement re-sends the same subscribe on open.
     h.sockets[1].open();
     expect(decodeFrame(h.sockets[1].sent[0])[0].type).toBe(MsgType.SUBSCRIBE);
+  });
+
+  it('reconnectNow() replaces a socket that never completed its handshake (no dead retry button)', () => {
+    const { h, conn, sock } = setup();
+    sock.open();
+    sock.drop(1001);
+    conn.reconnectNow(); // socket 2: opened, but the server never sends a Hello
+    expect(h.sockets).toHaveLength(2);
+    // The retry button must act, not no-op behind a wedged socket.
+    conn.reconnectNow();
+    expect(h.sockets).toHaveLength(3);
+    expect(h.sockets[1].closed).toBe(true); // the wedged socket is dropped
+    h.sockets[2].open();
+    expect(decodeFrame(h.sockets[2].sent[0])[0].type).toBe(MsgType.SUBSCRIBE);
+  });
+
+  it('reconnectNow() is a no-op once the handshake landed (never tears down a live session)', () => {
+    const { h, conn, sock } = setup();
+    sock.open();
+    sock.drop(1001);
+    conn.reconnectNow();
+    h.sockets[1].open();
+    h.sockets[1].deliver(goldenU8('cold_hello'));
+    conn.reconnectNow();
+    expect(h.sockets).toHaveLength(2);
+    expect(conn.status).toBe('live');
   });
 
   it('resets the attempt counter once a Hello handshake lands', () => {
@@ -1108,13 +1274,70 @@ describe('Connection — closeInfo, attempts, reconnectNow', () => {
   });
 });
 
-// --- depth seam honesty (QA3 C-1) --------------------------------------------
+describe('Connection — sidecar hold (desktop engine down)', () => {
+  function setup() {
+    const h = harness();
+    const conn = h.makeConn();
+    conn.subscribe('crypto', 'BTCUSDT');
+    return { h, conn, sock: h.sockets[0] };
+  }
+
+  it('keeps reconnect ticks from opening a socket until the engine answers again', () => {
+    const { h, conn, sock } = setup();
+    sock.open();
+    sock.drop(1001);
+    conn.setSidecarHold(true);
+    h.clock.advance(60_000);
+    expect(h.sockets).toHaveLength(1);
+    expect(conn.status).toBe('reconnecting');
+    conn.setSidecarHold(false);
+    expect(h.sockets).toHaveLength(2);
+    h.sockets[1].open();
+    expect(decodeFrame(h.sockets[1].sent[0])[0].type).toBe(MsgType.SUBSCRIBE);
+  });
+
+  it('parks the retry button too: a manual reconnect opens nothing while held', () => {
+    const { h, conn, sock } = setup();
+    sock.open();
+    sock.drop(1001);
+    conn.setSidecarHold(true);
+    conn.reconnectNow();
+    expect(h.sockets).toHaveLength(1);
+    conn.setSidecarHold(false);
+    expect(h.sockets).toHaveLength(2);
+    conn.close();
+  });
+
+  it('defers a subscribe made while held and opens it on release', () => {
+    const h = harness();
+    const conn = h.makeConn();
+    conn.setSidecarHold(true);
+    conn.subscribe('crypto', 'BTCUSDT');
+    expect(h.sockets).toHaveLength(0);
+    conn.setSidecarHold(false);
+    expect(h.sockets).toHaveLength(1);
+    conn.close();
+  });
+
+  it('does not reopen a connection closed while it was held', () => {
+    const { h, conn, sock } = setup();
+    sock.open();
+    sock.drop(1001);
+    conn.setSidecarHold(true);
+    conn.reconnectNow();
+    conn.close();
+    conn.setSidecarHold(false);
+    expect(h.sockets).toHaveLength(1);
+  });
+});
+
+// --- depth seam honesty --------------------------------------------
 // A session reattach can append a reconstructed block from another grid onto
 // the old session's live columns with a seq→time break. The transport must
 // surface the boundary as a `gap` Marker instead of letting the ring hold two
 // unmarked timelines.
 
-describe('Connection — depth seam markers (QA3 C-1)', () => {
+describe('Connection — depth seam markers', () => {
   const DT = 250_000_000n; // 250 ms, matches buildHello's epoch_params
 
   /** A depth column with an explicit t0 (buildDepthCol derives t0 from seq). */
@@ -1253,5 +1476,346 @@ describe('Connection — depth seam markers (QA3 C-1)', () => {
     // server emits its own gap marker for this case.
     h.sockets[0].deliver(buildDepthColAt(0, 30, liveT0(30)));
     expect(onStream).toHaveBeenCalledTimes(2);
+  });
+});
+
+// --- handshake deadline, liveness, terminal refusals, version skew ------------
+
+describe('Connection — handshake, liveness and terminal refusals', () => {
+  /** A connection with a subscribe (the normal case) or a bare socket (`subscribe = false`). */
+  function live(extra: Partial<ConnectionOptions> = {}, subscribe = true) {
+    const h = harness();
+    const events = {
+      refused: [] as (string | null)[],
+      mismatch: [] as { got: number; expected: number }[],
+      attempts: [] as number[],
+    };
+    const conn = h.makeConn({
+      now: () => h.clock.now,
+      onRefused: (reason) => events.refused.push(reason),
+      onProtocolMismatch: (info) => events.mismatch.push(info),
+      onReconnectScheduled: (attempt) => events.attempts.push(attempt),
+      ...extra,
+    });
+    if (subscribe) conn.subscribe('crypto', 'BTCUSDT');
+    else conn.connect();
+    return { h, conn, events };
+  }
+
+  /** Advance the fake clock in steps no larger than the watchdog cadence. */
+  function run(h: ReturnType<typeof harness>, ms: number, step = 500): void {
+    for (let t = 0; t < ms; t += step) h.clock.advance(step);
+  }
+
+  it('abandons a bare socket that never sends Hello at the handshake deadline and retries', () => {
+    const { h, conn, events } = live({}, false);
+    h.sockets[0].open();
+    run(h, 7_000);
+    expect(h.sockets[0].closed).toBe(false); // still inside the deadline
+    run(h, 3_000);
+    expect(h.sockets[0].closed).toBe(true); // wedged: dropped without waiting for a close event
+    expect(conn.status).toBe('reconnecting');
+    expect(events.attempts).toEqual([1]);
+    run(h, 1_000);
+    expect(h.sockets).toHaveLength(2);
+  });
+
+  it('a subscribe-bearing socket gets the cold-listing budget before the handshake deadline', () => {
+    const { h, conn, events } = live();
+    h.sockets[0].open();
+    run(h, SUBSCRIBE_HANDSHAKE_TIMEOUT_MS - 1_000);
+    expect(h.sockets[0].closed).toBe(false); // a cold venue listing may still be preparing
+    expect(conn.status).toBe('connecting');
+    run(h, 2_000);
+    expect(h.sockets[0].closed).toBe(true);
+    expect(conn.status).toBe('reconnecting');
+    expect(events.attempts).toEqual([1]);
+  });
+
+  it('an early Status never shortens the subscribe-bearing first window', () => {
+    const { h } = live();
+    h.sockets[0].open();
+    run(h, 6_000);
+    h.sockets[0].deliver(
+      coldFrame(MsgType.STATUS, {
+        feed_state: 'live',
+        capability: {},
+        latency_ms: 0.0,
+        clock_skew_ms: 0.0,
+        next_open_ts: null,
+      }),
+    );
+    run(h, 23_000); // 29 s: the Status at 6 s would have ended at 14 s, the 30 s window still holds
+    expect(h.sockets[0].closed).toBe(false);
+    run(h, 2_000); // 31 s: past the window
+    expect(h.sockets[0].closed).toBe(true);
+  });
+
+  it('a subscribe-bearing socket that keeps reporting progress is abandoned at its own ceiling', () => {
+    const { h, events } = live();
+    h.sockets[0].open();
+    const start = h.clock.now;
+    const status = coldFrame(MsgType.STATUS, {
+      feed_state: 'live',
+      capability: {},
+      latency_ms: 0.0,
+      clock_skew_ms: 0.0,
+      next_open_ts: null,
+    });
+    for (let t = 0; t < SUBSCRIBE_HANDSHAKE_MAX_MS + 10_000 && !h.sockets[0].closed; t += 1_000) {
+      h.sockets[0].deliver(status);
+      run(h, 1_000);
+    }
+    expect(h.sockets[0].closed).toBe(true);
+    const elapsed = h.clock.now - start;
+    expect(elapsed).toBeGreaterThanOrEqual(SUBSCRIBE_HANDSHAKE_MAX_MS - 1_000);
+    expect(elapsed).toBeLessThanOrEqual(SUBSCRIBE_HANDSHAKE_MAX_MS + 2_000);
+    expect(events.attempts).toEqual([1]);
+  });
+
+  it('an early Status from a slow-starting server extends the handshake window once', () => {
+    const { h, conn, events } = live({}, false);
+    h.sockets[0].open();
+    run(h, 6_000);
+    h.sockets[0].deliver(
+      coldFrame(MsgType.STATUS, {
+        feed_state: 'live',
+        capability: {},
+        latency_ms: 0.0,
+        clock_skew_ms: 0.0,
+        next_open_ts: null,
+      }),
+    );
+    run(h, 7_000); // 13 s after open: past the bare 8 s deadline, inside the extended one
+    expect(h.sockets[0].closed).toBe(false);
+    run(h, 2_000); // 15 s: the Status at 6 s bought one window, which ends at 14 s
+    expect(h.sockets[0].closed).toBe(true);
+    expect(conn.status).toBe('reconnecting');
+    expect(events.attempts).toEqual([1]);
+  });
+
+  it('keeps extending for progress frames, but abandons a server that never says Hello by the ceiling', () => {
+    const { h, events } = live({}, false);
+    h.sockets[0].open();
+    const start = h.clock.now;
+    const status = coldFrame(MsgType.STATUS, {
+      feed_state: 'live',
+      capability: {},
+      latency_ms: 0.0,
+      clock_skew_ms: 0.0,
+      next_open_ts: null,
+    });
+    for (let t = 0; t < HANDSHAKE_MAX_MS + 10_000 && !h.sockets[0].closed; t += 1_000) {
+      h.sockets[0].deliver(status);
+      run(h, 1_000);
+    }
+    expect(h.sockets[0].closed).toBe(true);
+    const elapsed = h.clock.now - start;
+    expect(elapsed).toBeGreaterThanOrEqual(HANDSHAKE_MAX_MS - 1_000);
+    expect(elapsed).toBeLessThanOrEqual(HANDSHAKE_MAX_MS + 2_000);
+    expect(events.attempts).toEqual([1]);
+  });
+
+  it('keeps a live socket alive while pings arrive, and drops it once it goes silent', () => {
+    const { h, conn } = live();
+    h.sockets[0].open();
+    h.sockets[0].deliver(goldenU8('cold_hello'));
+    expect(conn.status).toBe('live');
+    for (let t = 0; t < 12_000; t += 1_000) {
+      h.sockets[0].deliver(goldenU8('hot_ping'));
+      run(h, 1_000);
+    }
+    expect(h.sockets[0].closed).toBe(false);
+    expect(conn.status).toBe('live');
+    run(h, 6_000); // silent past the liveness deadline (5 s)
+    expect(h.sockets[0].closed).toBe(true);
+    expect(conn.status).toBe('reconnecting');
+  });
+
+  it('a constructor that throws still schedules the retry instead of stranding the status', () => {
+    const h = harness();
+    let first = true;
+    const conn = h.makeConn({
+      now: () => h.clock.now,
+      wsFactory: (url) => {
+        if (first) {
+          first = false;
+          throw new Error('blocked port');
+        }
+        return h.factory(url);
+      },
+    });
+    conn.subscribe('crypto', 'BTCUSDT');
+    expect(h.sockets).toHaveLength(0);
+    expect(conn.status).toBe('reconnecting');
+    run(h, 1_000);
+    expect(h.sockets).toHaveLength(1);
+  });
+
+  it('a double connect opens exactly one socket', () => {
+    const { h, conn } = live();
+    conn.connect();
+    conn.subscribe('crypto', 'BTCUSDT');
+    expect(h.sockets).toHaveLength(1);
+  });
+
+  it('a late event from a closed socket cannot disturb its replacement', () => {
+    const { h, conn } = live();
+    h.sockets[0].open();
+    const staleOnClose = h.sockets[0].onclose;
+    conn.close();
+    conn.connect(); // socket 1 is live
+    staleOnClose?.({ code: 1006 }); // the old socket's close arrives late
+    expect(h.sockets).toHaveLength(2);
+    expect(h.sockets[1].closed).toBe(false);
+    expect(conn.status).toBe('connecting');
+  });
+
+  it('a protocol version mismatch is fatal: reported once, never retried', () => {
+    const { h, conn, events } = live();
+    h.sockets[0].open();
+    const bytes = goldenU8('cold_hello');
+    bytes[1] = 2; // the server speaks envelope version 2
+    h.sockets[0].deliver(bytes);
+    expect(events.mismatch).toEqual([{ got: 2, expected: 1 }]);
+    expect(h.sockets[0].closed).toBe(true);
+    run(h, 60_000);
+    expect(h.sockets).toHaveLength(1);
+    expect(conn.status).toBe('closed');
+  });
+
+  it('a 1003 refusal of a live subscription is terminal and carries the server reason', () => {
+    const { h, conn, events } = live();
+    h.sockets[0].open();
+    h.sockets[0].deliver(
+      coldFrame(MsgType.STATUS, {
+        feed_state: 'degraded',
+        capability: { reason: 'invalid symbol: BAD/SYM' },
+        latency_ms: 0,
+        clock_skew_ms: 0,
+        next_open_ts: null,
+      }),
+    );
+    h.sockets[0].drop(1003);
+    expect(events.refused).toEqual(['invalid symbol: BAD/SYM']);
+    run(h, 60_000);
+    expect(h.sockets).toHaveLength(1); // the same subscribe is never re-sent
+    expect(conn.status).toBe('closed');
+  });
+
+  it('a malformed tail keeps the valid messages in front of it', () => {
+    const onEpochStart = vi.fn();
+    const { h, conn } = live({ onEpochStart });
+    h.sockets[0].open();
+    h.sockets[0].deliver(goldenU8('cold_hello'));
+    const good = buildEpochStart(5);
+    const bad = frameBytes(MsgType.TRADE, new Uint8Array(4)); // too short for a trade
+    const frame = new Uint8Array(good.length + bad.length);
+    frame.set(good, 0);
+    frame.set(bad, good.length);
+    h.sockets[0].deliver(frame);
+    expect(onEpochStart).toHaveBeenCalledTimes(1); // the valid message before the bad one is routed
+    expect(onEpochStart.mock.calls[0][0].epoch).toBe(5);
+    expect(h.sockets[0].closed).toBe(false);
+    expect(conn.status).toBe('live');
+  });
+
+  it('a CLOSING socket refuses control sends instead of reporting them sent', () => {
+    const { h, conn } = live();
+    h.sockets[0].open();
+    h.sockets[0].deliver(goldenU8('cold_hello'));
+    h.sockets[0].readyState = 2; // CLOSING: the browser would silently drop the frame
+    expect(conn.pause()).toBe(false);
+    h.sockets[0].readyState = 1; // OPEN
+    expect(conn.pause()).toBe(true);
+  });
+
+  it('an aborted history request rejects and frees its waiter', async () => {
+    const { h, conn } = live();
+    h.sockets[0].open();
+    h.sockets[0].deliver(goldenU8('cold_hello'));
+    const ctrl = new AbortController();
+    const pending = conn.requestHistory(0n, 4, undefined, ctrl.signal);
+    ctrl.abort();
+    await expect(pending).rejects.toThrow(/aborted/);
+  });
+
+  it('keeps the epoch geometry bounded to the newest retained epochs', () => {
+    const { h, conn } = live();
+    h.sockets[0].open();
+    h.sockets[0].deliver(goldenU8('cold_hello'));
+    for (let e = 1; e <= MAX_RETAINED_EPOCHS + 50; e += 1) h.sockets[0].deliver(buildEpochStart(e));
+    expect(conn.epochs.size).toBeLessThanOrEqual(MAX_RETAINED_EPOCHS);
+    expect(conn.epochs.has(MAX_RETAINED_EPOCHS + 50)).toBe(true);
+  });
+});
+
+// --- unexpected subscribe failure (server: degraded Status THEN close 1011) ----
+
+describe('Connection — failed subscribe (Status degraded + close 1011)', () => {
+  function liveWithStatus(reason: string | null): {
+    conn: Connection;
+    sock: FakeWebSocket;
+    refusals: (string | null)[];
+    attempts: number[];
+  } {
+    const refusals: (string | null)[] = [];
+    const attempts: number[] = [];
+    let sock: FakeWebSocket | undefined;
+    const conn = new Connection({
+      url: 'wss://test.invalid/ws',
+      wsFactory: (url) => {
+        sock = new FakeWebSocket(url);
+        return sock;
+      },
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      onRefused: (r) => refusals.push(r),
+      onReconnectScheduled: (attempt) => attempts.push(attempt),
+    });
+    conn.subscribe('crypto', 'BTCUSDT', 'live');
+    const s = sock as FakeWebSocket;
+    s.open();
+    s.deliver(
+      coldFrame(MsgType.STATUS, {
+        feed_state: 'degraded',
+        capability: reason === null ? {} : { reason },
+        latency_ms: 0.0,
+        clock_skew_ms: 0.0,
+        next_open_ts: null,
+      }),
+    );
+    return { conn, sock: s, refusals, attempts };
+  }
+
+  it('Status(degraded) + 1011 is terminal: reports the server reason and never reconnects', () => {
+    const { conn, sock, refusals, attempts } = liveWithStatus('subscribe failed');
+    sock.drop(1011);
+    expect(refusals).toEqual(['subscribe failed']);
+    expect(attempts).toEqual([]);
+    expect(conn.status).toBe('closed');
+  });
+
+  it('a 1011 with no pre-close Status keeps the reconnect ladder (transient wire death)', () => {
+    const attempts: number[] = [];
+    let sock: FakeWebSocket | undefined;
+    const refusals: (string | null)[] = [];
+    const conn = new Connection({
+      url: 'wss://test.invalid/ws',
+      wsFactory: (url) => {
+        sock = new FakeWebSocket(url);
+        return sock;
+      },
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      onRefused: (r) => refusals.push(r),
+      onReconnectScheduled: (attempt) => attempts.push(attempt),
+    });
+    conn.subscribe('crypto', 'BTCUSDT', 'live');
+    (sock as FakeWebSocket).open();
+    (sock as FakeWebSocket).drop(1011);
+    expect(refusals).toEqual([]);
+    expect(attempts).toEqual([1]);
+    expect(conn.status).toBe('reconnecting');
   });
 });

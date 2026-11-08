@@ -1,3 +1,4 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 /**
- * T5 verification — the live sim heatmap renders end-to-end against the REAL
+ * The live sim heatmap renders end-to-end against the REAL
  * server (booted by playwright.config's webServer array: flowmap-server on 8720
  * + vite proxying to it). This is the first milestone-visible deliverable.
  *
@@ -50,7 +51,7 @@ test('live sim heatmap renders and scrolls against the real server', async ({ pa
   // Wait for the live wiring: renderer up, connection `live`, columns flowing.
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       if (!live) return false;
       const status = live.store.getState().status;
       const range = live.renderer.residentRange();
@@ -84,16 +85,29 @@ test('live sim heatmap renders and scrolls against the real server', async ({ pa
 
   const seqAt = (): Promise<number> =>
     page.evaluate(
-      () => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.newestColSeq,
+      () => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.newestColSeq,
     );
 
-  const stats1 = await readStats();
+  // A capture can land between presents, so each one polls until a frame carries the heat.
+  const readPainted = async (): Promise<CanvasStats> => {
+    let painted: CanvasStats = { thermal: 0, checksum: 0, width: 0, height: 0 };
+    await expect.poll(async () => {
+      painted = await readStats();
+      return painted.thermal;
+    }, { timeout: 30_000 }).toBeGreaterThan(MIN_THERMAL_PIXELS);
+    return painted;
+  };
+
+  const stats1 = await readPainted();
   const seq1 = await seqAt();
 
-  // ≥1 s of live streaming (sim finalizes 4 cols/s → several new columns).
-  await page.waitForTimeout(1500);
+  // Live streaming must add columns (sim finalizes 4 cols/s): wait for three
+  // new ones instead of sleeping for a fixed time.
+  await expect
+    .poll(seqAt, { timeout: 20_000 })
+    .toBeGreaterThanOrEqual(seq1 + 3);
 
-  const stats2 = await readStats();
+  const stats2 = await readPainted();
   const seq2 = await seqAt();
 
   // Save the canvas as the report artifact.

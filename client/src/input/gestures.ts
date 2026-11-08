@@ -1,11 +1,11 @@
 /**
- * Input gestures (§8.3 / §9, M2 T6) — wheel/drag/keyboard → camera control.
+ * Input gestures — wheel/drag/keyboard → camera control.
  *
  * This module is deliberately dumb: it translates DOM events into semantic
  * camera intents and calls a {@link CameraController}. It owns NO transform math
  * and NO GL — the controller (the renderer) converts fractions ↔ columns/rows
  * using the live view and mutates the camera, then marks itself dirty. One
- * gesture → one camera mutation → one redraw. Nothing re-rasterizes (the §8.3
+ * gesture → one camera mutation → one redraw. Nothing re-rasterizes (the
  * invariant). The pixel→factor arithmetic lives in `input/axisScale.ts`.
  *
  * Chart canvas ({@link attachGestures}):
@@ -18,8 +18,13 @@
  *       cursor). Pointer capture keeps the drag alive outside the canvas.
  *   - keyboard (canvas focused):
  *       ArrowLeft/Right  pan time,  ArrowUp/Down  pan price (fraction of span),
+ *       Shift+ArrowUp/Down  zoom price in / out (about the centre of the viewport),
  *       + / =  zoom time in,  - / _  zoom time out (about the center),
+ *       ] / [  zoom price in / out (about the centre of the viewport),
  *       F  toggle TIME follow,  P  toggle PRICE follow,  R  reset + go live.
+ *       The character keys above follow the single-key switch (shortcutPrefs).
+ *       The arrows are not characters: they stay live with the switch off, so
+ *       price zoom is always reachable from the keyboard.
  *
  * Price gutter ({@link attachAxisGestures}) — TradingView / Bookmap semantics:
  *   - wheel      → PRICE zoom at the cursor row.
@@ -46,6 +51,7 @@ import {
   scaleFactorFromDrag,
   zoomFactorFromWheel,
 } from './axisScale';
+import { isSingleKeyShortcutsEnabled } from './shortcutPrefs';
 
 /** Peak absolute displacement of a drag, per axis, since pointerdown. */
 export interface DragTotals {
@@ -85,9 +91,11 @@ export interface CameraController {
   goLive(): void;
 }
 
-/** Keyboard +/- time zoom factors (in = shrink span, out = grow span). */
+/** Keyboard zoom factors (in = shrink span, out = grow span), for time and price. */
 const KEY_ZOOM_IN = 0.8;
 const KEY_ZOOM_OUT = 1.25;
+/** Keyboard price zoom anchors on the vertical centre of the viewport. */
+const KEY_PRICE_ZOOM_ANCHOR = 0.5;
 
 /** CSS-pixel cursor position relative to the element's content box. */
 function localPoint(el: HTMLElement, e: { clientX: number; clientY: number }): {
@@ -103,10 +111,6 @@ function localPoint(el: HTMLElement, e: { clientX: number; clientY: number }): {
  * that removes every listener (the renderer calls it on dispose).
  */
 export function attachGestures(canvas: HTMLCanvasElement, ctrl: CameraController): () => void {
-  // The canvas must be focusable to receive keyboard events without stealing
-  // focus from form controls elsewhere on the page.
-  if (!canvas.hasAttribute('tabindex')) canvas.setAttribute('tabindex', '0');
-
   const onWheel = (e: WheelEvent): void => {
     // Always own the wheel over the heatmap: no page scroll, no ctrl-pinch zoom.
     e.preventDefault();
@@ -203,6 +207,19 @@ export function attachGestures(canvas: HTMLCanvasElement, ctrl: CameraController
     // only BARE keys, so a modified keydown here is always somebody else's:
     // fall through without consuming it.
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // WCAG 2.1.4: with the single-key switch off, every character key here (F, P,
+    // R, the zoom and bracket keys) passes through. Arrows are not characters and
+    // keep panning.
+    if (e.key.length === 1 && !isSingleKeyShortcutsEnabled()) return;
+    // Toggles must not fire on OS auto-repeat: holding F would flip follow on and
+    // off dozens of times. Arrows and zoom keys keep repeating on purpose, since
+    // that is how a held key pans and zooms.
+    const isToggle = e.key === 'f' || e.key === 'F' || e.key === 'p' || e.key === 'P' ||
+      e.key === 'r' || e.key === 'R';
+    if (e.repeat && isToggle) {
+      e.preventDefault();
+      return;
+    }
     switch (e.key) {
       case 'ArrowLeft':
         ctrl.panTimeSteps(-1);
@@ -211,10 +228,13 @@ export function attachGestures(canvas: HTMLCanvasElement, ctrl: CameraController
         ctrl.panTimeSteps(+1);
         break;
       case 'ArrowUp':
-        ctrl.panPriceSteps(+1);
+        // Shift+Arrow zooms the price scale: a route that survives the single-key switch.
+        if (e.shiftKey) ctrl.zoomPriceAtFraction(KEY_ZOOM_IN, KEY_PRICE_ZOOM_ANCHOR);
+        else ctrl.panPriceSteps(+1);
         break;
       case 'ArrowDown':
-        ctrl.panPriceSteps(-1);
+        if (e.shiftKey) ctrl.zoomPriceAtFraction(KEY_ZOOM_OUT, KEY_PRICE_ZOOM_ANCHOR);
+        else ctrl.panPriceSteps(-1);
         break;
       case '+':
       case '=':
@@ -224,16 +244,23 @@ export function attachGestures(canvas: HTMLCanvasElement, ctrl: CameraController
       case '_':
         ctrl.zoomTimeCentered(KEY_ZOOM_OUT);
         break;
+      case ']':
+        ctrl.zoomPriceAtFraction(KEY_ZOOM_IN, KEY_PRICE_ZOOM_ANCHOR);
+        break;
+      case '[':
+        ctrl.zoomPriceAtFraction(KEY_ZOOM_OUT, KEY_PRICE_ZOOM_ANCHOR);
+        break;
       case 'f':
       case 'F':
         ctrl.toggleFollow();
         break;
       case 'p':
-        ctrl.togglePriceFollow();
-        break;
       case 'P':
-        // Shift+P — restore price AUTO-FIT (same as a gutter double-click).
-        ctrl.setPriceFollow('fit');
+        // Shift+P restores price AUTO-FIT (same as a gutter double-click). A bare
+        // 'P' toggles follow. With CapsLock on the key reports 'P' WITHOUT Shift,
+        // so the modifier flag is what tells the two apart.
+        if (e.key === 'P' && e.shiftKey) ctrl.setPriceFollow('fit');
+        else ctrl.togglePriceFollow();
         break;
       case 'r':
       case 'R':

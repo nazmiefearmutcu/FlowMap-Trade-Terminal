@@ -1,4 +1,4 @@
-"""WS receive-loop resilience unit tests (upgrade wave A2).
+"""WS receive-loop resilience unit tests.
 
 Malformed frames, stray text frames and dispatch errors must never kill the
 connection loop: log + drop the message, keep the socket. Exercised directly

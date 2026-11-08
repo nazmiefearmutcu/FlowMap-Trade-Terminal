@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { applyChartInk, applyOverlayPalette, OVERLAY, parseCssColor } from './palette';
+import { overlayHalo, THEMES, THEME_IDS } from '../../theme/registry';
 
 /** Deep snapshot of the shipped (midnight) palette literals. */
 function snapshot(): typeof OVERLAY {
@@ -55,7 +56,7 @@ describe('overlay palette theme bridge', () => {
     expect(OVERLAY.vwap.css).toBe(vwapBefore);
   });
 
-  // CHART-INK BRIDGE (visual campaign 2026-09-11, L4): `applyOverlayPalette`
+  // CHART-INK BRIDGE (visual update 2026-09-11): `applyOverlayPalette`
   // still only consumes bid/ask; the chart-ground ink (axis/grid/price family/
   // pill text/badge plate) is owned by `applyChartInk`, which is null-restorable
   // byte-for-byte like the semantic bridge.
@@ -75,17 +76,14 @@ describe('overlay palette theme bridge', () => {
     expect(OVERLAY.priceGlow.css).toBe('rgba(14, 124, 114, 0.22)');
     expect(OVERLAY.priceLevel.css).toBe('rgba(14, 124, 114, 0.38)');
     expect(OVERLAY.pricePill.css).toBe('rgba(14, 124, 114, 0.95)');
-    expect(OVERLAY.priceFillTop.css).toBe('rgba(14, 124, 114, 0.07)');
-    expect(OVERLAY.priceFillBottom.css).toBe('rgba(14, 124, 114, 0)');
     expect(OVERLAY.pricePillText.css).toBe('rgba(243, 241, 234, 1)');
     expect(OVERLAY.badgeBg).toBe('rgba(251, 250, 246, 1)');
     // The GL twin follows the same ink, alphas preserved per entry.
     expect(OVERLAY.price.gl).toEqual([14 / 255, 124 / 255, 114 / 255, 0.98]);
     expect(OVERLAY.priceGlow.gl[3]).toBe(0.22);
-    expect(OVERLAY.priceFillBottom.gl[3]).toBe(0);
   });
 
-  it('applyChartInk maps grid alpha from gridAlpha when provided (L-4)', () => {
+  it('applyChartInk maps grid alpha from gridAlpha when provided', () => {
     applyChartInk({
       ink: '#24272d',
       inkDim: '#57606c',
@@ -117,7 +115,7 @@ describe('overlay palette theme bridge', () => {
     expect(OVERLAY.grid.gl[3]).toBe(0.14);
   });
 
-  it('accepts (and ignores) the CSS-only sell/warn chart tokens (M-3)', () => {
+  it('accepts (and ignores) the CSS-only sell/warn chart tokens', () => {
     const sellBefore = OVERLAY.sell.css;
     const bidBefore = OVERLAY.bid.css;
     applyChartInk({
@@ -157,8 +155,6 @@ describe('overlay palette theme bridge', () => {
     expect(OVERLAY.priceGlow.css).toBe('rgba(245, 248, 252, 0.22)');
     expect(OVERLAY.priceLevel.css).toBe('rgba(245, 248, 252, 0.38)');
     expect(OVERLAY.pricePill.css).toBe('rgba(245, 248, 252, 0.95)');
-    expect(OVERLAY.priceFillTop.css).toBe('rgba(210, 225, 245, 0.07)');
-    expect(OVERLAY.priceFillBottom.css).toBe('rgba(210, 225, 245, 0)');
     expect(OVERLAY.pricePillText.css).toBe('rgba(10, 14, 20, 1)');
     expect(OVERLAY.badgeBg).toBe('rgba(5, 8, 12, 0.82)');
   });
@@ -231,4 +227,46 @@ describe('overlay palette theme bridge', () => {
     expect(OVERLAY.bid.css).toBe(before);
     expect(OVERLAY.ask.css).toBe('rgba(165, 42, 29, 1)');
   });
+});
+
+/** WCAG relative luminance of an sRGB triple in 0-255. */
+function luminance(rgb: readonly number[]): number {
+  const [r, g, b] = rgb.map((c) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(a: readonly number[], b: readonly number[]): number {
+  const x = luminance(a);
+  const y = luminance(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+
+/** A 0-1 GL colour as 0-255 sRGB. */
+function toRgb255(gl: readonly number[]): number[] {
+  return [gl[0] * 255, gl[1] * 255, gl[2] * 255];
+}
+
+describe('default-visible trace inks across the density ramp', () => {
+  // Every line trace that is on by default must stay readable over every
+  // density stop of every theme: its own ink, or the theme's contrast halo that
+  // sits under it, has to clear 3:1 on that stop.
+  const TRACES = ['vwap', 'gexCall', 'gexPut', 'gexGamma', 'price'] as const;
+  for (const id of THEME_IDS) {
+    it(`${id}: each default trace clears 3:1 with its halo on every density stop`, () => {
+      const theme = THEMES[id];
+      applyChartInk(theme.chart);
+      // The under-stroke colour the overlays draw beneath every trace (theme/registry overlayHalo).
+      const halo = overlayHalo(id) === '#FFFFFF' ? [255, 255, 255] : [0, 0, 0];
+      for (const key of TRACES) {
+        const ink = toRgb255(OVERLAY[key].gl);
+        for (const stop of theme.chart.density) {
+          const best = Math.max(contrastRatio(ink, stop.rgb), contrastRatio(halo, stop.rgb));
+          expect(best, `${key} on ${id} at t=${stop.t}`).toBeGreaterThanOrEqual(3);
+        }
+      }
+    });
+  }
 });

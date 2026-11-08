@@ -1,5 +1,5 @@
 /**
- * Streaming VWAP kernel vs the old branch's volume-weighted goldens, adapted to
+ * Streaming VWAP kernel vs the reference implementation's volume-weighted goldens, adapted to
  * typical price (h+l+c)/3: with h=l=c the typical IS the close, so the old
  * `[1,2,3]`-style vectors transfer verbatim; weighted and zero-volume rules
  * are re-pinned with explicit volumes.

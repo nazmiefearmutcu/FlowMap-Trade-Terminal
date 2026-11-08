@@ -196,7 +196,7 @@ describe('pool storage — allocation-free steady-state append', () => {
   });
 });
 
-describe('paged pool — lazy per-page allocation (fix 2026-09-10 F1-1)', () => {
+describe('paged pool — lazy per-page allocation', () => {
   const ROWS = 64;
   const PAGE_BYTES = COLUMN_CACHE_PAGE_SLOTS * ROWS * 2 * 4; // one resident page
 
@@ -282,5 +282,18 @@ describe('reset', () => {
     expect(c.size).toBe(0);
     expect(c.has(1)).toBe(false);
     expect(c.byteLength).toBe(metaBytes); // pool released; metadata persists
+  });
+});
+
+describe('put validates the ask length', () => {
+  it('refuses an ask longer than its bid, so no neighbour slot is overwritten', () => {
+    const c = new ColumnCache();
+    const { bid, ask } = ramp(64);
+    c.put(1000, bid, ask, 5n);
+    c.put(1001, bid, ask, 6n);
+    const before = c.sizeAt(1001, 7);
+    expect(() => c.put(1000, bid, new Float32Array(128).fill(9), 5n)).toThrow(/ask length/);
+    expect(c.sizeAt(1001, 7)).toEqual(before);
+    expect(c.sizeAt(1000, 7)).toEqual({ bid: 7, ask: 70 });
   });
 });

@@ -20,6 +20,7 @@ import {
   MODE_L2,
   MODE_SYNTH_PROFILE,
   MsgType,
+  PROTO_VER,
   SIDE_BUY,
   SIDE_SELL,
   SIDE_SRC_EXCHANGE,
@@ -237,6 +238,69 @@ describe('golden vector — HistoryResponse nested framing', () => {
   });
 });
 
+/**
+ * A TRADE frame built byte by byte (envelope, 28-byte header, venue), so the test
+ * pins the sequence field's offset (payload bytes 26-27) rather than trusting a
+ * golden file that carries seq 0.
+ */
+function tradeFrame(seq: number, venue = 'iex'): ArrayBuffer {
+  const venueBytes = new TextEncoder().encode(venue);
+  const plen = 28 + 1 + venueBytes.length;
+  const buf = new ArrayBuffer(8 + ((plen + 3) & ~3));
+  const v = new DataView(buf);
+  v.setUint8(0, MsgType.TRADE);
+  v.setUint8(1, PROTO_VER);
+  v.setUint16(2, 0, true); // flags: binary payload
+  v.setUint32(4, plen, true);
+  v.setBigInt64(8, T0 + 2_000n, true);
+  v.setFloat64(16, 100.25, true);
+  v.setFloat64(24, 0.75, true);
+  v.setUint8(32, SIDE_SELL);
+  v.setUint8(33, SIDE_SRC_INFERRED);
+  v.setUint16(34, seq, true);
+  v.setUint8(36, venueBytes.length);
+  new Uint8Array(buf, 37, venueBytes.length).set(venueBytes);
+  return buf;
+}
+
+function decodeTrade(seq: number) {
+  const { msg } = decode(new DataView(tradeFrame(seq)));
+  if (msg === null) throw new Error('TRADE decoded to null');
+  assertType(msg, MsgType.TRADE);
+  return msg;
+}
+
+describe('TRADE sequence (payload bytes 26-27, formerly pad)', () => {
+  it('reads a non-zero sequence and keeps every other field', () => {
+    const msg = decodeTrade(42);
+    expect(msg.seq).toBe(42);
+    expect(msg.ts_ns).toBe(T0 + 2_000n);
+    expect(msg.price).toBe(100.25);
+    expect(msg.size).toBe(0.75);
+    expect(msg.side).toBe(SIDE_SELL);
+    expect(msg.side_src).toBe(SIDE_SRC_INFERRED);
+    expect(msg.venue).toBe('iex');
+  });
+
+  it('omits seq when the wire carries 0 (unknown / legacy recording)', () => {
+    const msg = decodeTrade(0);
+    expect('seq' in msg).toBe(false);
+  });
+
+  it('keeps the top of the uint16 range', () => {
+    expect(decodeTrade(65_535).seq).toBe(65_535);
+  });
+
+  it('gives two same-millisecond, same-price, same-size fills distinct sequences', () => {
+    const first = decodeTrade(7);
+    const second = decodeTrade(8);
+    expect(second.ts_ns).toBe(first.ts_ns);
+    expect(second.price).toBe(first.price);
+    expect(second.size).toBe(first.size);
+    expect(first.seq).not.toBe(second.seq);
+  });
+});
+
 describe('envelope parse + framing behavior', () => {
   it('parses the 8-byte little-endian envelope and advances by padded length', () => {
     // hot_trade_inferred: plen=32 (already 4-aligned), total 40.
@@ -347,6 +411,70 @@ describe('robustness — malformed input throws WireError', () => {
     expect(() => decode(dv)).toThrow(/JSON payload/);
   });
 
+  describe('cold payload field shape', () => {
+    /** A cold-JSON frame carrying `value` as its payload, unpadded length in the envelope. */
+    function coldJsonFrame(msgType: number, value: unknown): DataView {
+      const payload = new TextEncoder().encode(JSON.stringify(value));
+      const buf = new Uint8Array(8 + ((payload.length + 3) & ~3));
+      const dv = new DataView(buf.buffer);
+      dv.setUint8(0, msgType);
+      dv.setUint8(1, 1);
+      dv.setUint16(2, 0x0001, true); // FLAG_JSON
+      dv.setUint32(4, payload.length, true);
+      buf.set(payload, 8);
+      return dv;
+    }
+    const geometry = { epoch: 3, tick: 0.01, tick_multiple: 5, dt_ns: 250_000_000, p0: 100, rows: 2048 };
+    const hello = {
+      protocol_version: 1,
+      session_id: 'sess-1',
+      grid_epoch: 3,
+      epoch_params: geometry,
+      capability: {},
+      norm_seed: 1.5,
+    };
+
+    const status = { feed_state: 'live', capability: {}, latency_ms: 12.5, clock_skew_ms: -0.5, next_open_ts: null };
+    const marker = { ts_ns: 1_000, kind: 'gap', text: '', price: null, size: null };
+    const intel = { ts_ns: 1_000, kind: 'Purchase', symbol: 'AAPL', headline: 'Filing', amount_usd: null, detail: '', source: '' };
+    const macro = { ts_ns: 1_000, sofr: 4.3, hy_spread: 3.1, yield_10y2y: 0.2, stress_score: 0.4, status: 'calm' };
+
+    it('accepts well-formed Hello, EpochStart, Status, Marker, MarketIntelligence and MacroStress payloads', () => {
+      expect(decode(coldJsonFrame(MsgType.HELLO, hello)).msg).toMatchObject({ type: MsgType.HELLO, session_id: 'sess-1' });
+      expect(decode(coldJsonFrame(MsgType.EPOCH_START, { epoch: 3, epoch_params: geometry })).msg).toMatchObject({
+        type: MsgType.EPOCH_START,
+        epoch: 3,
+      });
+      expect(decode(coldJsonFrame(MsgType.STATUS, status)).msg).toMatchObject({ type: MsgType.STATUS, feed_state: 'live' });
+      expect(decode(coldJsonFrame(MsgType.MARKER, marker)).msg).toMatchObject({ type: MsgType.MARKER, ts_ns: 1000n });
+      expect(decode(coldJsonFrame(MsgType.MARKET_INTELLIGENCE, intel)).msg).toMatchObject({ type: MsgType.MARKET_INTELLIGENCE, symbol: 'AAPL' });
+      expect(decode(coldJsonFrame(MsgType.MACRO_STRESS, macro)).msg).toMatchObject({ type: MsgType.MACRO_STRESS, status: 'calm' });
+    });
+
+    it.each([
+      ['a Hello without epoch geometry', MsgType.HELLO, { ...hello, epoch_params: undefined }],
+      ['a Hello whose session_id is a number', MsgType.HELLO, { ...hello, session_id: 7 }],
+      ['a Hello whose capability is an array', MsgType.HELLO, { ...hello, capability: [] }],
+      ['a Hello with a non-numeric norm_seed', MsgType.HELLO, { ...hello, norm_seed: 'x' }],
+      ['an EpochStart with a string epoch', MsgType.EPOCH_START, { epoch: '3', epoch_params: geometry }],
+      ['an EpochStart whose geometry lacks rows', MsgType.EPOCH_START, { epoch: 3, epoch_params: { ...geometry, rows: undefined } }],
+      ['a Status without capability', MsgType.STATUS, { ...status, capability: undefined }],
+      ['a Status whose latency is a string', MsgType.STATUS, { ...status, latency_ms: '12' }],
+      ['a Marker whose ts_ns is a string', MsgType.MARKER, { ...marker, ts_ns: '1000' }],
+      ['a MarketIntelligence without a headline', MsgType.MARKET_INTELLIGENCE, { ...intel, headline: undefined }],
+      ['a MacroStress whose score is a string', MsgType.MACRO_STRESS, { ...macro, stress_score: '0.4' }],
+    ])('rejects %s as a malformed payload', (_label, msgType, value) => {
+      expect(() => decode(coldJsonFrame(msgType, value))).toThrow(WireError);
+      expect(() => decode(coldJsonFrame(msgType, value))).toThrow(/field shape/);
+    });
+
+    it('keeps the object-only check for cold types the client does not route by field', () => {
+      // A Seek decodes with any object; only the JSON object is required.
+      expect(decode(coldJsonFrame(MsgType.SEEK, { t: 5 })).msg).toMatchObject({ type: MsgType.SEEK });
+      expect(() => decode(coldJsonFrame(MsgType.SEEK, [1, 2]))).toThrow(/not an object/);
+    });
+  });
+
   it('protocol version mismatch throws', () => {
     const bytes = new Uint8Array(goldenAB('hot_ping'));
     new DataView(bytes.buffer).setUint8(1, 2); // ver = 2
@@ -394,7 +522,7 @@ describe('encode ↔ decode round-trip (control messages)', () => {
 
   it('ns fields stay bigint even for small values (type-honesty)', () => {
     // A small ns value must NOT decode to a plain number — that mismatch
-    // (bigint type, number runtime) crashed the overlay render loop (T10).
+    // (bigint type, number runtime) crashed the overlay render loop.
     const msg = roundTrip(encodeSeek(1000n));
     assertType(msg, MsgType.SEEK);
     expect(typeof msg.t).toBe('bigint');
@@ -446,7 +574,7 @@ describe('encode ↔ decode round-trip (control messages)', () => {
     expect(encoded).toEqual(new Uint8Array(goldenAB('cold_subscribe')));
   });
 
-  // --- P6: the replay window (end_t) ------------------------------------------
+  // --- the replay window (end_t) ------------------------------------------
 
   it('Subscribe (end_t replay window survives as bigint; start_t preserved)', () => {
     const start = T0 + 100n;
@@ -466,7 +594,7 @@ describe('encode ↔ decode round-trip (control messages)', () => {
     expect(msg.end_t).toBe(end);
   });
 
-  it('an unbounded Subscribe OMITS end_t entirely (pre-P6 bytes preserved)', () => {
+  it('an unbounded Subscribe OMITS end_t entirely (pre-end_t bytes preserved)', () => {
     const encoded = encodeSubscribe({
       market: 'crypto',
       symbol: 'BTCUSDT',
@@ -528,7 +656,7 @@ describe('encode ↔ decode round-trip (control messages)', () => {
     const { msg } = decode(view, 0);
     expect(msg).not.toBeNull();
     expect(msg?.type).toBe(MsgType.GEX_UPDATE);
-    const gex = msg as any;
+    const gex = msg as unknown as Record<string, unknown>;
     expect(gex.symbol).toBe('AAPL');
     expect(gex.spot_price).toBe(150.0);
     expect(gex.gamma_flip).toBe(148.5);
@@ -559,7 +687,7 @@ describe('encode ↔ decode round-trip (control messages)', () => {
     const { msg } = decode(view, 0);
     expect(msg).not.toBeNull();
     expect(msg?.type).toBe(MsgType.MARKET_INTELLIGENCE);
-    expect((msg as any).symbol).toBe('PLTR');
-    expect((msg as any).amount_usd).toBe(178000000.0);
+    expect((msg as unknown as Record<string, unknown>).symbol).toBe('PLTR');
+    expect((msg as unknown as Record<string, unknown>).amount_usd).toBe(178000000.0);
   });
 });

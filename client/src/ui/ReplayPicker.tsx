@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { apiBase } from '../net/serverBase';
+import { sidecarFetch } from '../net/serverBase';
+import { exchangeZoneFor, formatDateTime, formatNumber, resolveTimeZone, useTimeZone, zonedWallText, zonedWallToNs, zoneLabel } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import { isTopOverlay, pushOverlay } from './overlayStack';
+import { marketGroup } from './symbols';
 import './ReplayPicker.css';
 
 interface Availability {
@@ -14,12 +16,6 @@ interface WindowPreview {
   start_ns: string;
   end_ns: string;
   columns: number;
-}
-
-export function localDateTime(ns: bigint): string {
-  const date = new Date(Number(ns / 1_000_000n));
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 23);
 }
 
 export function utcDateTime(ns: bigint): string {
@@ -37,22 +33,76 @@ export function utcDateTimeNs(value: string): bigint | null {
   return utcDateTime(ns) === normalized ? ns : null;
 }
 
-// Keep API-selected nanoseconds exact; manual UTC edits have millisecond precision.
-const rangeInput = (ns: bigint): { value: string; ns: bigint } => ({ value: utcDateTime(ns), ns });
-const manualInput = (value: string): { value: string; ns: bigint | null } => ({ value, ns: utcDateTimeNs(value) });
-function localReadout(ns: bigint | null): string {
-  return ns === null ? '—' : new Date(Number(ns / 1_000_000n)).toLocaleString(undefined, { timeZoneName: 'short' });
+/**
+ * One edge of the range. `ns` is the instant, kept exact when it came from the
+ * API. `draft` is the text the user typed: shown as typed until the zone changes,
+ * then the same instant is shown again in the new zone.
+ */
+interface RangeEdge { draft: string | null; ns: bigint | null }
+const exactEdge = (ns: bigint): RangeEdge => ({ draft: null, ns });
+const typedEdge = (draft: string, zone: string | undefined): RangeEdge => ({ draft, ns: zonedWallToNs(draft, zone) });
+const msOf = (ns: bigint): number => Number(ns / 1_000_000n);
+/** The text an edge shows in the picker's zone, in `datetime-local` form. */
+const edgeText = (edge: RangeEdge, zone: string | undefined): string =>
+  edge.draft ?? (edge.ns === null ? '' : zonedWallText(msOf(edge.ns), zone));
+/** A readable instant in the picker's zone, with that zone's abbreviation. */
+function zonedReadout(ns: bigint | null, zone: string | undefined): string {
+  return ns === null ? '—' : formatDateTime(msOf(ns), {
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', second: 'numeric', timeZone: zone, timeZoneName: 'short',
+  });
 }
 
 function utc(ns: bigint | null): string {
   return ns === null ? '—' : new Date(Number(ns / 1_000_000n)).toISOString();
 }
 
+/**
+ * Why a recording request failed, as a category the picker can localize. The
+ * server's own detail text is English internals and is never shown.
+ */
+export class ReplayRequestError extends Error {
+  constructor(readonly kind: 'network' | 'http' | 'invalid', readonly status: number) {
+    super(`replay request ${kind} ${status}`);
+  }
+}
+
+/** The translation key that explains a failed recording request. */
+function replayErrorKey(e: unknown): { key: string; status?: number } {
+  if (!(e instanceof ReplayRequestError) || e.kind === 'network') return { key: 'replayPicker.errorUnreachable' };
+  if (e.kind === 'invalid') return { key: 'replayPicker.errorResponse' };
+  if (e.status === 404) return { key: 'replayPicker.errorRecordingOff' };
+  if (e.status === 422) return { key: 'replayPicker.errorRejected' };
+  return { key: 'replayPicker.errorHttp', status: e.status };
+}
+
+/**
+ * Reads the body as text before anything else, so an HTML error page or an empty
+ * body cannot throw a JSON SyntaxError before the status is checked, and a 422
+ * detail array is never shown as "[object Object]".
+ */
 async function readJson<T>(path: string, signal: AbortSignal): Promise<T> {
-  const response = await fetch(`${apiBase()}${path}`, { signal });
-  const data = await response.json() as T & { detail?: string };
-  if (!response.ok) throw new Error(data.detail ?? `${response.status}`);
-  return data;
+  let response: Response;
+  try {
+    response = await sidecarFetch(path, { signal });
+  } catch (e) {
+    if (signal.aborted) throw e;
+    throw new ReplayRequestError('network', 0);
+  }
+  const text = await response.text();
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = undefined;
+  }
+  // A non-JSON error body (an HTML 500 page, an empty body, a proxy page) means no
+  // engine answered, so it reads as unreachable rather than as an HTTP detail.
+  if (!response.ok) throw new ReplayRequestError(data === undefined ? 'network' : 'http', response.status);
+  if (data === undefined || data === null || typeof data !== 'object') {
+    throw new ReplayRequestError('invalid', response.status);
+  }
+  return data as T;
 }
 
 export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
@@ -64,15 +114,28 @@ export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
   const close = useRef<HTMLButtonElement>(null);
   const request = useRef<AbortController | null>(null);
   const [availability, setAvailability] = useState<Availability | null>(null);
-  const [start, setStart] = useState(manualInput(''));
-  const [end, setEnd] = useState(manualInput(''));
+  const [start, setStart] = useState<RangeEdge>({ draft: '', ns: null });
+  const [end, setEnd] = useState<RangeEdge>({ draft: '', ns: null });
   const [minutes, setMinutes] = useState(5);
   const [preview, setPreview] = useState<WindowPreview | null>(null);
   const [busy, setBusy] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<{ key: string; status?: number } | null>(null);
+  // The server answered, but no recording store is attached (recording is off):
+  // "no recordings" would then be a lie, so the picker says so instead.
+  const [recordingOff, setRecordingOff] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const startNs = start.ns, endNs = end.ns;
-  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // The Settings zone decides every clock here: the hour list, the typed edges and
+  // the readouts. The request itself always uses exact nanoseconds.
+  const pref = useTimeZone();
+  const exchange = exchangeZoneFor(marketGroup(market));
+  const zone = resolveTimeZone(pref, exchange);
+  const zoneText = zoneLabel(pref, exchange);
+  // A typed edge is read again in the new zone; the instant it names is kept.
+  useEffect(() => {
+    setStart((edge) => (edge.ns === null ? edge : exactEdge(edge.ns)));
+    setEnd((edge) => (edge.ns === null ? edge : exactEdge(edge.ns)));
+  }, [zone]);
   const query = `market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}`;
   useEffect(() => pushOverlay('replay-picker'), []);
   useEffect(() => {
@@ -93,36 +156,41 @@ export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
     const ctrl = new AbortController();
     request.current?.abort();
     request.current = ctrl;
-    setBusy(true); setError(''); setPreview(null);
-    void readJson<Availability>(`/api/recordings/availability?${query}`, ctrl.signal).then((a) => {
+    setBusy(true); setError(null); setPreview(null); setRecordingOff(false);
+    void readJson<Availability>(`/api/recordings/availability?${query}`, ctrl.signal).then(async (a) => {
       if (ctrl.signal.aborted) return;
       setAvailability(a);
       if (a.latest_column_ns !== null) {
         const latest = BigInt(a.latest_column_ns);
-        setEnd(rangeInput(latest + 1_000_000_000n));
-        setStart(rangeInput(latest - 300_000_000_000n));
+        setEnd(exactEdge(latest + 1_000_000_000n));
+        setStart(exactEdge(latest - 300_000_000_000n));
+      }
+      if (a.hours.length === 0) {
+        // An empty list means "nothing recorded" only while recording is on.
+        const health = await readJson<{ recording_enabled?: boolean }>('/api/health', ctrl.signal).catch(() => null);
+        if (!ctrl.signal.aborted && health?.recording_enabled === false) setRecordingOff(true);
       }
     }).catch((e: unknown) => {
-      if (!ctrl.signal.aborted) setError(String(e instanceof Error ? e.message : e));
+      if (!ctrl.signal.aborted) setError(replayErrorKey(e));
     }).finally(() => { if (!ctrl.signal.aborted) setBusy(false); });
     return () => ctrl.abort();
   }, [query, refresh]);
 
-  const changeRange = (nextStart: typeof start, nextEnd: typeof end): void => {
-    request.current?.abort(); setBusy(false); setStart(nextStart); setEnd(nextEnd); setPreview(null); setError('');
+  const changeRange = (nextStart: RangeEdge, nextEnd: RangeEdge): void => {
+    request.current?.abort(); setBusy(false); setStart(nextStart); setEnd(nextEnd); setPreview(null); setError(null);
   };
   const preset = (duration: number, anchor = endNs): void => {
     setMinutes(duration);
-    if (anchor !== null) changeRange(rangeInput(anchor - BigInt(duration) * 60_000_000_000n), rangeInput(anchor));
+    if (anchor !== null) changeRange(exactEdge(anchor - BigInt(duration) * 60_000_000_000n), exactEdge(anchor));
   };
   const checkWindow = async (): Promise<void> => {
-    if (startNs === null || endNs === null || endNs <= startNs) { setError(t('replayPicker.invalid')); return; }
+    if (startNs === null || endNs === null || endNs <= startNs) { setError({ key: 'replayPicker.invalid' }); return; }
     const ctrl = new AbortController(); request.current?.abort(); request.current = ctrl;
-    setBusy(true); setError('');
+    setBusy(true); setError(null);
     try {
       const p = await readJson<WindowPreview>(`/api/recordings/window?${query}&start_ns=${startNs}&end_ns=${endNs}`, ctrl.signal);
       if (!ctrl.signal.aborted) setPreview(p);
-    } catch (e) { if (!ctrl.signal.aborted) setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { if (!ctrl.signal.aborted) setError(replayErrorKey(e)); }
     finally { if (!ctrl.signal.aborted) setBusy(false); }
   };
   const onKeyDown = (e: React.KeyboardEvent): void => {
@@ -140,25 +208,25 @@ export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
     <div ref={panel} className="replay-picker" role="dialog" aria-modal="true" aria-labelledby="replay-picker-title" onKeyDown={onKeyDown}>
       <header><h2 id="replay-picker-title">{t('replayPicker.title')} · {market} / {symbol}</h2>
         <button ref={close} type="button" onClick={onClose} aria-label={t('replayPicker.cancel')}>×</button></header>
-      <p>{t('replayPicker.zone')} <strong>{zone}</strong> · {t('replayPicker.buckets')}</p>
+      <p>{t('replayPicker.zone')} <strong>{zoneText}</strong> · {t('replayPicker.buckets')}</p>
       {busy && <p role="status">{t('replayPicker.loading')}</p>}
-      {availability && availability.hours.length === 0 && <p role="status">{t('replayPicker.empty')}</p>}
+      {availability && availability.hours.length === 0 && <p role="status">{recordingOff ? t('replayPicker.recordingOff') : t('replayPicker.empty')}</p>}
       {availability && availability.hours.length > 0 && <>
         <label>{t('replayPicker.hours')}<select aria-label={t('replayPicker.hours')} value="" onChange={(e) => {
           if (!e.target.value) return;
           const hour = BigInt(e.target.value);
-          changeRange(rangeInput(hour), rangeInput(hour + BigInt(minutes) * 60_000_000_000n));
+          changeRange(exactEdge(hour), exactEdge(hour + BigInt(minutes) * 60_000_000_000n));
         }}><option value="">{t('replayPicker.chooseHour')}</option>
-          {availability.hours.map((h) => <option key={h} value={h}>{localDateTime(BigInt(h)).slice(0, 16).replace('T', ' ')} ({utc(BigInt(h))})</option>)}
+          {availability.hours.map((h) => <option key={h} value={h}>{zonedWallText(msOf(BigInt(h)), zone).slice(0, 16).replace('T', ' ')} {zoneText}</option>)}
         </select></label>
-        <div className="replay-picker__presets">{[1, 5, 15].map((m) => <button type="button" key={m} aria-pressed={minutes === m} onClick={() => preset(m)}>{m} min</button>)}</div>
-        <label>{t('replayPicker.start')} (UTC)<input type="datetime-local" step="0.001" value={start.value} onChange={(e) => changeRange(manualInput(e.target.value), end)} /></label>
-        <small>{zone}: {localReadout(startNs)}</small>
-        <label>{t('replayPicker.end')} (UTC)<input type="datetime-local" step="0.001" value={end.value} onChange={(e) => changeRange(start, manualInput(e.target.value))} /></label>
-        <small>{zone}: {localReadout(endNs)} · [start, end)</small>
-        <p>{t('replayPicker.limit')} {availability.max_columns.toLocaleString()} {t('replayPicker.columns')}</p>
+        <div className="replay-picker__presets">{[1, 5, 15].map((m) => <button type="button" key={m} aria-pressed={minutes === m} onClick={() => preset(m)}>{t('replayPicker.minutes', { n: m })}</button>)}</div>
+        <label>{t('replayPicker.start')} ({zoneText})<input type="datetime-local" step="0.001" value={edgeText(start, zone)} onChange={(e) => changeRange(typedEdge(e.target.value, zone), end)} /></label>
+        <small>{zonedReadout(startNs, zone)}</small>
+        <label>{t('replayPicker.end')} ({zoneText})<input type="datetime-local" step="0.001" value={edgeText(end, zone)} onChange={(e) => changeRange(start, typedEdge(e.target.value, zone))} /></label>
+        <small>{zonedReadout(endNs, zone)} · {t('replayPicker.halfOpen')}</small>
+        <p>{t('replayPicker.limit')} {formatNumber(availability.max_columns)} {t('replayPicker.columns')}</p>
       </>}
-      {error && <p className="replay-picker__error" role="alert">{error}</p>}
+      {error && <p className="replay-picker__error" role="alert">{t(error.key, error.status === undefined ? undefined : { status: error.status })}</p>}
       {preview && <p role="status">{t('replayPicker.effective')} {utc(BigInt(preview.start_ns))} → {utc(BigInt(preview.end_ns))} · {preview.columns} {t('replayPicker.columns')}<br />{t('replayPicker.provenance')}</p>}
       <footer><button type="button" onClick={onClose}>{t('replayPicker.cancel')}</button>
         <button type="button" disabled={busy} onClick={() => setRefresh((v) => v + 1)}>{t('replayPicker.refresh')}</button>

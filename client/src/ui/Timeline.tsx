@@ -1,13 +1,13 @@
 /**
- * Timeline minimap + replay transport (§9 bottom strip, T12).
+ * Timeline minimap + replay transport (bottom strip).
  *
  * **Mode-gated, deliberately.** The transport used to render a play/pause button
  * plus a six-rung speed ladder plus a scrubber unconditionally, every one of
  * them `disabled` in LIVE — eight dead controls in the mode the user is in
  * almost all the time, which is exactly what made the tool read as confusing.
  * Now:
- *   - LIVE   → one state pill, plus a GO LIVE button that appears ONLY when the
- *              camera has actually been scrolled back off the live edge.
+ *   - LIVE   → one state pill (FOLLOWING / SCROLLED BACK). The return-to-edge
+ *              action lives in the chart's LiveControls chip, not here.
  *   - REPLAY → play/pause + ONE cycling speed button (the 1–100× ladder is
  *              unchanged as the DOMAIN, only its presentation collapses) + the
  *              seek scrubber + the time readout.
@@ -19,11 +19,14 @@
  *
  * Right: a minimap of the loaded session extent with the current viewport window
  * marked, and — in replay — a seek scrubber over it. The window follows drawn
- * view notifications through a cheap DOM writer. Extent, playhead, `following`
- * and the behind-readout share a ≤4 Hz poll, keeping React and time mapping off
- * the renderer's high-frequency path.
+ * view notifications through a cheap DOM writer. Extent, playhead and `following`
+ * share a ≤4 Hz poll, keeping React and time mapping off the renderer's
+ * high-frequency path.
  *
- * **Attach honesty (QA11 H1/H2/M1/M2).** The pill, time readout and controls
+ * **One GO LIVE control.** The in-chart chip in LiveControls is the
+ * single GO LIVE affordance; this strip no longer repeats it in the footer.
+ *
+ * **Attach honesty.** The pill, time readout and controls
  * describe the CURRENT subscription only once it has actually ATTACHED — a
  * Hello for it has landed and the connection is live. Before that, every value
  * still belongs to the session whose frame is on screen (the previous live
@@ -38,17 +41,14 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type RefObject } from 'react';
 
-import { colsBehind } from '../gl/follow';
 import type { Renderer } from '../gl/renderer';
+import { useT } from '../i18n/useT';
 import type { ConnStatus } from '../net/connection';
 import { useFlowMapStore } from '../state/store';
 import {
-  behindNs,
-  formatDurationCoarseNs,
   formatDurationNs,
   fractionOfExtent,
   nextSpeed,
-  phaseLabel,
   seekTargetNs,
   transportPhase,
   type TimeExtent,
@@ -71,7 +71,7 @@ function clamp01(x: number): number {
 }
 
 /**
- * What the transport is ALLOWED to claim, given the attach state (QA11 H1/M1).
+ * What the transport is ALLOWED to claim, given the attach state.
  * Pure so the honesty contract is unit-locked:
  *
  * - `attached`  — a Hello for the CURRENT subscription has landed AND the
@@ -84,7 +84,7 @@ function clamp01(x: number): number {
  *                 pill must say refused, not "playing" and not "reconnecting"
  *                 as if a working session dropped.
  * - `reconnecting` / `connecting` — the socket is down / being opened; a
- *                 live fallback lands here (QA11 H2's empty chart).
+ *                 live fallback lands here (the empty chart).
  * - `no-feed`   — no connection attempt is up (idle / closed terminal).
  */
 export type TransportDisplay = 'attached' | 'connecting' | 'reconnecting' | 'refused' | 'no-feed';
@@ -103,11 +103,15 @@ export function transportDisplay(
 
 interface TimelineProps {
   rendererRef: RefObject<Renderer | null>;
-  /** Return the chart to the live edge and re-arm the persisted follow flags. */
-  onGoLive: () => void;
+  /**
+   * Retained so the shell's call site stays valid. This strip no longer renders
+   * a GO LIVE button: LiveControls (in the chart) owns that action.
+   */
+  onGoLive?: () => void;
 }
 
-export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element {
+export function Timeline({ rendererRef }: TimelineProps): JSX.Element {
+  const t = useT();
   const mode = useFlowMapStore((s) => s.subscription?.mode ?? 'live');
   const paused = useFlowMapStore((s) => s.paused);
   const speed = useFlowMapStore((s) => s.speed);
@@ -122,15 +126,12 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
 
   const [geom, setGeom] = useState<MinimapGeom>(EMPTY_GEOM);
   const [scrub, setScrub] = useState(0); // 0..1000 scrubber position (replay)
-  // Camera follow state + how far behind the live edge it sits, from the SAME
-  // ≤4 Hz poll as the extent (a plain boolean getter and a subtraction).
+  // Camera follow state, from the SAME ≤4 Hz poll as the extent (a plain boolean getter).
   const [following, setFollowing] = useState(true);
-  const [behind, setBehind] = useState('');
   const geomRef = useRef<MinimapGeom>(EMPTY_GEOM);
   const draggingRef = useRef(false); // true while the user actively scrubs
   const seekTimerRef = useRef<number | null>(null); // trailing-throttle handle
   const pendingFracRef = useRef(0); // latest scrub fraction awaiting a seek
-  const pillRef = useRef<HTMLSpanElement | null>(null);
   const windowRef = useRef<HTMLDivElement | null>(null);
   const isReplay = mode === 'replay';
 
@@ -147,7 +148,6 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
         geomRef.current = EMPTY_GEOM;
         setGeom(EMPTY_GEOM);
       }
-      setBehind((b) => (b === '' ? b : ''));
       return;
     }
     const span = Math.max(1, tl.newestSeq - tl.oldestSeq);
@@ -162,20 +162,6 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
       extent = { startNs: toNs(tl.oldestSeq), endNs: toNs(tl.newestSeq) };
     }
     if (state.subscription?.mode === 'replay') extent = replay ? { startNs: replay.startNs, endNs: replay.endNs } : null;
-    // How far the right edge trails the newest column, as HH:MM:SS. "Behind"
-    // is a WHOLE-column concept: while time-follow is armed, the eased draw
-    // edge (gl/renderer stepLiveEdgeGlide) trails the logical frame by a
-    // sub-column glide lag that must never read as history lag, and the
-    // sub-column residue right after a follow-off is below this readout's
-    // granularity — both report live (blank).
-    const dtNs = tl.timeBase?.dtNs ?? 0;
-    const lag = colsBehind(
-      { colOffset: tl.viewStartCol, colScale: tl.viewEndCol - tl.viewStartCol, rowOffset: 0, rowScale: 1 },
-      tl.newestSeq,
-    );
-    const behindCols = r !== null && !r.following && lag >= 1 ? lag : 0;
-    const nextBehind = behindCols > 0 && dtNs > 0 ? formatDurationCoarseNs(behindNs(behindCols, dtNs)) : '';
-    setBehind((b) => (b === nextBehind ? b : nextBehind));
     // Advance the playhead: map the newest column to ns and drive the scrubber
     // from its fraction of the session extent — unless the user is scrubbing.
     // Also self-corrects a stale thumb across session/symbol switches.
@@ -332,18 +318,10 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
     setSpeed(nextSpeed(current, e.shiftKey ? -1 : 1));
   };
 
-  // GO LIVE unmounts itself the moment it succeeds, so move focus somewhere
-  // sane first or the browser drops it to <body>.
-  const onGoLiveClick = (): void => {
-    pillRef.current?.focus();
-    onGoLive();
-    setFollowing(true); // optimistic; the poll confirms within 250 ms
-  };
-
   const extent = isReplay ? (playback ? { startNs: playback.startNs, endNs: playback.endNs } : null) : geom.extent;
   // The transport may describe the CURRENT subscription only once it has
   // attached: before that, every value still belongs to the PREVIOUS session
-  // whose frame is on screen (QA11 H1/M1 — the frozen `00:02:07` span under a
+  // whose frame is on screen (the frozen `00:02:07` span under a
   // `REPLAY 1× PLAYING` pill over the stale live chart).
   const attached = status === 'live' && sessionId !== null;
   const display = transportDisplay(attached, isReplay, status, lastClose?.code ?? null);
@@ -367,38 +345,44 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
       : display === 'refused'
         ? 'state-pill state-pill--live-detached'
         : 'state-pill';
+  // Translated pill text per phase (replay.ts's phaseLabel is English-only).
+  const phaseKey =
+    phase === 'live-following' ? 'transport.following'
+      : phase === 'live-detached' ? 'transport.scrolledBack'
+        : phase === 'replay-playing' ? 'transport.replayPlaying'
+          : 'transport.replayPaused';
   let pillText: string;
   switch (display) {
     case 'attached':
-      pillText = playback?.ended && isReplay ? `REPLAY ${speed}× ENDED` : phaseLabel(phase, speed);
+      pillText = playback?.ended && isReplay ? t('transport.replayEnded', { speed }) : t(phaseKey, { speed });
       break;
     case 'refused':
-      pillText = 'REPLAY REFUSED';
+      pillText = t('transport.replayRefused');
       break;
     case 'no-feed':
-      pillText = 'NO FEED';
+      pillText = t('transport.noFeed');
       break;
     case 'reconnecting':
-      pillText = isReplay ? 'REPLAY CONNECTING…' : 'RECONNECTING…';
+      pillText = isReplay ? t('transport.replayConnecting') : t('transport.reconnecting');
       break;
     default:
-      pillText = isReplay ? 'REPLAY CONNECTING…' : 'CONNECTING…';
+      pillText = isReplay ? t('transport.replayConnecting') : t('transport.connecting');
       break;
   }
   const pillTitle =
     display === 'refused'
-      ? `replay refused — ${closeReasonText(lastClose)}; retrying`
+      ? t('transport.refusedTitle', { reason: closeReasonText(lastClose) })
       : display === 'reconnecting'
-        ? `waiting for the feed — ${closeReasonText(lastClose)}`
+        ? t('transport.waitingReason', { reason: closeReasonText(lastClose) })
         : display === 'connecting'
-          ? 'waiting for the feed'
+          ? t('transport.waitingTitle')
           : undefined;
   const waitText =
     display === 'refused'
-      ? 'server at capacity — retrying'
+      ? t('transport.capacity')
       : display === 'reconnecting'
-        ? `waiting for the feed — ${closeReasonText(lastClose)}`
-        : 'waiting for the feed…';
+        ? t('transport.waitingReason', { reason: closeReasonText(lastClose) })
+        : t('transport.waitingFeed');
 
   return (
     <footer className="timeline" data-testid="timeline">
@@ -409,17 +393,30 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
               type="button"
               className={`transport__play${playing ? ' is-playing' : ''}`}
               data-testid="transport-play"
-              aria-label={playing ? 'pause' : 'play'}
-              aria-pressed={playing}
+              // The name is the action the button performs now (Pause while playing);
+              // no aria-pressed, which would announce the same state a second time.
+              aria-label={playing ? t('transport.pause') : t('transport.play')}
               title={
                 attached
                   ? playing
-                    ? 'pause'
-                    : 'play'
-                  : 'waiting for the replay to attach'
+                    ? t('transport.pause')
+                    : playback?.ended === true
+                      ? t('transport.restart')
+                      : t('transport.play')
+                  : t('transport.attachWait')
               }
-              disabled={!attached || playback?.ended === true}
-              onClick={() => (paused ? resume() : pause())}
+              disabled={!attached}
+              onClick={() => {
+                // A finished replay restarts from its first moment and plays on.
+                if (playback?.ended === true && extent) {
+                  seek(seekTargetNs(0, extent));
+                  resume();
+                } else if (paused) {
+                  resume();
+                } else {
+                  pause();
+                }
+              }}
             >
               {playing ? '❚❚' : '▶'}
             </button>
@@ -428,8 +425,8 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
               className="speed-cycle"
               data-testid="speed-cycle"
               data-speed={speed}
-              aria-label={`replay speed ${speed}×, click to change`}
-              title="replay speed — click to step up, shift-click to step down"
+              aria-label={t('transport.speedAria', { speed })}
+              title={t('transport.speedTitle')}
               disabled={!attached}
               onClick={onCycleSpeed}
             >
@@ -437,24 +434,11 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
             </button>
           </>
         )}
-        {!following && !isReplay && (
-          <button
-            type="button"
-            className="go-live"
-            data-testid="go-live"
-            title="return the chart to the live edge (R)"
-            onClick={onGoLiveClick}
-          >
-            <span aria-hidden="true">⏭</span> GO LIVE
-            {behind && <span className="go-live__behind">−{behind}</span>}
-          </button>
-        )}
       </div>
 
       <div className={`minimap${isReplay ? ' minimap--replay' : ''}`}>
         <div className="minimap__label">
           <span
-            ref={pillRef}
             tabIndex={-1}
             className={pillClass}
             data-testid="transport-state"
@@ -481,11 +465,15 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
             >
               <progress
                 data-testid="transport-progress"
-                aria-label="waiting for the feed"
+                aria-label={t('transport.waitingTitle')}
                 style={{ width: 64, height: 6, accentColor: 'var(--accent)' }}
               />
               {waitText}
             </span>
+          )}
+          {!isReplay && attached && extent && (
+            // In live mode the readout is the loaded session's SPAN, not elapsed time.
+            <span className="minimap__readout-k" style={{ opacity: 0.6 }}>{t('transport.span')}</span>
           )}
           <span
             className="minimap__readout"
@@ -512,7 +500,8 @@ export function Timeline({ rendererRef, onGoLive }: TimelineProps): JSX.Element 
               value={scrub}
               disabled={!attached}
               data-testid="seek-scrubber"
-              aria-label="replay seek"
+              aria-label={t('transport.seekAria')}
+              aria-valuetext={readout}
               onChange={onScrub}
               onPointerUp={onScrubCommit}
               onKeyUp={onScrubCommit}

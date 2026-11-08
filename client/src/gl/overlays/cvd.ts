@@ -13,7 +13,7 @@
  * the visible columns and maps them through the SAME horizontal camera transform
  * as the heatmap, so dragging the chart back/forward drags CVD in lock-step.
  *
- * Honesty (§7): CVD is only meaningful when the feed carries a real aggressor
+ * Honesty: CVD is only meaningful when the feed carries a real aggressor
  * side. For keyless equity (`side_src = na`) `cvd_cum` stays ~0 and the pane must
  * badge it "not measurable" rather than draw a flat zero line — the capability
  * dict drives that, not this data class.
@@ -31,10 +31,17 @@ export class Cvd {
   private readonly values = new Map<number, number>();
   private revision = 0;
   private cached: { revision: number; lo: number; hi: number; points: CvdPoint[] } | null = null;
+  /** True while columns first arrive in ascending order, so the map is already sorted. */
+  private ordered = true;
+  private lastInserted = Number.NEGATIVE_INFINITY;
 
   /** Record / refresh a column's cumulative CVD at its absolute col_seq. */
   add(bar: BarColumn): void {
     if (Number.isFinite(bar.cvd_cum) && this.values.get(bar.col_seq) !== bar.cvd_cum) {
+      if (!this.values.has(bar.col_seq)) {
+        if (bar.col_seq < this.lastInserted) this.ordered = false;
+        this.lastInserted = bar.col_seq;
+      }
       this.values.set(bar.col_seq, bar.cvd_cum);
       this.revision++;
     }
@@ -61,6 +68,8 @@ export class Cvd {
     this.values.clear();
     this.revision++;
     this.cached = null;
+    this.ordered = true;
+    this.lastInserted = Number.NEGATIVE_INFINITY;
   }
 
   /** CVD value at a column (for tests / readouts), or NaN. */
@@ -87,7 +96,9 @@ export class Cvd {
       if (!Number.isFinite(v)) continue;
       out.push({ col: c, cvd: v });
     }
-    out.sort((a, b) => a.col - b.col);
+    // Insertion order is ascending in the live path, so the sort only runs after
+    // an out-of-order arrival (no O(N log N) per new column).
+    if (!this.ordered) out.sort((a, b) => a.col - b.col);
     this.cached = { revision: this.revision, lo, hi, points: out };
     return out;
   }

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MsgType, type GexLevelUpdate, type MacroStressUpdate, type MarketIntelligence } from '../proto/types';
 import { DEMO_INTELLIGENCE, useIntelligenceStore } from './intelligenceStore';
 
@@ -148,5 +148,24 @@ describe('current intelligence wire records', () => {
     store.handleStreamMsg({ type: 255 } as unknown as MarketIntelligence);
     expect(useIntelligenceStore.getState().events).toBe(received);
     expect(useIntelligenceStore.getState().contracts).toHaveLength(1);
+  });
+});
+
+describe('synthetic fixtures are development-only (state-16)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('a production build exposes an empty fixture set, never the invented seed text', async () => {
+    vi.stubEnv('DEV', false);
+    vi.resetModules();
+    const fresh = await import('./intelligenceStore');
+    expect(fresh.DEMO_INTELLIGENCE.gex).toEqual({});
+    expect(fresh.DEMO_INTELLIGENCE.darkPool).toEqual({});
+    expect(fresh.DEMO_INTELLIGENCE.secDiffs).toEqual([]);
+    expect(fresh.DEMO_INTELLIGENCE.contracts).toEqual([]);
+    expect(fresh.DEMO_INTELLIGENCE.corporateJets).toEqual([]);
+    expect(fresh.DEMO_INTELLIGENCE.macro.stressRegime).toBe('UNKNOWN');
   });
 });

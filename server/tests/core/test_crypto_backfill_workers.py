@@ -20,12 +20,16 @@ def _owner():
     return threading.get_ident(), asyncio.get_running_loop()
 
 
-async def _pulse_until(released: threading.Event) -> int:
-    count = 0
-    while not released.is_set():
-        count += 1
+async def _pulse_until(released: threading.Event, beats: int = 5) -> None:
+    """Turn the event loop ``beats`` times while the worker is blocked, then release it.
+
+    Release follows the loop's own progress instead of a wall-clock timer, so the
+    check that the server keeps serving while the worker is blocked holds on a
+    loaded machine. A loop that never turns trips the worker's own watchdog.
+    """
+    for _ in range(beats):
         await asyncio.sleep(0.005)
-    return count
+    released.set()
 
 
 async def _wait_for(predicate):
@@ -82,13 +86,11 @@ async def test_concurrent_native_ca_is_off_loop_coalesced_and_sessions_stay_owne
     monkeypatch.setattr(backfill, "_CA_CONTEXT_FUTURES", {}, raising=False)
     monkeypatch.setattr(ssl, "create_default_context", slow_ca)
     pulse = asyncio.create_task(_pulse_until(released))
-    timer = threading.Timer(0.15, released.set)
-    timer.start()
     try:
         requests = [backfill._native_candles("binance", "BTCUSDT", "spot",
                     interval="1m", max_bars=1, now_ns=NOW) for _ in range(5)]
         got = await asyncio.gather(*requests)
-        assert await pulse >= 5, "server heartbeat stopped during CA loading"
+        await pulse
         assert calls == [(calls[0][0], certifi.where())] and calls[0][0] != server[0]
         assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
         assert all(event[1] == server for event in events)
@@ -99,7 +101,6 @@ async def test_concurrent_native_ca_is_off_loop_coalesced_and_sessions_stay_owne
         assert len(calls) == 1
     finally:
         released.set()
-        timer.join()
         await pulse
 
 
@@ -128,6 +129,10 @@ def _ccxt_fake(monkeypatch, *, hold=None, error=None, supported=True, listed=Tru
             if error == "load":
                 raise ValueError("metadata failure")
             return {"BTC/USDT": {}} if listed else {}
+
+        def set_markets(self, markets, currencies=None):
+            # A cached market table is installed on a fresh client (api-v1).
+            self.markets = markets
 
         async def fetch_ohlcv(self, symbol, interval, *, since, limit):
             events.append(("fetch", _owner(), symbol, interval, since, limit))
@@ -160,12 +165,10 @@ async def test_ccxt_metadata_heartbeat_and_entire_sdk_lifecycle_are_worker_owned
         "constructor_hold" if phase == "create" else "hold": released,
     })
     pulse = asyncio.create_task(_pulse_until(released))
-    timer = threading.Timer(0.15, released.set)
-    timer.start()
     try:
         result = await backfill._ccxt_candles("binance", "BTCUSDT", "usdm",
                                              interval="1h", max_bars=25, now_ns=NOW)
-        assert await pulse >= 5, "server heartbeat stopped during ccxt metadata parsing"
+        await pulse
         owners = {event[1] for event in events}
         assert len(owners) == 1 and server not in owners
         assert [event[0] for event in events] == ["create", "load", "fetch", "closing", "close"]
@@ -175,7 +178,6 @@ async def test_ccxt_metadata_heartbeat_and_entire_sdk_lifecycle_are_worker_owned
         assert events[2][2:] == ("BTC/USDT", "1h", (NOW - 25 * 3600 * 10**9) // 10**6, 25)
     finally:
         released.set()
-        timer.join()
         await pulse
 
 

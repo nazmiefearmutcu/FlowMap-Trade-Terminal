@@ -1,4 +1,4 @@
-"""Regression tests for the 2026-09-03 review-fix wave.
+"""Regression tests for the 2026-09-03 review fixes.
 
 One test per reviewed finding, named after it:
 
@@ -7,9 +7,9 @@ One test per reviewed finding, named after it:
 - B1b legacy 6-column epochs files (pre-hybrid recordings) still load, as linear
 - B2  a session torn down mid-boot starts no run task; SessionManager resubscribes
 - B3  a ragged (corrupt) bid/ask block degrades to cold start (None), not a crash
-- C2  a degenerate candle cannot hang columns_from_candles
-- C3  a failed tail still lets the candle backfill run (the session keeps history)
-- C4  a banded tail spanning the first anchor (two multiples) rehydrates
+- a degenerate candle cannot hang columns_from_candles
+- a failed tail still lets the candle backfill run (the session keeps history)
+- a banded tail spanning the first anchor (two multiples) rehydrates
 """
 
 from __future__ import annotations
@@ -143,7 +143,7 @@ def test_b1a_hybrid_epoch_round_trips_and_preload_restores_scale(tmp_path):
 
     g = Grid(_cfg(band_up=9.0, band_down=0.99, band_hybrid=True, core_rows=ROWS // 2))
     g.preload(tail.columns, tail.epochs)
-    assert g._scale.kind == SCALE_HYBRID, "preload must rebuild the hybrid scale (H1)"
+    assert g._scale.kind == SCALE_HYBRID, "preload must rebuild the hybrid scale"
     assert np.isclose(g._scale.core_p0, scale.core_p0)
 
 
@@ -204,7 +204,7 @@ async def test_b2_session_torn_down_mid_boot_starts_nothing():
 
 async def test_b2_manager_resubscribes_after_midboot_teardown(monkeypatch):
     """First boot races a teardown: subscribe must retry ONCE onto a fresh,
-    LIVE session — never hand out (or leak) the corpse (H2 + L2)."""
+    LIVE session — never hand out (or leak) the corpse ."""
     cfg = Config(max_sessions=4, ring_columns=256, max_rows=64, dt_crypto_ns=DT_NS)
     mgr = SessionManager(cfg, timer=FakeTimer(), feed_factory=lambda sub: IdleFeed())
     sub = Subscribe(market="sim", symbol="IDLE", mode="live", source=None, start_t=None)
@@ -259,7 +259,7 @@ def test_b3_ragged_bid_block_degrades_to_none(tmp_path):
     assert tail is None, "a corrupt block must cold-start, not crash the boot"
 
 
-# C2 --------------------------------------------------------------------------
+# Degenerate candles --------------------------------------------------------------------------
 
 
 def test_c2_degenerate_candle_clamps_before_range():
@@ -278,12 +278,12 @@ def test_c2_degenerate_candle_clamps_before_range():
         assert len(c.bid) == ROWS and len(c.ask) == ROWS
 
 
-# C3 --------------------------------------------------------------------------
+# Failed tail and candle backfill --------------------------------------------------------------------------
 
 
 async def test_c3_failed_tail_still_backfills(tmp_path):
     # Tail recorded under rows=64; the new session runs rows=128: preload
-    # fails, and the candle backfill must STILL run (M2) so the session keeps
+    # fails, and the candle backfill must STILL run so the session keeps
     # history instead of starting from a void.
     tail_rows = 64
     rec_root = Recorder(tmp_path / "rec", 20.0)
@@ -327,13 +327,13 @@ async def test_c3_failed_tail_still_backfills(tmp_path):
         backfill_max_cols=20,
     )
     await sess.start()
-    assert bf.called, "backfill must run after a failed tail (M2)"
+    assert bf.called, "backfill must run after a failed tail"
     client = ClientTx()
     snap = sess.attach(client)
     assert snap  # session usable
 
 
-# C4 --------------------------------------------------------------------------
+# Banded tail across the first anchor --------------------------------------------------------------------------
 
 
 def test_c4_tail_spanning_first_anchor_preloads():
@@ -344,7 +344,7 @@ def test_c4_tail_spanning_first_anchor_preloads():
     e1 = EpochParams(epoch=1, tick=0.5, tick_multiple=4, dt_ns=DT_NS, p0=90.0, rows=ROWS)
     cols = [_col(i, epoch=0 if i < 3 else 1) for i in range(6)]
     # Old validation rejected the mixed {1, 4} multiples outright, permanently
-    # orphaning such recordings (M3).
+    # orphaning such recordings.
     g.preload(cols, [e0, e1])
     assert g._tick_multiple == 4, "the NEWEST epoch's frozen multiple wins"
     assert g._count == 6

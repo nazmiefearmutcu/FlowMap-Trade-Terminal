@@ -1,6 +1,6 @@
 /**
  * RSI kernel — Wilder's Relative Strength Index over candle closes.
- * Identical math to the old branch's `rsi()`: simple-mean seed of the first
+ * Identical math to the reference implementation's `rsi()`: simple-mean seed of the first
  * `period` deltas, then the Wilder recurrence `avg = (prev·(p−1)+cur)/p`;
  * degenerate averages → 50 (flat) / 100 (pure gains) / 0 (pure losses); a NaN
  * delta folds to ZERO change (gap deviation pinned by the old tests) instead

@@ -16,6 +16,8 @@ import logging
 import math
 from typing import Any
 
+import numpy as np
+
 log = logging.getLogger(__name__)
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
 _DEFAULT_RISK_FREE_RATE = 0.045  # Fixed model assumption, not a current market quote.
@@ -90,10 +92,18 @@ def _valid_contract(opt: OptionContract) -> bool:
 
 def calculate_gex(symbol: str, spot: float, contracts: list[OptionContract],
                   r: float = _DEFAULT_RISK_FREE_RATE) -> GexResult:
-    """Calculate only from finite real inputs; unavailable data has no levels."""
+    """Calculate only from finite real inputs; unavailable data has no levels.
+
+    An invalid contract is skipped and counted in
+    ``model_provenance['skipped_invalid_contracts']`` rather than discarding the
+    whole symbol. The symbol is unavailable only when no valid contract remains.
+    """
     if not _finite(spot) or spot <= 0 or not _finite(r):
         return _unavailable(symbol, spot, 'invalid spot or risk-free-rate assumption')
-    if not contracts or any(not _valid_contract(opt) for opt in contracts):
+    listed = list(contracts or [])
+    valid = [opt for opt in listed if _valid_contract(opt)]
+    skipped = len(listed) - len(valid)
+    if not valid:
         return _unavailable(symbol, spot, 'missing or invalid option chain')
     try:
         multiplier = spot * spot * 100.0
@@ -101,7 +111,7 @@ def calculate_gex(symbol: str, spot: float, contracts: list[OptionContract],
             raise ValueError('GEX multiplier is not finite')
         calls: dict[float, float] = {}
         puts: dict[float, float] = {}
-        for opt in contracts:
+        for opt in valid:
             contribution = opt.open_interest * bs_gamma(spot, opt.strike, opt.dte_days / 365.0, opt.implied_vol, r) * multiplier
             if not _finite(contribution):
                 raise ValueError('GEX contribution is not finite')
@@ -118,10 +128,23 @@ def calculate_gex(symbol: str, spot: float, contracts: list[OptionContract],
         positive_puts = {k: value for k, value in puts.items() if value > 0}
         flip = None
         if positive_calls and positive_puts and strikes[0] < strikes[-1]:
+            # Per-contract constants are hoisted once; each scan point is then one
+            # vectorised Black-Scholes gamma pass over the whole valid chain.
+            strike_arr = np.array([opt.strike for opt in valid], dtype=np.float64)
+            log_strike = np.log(strike_arr)
+            tau = np.array([opt.dte_days / 365.0 for opt in valid], dtype=np.float64)
+            vol = np.array([opt.implied_vol for opt in valid], dtype=np.float64)
+            vol_sqrt_t = vol * np.sqrt(tau)
+            drift = (r + 0.5 * vol * vol) * tau
+            signed_oi = np.array([opt.open_interest * (1.0 if opt.is_call else -1.0) for opt in valid],
+                                 dtype=np.float64)
+
             def at_price(price: float) -> float:
                 # The positive spot scaling does not affect the zero's location.
-                values = [opt.open_interest * bs_gamma(price, opt.strike, opt.dte_days / 365.0,
-                          opt.implied_vol, r) * (1 if opt.is_call else -1) for opt in contracts]
+                with np.errstate(all='ignore'):
+                    d1 = (math.log(price) - log_strike + drift) / vol_sqrt_t
+                    gamma = np.exp(-0.5 * d1 * d1) / _SQRT_2PI / (price * vol_sqrt_t)
+                    values = (signed_oi * gamma).tolist()
                 value = math.fsum(values)
                 if not _finite(value):
                     raise ValueError('gamma scan is not finite')
@@ -166,21 +189,31 @@ def calculate_gex(symbol: str, spot: float, contracts: list[OptionContract],
                 'scale': 'dollar delta-notional sensitivity per unit relative spot move',
                 'dealer_position_convention': 'positive calls, negative puts; actual positions unknown',
                 'options_source': 'caller-supplied option chain',
+                'skipped_invalid_contracts': skipped,
             },
         )
     except (ValueError, OverflowError, ZeroDivisionError) as exc:
         return _unavailable(symbol, spot, str(exc))
 
 
+def _load_shared_yfinance_runner() -> Any:
+    """Return crocodile's shared yfinance session gate, or None on older builds.
+
+    The gate (``run_yfinance_default_call``) exists only in crocodile 0.3.2 and
+    later. An installed build without it must not turn the GEX path into an
+    ImportError; the caller falls back to yfinance's own session instead.
+    """
+    try:
+        from crocodile.equity.providers.yahoo.client import run_yfinance_default_call
+    except ImportError:
+        return None
+    return run_yfinance_default_call
+
+
 async def fetch_options_and_calculate_gex(symbol: str, spot_price: float | None = None) -> GexResult:
     """Fetch actual Yahoo option inputs; never invent prices, IV or contracts."""
-    def load_runner():
-        from crocodile.equity.providers.yahoo.client import run_yfinance_default_call
-
-        return run_yfinance_default_call
-
     # Preserve the original worker-side import of pandas/yfinance on a cold call.
-    run_yfinance_default_call = await asyncio.to_thread(load_runner)
+    run_yfinance_default_call = await asyncio.to_thread(_load_shared_yfinance_runner)
 
     def fetch(session: Any) -> GexResult:
         current_spot = spot_price
@@ -195,6 +228,7 @@ async def fetch_options_and_calculate_gex(symbol: str, spot_price: float | None 
                 return _unavailable(symbol, current_spot, 'missing or invalid source price')
             expirations = ticker.options[:6]
             contracts: list[OptionContract] = []
+            skipped = 0  # source rows that were malformed or invalid; counted, never invented
             today = datetime.now(UTC).date()
             for expiration in expirations:
                 dte = (datetime.strptime(expiration, '%Y-%m-%d').date() - today).days
@@ -203,18 +237,26 @@ async def fetch_options_and_calculate_gex(symbol: str, spot_price: float | None 
                 chain = ticker.option_chain(expiration)
                 for is_call, frame in ((True, chain.calls), (False, chain.puts)):
                     for _, row in frame.iterrows():
-                        oi = float(row.get('openInterest'))
+                        try:
+                            oi = float(row.get('openInterest'))
+                            strike = float(row['strike'])
+                            implied_vol = float(row.get('impliedVolatility'))
+                        except (KeyError, TypeError, ValueError):
+                            skipped += 1
+                            continue
                         if not _finite(oi) or oi < 0:
-                            return _unavailable(symbol, current_spot, 'missing or invalid source open interest')
+                            skipped += 1
+                            continue
                         if oi == 0:
                             continue
-                        opt = OptionContract(float(row['strike']), is_call, oi,
-                                             float(row.get('impliedVolatility')), dte)
+                        opt = OptionContract(strike, is_call, oi, implied_vol, dte)
                         if not _valid_contract(opt):
-                            return _unavailable(symbol, current_spot, 'missing or invalid source option inputs')
+                            skipped += 1
+                            continue
                         contracts.append(opt)
             result = calculate_gex(symbol, current_spot, contracts)
             if result.available:
+                result.model_provenance['skipped_invalid_contracts'] += skipped
                 result.model_provenance['options_source'] = 'yfinance option chain, first six expirations'
                 result.model_provenance['spot_source'] = 'caller supplied' if spot_price is not None else 'yfinance fast_info.last_price'
             return result
@@ -222,4 +264,7 @@ async def fetch_options_and_calculate_gex(symbol: str, spot_price: float | None 
             log.warning('Could not obtain valid option inputs for %s: %s', symbol, exc)
             return _unavailable(symbol, current_spot, 'option source unavailable or invalid')
 
+    if run_yfinance_default_call is None:
+        # Without the shared gate, yfinance's own default session serves the call.
+        return await asyncio.to_thread(fetch, None)
     return await run_yfinance_default_call(fetch)

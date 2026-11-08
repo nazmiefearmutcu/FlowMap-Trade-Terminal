@@ -56,7 +56,7 @@ raw sizes **2.8M–16.1M shares** → **f16 overflow** (grid ring max 65 504); m
 - Heatmap: already renders two channels for crypto L2 → **no change** (two-sided equity
   density renders automatically).
 
-## Honesty (spec §7)
+## Honesty (see the capability model in the original design)
 Two-sided synthetic depth is still **synthetic** — a relative volume-at-price shape, not
 real resting orders — and stays badged `SYNTH` everywhere. Only keyed Alpaca is badged `L1`
 (real top-of-book). No fabricated depth; asymmetry (e.g. 10 bids / 2 asks) is shown as-is.

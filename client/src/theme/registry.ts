@@ -8,12 +8,12 @@ export interface ChartPalette {
  gutterBg: string; grid: string; gridAlpha?: number; axis: string; price: string; sell: string; warn: string;
  density: readonly ChartStop[]; synth: readonly ChartStop[];
 }
-export interface ThemeMeta { id: ThemeId; label: string; mode: 'dark' | 'light'; /** Legacy metadata field, now a plain purpose phrase. */ cvd: string; canvas: CanvasPalette; chart: ChartPalette }
+export interface ThemeMeta { id: ThemeId; mode: 'dark' | 'light'; canvas: CanvasPalette; chart: ChartPalette }
 export const THEME_IDS: readonly ThemeId[] = ['midnight', 'paper', 'swiss', 'amber', 'sea', 'paper-deut', 'contrast'];
 export const DEFAULT_THEME_ID: ThemeId = 'midnight';
 export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
   "midnight": {
-    id: 'midnight', label: 'Midnight', mode: 'dark', cvd: 'Navy blue',
+    id: 'midnight', mode: 'dark',
     canvas: {"bg":"#081B37","grid":"#446B92","text":"#E8F2FF","bid":"#74D8C1","ask":"#FFA799","accent":"#8DC8FF"},
     chart: {
       bg: "#081B37",
@@ -47,7 +47,7 @@ export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
     },
   },
   "paper": {
-    id: 'paper', label: 'Paper', mode: 'light', cvd: 'Warm parchment',
+    id: 'paper', mode: 'light',
     canvas: {"bg":"#FFF4DC","grid":"#AD8952","text":"#352818","bid":"#176149","ask":"#982F32","accent":"#7D4812"},
     chart: {
       bg: "#FFF4DC",
@@ -81,7 +81,7 @@ export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
     },
   },
   "swiss": {
-    id: 'swiss', label: 'Studio', mode: 'light', cvd: 'Neutral white',
+    id: 'swiss', mode: 'light',
     canvas: {"bg":"#FFFFFF","grid":"#9B9B9B","text":"#202020","bid":"#006653","ask":"#A32642","accent":"#364BC5"},
     chart: {
       bg: "#FFFFFF",
@@ -115,7 +115,7 @@ export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
     },
   },
   "amber": {
-    id: 'amber', label: 'Amber', mode: 'dark', cvd: 'Copper and amber',
+    id: 'amber', mode: 'dark',
     canvas: {"bg":"#291207","grid":"#9C7544","text":"#FFF0D8","bid":"#9AD8AE","ask":"#FFAA88","accent":"#FFD078"},
     chart: {
       bg: "#291207",
@@ -149,7 +149,7 @@ export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
     },
   },
   "sea": {
-    id: 'sea', label: 'Deep sea', mode: 'dark', cvd: 'Petrol green',
+    id: 'sea', mode: 'dark',
     canvas: {"bg":"#00251E","grid":"#478E79","text":"#E0FFF0","bid":"#87E6B9","ask":"#FFB798","accent":"#7FE1CE"},
     chart: {
       bg: "#00251E",
@@ -183,7 +183,7 @@ export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
     },
   },
   "paper-deut": {
-    id: 'paper-deut', label: 'Daylight', mode: 'light', cvd: 'Blue daylight',
+    id: 'paper-deut', mode: 'light',
     canvas: {"bg":"#E5F1FF","grid":"#789DBD","text":"#18354D","bid":"#075469","ask":"#8C3B1B","accent":"#174F9C"},
     chart: {
       bg: "#E5F1FF",
@@ -217,7 +217,7 @@ export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
     },
   },
   "contrast": {
-    id: 'contrast', label: 'High contrast', mode: 'dark', cvd: 'Black and white',
+    id: 'contrast', mode: 'dark',
     canvas: {"bg":"#000000","grid":"#FFFFFF","text":"#FFFFFF","bid":"#53E8CF","ask":"#FFA168","accent":"#FFF089"},
     chart: {
       bg: "#000000",
@@ -251,6 +251,15 @@ export const THEMES: Readonly<Record<ThemeId, ThemeMeta>> = {
     },
   },
 } as const;
+/**
+ * Under-stroke drawn beneath an overlay trace (VWAP, CVD, POC, GEX). Where the
+ * density ramp runs pale (t of 0.6 and up), a trace drawn straight onto it can
+ * lose contrast, so the halo sits between the two. Black on the dark themes and
+ * white on the light ones: each keeps at least 3:1 against that hot end.
+ */
+export function overlayHalo(id: ThemeId): '#000000' | '#FFFFFF' {
+  return THEMES[id].mode === 'dark' ? '#000000' : '#FFFFFF';
+}
 export function isThemeId(value: string | null | undefined): value is ThemeId { return typeof value === 'string' && (THEME_IDS as readonly string[]).includes(value) }
 export function nextTheme(id: ThemeId): ThemeId { return THEME_IDS[(THEME_IDS.indexOf(id) + 1) % THEME_IDS.length] }
 export function resolveCanvasPalette(id: ThemeId, getVar: (name: string) => string): CanvasPalette {

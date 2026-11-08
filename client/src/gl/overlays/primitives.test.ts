@@ -6,7 +6,7 @@ import { PointBatch, SolidBatch } from './primitives';
 import { GL, makeFakeGL } from '../mockGL';
 
 /**
- * Overlay batch blend-state tests (B-5) over the recording fake GL. The visual
+ * Overlay batch blend-state tests over the recording fake GL. The visual
  * fix — premultiplied-alpha over-compositing so translucent overlays cannot
  * double-composite with the page when dst alpha < 1 — is two halves: the
  * blendFuncSeparate STATE (asserted here) and the shaders premultiplying their
@@ -16,6 +16,34 @@ import { GL, makeFakeGL } from '../mockGL';
 const LAST_BLEND = [GL.ONE, GL.ONE_MINUS_SRC_ALPHA, GL.ONE, GL.ONE_MINUS_SRC_ALPHA];
 
 const SOURCE = readFileSync(join(process.cwd(), 'src/gl/overlays/primitives.ts'), 'utf8');
+
+describe('batch uploads reuse the GPU store', () => {
+  it('a steady batch re-uploads its prefix in place: one allocation, then sub-data', () => {
+    const gl = makeFakeGL();
+    const batch = new SolidBatch(gl);
+    for (let frame = 0; frame < 3; frame++) {
+      batch.begin();
+      batch.addTri(0, 0, 1, 0, 0, 1, [1, 1, 1, 1]);
+      batch.flush();
+    }
+    expect(gl.callsOf('bufferData')).toHaveLength(1);
+    expect(gl.callsOf('bufferSubData')).toHaveLength(3);
+  });
+
+  it('growing past the CPU capacity reallocates the store once', () => {
+    const gl = makeFakeGL();
+    const batch = new PointBatch(gl as unknown as WebGL2RenderingContext, 4);
+    batch.begin();
+    for (let i = 0; i < 3; i++) batch.add(i, 0, 2, [1, 1, 1, 1]);
+    batch.flush();
+    expect(gl.callsOf('bufferData')).toHaveLength(1);
+    batch.begin();
+    for (let i = 0; i < 9; i++) batch.add(i, 0, 2, [1, 1, 1, 1]); // grows the CPU array
+    batch.flush();
+    expect(gl.callsOf('bufferData')).toHaveLength(2);
+    expect(gl.callsOf('bufferSubData')).toHaveLength(2);
+  });
+});
 
 describe('SolidBatch blend state (premultiplied over)', () => {
   it('flushes with blendFuncSeparate(ONE, 1-srcAlpha, ONE, 1-srcAlpha)', () => {
@@ -48,7 +76,7 @@ describe('SolidBatch blend state (premultiplied over)', () => {
   });
 
   it('the point program carries the Bookmap sphere shading (soft fill, rim, gated gloss)', () => {
-    // F25: soft spherical fill (core → translucent edge)…
+    // Soft spherical fill (core → translucent edge)…
     expect(SOURCE).toMatch(/float fill = mix\(0\.62, 1\.0/);
     // …a darker outer rim…
     expect(SOURCE).toMatch(/RIM_DARKEN/);

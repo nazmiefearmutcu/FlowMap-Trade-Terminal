@@ -181,6 +181,13 @@ export interface Trade {
   side: number; // SIDE_BUY | SIDE_SELL | SIDE_UNKNOWN
   side_src: number; // SIDE_SRC_EXCHANGE | SIDE_SRC_INFERRED | SIDE_SRC_NA
   venue: string;
+  /**
+   * Per-session ingest sequence (uint16 on the wire, 1..65535, wrapping). Two
+   * distinct fills in the same millisecond at the same price and size carry
+   * different values, and a re-delivered trade keeps its value. Absent when the
+   * wire carries 0 (unknown: legacy encoders and old recordings).
+   */
+  seq?: number;
 }
 
 export interface BBO {

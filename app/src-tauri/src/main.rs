@@ -3,176 +3,95 @@
 // Wraps the built WebGL2 client and runs the FlowMap Python server as a bundled
 // sidecar so the app is fully self-contained (no user-side Python/Node install):
 //
-//   1. pick a free loopback TCP port;
-//   2. spawn `<bundled pyruntime>/bin/python3.13 -m flowmap_server` bound to that
-//      port, recording under the app-data dir, logs piped to a file there;
-//   3. create the webview with an initialization script that injects
-//      `window.__FLOWMAP_SERVER__ = "http://127.0.0.1:<port>"` BEFORE the client
-//      JS runs, so the SPA reaches the sidecar (the client falls back to
-//      same-origin only in the vite dev server, where the global is absent);
-//   4. on quit (window close or Cmd-Q) terminate the sidecar — SIGTERM, then
-//      SIGKILL after a grace period — so no orphan server survives;
+//   1. pick a free loopback TCP port and create a 256-bit session token;
+//   2. spawn `<bundled pyruntime>/bin/python3.13 -I -X utf8 -m flowmap_server`
+//      bound to that port with the token in FLOWMAP_SESSION_TOKEN, recording
+//      under the app-data dir, output captured into a size-capped log file;
+//   3. once the operating system confirms that the sidecar owns the port (see
+//      `listener`), create the webview with an initialization script that injects
+//      the server origin and the session token BEFORE the client JS runs, so the
+//      SPA can reach the sidecar's REST and WebSocket endpoints;
+//   4. on quit (window close or Cmd-Q) stop the sidecar gracefully: close its
+//      stdin (EOF is the server's stop signal), SIGTERM on unix,
+//      then SIGKILL after a short grace period. The sidecar also dies with the
+//      shell: a Linux parent-death signal, the stdin EOF on macOS (the server
+//      exits on it when FLOWMAP_EXIT_ON_STDIN_EOF=1), and a kill-on-close job
+//      object on Windows;
 //   5. guard against a second instance via an OS-held advisory lock on a
 //      sentinel file under the app-data dir (two shells would race the
 //      recorder's disk-scan part numbering and corrupt recordings); the OS
 //      releases the lock on exit or crash, so no stale-file takeover exists;
-//   6. watch the sidecar every ~10 s and respawn it once if it dies mid-session.
+//   6. supervise the sidecar for the rest of the run: restart it when it exits
+//      or stops answering /api/health, with exponential backoff and a bounded
+//      budget, and publish every phase change as a `sidecar-status` event.
 //
 // Startup failures are fatal WITHOUT panicking: the Windows GUI subsystem has
 // no console, so a panic (or a `?` in setup) dies silently. Everything that can
-// fail before the window exists goes through `show_error_box` + a clean exit.
-//
-// The webview shows immediately; the client's own WebSocket reconnect/backoff
-// bridges the ~1-3 s the sidecar takes to come up, and a background thread logs
-// when `/api/health` first responds. There is no webview event channel in this
-// shell, so monitor status surfaces through the same log.
+// fail before the window exists goes through `fatal` (a native dialog on every
+// platform, then a clean exit). Shell lifecycle messages also go to shell.log in
+// the app-data dir, because release Windows builds have no console at all.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod dialog_text;
+mod instance_lock;
+mod listener;
+mod native_dialog;
+mod recording;
+mod redact;
+mod server_log;
+mod sidecar;
+mod supervisor;
+mod window_state;
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::ops::{Deref, DerefMut};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use dialog_text::{detect_lang, text, Key, Lang};
+use instance_lock::{
+    acquire_instance_lock, focus_existing_window, lock_holder_pid, InstanceGuard, LockError,
+};
+use native_dialog::show_native_dialog;
+use recording::{read_recording_pref, swap_recording, write_recording_pref};
+use server_log::rotate_to_previous;
+use sidecar::{
+    kill_sidecar, spawn_sidecar, stop_child, Launch, SidecarState, GRACEFUL_STOP, RECORDING_GB_CAP,
+};
+use supervisor::{
+    publish, retry_sidecar, sidecar_status, spawn_supervisor, Phase, Supervisor, SupervisorCommand,
+    STARTUP_HEALTH_TIMEOUT,
+};
 use tauri::path::BaseDirectory;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-
-// The `windows` crate is already in the tree as a transitive tauri dependency,
-// so the minimal Win32 MessageBox (spawn-failure / already-running dialogs)
-// comes from it instead of a new dependency.
-#[cfg(windows)]
-use windows::core::PCWSTR;
-#[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use window_state::{
+    current_window_state, logical_areas, place_window, read_window_state, write_window_state,
 };
 
-/// How often the monitor thread checks sidecar liveness.
-const MONITOR_INTERVAL: Duration = Duration::from_secs(10);
+/// The shell log is moved aside to `shell.previous.log` at this size.
+const SHELL_LOG_MAX_BYTES: u64 = 1024 * 1024;
 
-/// Holds the sidecar child so it can be terminated exactly once on exit.
-struct SidecarState(Mutex<Option<ManagedChild>>);
-
-/// Keep the sidecar tied to the shell even if the shell crashes. A Windows
-/// child otherwise survives its parent, continuing to record and use memory.
-struct ManagedChild {
-    process: Child,
-    #[cfg(windows)]
-    _job: SidecarJob,
-}
-
-impl ManagedChild {
-    fn new(mut process: Child) -> Result<Self, Box<dyn std::error::Error>> {
-        #[cfg(windows)]
-        let job = match SidecarJob::attach(&process) {
-            Ok(job) => job,
-            Err(err) => {
-                let _ = process.kill();
-                let _ = process.wait();
-                return Err(err.into());
-            }
-        };
-        Ok(Self { process, #[cfg(windows)] _job: job })
-    }
-}
-
-impl Deref for ManagedChild {
-    type Target = Child;
-    fn deref(&self) -> &Child { &self.process }
-}
-impl DerefMut for ManagedChild {
-    fn deref_mut(&mut self) -> &mut Child { &mut self.process }
-}
-
-#[cfg(windows)]
-struct SidecarJob {
-    // Store the owned handle as an integer so the monitor can transfer its
-    // ownership across threads. No other object closes or inherits this handle.
-    handle: usize,
-}
-
-#[cfg(windows)]
-impl SidecarJob {
-    fn attach(child: &Child) -> windows::core::Result<Self> {
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-            JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        };
-        let handle = unsafe { CreateJobObjectW(None, PCWSTR::null())? };
-        let job = Self { handle: handle.0 as usize };
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        unsafe {
-            SetInformationJobObject(handle, JobObjectExtendedLimitInformation,
-                &limits as *const _ as *const std::ffi::c_void,
-                std::mem::size_of_val(&limits) as u32)?;
-            AssignProcessToJobObject(handle, HANDLE(child.as_raw_handle()))?;
-        }
-        Ok(job)
-    }
-}
-
-#[cfg(windows)]
-impl Drop for SidecarJob {
-    fn drop(&mut self) {
-        use windows::Win32::Foundation::{CloseHandle, HANDLE};
-        unsafe { let _ = CloseHandle(HANDLE(self.handle as *mut std::ffi::c_void)); }
-    }
-}
-
-/// Set just before teardown begins; the sidecar monitor reads it to stand down
+/// Set just before teardown begins; the supervisor reads it to stand down
 /// instead of respawning into a dying process.
 struct ShutdownState(AtomicBool);
 
 /// Managed so the exit handlers can release the single-instance sentinel.
 struct InstanceState(Mutex<Option<InstanceGuard>>);
 
-const BENCHMARK_IDENTIFIER: &str = "com.nazmiefearmutcu.flowmap.benchmark";
-
-/// An alternate build identity AND an owned absolute profile are required.
-/// Normal builds keep their original app-data, recording and window defaults.
-fn app_data_directory(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if app.config().identifier != BENCHMARK_IDENTIFIER {
-        if std::env::var_os("FLOWMAP_BENCHMARK_PROFILE").is_some() ||
-            std::env::var_os("FLOWMAP_BENCHMARK_OWNER").is_some() {
-            return Err("benchmark environment requires the isolated benchmark build identity".into());
-        }
-        return Ok(app.path().app_data_dir()?);
-    }
-    let path = PathBuf::from(std::env::var("FLOWMAP_BENCHMARK_PROFILE")?);
-    let token = std::env::var("FLOWMAP_BENCHMARK_OWNER")?;
-    if !path.is_absolute() || token.len() < 16 ||
-        std::fs::read_to_string(path.join(".flowmap-benchmark-owner"))? != token {
-        return Err("benchmark requires an absolute owned profile and matching owner token".into());
-    }
-    Ok(path.canonicalize()?)
+/// Lock a mutex, recovering the guard when a previous holder panicked.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The single-instance guard: an advisory-locked file held open for the whole
-/// process lifetime. The OS drops the lock on exit or crash, so there is no
-/// stale-file takeover logic; on a clean exit `release` also removes the file.
-#[derive(Debug)]
-struct InstanceGuard {
-    _file: File,
-    path: PathBuf,
-}
-
-#[derive(Debug)]
-enum LockError {
-    /// Another live FlowMap process holds the lock.
-    AlreadyRunning,
-    Io(std::io::Error),
-}
-
-/// Bind :0 on loopback, read the assigned port, drop the listener. A tiny TOCTOU
-/// window remains before the sidecar rebinds it, negligible for a local app.
+/// Bind :0 on loopback, read the assigned port, drop the listener. The port is only
+/// a hint: another process can take it before the sidecar binds. The shell
+/// therefore checks the listener's owner (see `listener::owned_by`) before it
+/// sends the session token anywhere.
 fn free_loopback_port() -> std::io::Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -180,103 +99,85 @@ fn free_loopback_port() -> std::io::Result<u16> {
     Ok(port)
 }
 
-/// UTF-16 (NUL-terminated) for the Win32 wide-string APIs.
-#[cfg(windows)]
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
+/// 256 bits of OS randomness as lowercase hex.
+fn new_session_token() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-/// Surface a fatal error to a user who has no console (the Windows GUI
-/// subsystem detaches stdout/stderr, so a panic would die silently). Never
-/// panics itself; callers exit with a non-zero code afterwards.
-fn show_error_box(title: &str, message: &str) {
-    eprintln!("[flowmap] {title}: {message}");
-    #[cfg(windows)]
+/// Shell lifecycle log: `shell.log` in the app-data dir, plus stderr for debug runs.
+static SHELL_LOG: OnceLock<PathBuf> = OnceLock::new();
+
+/// Create `path` and its parents for the app's own files. On unix the folder is
+/// owner-only: the logs and recordings name the symbols the user subscribes to, so
+/// other local accounts must not read them.
+fn ensure_private_dir(path: &Path) -> io::Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
     {
-        let text = wide(&format!("{message}\n\nFlowMap will now exit."));
-        let caption = wide(title);
-        unsafe {
-            MessageBoxW(
-                None,
-                PCWSTR(text.as_ptr()),
-                PCWSTR(caption.as_ptr()),
-                MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST,
-            );
-        }
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn init_shell_log(data_dir: &Path) {
+    if let Err(err) = ensure_private_dir(data_dir) {
+        eprintln!("[flowmap] could not create {}: {err}", data_dir.display());
+    }
+    let path = data_dir.join("shell.log");
+    // Set first, so a rotation that fails is reported in the log it could not move.
+    let _ = SHELL_LOG.set(path.clone());
+    if fs::metadata(&path)
+        .map(|meta| meta.len() > SHELL_LOG_MAX_BYTES)
+        .unwrap_or(false)
+    {
+        rotate_to_previous(&path);
     }
 }
 
-/// Fatal startup failure: show the message box, exit non-zero.
-fn fatal_error(title: &str, message: &str) -> ! {
-    show_error_box(title, message);
+fn shell_log(message: &str) {
+    eprintln!("[flowmap] {message}");
+    let Some(path) = SHELL_LOG.get() else { return };
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{} {message}", utc_timestamp(now_secs()));
+    }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Show a message to the user on every platform, and log it.
+fn alert(title: &str, message: &str) {
+    shell_log(&format!("{title}: {message}"));
+    show_native_dialog(title, message);
+}
+
+/// Fatal startup failure: show the message, exit non-zero. Never returns.
+fn fatal(lang: Lang, message: &str) -> ! {
+    alert(
+        text(lang, Key::FailedTitle),
+        &format!("{message}\n\n{}", text(lang, Key::ExitNotice)),
+    );
     std::process::exit(1);
 }
 
-/// The sentinel file holds one decimal PID (plus trailing newline). Diagnostic
-/// only — the OS-held lock, not this text, decides liveness.
-#[cfg(test)]
-fn parse_lock_pid(content: &str) -> Option<u32> {
-    content.trim().parse::<u32>().ok()
-}
-
-/// Acquire the single-instance advisory lock on `flowmap.lock`.
-///
-/// The LOCK ITSELF (an OS-held advisory file lock via `File::try_lock`) is the
-/// authority, not the file's existence or contents: the OS releases it
-/// automatically when the holding process exits OR CRASHES, so there is no
-/// stale lockfile to second-guess. PID-liveness probing had two failure modes
-/// ending in the exact two-shell recording corruption this guard exists to
-/// prevent — a recycled PID reading "alive" forever, and an `OpenProcess`
-/// permission failure deleting a LIVE instance's lockfile. The PID inside the
-/// file is diagnostic text only.
-fn acquire_instance_lock(data_dir: &Path) -> Result<InstanceGuard, LockError> {
-    std::fs::create_dir_all(data_dir).map_err(LockError::Io)?;
-    let path = data_dir.join("flowmap.lock");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(LockError::Io)?;
-    match file.try_lock() {
-        Ok(()) => {
-            // Diagnostic content only — never trusted for liveness.
-            let _ = file.set_len(0);
-            let _ = write!(file, "{}", std::process::id());
-            let _ = file.sync_all();
-            Ok(InstanceGuard { _file: file, path })
-        }
-        // Another live FlowMap process holds the lock.
-        Err(std::fs::TryLockError::WouldBlock) => Err(LockError::AlreadyRunning),
-        Err(std::fs::TryLockError::Error(err)) => Err(LockError::Io(err)),
-    }
-}
-
-impl InstanceGuard {
-    /// Remove the sentinel on a clean exit so the next start doesn't have to
-    /// staleness-check it. The handle must close first — Windows refuses to
-    /// delete an open file. Best effort either way.
-    fn release(self) {
-        drop(self._file);
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 /// Release the managed sentinel, if this process holds it.
-fn release_instance_lock(app: &tauri::AppHandle) {
+fn release_instance_lock(app: &AppHandle) {
     if let Some(state) = app.try_state::<InstanceState>() {
-        let mut guard = match state.0.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if let Some(instance) = guard.take() {
+        if let Some(instance) = lock_or_recover(&state.0).take() {
             instance.release();
         }
     }
 }
 
-/// Whether teardown has begun (the monitor must not respawn into it).
-fn is_shutting_down(app: &tauri::AppHandle) -> bool {
+/// Whether teardown has begun (the supervisor must not respawn into it).
+fn is_shutting_down(app: &AppHandle) -> bool {
     app.try_state::<ShutdownState>()
         .map(|s| s.0.load(Ordering::Relaxed))
         .unwrap_or(false)
@@ -292,7 +193,7 @@ fn is_shutting_down(app: &tauri::AppHandle) -> bool {
 /// placed by the Tauri `resources` map (→ `<res>/pyruntime`) or the macOS
 /// `ditto` injection in build-dmg.sh (→ `<res>/pyruntime`) — and a defensive
 /// `resources/pyruntime` fallback covers a list-form `resources` layout.
-fn resolve_python(app: &tauri::AppHandle) -> Option<PathBuf> {
+fn resolve_python(app: &AppHandle) -> Option<PathBuf> {
     // Windows candidates FIRST on Windows; unix candidates on macOS/Linux.
     #[cfg(windows)]
     let interpreters: &[&str] = &["python.exe", "python3.13.exe"];
@@ -312,69 +213,43 @@ fn resolve_python(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
-/// One `GET /api/health` over a short-lived loopback socket; true on `200 ok`.
-fn health_ok(port: u16) -> bool {
-    let addr: SocketAddr = match format!("127.0.0.1:{port}").parse() {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
-        return false;
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(1000)));
-    let req = format!(
-        "GET /api/health HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-    );
-    if stream.write_all(req.as_bytes()).is_err() {
-        return false;
+/// Where the bundled interpreter is expected, for the missing-runtime dialog.
+fn runtime_hint() -> &'static str {
+    // `cfg!` rather than cfg-gated returns: every branch type-checks on every platform.
+    if cfg!(target_os = "macos") {
+        "Contents/Resources/pyruntime/bin/python3.13"
+    } else if cfg!(windows) {
+        "<resources>\\pyruntime\\python.exe"
+    } else {
+        "<resources>/pyruntime/bin/python3.13"
     }
-    let mut buf = String::new();
-    let _ = stream.read_to_string(&mut buf);
-    buf.contains("200") && buf.contains("\"status\":\"ok\"")
 }
 
-/// Poll `/api/health` until healthy or `timeout` elapses.
-fn wait_for_health(port: u16, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if health_ok(port) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    false
+/// Debug builds only: attach to a server the developer started themselves
+/// (for example `python -m flowmap_server` on this port) instead of spawning one.
+#[cfg(debug_assertions)]
+fn dev_sidecar_port() -> Option<u16> {
+    std::env::var("FLOWMAP_DEV_SIDECAR_PORT")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
-/// Terminate the sidecar: SIGTERM, wait up to ~2 s for a clean uvicorn shutdown,
-/// then SIGKILL. Idempotent via `Option::take` — safe to call from both the
-/// window-close handler and the app-exit event.
-fn kill_sidecar(state: &SidecarState) {
-    let mut guard = match state.0.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if let Some(mut child) = guard.take() {
-        // Ask for a graceful shutdown. On unix that's SIGTERM (uvicorn traps it
-        // and drains); Windows has no SIGTERM, so we go straight to a hard
-        // terminate — child.kill() below in the loop tail is the same call, but
-        // issuing it up front lets the try_wait loop reap the process promptly.
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
-        }
-        #[cfg(windows)]
-        {
-            let _ = child.kill();
-        }
-        for _ in 0..20 {
-            match child.try_wait() {
-                Ok(Some(_)) => return, // exited on SIGTERM
-                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-                Err(_) => break,
-            }
-        }
-        let _ = child.kill(); // SIGKILL
-        let _ = child.wait();
+#[cfg(not(debug_assertions))]
+fn dev_sidecar_port() -> Option<u16> {
+    None
+}
+
+/// The main window may load only the app's own origin. Anything else, such as a
+/// link or a redirect, is refused rather than opened in the webview that holds
+/// the session token. Windows serves the app over `http://tauri.localhost`; the
+/// other platforms use the `tauri://localhost` scheme.
+fn is_app_origin(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" => url.host_str() == Some("localhost"),
+        "http" | "https" => url.host_str() == Some("tauri.localhost"),
+        _ => url.as_str() == "about:blank",
     }
 }
 
@@ -402,276 +277,179 @@ fn utc_timestamp(unix_secs: u64) -> String {
     )
 }
 
-/// Open the sidecar log for spawn number `spawn_index` (0 = the initial
-/// spawn, >=1 = the monitor's respawn).
-///
-/// The FIRST spawn truncates (a fresh app run starts a fresh log). Every
-/// RESPAWN opens in APPEND mode and writes a dated `--- respawn #N ---`
-/// separator first: the respawn happens exactly when the sidecar died
-/// unexpectedly, and `File::create` here used to erase the Python traceback
-/// the respawn exists to explain (survey-4 M-1) — a crash loop left only the
-/// least informative (newest) log. std::fs::File writes are unbuffered, so
-/// the separator is on disk before the child's first stdout byte.
-fn open_sidecar_log(path: &Path, spawn_index: u32) -> std::io::Result<File> {
-    let mut file = if spawn_index == 0 {
-        File::create(path)? // first spawn of this app run: fresh log
-    } else {
-        OpenOptions::new().create(true).append(true).open(path)?
-    };
-    if spawn_index > 0 {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = writeln!(
-            file,
-            "\n--- respawn #{spawn_index} --- {} ---",
-            utc_timestamp(secs)
+/// Replace `path` with `bytes` via a sibling temporary file and a rename.
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, path)
+}
+
+/// Initial window size: the 1440x900 design size, capped at 90% of the primary
+/// monitor's work area, so the title bar stays on screen on small laptops.
+fn initial_window_size(app: &AppHandle) -> (f64, f64) {
+    const DESIGN: (f64, f64) = (1440.0, 900.0);
+    match app.primary_monitor() {
+        Ok(Some(monitor)) => {
+            let scale = monitor.scale_factor().max(1.0);
+            let area = monitor.work_area().size;
+            let max_w = f64::from(area.width) / scale * 0.9;
+            let max_h = f64::from(area.height) / scale * 0.9;
+            (DESIGN.0.min(max_w.floor()), DESIGN.1.min(max_h.floor()))
+        }
+        _ => DESIGN,
+    }
+}
+
+/// Paths and switches the webview commands read, managed for the whole run.
+struct ShellPaths {
+    data_dir: PathBuf,
+    /// The same switch the supervisor reads when it spawns the sidecar.
+    recording: Arc<AtomicBool>,
+}
+
+/// The Settings screen's view of recording, and the result of changing it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordingSettings {
+    enabled: bool,
+    cap_gb: f64,
+    /// Where the recordings are written: the `recordings` folder in the app-data dir.
+    folder: String,
+    /// True when the change restarted a running sidecar, so it applies now.
+    restarting: bool,
+}
+
+fn recording_settings_for(paths: &ShellPaths, restarting: bool) -> RecordingSettings {
+    RecordingSettings {
+        enabled: paths.recording.load(Ordering::Relaxed),
+        cap_gb: RECORDING_GB_CAP,
+        folder: paths.data_dir.join("recordings").display().to_string(),
+        restarting,
+    }
+}
+
+/// The recording switch and its size cap, for the Settings screen.
+#[tauri::command]
+fn recording_settings(paths: State<'_, ShellPaths>) -> RecordingSettings {
+    recording_settings_for(&paths, false)
+}
+
+/// Whether a recording change restarts the sidecar at once. The supervisor restarts a
+/// sidecar only while one is starting, live or restarting. A failed or external
+/// sidecar keeps the saved value for its next spawn, so the window must not report a
+/// restart for it.
+fn restarts_sidecar_now(phase: Option<&str>) -> bool {
+    matches!(phase, Some("starting" | "live" | "restarting"))
+}
+
+/// Turn recording on or off. The choice is saved first, then a running sidecar is
+/// restarted so the change takes effect at once. Recording stops for the time the
+/// sidecar restarts, and the window reconnects by itself.
+#[tauri::command]
+fn set_recording_enabled(
+    enabled: bool,
+    paths: State<'_, ShellPaths>,
+    supervisor: State<'_, Supervisor>,
+) -> Result<RecordingSettings, String> {
+    write_recording_pref(&paths.data_dir, enabled).map_err(|err| err.to_string())?;
+    let changed = swap_recording(&paths.recording, enabled);
+    let phase = lock_or_recover(&supervisor.status)
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let sent = changed
+        && match lock_or_recover(&supervisor.commands).as_ref() {
+            Some(tx) => tx.send(SupervisorCommand::ApplySettings).is_ok(),
+            None => false,
+        };
+    let restarting = sent && restarts_sidecar_now(phase.as_deref());
+    if changed && !restarting {
+        // The switch is saved and applies when a sidecar next starts. The window
+        // reports `restarting: false`, so it does not claim an immediate change.
+        shell_log(
+            "recording switch saved; no sidecar restarts now, so it applies at its next start",
         );
     }
-    Ok(file)
+    Ok(recording_settings_for(&paths, restarting))
 }
 
-fn spawn_sidecar(
-    app: &tauri::AppHandle,
-    port: u16,
-    spawn_index: u32,
-) -> Result<ManagedChild, Box<dyn std::error::Error>> {
-    let python = resolve_python(app)
-        .ok_or("bundled pyruntime not found (expected Contents/Resources/pyruntime)")?;
-
-    let data_dir = app_data_directory(app)?;
-    let recordings = data_dir.join("recordings");
-    std::fs::create_dir_all(&recordings)?;
-
-    let log_path = data_dir.join("flowmap-server.log");
-    let log = open_sidecar_log(&log_path, spawn_index)?;
-    let log_err = log.try_clone()?;
-
-    eprintln!("[flowmap] sidecar: {} -m flowmap_server on :{port}", python.display());
-    eprintln!("[flowmap] server log -> {}", log_path.display());
-
-    let mut command = Command::new(&python);
-    command.env_remove("FLOWMAP_BENCHMARK_PROVENANCE");
-    if app.config().identifier == BENCHMARK_IDENTIFIER {
-        command.args(["-I", "-B"])
-            .env("FLOWMAP_BENCHMARK_PROVENANCE", data_dir.join("sidecar-provenance.json"));
+/// The file manager command for the platform.
+fn folder_opener() -> &'static str {
+    if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-        command.creation_flags(CREATE_NO_WINDOW.0);
-    }
-    let child = command.arg("-m")
-        .arg("flowmap_server")
-        .env("FLOWMAP_HOST", "127.0.0.1")
-        .env("FLOWMAP_PORT", port.to_string())
-        .env("FLOWMAP_RECORDING_ENABLED", "1")
-        .env("FLOWMAP_DATA_DIR", &recordings)
-        // Isolate from any user-level PYTHON* env that could shadow the bundle.
-        .env_remove("PYTHONPATH")
-        .env_remove("PYTHONHOME")
-        .current_dir(&data_dir)
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err))
-        .spawn()?;
-    ManagedChild::new(child)
 }
 
-/// Periodically check the sidecar and respawn it ONCE on the same port if it
-/// dies mid-session (same port so the webview's injected `__FLOWMAP_SERVER__`
-/// URL stays valid). Exits cleanly on shutdown via `ShutdownState`. Status is
-/// surfaced through the log only — this shell has no webview event channel,
-/// so there is nothing else to append to.
-///
-/// Windows job ownership also reaps a respawn if the shell exits between the
-/// shutdown checks. Unix retains the explicit signal/wait teardown below.
-fn spawn_sidecar_monitor(handle: tauri::AppHandle, port: u16) {
+/// Open the app-data folder, which holds the logs and the recordings. The file
+/// manager runs detached, so a slow one never blocks the window.
+#[tauri::command]
+fn open_log_folder(paths: State<'_, ShellPaths>) -> Result<(), String> {
+    let mut child = Command::new(folder_opener())
+        .arg(&paths.data_dir)
+        .spawn()
+        .map_err(|err| err.to_string())?;
     std::thread::spawn(move || {
-        let mut respawned = false;
-        loop {
-            std::thread::sleep(MONITOR_INTERVAL);
-            if is_shutting_down(&handle) {
-                return;
-            }
-            let Some(state) = handle.try_state::<SidecarState>() else {
-                return; // not managed yet / already torn down
-            };
-            let exited = {
-                let mut guard = match state.0.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                match guard.as_mut() {
-                    Some(child) => matches!(child.try_wait(), Ok(Some(_))),
-                    // Taken by the shutdown path — nothing left to watch.
-                    None => true,
-                }
-            };
-            if !exited {
-                continue;
-            }
-            if is_shutting_down(&handle) {
-                return;
-            }
-            if respawned {
-                eprintln!("[flowmap] sidecar exited again after respawn; monitor standing down");
-                return;
-            }
-            respawned = true;
-            eprintln!("[flowmap] sidecar exited unexpectedly; one respawn on :{port}");
-            // spawn_index 1 = respawn: the log is APPENDED to (never
-            // truncated), so the crashed process's traceback survives.
-            let child = match spawn_sidecar(&handle, port, 1) {
-                Ok(c) => c,
-                Err(err) => {
-                    eprintln!("[flowmap] sidecar respawn failed: {err}; not retrying");
-                    return;
-                }
-            };
-            if is_shutting_down(&handle) {
-                // Shutdown raced the respawn: reap what we just started.
-                let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
-                return;
-            }
-            let state = handle.state::<SidecarState>();
-            {
-                let mut guard = match state.0.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                *guard = Some(child);
-            }
-            eprintln!("[flowmap] sidecar respawned on http://127.0.0.1:{port}");
-            if is_shutting_down(&handle) {
-                // Teardown began while we stored the child; kill_sidecar in the
-                // exit handlers may already have run. Reap the straggler here.
-                kill_sidecar(&state);
-                return;
-            }
-        }
+        let _ = child.wait();
     });
+    Ok(())
 }
 
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            sidecar_status,
+            retry_sidecar,
+            recording_settings,
+            set_recording_enabled,
+            open_log_folder
+        ])
         .setup(|app| {
-            let handle = app.handle().clone();
-
-            // Single-instance guard first: two shells would race the recorder's
-            // disk-scan part numbering and corrupt each other's recordings.
-            let data_dir = match app_data_directory(&handle) {
-                Ok(dir) => dir,
-                Err(err) => fatal_error(
-                    "FlowMap failed to start",
-                    &format!("could not resolve the app data directory: {err}"),
-                ),
-            };
-            match acquire_instance_lock(&data_dir) {
-                Ok(guard) => {
-                    app.manage(InstanceState(Mutex::new(Some(guard))));
-                }
-                Err(LockError::AlreadyRunning) => {
-                    show_error_box(
-                        "FlowMap",
-                        "FlowMap is already running.\n\nClose the other FlowMap window first. If none is visible, a stuck FlowMap process may still be running — quit it from the task manager.",
-                    );
-                    std::process::exit(0);
-                }
-                // Fail open on unexpected filesystem errors: a broken sentinel
-                // must not brick the app — log loudly instead.
-                Err(LockError::Io(err)) => {
-                    eprintln!(
-                        "[flowmap] instance lock unavailable ({err}); continuing without single-instance protection"
-                    );
-                }
-            }
-
-            let port = match free_loopback_port() {
-                Ok(port) => port,
-                Err(err) => fatal_error(
-                    "FlowMap failed to start",
-                    &format!("could not find a free loopback port: {err}"),
-                ),
-            };
-            let child = match spawn_sidecar(&handle, port, 0) {
-                Ok(child) => child,
-                Err(err) => fatal_error(
-                    "FlowMap failed to start",
-                    &format!("could not launch the bundled FlowMap server: {err}"),
-                ),
-            };
-            let benchmark = handle.config().identifier == BENCHMARK_IDENTIFIER;
-            if benchmark {
-                let info = serde_json::json!({
-                    "identifier": BENCHMARK_IDENTIFIER, "rootPid": std::process::id(),
-                    "sidecarPid": child.id(), "profile": data_dir,
-                    "interpreter": resolve_python(&handle),
-                    "webviewCache": data_dir.join("webview-cache"), "serverPort": port,
-                    "recordingEnabled": true,
-                });
-                std::fs::write(data_dir.join("native-info.json"), info.to_string())?;
-            }
-            app.manage(SidecarState(Mutex::new(Some(child))));
-            app.manage(ShutdownState(AtomicBool::new(false)));
-
-            // Inject the absolute server origin before the client JS runs.
-            let init = format!("window.__FLOWMAP_SERVER__ = \"http://127.0.0.1:{port}\"; window.__FLOWMAP_BENCHMARK__ = {benchmark};");
-            let mut window_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("FlowMap")
-                .inner_size(1440.0, 900.0)
-                .min_inner_size(900.0, 600.0)
-                .initialization_script(&init);
-            if benchmark {
-                window_builder = window_builder.title("FlowMap Benchmark")
-                    .inner_size(1920.0, 1080.0)
-                    .decorations(false)
-                    .resizable(false)
-                    .shadow(false)
-                    .data_directory(data_dir.join("webview-cache"));
-            }
-            if let Err(err) = window_builder.build()
-            {
-                fatal_error(
-                    "FlowMap failed to start",
-                    &format!("could not create the main window: {err}"),
-                );
-            }
-
-            // Log first health so verification can confirm the bundled server
-            // (not a stray dev server) is what the webview talks to.
-            std::thread::spawn(move || {
-                if wait_for_health(port, Duration::from_secs(30)) {
-                    eprintln!("[flowmap] sidecar healthy on http://127.0.0.1:{port}");
-                } else {
-                    eprintln!("[flowmap] sidecar health timed out; client will keep retrying");
-                }
-            });
-
-            // Watch the sidecar for the rest of the session (one respawn).
-            spawn_sidecar_monitor(handle, port);
+            setup_shell(app);
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Single-window app: closing the window quits and tears down the
-                // sidecar (the Exit event below performs the actual kill).
+                // Single-window app: closing the window quits. The stop runs on its
+                // own thread because it can take up to GRACEFUL_STOP, and the event
+                // thread must stay responsive while it does.
                 let handle = window.app_handle().clone();
                 if let Some(state) = handle.try_state::<ShutdownState>() {
                     state.0.store(true, Ordering::Relaxed);
                 }
-                if let Some(state) = handle.try_state::<SidecarState>() {
-                    kill_sidecar(&state);
+                // Keep the placement for the next launch (not for the benchmark frame).
+                if handle.config().identifier != BENCHMARK_IDENTIFIER {
+                    if let (Some(paths), Some(placed)) = (
+                        handle.try_state::<ShellPaths>(),
+                        current_window_state(window),
+                    ) {
+                        if let Err(err) = write_window_state(&paths.data_dir, placed) {
+                            shell_log(&format!("could not save the window placement: {err}"));
+                        }
+                    }
                 }
-                release_instance_lock(&handle);
-                handle.exit(0);
+                std::thread::spawn(move || {
+                    if let Some(state) = handle.try_state::<SidecarState>() {
+                        kill_sidecar(&state);
+                    }
+                    release_instance_lock(&handle);
+                    handle.exit(0);
+                });
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building FlowMap")
+        .unwrap_or_else(|err| {
+            // The build runs before any window exists, so a failure is shown in a
+            // native dialog rather than panicking, which a GUI build would hide.
+            let lang = detect_lang();
+            fatal(
+                lang,
+                &text(lang, Key::Build).replace("{}", &err.to_string()),
+            )
+        })
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<ShutdownState>() {
@@ -685,99 +463,335 @@ fn main() {
         });
 }
 
+/// Start the shell from the setup hook: the single-instance guard, the sidecar (or
+/// the developer's own), and the main window. Every failure ends in a dialog
+/// through `fatal`, because a panic in the GUI build is silent.
+fn setup_shell(app: &mut tauri::App) {
+    let handle = app.handle().clone();
+    let lang = detect_lang();
+
+    // Single-instance guard first: two shells would race the recorder's
+    // disk-scan part numbering and corrupt each other's recordings.
+    let data_dir = match app_data_directory(&handle) {
+        Ok(dir) => dir,
+        Err(err) => fatal(
+            lang,
+            &text(lang, Key::DataDir).replace("{}", &err.to_string()),
+        ),
+    };
+    init_shell_log(&data_dir);
+    shell_log(&format!("FlowMap {} starting", env!("CARGO_PKG_VERSION")));
+    match acquire_instance_lock(&data_dir) {
+        Ok(guard) => {
+            app.manage(InstanceState(Mutex::new(Some(guard))));
+        }
+        Err(LockError::AlreadyRunning) => {
+            if !focus_existing_window(lock_holder_pid(&data_dir)) {
+                alert("FlowMap", text(lang, Key::AlreadyRunning));
+            }
+            std::process::exit(0);
+        }
+        // Fail open on unexpected filesystem errors: a broken sentinel
+        // must not brick the app — log loudly instead.
+        Err(LockError::Io(err)) => {
+            shell_log(&format!(
+                "instance lock unavailable ({err}); continuing without single-instance protection"
+            ));
+        }
+    }
+
+    let benchmark = handle.config().identifier == BENCHMARK_IDENTIFIER;
+    app.manage(ShutdownState(AtomicBool::new(false)));
+    app.manage(Supervisor::default());
+    let recording = Arc::new(AtomicBool::new(read_recording_pref(&data_dir)));
+    app.manage(ShellPaths {
+        data_dir: data_dir.clone(),
+        recording: Arc::clone(&recording),
+    });
+
+    // The origin the webview talks to, and the token that proves the webview is this
+    // shell's client. Both are injected before the client JS runs.
+    let (port, token) = match dev_sidecar_port() {
+        Some(port) => {
+            attach_developer_sidecar(&handle, port);
+            (port, None)
+        }
+        None => {
+            let (port, token) =
+                start_bundled_sidecar(&handle, &data_dir, lang, benchmark, &recording);
+            (port, Some(token))
+        }
+    };
+    let mut init = format!(
+        "window.__FLOWMAP_SERVER__ = \"http://127.0.0.1:{port}\"; window.__FLOWMAP_BENCHMARK__ = {benchmark};"
+    );
+    if let Some(token) = &token {
+        init.push_str(&format!(" window.__FLOWMAP_SESSION_TOKEN__ = \"{token}\";"));
+    }
+    open_main_window(app, lang, benchmark, &data_dir, &init);
+}
+
+/// Debug builds: the window attaches to a server the developer started. No session
+/// token is injected, and the supervisor does not manage that server.
+fn attach_developer_sidecar(handle: &AppHandle, port: u16) {
+    shell_log(&format!(
+        "using the developer sidecar on :{port}; no session token"
+    ));
+    let status = serde_json::json!({
+        "state": Phase::External.as_str(),
+        "port": port,
+        "logPath": null,
+        "detail": "developer-run sidecar",
+    });
+    *lock_or_recover(&handle.state::<Supervisor>().status) = status;
+}
+
+/// Release path: pick the port and the session token, spawn the bundled server and
+/// hand it to the supervisor. Returns the port and the token. The window only
+/// receives the token once the OS confirms that the sidecar owns the port.
+fn start_bundled_sidecar(
+    handle: &AppHandle,
+    data_dir: &Path,
+    lang: Lang,
+    benchmark: bool,
+    recording: &Arc<AtomicBool>,
+) -> (u16, String) {
+    let port = match free_loopback_port() {
+        Ok(port) => port,
+        Err(err) => fatal(lang, &text(lang, Key::Port).replace("{}", &err.to_string())),
+    };
+    let token = match new_session_token() {
+        Ok(token) => token,
+        Err(err) => fatal(
+            lang,
+            &text(lang, Key::Token).replace("{}", &err.to_string()),
+        ),
+    };
+    let python = match resolve_python(handle) {
+        Some(python) => python,
+        None => fatal(
+            lang,
+            &text(lang, Key::RuntimeMissing).replace("{}", runtime_hint()),
+        ),
+    };
+    let launch = Launch {
+        python,
+        data_dir: data_dir.to_path_buf(),
+        log_path: data_dir.join("flowmap-server.log"),
+        port,
+        token: token.clone(),
+        benchmark,
+        lang,
+        recording: Arc::clone(recording),
+    };
+    let mut child = match spawn_sidecar(&launch, 0) {
+        Ok(child) => child,
+        Err(err) => {
+            let log = text(lang, Key::LogAt).replace("{}", &launch.log_path.display().to_string());
+            fatal(
+                lang,
+                &format!(
+                    "{}\n\n{log}",
+                    text(lang, Key::Spawn).replace("{}", &err.to_string())
+                ),
+            );
+        }
+    };
+    // The window receives the token only once the operating system confirms that this
+    // child owns the port. A process that took the port first never sees the token,
+    // and the app stops with a dialog.
+    if let Err(err) = listener::wait_until_owned(&mut child, port, STARTUP_HEALTH_TIMEOUT) {
+        shell_log(&format!("the sidecar did not take its port: {err}"));
+        stop_child(&mut child, GRACEFUL_STOP);
+        let log = text(lang, Key::LogAt).replace("{}", &launch.log_path.display().to_string());
+        fatal(
+            lang,
+            &format!(
+                "{}\n\n{log}",
+                text(lang, Key::NotListening).replace("{}", &err)
+            ),
+        );
+    }
+    if benchmark {
+        let info = serde_json::json!({
+            "identifier": BENCHMARK_IDENTIFIER, "rootPid": std::process::id(),
+            "sidecarPid": child.id(), "profile": data_dir,
+            "interpreter": resolve_python(handle),
+            "webviewCache": data_dir.join("webview-cache"), "serverPort": port,
+            "recordingEnabled": true,
+        });
+        if let Err(err) = fs::write(data_dir.join("native-info.json"), info.to_string()) {
+            // A `?` here would end setup silently in the GUI build, so the sidecar is
+            // stopped and the failure is shown instead.
+            stop_child(&mut child, GRACEFUL_STOP);
+            fatal(
+                lang,
+                &text(lang, Key::BenchmarkInfo).replace("{}", &err.to_string()),
+            );
+        }
+    }
+    handle.manage(SidecarState(Mutex::new(Some(child))));
+    publish(
+        handle,
+        &launch,
+        Phase::Starting,
+        "spawned; waiting for /api/health",
+    );
+    let (tx, rx) = mpsc::channel();
+    *lock_or_recover(&handle.state::<Supervisor>().commands) = Some(tx);
+    spawn_supervisor(handle.clone(), launch, rx);
+    (port, token)
+}
+
+/// The main window: the last placement when it still fits a connected monitor,
+/// otherwise the default size, centred. The benchmark build keeps its fixed frame.
+fn open_main_window(
+    app: &mut tauri::App,
+    lang: Lang,
+    benchmark: bool,
+    data_dir: &Path,
+    init: &str,
+) {
+    let handle = app.handle().clone();
+    let placement = if benchmark {
+        None
+    } else {
+        read_window_state(data_dir).and_then(|saved| place_window(saved, &logical_areas(&handle)))
+    };
+    let (width, height) = match placement {
+        Some(placed) => (placed.width, placed.height),
+        None => initial_window_size(&handle),
+    };
+    let mut window_builder =
+        WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            .title("FlowMap")
+            .inner_size(width, height)
+            .min_inner_size(900.0, 600.0)
+            // The default dark theme's background (`--bg` in client/src/theme/themes.css),
+            // so the first paint is not white.
+            .background_color(tauri::window::Color(8, 27, 55, 255))
+            .initialization_script(init)
+            .on_navigation(is_app_origin);
+    window_builder = match placement {
+        Some(placed) => window_builder.position(placed.x, placed.y),
+        None => window_builder.center(),
+    };
+    if benchmark {
+        window_builder = window_builder
+            .title("FlowMap Benchmark")
+            .inner_size(1920.0, 1080.0)
+            .decorations(false)
+            .resizable(false)
+            .shadow(false)
+            .data_directory(data_dir.join("webview-cache"));
+    }
+    if let Err(err) = window_builder.build() {
+        // The sidecar is already running. Stop it before exiting: on macOS the stdin
+        // EOF is its only orphan guard, and the process would otherwise outlive the shell.
+        if let Some(state) = handle.try_state::<SidecarState>() {
+            kill_sidecar(&state);
+        }
+        fatal(
+            lang,
+            &text(lang, Key::Window).replace("{}", &err.to_string()),
+        );
+    }
+}
+
+/// Application data dir (`%APPDATA%\<id>`, `~/Library/Application Support/<id>`,
+/// `~/.local/share/<id>`), or the isolated benchmark profile for the benchmark build.
+fn app_data_directory(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if app.config().identifier != BENCHMARK_IDENTIFIER {
+        if std::env::var_os("FLOWMAP_BENCHMARK_PROFILE").is_some()
+            || std::env::var_os("FLOWMAP_BENCHMARK_OWNER").is_some()
+        {
+            return Err(
+                "benchmark environment requires the isolated benchmark build identity".into(),
+            );
+        }
+        return Ok(app.path().app_data_dir()?);
+    }
+    let path = PathBuf::from(std::env::var("FLOWMAP_BENCHMARK_PROFILE")?);
+    let token = std::env::var("FLOWMAP_BENCHMARK_OWNER")?;
+    if !path.is_absolute()
+        || token.len() < 16
+        || std::fs::read_to_string(path.join(".flowmap-benchmark-owner"))? != token
+    {
+        return Err("benchmark requires an absolute owned profile and matching owner token".into());
+    }
+    Ok(path.canonicalize()?)
+}
+
+const BENCHMARK_IDENTIFIER: &str = "com.nazmiefearmutcu.flowmap.benchmark";
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
+    #[cfg(unix)]
     #[test]
-    fn closing_the_sidecar_job_terminates_its_process() {
-        use std::os::windows::process::CommandExt;
-        use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-        let mut child = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"])
-            .creation_flags(CREATE_NO_WINDOW.0).spawn().expect("test child");
-        let job = SidecarJob::attach(&child).expect("attach child to private job");
-        assert!(child.try_wait().unwrap().is_none());
-        drop(job);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if child.try_wait().unwrap().is_some() { break; }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("child survived its job owner");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+    fn the_app_data_folder_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("flowmap-private-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        ensure_private_dir(&dir).expect("create the folder");
+        let mode = fs::metadata(&dir)
+            .expect("stat the folder")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "other local accounts must not read it");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn lock_pid_parses_decimal_with_newline() {
-        assert_eq!(parse_lock_pid("1234\n"), Some(1234));
-        assert_eq!(parse_lock_pid(" 42 "), Some(42));
-        assert_eq!(parse_lock_pid(""), None);
-        assert_eq!(parse_lock_pid("not-a-pid"), None);
-        assert_eq!(parse_lock_pid("4294967296"), None); // out of u32 range
+    fn session_token_is_256_bits_of_lowercase_hex() {
+        let token = new_session_token().expect("os randomness");
+        assert_eq!(token.len(), 64);
+        assert!(token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        assert_ne!(token, new_session_token().expect("os randomness"));
     }
 
     #[test]
-    fn a_second_lock_acquirement_reports_already_running() {
-        // The real two-instance scenario, in-process: the first guard HOLDS the
-        // OS lock, so a second acquirement on the same path must be refused.
-        let dir = std::env::temp_dir().join(format!("flowmap-lock-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _first = acquire_instance_lock(&dir).expect("first acquire");
-        match acquire_instance_lock(&dir) {
-            Err(LockError::AlreadyRunning) => {}
-            other => panic!("expected AlreadyRunning, got {other:?}"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+    fn only_the_app_origin_may_load_in_the_main_window() {
+        let parse = |text: &str| tauri::Url::parse(text).expect("a valid URL");
+        assert!(is_app_origin(&parse("tauri://localhost/index.html")));
+        assert!(is_app_origin(&parse("http://tauri.localhost/index.html")));
+        assert!(is_app_origin(&parse("about:blank")));
+        assert!(!is_app_origin(&parse("https://example.com/")));
+        assert!(
+            !is_app_origin(&parse("http://127.0.0.1:49152/api/health")),
+            "the sidecar is not a page the window may navigate to"
+        );
+        assert!(!is_app_origin(&parse("tauri://example.com/")));
+        assert!(!is_app_origin(&parse("file:///etc/hosts")));
+        assert!(!is_app_origin(&parse("javascript:alert(1)")));
     }
 
     #[test]
-    fn respawn_log_opens_in_append_mode_and_keeps_crash_evidence() {
-        // survey-4 M-1 regression: the respawn monitor used to reopen the log
-        // with File::create (truncate), erasing the crash traceback it exists
-        // to explain. A respawn must APPEND and mark the boundary.
-        let dir = std::env::temp_dir().join(format!("flowmap-log-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("flowmap-server.log");
-        std::fs::write(&path, "Traceback (most recent call last): ...\n").unwrap();
-
-        {
-            let _log = open_sidecar_log(&path, 1).expect("respawn open");
-        } // drop before reading
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("Traceback (most recent call last)"));
-        assert!(contents.contains("--- respawn #1 ---"));
-        assert!(contents.contains("T") && contents.ends_with("Z ---\n")); // dated
-
-        // A second respawn appends again, keeping everything before it.
-        {
-            let _log = open_sidecar_log(&path, 2).expect("second respawn open");
-        }
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("Traceback (most recent call last)"));
-        assert!(contents.contains("--- respawn #1 ---"));
-        assert!(contents.contains("--- respawn #2 ---"));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn the_licence_files_in_the_bundle_are_the_repository_ones() {
+        // The installers ship these copies (tauri.conf.json bundle.resources), so
+        // they must not drift from the files the release describes.
+        assert_eq!(
+            include_bytes!("../resources/LICENSE")[..],
+            include_bytes!("../../../LICENSE")[..]
+        );
+        assert_eq!(
+            include_bytes!("../resources/NOTICE")[..],
+            include_bytes!("../../../NOTICE")[..]
+        );
     }
 
     #[test]
-    fn first_spawn_of_a_run_starts_a_fresh_log() {
-        // spawn_index 0 keeps the historical truncate-on-launch behavior: one
-        // fresh log per app run, no unbounded growth across runs.
-        let dir = std::env::temp_dir().join(format!("flowmap-log-test0-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("flowmap-server.log");
-        std::fs::write(&path, "stale bytes from the previous run").unwrap();
-        {
-            let _log = open_sidecar_log(&path, 0).expect("first open");
+    fn a_settings_change_reports_a_restart_only_where_the_supervisor_restarts() {
+        for phase in ["starting", "live", "restarting"] {
+            assert!(restarts_sidecar_now(Some(phase)), "{phase} restarts");
         }
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(contents, "");
-        let _ = std::fs::remove_dir_all(&dir);
+        for phase in ["failed", "external"] {
+            assert!(!restarts_sidecar_now(Some(phase)), "{phase} does not");
+        }
+        assert!(!restarts_sidecar_now(None), "no status yet");
     }
 
     #[test]

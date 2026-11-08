@@ -1,23 +1,24 @@
+import type { LooseProbe } from './probe';
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Campaign 2026-09-11-chart, lane E — FOLLOW/TRACK regression specs (lane C fix
- * + lane B2's CP1 APIs), driven on the REAL sim feed (`/?spy=1`, `__flowmapLive`).
+ * FOLLOW and TRACK regression specs, driven on the REAL sim feed (`/?spy=1`,
+ * `__flowmapLive`).
  *
  * Pins the owner-reported "TRACK PRICE çalışmıyor" bug chain with two specs:
  *
  *  1. Off-edge composite: LOCK via the AUTO chip (FIT→LOCK) must persist
- *     `followPrice:false` to localStorage (lane C D4 — the chip used to bypass
+ *     `followPrice:false` to localStorage (the chip used to bypass
  *     settings); scrolling back in time with a canvas drag must surface BOTH the
  *     GO LIVE and TRACK PRICE chips; clicking TRACK PRICE must set
  *     `priceFollow==='track'` AND return to the live edge (`following===true`)
- *     via the App's composite action (lane C CP1) instead of dying silently; the
+ *     via the App's composite action instead of dying silently; the
  *     AUTO chip must settle on `TRACK` (never a `TRK·WAIT` limbo).
  *
  *  2. Edge-visible control: with the live edge on screen, LOCK then TRACK must
  *     actually GLIDE the camera (`rowCenter` approaches the tracked row) when the
- *     tracked row sits outside the deadband. Conditional by design (survey S1
- *     verified the glide works; the deadband can legitimately be satisfied) — if
+ *     tracked row sits outside the deadband. Conditional by design (the glide
+ *     was verified earlier; the deadband can legitimately be satisfied) — if
  *     the deadband is not exceeded the spec asserts no movement and annotates.
  *
  * No wall-clock phase pins: every wait is a condition poll. The AUTO chip label
@@ -37,7 +38,7 @@ async function bootSim(page: Page): Promise<void> {
   await page.goto('/?spy=1');
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       if (!live || !live.renderer) return false;
       const range = live.renderer.residentRange();
       return live.store.getState().status === 'live' && range !== null && range.count > 5;
@@ -50,7 +51,7 @@ async function bootSim(page: Page): Promise<void> {
 /** Read the live follow state through the public renderer getters. */
 function readFollow(page: Page): Promise<FollowState> {
   return page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const v = r.viewSnapshot;
     return {
       priceFollow: r.priceFollow,
@@ -95,7 +96,7 @@ test('TRACK PRICE off-edge: LOCK persists, chips appear, composite returns to th
     .poll(async () => (await readFollow(page)).priceFollow, { timeout: 5_000 })
     .toBe('off');
 
-  // Persistence (lane C D4): the chip must write the settings object, or the
+  // Persistence: the chip must write the settings object, or the
   // drawer + the next boot disagree with the camera (the reported reload bug).
   await expect
     .poll(
@@ -126,7 +127,7 @@ test('TRACK PRICE off-edge: LOCK persists, chips appear, composite returns to th
   await expect(page.getByTestId('chip-go-live')).toBeVisible({ timeout: 5_000 });
   await expect(page.getByTestId('chip-track-price')).toBeVisible({ timeout: 5_000 });
 
-  // --- TRACK PRICE composite (lane C CP1): track + return to the live edge. ----
+  // --- TRACK PRICE composite: track + return to the live edge. ----
   await page.getByTestId('chip-track-price').click();
   await expect
     .poll(async () => (await readFollow(page)).priceFollow, { timeout: 5_000 })
@@ -169,7 +170,7 @@ test('TRACK with a visible edge glides the camera to the tracked row (or honestl
   // Wait for a live edge that is genuinely on screen.
   await page.waitForFunction(
     () => {
-      const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+      const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
       return r.newestColSeq > 20 && r.liveEdgeVisible;
     },
     undefined,
@@ -188,7 +189,7 @@ test('TRACK with a visible edge glides the camera to the tracked row (or honestl
     .toBe('off');
 
   const framed = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const n = r.newestColSeq;
     // Right edge = newest + 200: the edge stays visible while the glide runs.
     r.setViewForTest(Math.max(0, n - 200), 400, 0, 8);
@@ -208,7 +209,7 @@ test('TRACK with a visible edge glides the camera to the tracked row (or honestl
   const moved = await page
     .waitForFunction(
       (s) => {
-        const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+        const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
         const v = r.viewSnapshot;
         return v.rowOffset + v.rowScale / 2 > s + 2;
       },

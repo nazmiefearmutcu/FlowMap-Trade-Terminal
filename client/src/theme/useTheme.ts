@@ -1,6 +1,6 @@
 /**
- * Theme application + persistence (lane CE) — the ONE theme store (fix
- * 2026-09-10 F1-4: single source of truth; there is no second hook state).
+ * Theme application + persistence — the ONE theme store (single source of
+ * truth; there is no second hook state).
  *
  * - Module state `current` resolves LAZILY: stored value (localStorage
  *   `flowmap.theme`) → first-run `prefers-color-scheme` (light → `paper`) →
@@ -18,8 +18,7 @@
  *   prefers-color-scheme seed, so the OS changing its mind later never
  *   silently flips the app.
  * - `cycleTheme()` advances through {@link THEME_IDS} reading the store; the
- *   `T` shortcut is wired by {@link attachThemeKey} (INT mounts it in
- *   App.tsx — see MOUNT-SNIPPET-CE).
+ *   `T` shortcut is wired by {@link attachThemeKey}, which the app mounts.
  * - `useTheme()` subscribes via `useSyncExternalStore` and returns the LIVE
  *   value (initial = the resolved current, never a blind default), zero deps.
  */
@@ -27,6 +26,7 @@
 import { useSyncExternalStore } from 'react';
 
 import { classifyTarget } from '../input/keys';
+import { isSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import {
   DEFAULT_THEME_ID,
   isThemeId,
@@ -168,7 +168,8 @@ export function getCanvasPalette(id: ThemeId = ensureCurrent()): CanvasPalette {
 /**
  * `T` → cycle theme. Skips text-entry surfaces and open dialogs (same
  * classification as the app's other global keys, via input/keys). Bare `t`
- * only — chords stay with the browser. Returns a disposer.
+ * only, and only while single-key shortcuts are enabled; chords stay with the
+ * browser. Returns a disposer.
  */
 export function attachThemeKey(
   target: Pick<Window, 'addEventListener' | 'removeEventListener'> = window,
@@ -177,9 +178,13 @@ export function attachThemeKey(
     const e = ev as KeyboardEvent;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key !== 't' && e.key !== 'T') return;
+    // Bare-key shortcuts can be switched off (WCAG 2.1.4); respect that here too.
+    if (!isSingleKeyShortcutsEnabled()) return;
     const ctx = classifyTarget(e.target);
     if (ctx.editable || ctx.dialog) return;
     e.preventDefault();
+    // Auto-repeat would cycle through every theme while the key is held.
+    if (e.repeat) return;
     cycleTheme();
   };
   target.addEventListener('keydown', onKeyDown);

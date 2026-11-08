@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,7 +11,9 @@ import sys
 import tempfile
 import unittest
 
-from validate_release_assets import ReleaseValidationError, validate_release_assets
+from validate_release_assets import (
+    RELEASE_FILES, ReleaseValidationError, validate_release_assets,
+)
 
 
 INSTALLERS = (
@@ -25,12 +28,14 @@ INSTALLERS = (
 )
 
 
-def manifest(names=INSTALLERS):
-    return "".join(f"{hashlib.sha256(name.encode()).hexdigest()}  {name}\n" for name in names)
+def manifest(names=INSTALLERS, files=RELEASE_FILES):
+    return "".join(
+        f"{hashlib.sha256(name.encode()).hexdigest()}  {name}\n" for name in (*names, *files)
+    )
 
 
-def release(names=INSTALLERS):
-    return {"assets": [{"name": name} for name in (*names, "SHA256SUMS")]}
+def release(names=INSTALLERS, files=RELEASE_FILES):
+    return {"assets": [{"name": name} for name in (*names, *files, "SHA256SUMS")]}
 
 
 def record_variants(text):
@@ -57,6 +62,21 @@ def workflow_run(workflow, step_name):
     return "\n".join(body) + "\n"
 
 
+def workflow_bash():
+    """Return a bash that can run the workflow's shell block, or None.
+
+    On Windows a `bash` found on PATH can be the WSL launcher in System32, which
+    runs in another filesystem namespace and fails confusingly, so only Git for
+    Windows' bash is accepted there.
+    """
+    if sys.platform == "win32":
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        candidate = Path(program_files) / "Git" / "bin" / "bash.exe"
+        return candidate if candidate.is_file() else None
+    found = shutil.which("bash")
+    return Path(found) if found else None
+
+
 class ReleaseAssetsTests(unittest.TestCase):
     def test_all_eight_and_ancillary_assets_are_allowed(self):
         names = (
@@ -65,9 +85,9 @@ class ReleaseAssetsTests(unittest.TestCase):
         )
         validate_release_assets("v1.5.1", manifest(names), release(names))
 
-    def test_hotfix_tag_and_binary_checksums(self):
-        names = tuple(name.replace("1.5.1", "1.5.1.2") for name in INSTALLERS)
-        validate_release_assets("v1.5.1.2", manifest(names).replace("  ", " *"), release(names))
+    def test_patch_hotfix_tag_and_binary_checksums(self):
+        names = tuple(name.replace("1.5.1", "1.5.2") for name in INSTALLERS)
+        validate_release_assets("v1.5.2", manifest(names).replace("  ", " *"), release(names))
 
     def test_missing_appimage_in_manifest_cannot_use_stale_uploaded_copy(self):
         with self.assertRaisesRegex(
@@ -89,6 +109,18 @@ class ReleaseAssetsTests(unittest.TestCase):
             ):
                 with self.subTest(missing=missing, checksums_complete=checksum_text == manifest()):
                     with self.assertRaisesRegex(ReleaseValidationError, "missing installers"):
+                        validate_release_assets("v1.5.1", checksum_text, assets)
+
+    def test_release_files_are_required_on_both_sides(self):
+        for missing in RELEASE_FILES:
+            kept = tuple(name for name in RELEASE_FILES if name != missing)
+            for checksum_text, assets in (
+                (manifest(files=kept), release()), (manifest(), release(files=kept))
+            ):
+                with self.subTest(missing=missing, checksums_complete=checksum_text == manifest()):
+                    with self.assertRaisesRegex(
+                        ReleaseValidationError, "missing release files: " + re.escape(missing) + "$"
+                    ):
                         validate_release_assets("v1.5.1", checksum_text, assets)
 
     def test_duplicate_and_conflicting_checksum_names_fail(self):
@@ -145,7 +177,8 @@ class ReleaseAssetsTests(unittest.TestCase):
             )
 
     def test_invalid_tag_and_asset_json_fail_closed(self):
-        for tag in ("1.5.1", "v1.5.1-beta", "v1.5", "v1.5.1; echo bad"):
+        # Four-part hotfix tags are rejected: no buildable manifest carries them.
+        for tag in ("1.5.1", "v1.5.1-beta", "v1.5", "v1.5.1.2", "v1.5.1; echo bad"):
             with self.subTest(tag=tag), self.assertRaisesRegex(ReleaseValidationError, "release tag"):
                 validate_release_assets(tag, manifest(), release())
         for assets in (
@@ -213,29 +246,31 @@ class ReleaseAssetsTests(unittest.TestCase):
                         self.assertIn("keep the release draft", result.stderr)
 
     def test_actual_workflow_shell_blocks_invalid_checksum_records(self):
-        shell = Path(r"C:\Program Files\Git\bin\bash.exe")
-        if not shell.is_file():
-            found = shutil.which("bash")
-            if not found:
-                self.skipTest("Bash is needed to execute the actual workflow shell")
-            shell = Path(found)
+        shell = workflow_bash()
+        if shell is None:
+            # A silent skip is how a release gate goes untested: a CI run must
+            # fail instead of passing without executing the workflow shell.
+            message = "Bash is needed to execute the actual workflow shell"
+            if os.environ.get("CI"):
+                self.fail(message)
+            self.skipTest(message)
         source = Path(__file__).resolve().parents[1]
         workflow = (source / ".github/workflows/release.yml").read_text(encoding="utf-8")
         script = workflow_run(workflow, "Require all eight installers before publishing")
         script += workflow_run(workflow, "Publish the release")
         contents = b"offline checksum record fixture\n"
         digest = hashlib.sha256(contents).hexdigest()
-        text = "".join(f"{digest}  {name}\n" for name in INSTALLERS)
+        text = "".join(f"{digest}  {name}\n" for name in (*INSTALLERS, *RELEASE_FILES))
         for label, checksum_text, accepted in record_variants(text):
             with self.subTest(variant=label):
-                with tempfile.TemporaryDirectory(prefix="task9-records-", dir=source.parent) as temporary:
+                with tempfile.TemporaryDirectory(prefix="release-records-") as temporary:
                     root = Path(temporary)
                     (root / "scripts").mkdir()
                     shutil.copyfile(source / "scripts/validate_release_assets.py",
                                     root / "scripts/validate_release_assets.py")
                     (root / "SHA256SUMS").write_bytes(checksum_text.encode("utf-8"))
                     (root / "assets.json").write_text(json.dumps(release()), encoding="utf-8")
-                    for name in INSTALLERS:
+                    for name in (*INSTALLERS, *RELEASE_FILES):
                         (root / name).write_bytes(contents)
                     binary = root / "bin"
                     binary.mkdir()

@@ -1,24 +1,55 @@
 /**
- * IntelligenceDrawer (§Terminal Intelligence <GO>).
+ * Research drawer.
  *
- * Multi-module deep market analytics terminal drawer:
- * - DOCS <GO>: SEC EDGAR Item 1A Risk Factors sentence diffs & Earnings Call vocal stress acoustic scores.
- * - GOV <GO>: USASpending.gov defense contract awards & Capitol Hill congressional trades.
- * - FLOW <GO>: Gamma Exposure (GEX) boundaries (Call Wall, Put Wall, Gamma Flip) & FINRA TRF dark pool short ratios.
- * - GEO  <GO>: Corporate Jet ADS-B movements (OpenSky M&A hub telemetry) & Talent Velocity headcount momentum.
- * - MACRO <GO>: SOFR, US High Yield OAS spread, and 10Y-2Y yield curve inversion regime.
+ * Multi-module research drawer. Every module names its source, says what it
+ * measures and what it cannot establish, and is hidden (and counted) while no
+ * source has delivered data for it. Nothing here is shown as live or as an
+ * institutional signal: outputs are heuristics, and the copy says so.
+ * - DOCS: SEC EDGAR Item 1A line diffs & earnings-call acoustic heuristics.
+ * - GOV:  USASpending.gov award notices & House disclosure trades.
+ * - FLOW: option-chain GEX model levels & Reg SHO short-sale volume share.
+ * - GEO:  ADS-B aircraft positions & open-role headcount change.
+ * - MACRO footer: SOFR, HY OAS, 10Y-2Y, and a heuristic stress regime.
+ *
+ * Synthetic fixtures (DEMO_INTELLIGENCE) appear only for SIM-DEMO in a
+ * development build. A shipped build shows the sources it actually received.
+ * Every label reads through i18n; the source and dataset names are
+ * proper nouns and stay as published.
+ *
+ * The tab strip, the macro footer and the dialog focus handling live in
+ * IntelligenceDrawerTabs, IntelligenceDrawerMacro and IntelligenceDrawerFocus.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import { formatNumber } from '../i18n/format';
+import { useT } from '../i18n/useT';
 import { DEMO_INTELLIGENCE, useIntelligenceStore } from '../state/intelligenceStore';
+import {
+  IntelDocsPane,
+  IntelFlowPane,
+  IntelGeoPane,
+  IntelGovPane,
+} from './IntelligenceDrawerPanes';
+import { IntelMacroBar } from './IntelligenceDrawerMacro';
+import { useIntelDrawerFocus } from './IntelligenceDrawerFocus';
+import { IntelTabList } from './IntelligenceDrawerTabs';
+import { marketGroup } from './symbols';
 import './IntelligenceDrawer.css';
 
 interface IntelligenceDrawerProps {
   activeSymbol: string;
+  /** Market of the active symbol. Crypto symbols get the equity-only note. */
+  activeMarket?: string | null;
+  /**
+   * Opens the data-sources and legal dialog. There is no source
+   * management UI yet: the sources are listed, with their terms, in About.
+   */
+  onOpenSources?: () => void;
   onClose: () => void;
 }
 
-export function IntelligenceDrawer({ activeSymbol, onClose }: IntelligenceDrawerProps) {
+export function IntelligenceDrawer({ activeSymbol, activeMarket = null, onOpenSources, onClose }: IntelligenceDrawerProps) {
+  const t = useT();
   const activeTab = useIntelligenceStore((s) => s.activeTab);
   const setActiveTab = useIntelligenceStore((s) => s.setActiveTab);
 
@@ -35,37 +66,58 @@ export function IntelligenceDrawer({ activeSymbol, onClose }: IntelligenceDrawer
 
   const [filterActiveSymbol, setFilterActiveSymbol] = useState(false);
   const drawerRef = useRef<HTMLElement>(null);
-
-  // Close on Escape
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const onTrapKeyDown = useIntelDrawerFocus({ drawerRef, closeRef, onClose });
 
   const sym = activeSymbol.toUpperCase();
-  const demo = sym === 'SIM-DEMO';
-  const currentGex = demo ? DEMO_INTELLIGENCE.gex[sym] : liveGex[sym];
-  const currentDarkPool = demo ? DEMO_INTELLIGENCE.darkPool[sym] : liveDarkPool[sym];
-  const currentTalent = demo ? DEMO_INTELLIGENCE.talent[sym] : liveTalent[sym];
-  const secDiffs = demo ? DEMO_INTELLIGENCE.secDiffs : liveDiffs;
-  const vocalStress = demo ? DEMO_INTELLIGENCE.vocalStress : liveStress;
-  const contracts = demo ? DEMO_INTELLIGENCE.contracts : liveContracts;
-  const capitolTrades = demo ? DEMO_INTELLIGENCE.capitolTrades : liveTrades;
-  const corporateJets = demo ? DEMO_INTELLIGENCE.corporateJets : liveJets;
-  const macro = demo ? DEMO_INTELLIGENCE.macro : liveMacro;
-  const unavailable = 'Unavailable — no connected source supplied data.';
+  // The modules are equity and option research sources; crypto has no matching records.
+  const equityOnly = activeMarket !== null && marketGroup(activeMarket) === 'crypto';
+  // Synthetic fixtures are a development aid only. A shipped build never shows
+  // them, even for SIM-DEMO, so no invented filing or award can reach a user.
+  const demo = import.meta.env.DEV && sym === 'SIM-DEMO';
+  const fixtures = demo ? DEMO_INTELLIGENCE : null;
+  const currentGex = fixtures ? fixtures.gex[sym] : liveGex[sym];
+  const currentDarkPool = fixtures ? fixtures.darkPool[sym] : liveDarkPool[sym];
+  const currentTalent = fixtures ? fixtures.talent[sym] : liveTalent[sym];
+  const secDiffs = fixtures ? fixtures.secDiffs : liveDiffs;
+  const vocalStress = fixtures ? fixtures.vocalStress : liveStress;
+  const contracts = fixtures ? fixtures.contracts : liveContracts;
+  const capitolTrades = fixtures ? fixtures.capitolTrades : liveTrades;
+  const corporateJets = fixtures ? fixtures.corporateJets : liveJets;
+  const macro = fixtures ? fixtures.macro : liveMacro;
+
+  // A module is "connected" once its source has delivered anything (for the
+  // per-symbol modules: anything for any symbol). Unconnected modules are hidden.
+  const connected = {
+    sec: fixtures !== null || liveDiffs.length > 0,
+    acoustics: fixtures !== null || liveStress.length > 0,
+    contracts: fixtures !== null || liveContracts.length > 0,
+    capitol: fixtures !== null || liveTrades.length > 0,
+    gex: fixtures !== null || Object.keys(liveGex).length > 0,
+    darkPool: fixtures !== null || Object.keys(liveDarkPool).length > 0,
+    jets: fixtures !== null || liveJets.length > 0,
+    talent: fixtures !== null || Object.keys(liveTalent).length > 0,
+  };
 
   const filteredDiffs = filterActiveSymbol ? secDiffs.filter((d) => d.symbol === sym) : secDiffs;
   const filteredStress = filterActiveSymbol ? vocalStress.filter((v) => v.symbol === sym) : vocalStress;
   const filteredContracts = filterActiveSymbol ? contracts.filter((c) => c.symbol === sym) : contracts;
-  const filteredTrades = filterActiveSymbol ? capitolTrades.filter((t) => t.symbol === sym) : capitolTrades;
+  const filteredTrades = filterActiveSymbol ? capitolTrades.filter((tr) => tr.symbol === sym) : capitolTrades;
   const filteredJets = filterActiveSymbol ? corporateJets.filter((j) => j.symbol === sym) : corporateJets;
   const filteredEvents = filterActiveSymbol ? events.filter((event) => event.symbol === sym) : events;
+
+  const docsHidden: string[] = [];
+  if (!connected.sec) docsHidden.push(t('intel.src.sec'));
+  if (!connected.acoustics) docsHidden.push(t('intel.src.acoustics'));
+  const govHidden: string[] = [];
+  if (!connected.contracts) govHidden.push(t('intel.src.usaspending'));
+  if (!connected.capitol) govHidden.push(t('intel.src.house'));
+  const flowHidden: string[] = [];
+  if (!connected.gex) flowHidden.push(t('intel.src.gex'));
+  if (!connected.darkPool) flowHidden.push(t('intel.src.regSho'));
+  const geoHidden: string[] = [];
+  if (!connected.jets) geoHidden.push(t('intel.src.adsb'));
+  if (!connected.talent) geoHidden.push(t('intel.src.headcount'));
 
   return (
     <>
@@ -74,453 +126,130 @@ export function IntelligenceDrawer({ activeSymbol, onClose }: IntelligenceDrawer
         ref={drawerRef}
         className="drawer intel-drawer"
         role="dialog"
-        aria-label="Intelligence Terminal"
+        aria-label={t('intel.title')}
         aria-modal="true"
         data-testid="intelligence-drawer"
+        onKeyDown={onTrapKeyDown}
       >
         <div className="drawer__header intel-drawer__header">
           <div className="intel-drawer__title-group">
-            <span className="intel-drawer__badge">⚡ DEEP INTELLIGENCE &lt;GO&gt;</span>
-            <h2 className="drawer__title intel-drawer__title">Institutional Terminal Alpha</h2>
+            <span className="intel-drawer__badge">{t('intel.badge')}</span>
+            <h2 className="drawer__title intel-drawer__title">{t('intel.title')}</h2>
           </div>
           <button
+            ref={closeRef}
             type="button"
             className="drawer__close"
             onClick={onClose}
-            aria-label="Close intelligence drawer"
+            aria-label={t('intel.closeDrawer')}
             data-testid="intel-drawer-close"
           >
             ✕
           </button>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="intel-drawer__tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'DOCS'}
-            className={`intel-tab${activeTab === 'DOCS' ? ' is-active' : ''}`}
-            onClick={() => setActiveTab('DOCS')}
-            data-testid="tab-docs"
-          >
-            DOCS &lt;GO&gt;
-            <span className="intel-tab__hint">SEC & Acoustic</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'GOV'}
-            className={`intel-tab${activeTab === 'GOV' ? ' is-active' : ''}`}
-            onClick={() => setActiveTab('GOV')}
-            data-testid="tab-gov"
-          >
-            GOV &lt;GO&gt;
-            <span className="intel-tab__hint">DoD & Capitol</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'FLOW'}
-            className={`intel-tab${activeTab === 'FLOW' ? ' is-active' : ''}`}
-            onClick={() => setActiveTab('FLOW')}
-            data-testid="tab-flow"
-          >
-            FLOW &lt;GO&gt;
-            <span className="intel-tab__hint">Dark Pools & GEX</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'GEO'}
-            className={`intel-tab${activeTab === 'GEO' ? ' is-active' : ''}`}
-            onClick={() => setActiveTab('GEO')}
-            data-testid="tab-geo"
-          >
-            GEO &lt;GO&gt;
-            <span className="intel-tab__hint">Jets & Talent</span>
-          </button>
-        </div>
+        <IntelTabList activeTab={activeTab} onSelect={setActiveTab} />
 
         {/* Active Symbol Context & Filter Switch */}
         <div className="intel-drawer__context-bar">
           <span className="intel-drawer__target">
-            ACTIVE SYMBOL: <strong>{sym}</strong>
+            {t('intel.activeSymbol')} <strong>{sym}</strong>
           </span>
           <button
             type="button"
             className={`intel-filter-toggle${filterActiveSymbol ? ' is-on' : ''}`}
             onClick={() => setFilterActiveSymbol(!filterActiveSymbol)}
           >
-            {filterActiveSymbol ? `Filter: ${sym} only` : 'Show all universe'}
+            {filterActiveSymbol ? t('intel.filterOnly', { symbol: sym }) : t('intel.showAll')}
           </button>
+          {onOpenSources && (
+            <button
+              type="button"
+              className="intel-filter-toggle"
+              onClick={onOpenSources}
+              data-testid="intel-open-sources"
+            >
+              {t('intel.sourceDetails')}
+            </button>
+          )}
         </div>
 
         <div className="drawer__body intel-drawer__body">
           {demo && (
             <div className="intel-empty" data-testid="intel-demo-label">
-              DEMO FIXTURES — all values, names and events below are synthetic examples.
+              {t('intel.demoFixtures')}
             </div>
+          )}
+          {equityOnly && (
+            <p className="intel-hidden" data-testid="intel-equity-only">{t('intel.equityOnly')}</p>
           )}
           {!demo && filteredEvents.length > 0 && (
             <section className="intel-section" data-testid="intel-received-events">
-              <h3 className="intel-section__title">Received intelligence</h3>
+              <h3 className="intel-section__title">{t('intel.receivedTitle')}</h3>
               {filteredEvents.map((event) => (
                 <article key={event.id} className="intel-card">
                   <div className="intel-card__top">
                     <span className="intel-card__sym">{event.symbol}</span>
                     <span>{event.kind}</span>
-                    <span>{event.source || 'Source not supplied'}</span>
+                    <span>{event.source || t('intel.sourceMissing')}</span>
                   </div>
                   <div className="intel-card__heading">{event.headline}</div>
                   <div className="intel-card__desc">{event.detail}</div>
-                  {event.amountUsd !== undefined && <div>Amount: ${event.amountUsd.toLocaleString('en-US')}</div>}
+                  {event.amountUsd !== undefined && (
+                    <div>{t('intel.amount', { amount: `$${formatNumber(event.amountUsd)}` })}</div>
+                  )}
                 </article>
               ))}
             </section>
           )}
-          {/* TAB 1: DOCS <GO> */}
+
+          {/* TAB 1: DOCS */}
           {activeTab === 'DOCS' && (
-            <div className="intel-tab-pane" data-testid="pane-docs">
-              <section className="intel-section">
-                <div className="intel-section__head">
-                  <span className="intel-section__tag">SEC EDGAR 10-K / 10-Q ITEM 1A</span>
-                  <h3 className="intel-section__title">Risk Factors Semantic Diff Engine</h3>
-                </div>
-                <p className="intel-section__desc">
-                  Real-time sentence-level unified diffing against prior quarterly filings. Highlights material
-                  investigations, subpoenas, and operational vulnerabilities.
-                </p>
-
-                {filteredDiffs.length === 0 ? (
-                  <div className="intel-empty">{unavailable}</div>
-                ) : (
-                  filteredDiffs.map((diff) => (
-                    <article key={diff.id} className="intel-card intel-card--diff">
-                      <div className="intel-card__top">
-                        <span className="intel-card__sym">{diff.symbol}</span>
-                        <span className="intel-card__form">{diff.filingType}</span>
-                        <span className="intel-card__date">{diff.filedDate}</span>
-                      </div>
-                      <div className="intel-card__heading">{diff.title}</div>
-                      {diff.criticalTriggers.length > 0 && (
-                        <div className="intel-triggers">
-                          {diff.criticalTriggers.map((trig) => (
-                            <span key={trig} className="intel-trigger-badge">
-                              ⚠️ {trig}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <div className="intel-diff-box">
-                        {diff.removedLines.map((line, idx) => (
-                          <div key={idx} className="diff-line diff-line--del">
-                            {line}
-                          </div>
-                        ))}
-                        {diff.addedLines.map((line, idx) => (
-                          <div key={idx} className="diff-line diff-line--add">
-                            {line}
-                          </div>
-                        ))}
-                      </div>
-                    </article>
-                  ))
-                )}
-              </section>
-
-              <section className="intel-section">
-                <div className="intel-section__head">
-                  <span className="intel-section__tag">EARNINGS CALL ACOUSTICS</span>
-                  <h3 className="intel-section__title">Call Transcript & Acoustic Metrics</h3>
-                </div>
-                <p className="intel-section__desc">
-                  Acoustic metrics require supplied audio measurements. Any score is an unvalidated heuristic; text phrase matches do not establish stress or deception.
-                </p>
-
-                {filteredStress.length === 0 && <div className="intel-empty">{unavailable}</div>}
-                {filteredStress.map((voc) => {
-                  const pct = Math.round(voc.stressScore * 100);
-                  const isHigh = voc.stressScore >= 0.6;
-                  return (
-                    <article key={voc.id} className="intel-card intel-card--vocal">
-                      <div className="intel-card__top">
-                        <span className="intel-card__sym">{voc.symbol}</span>
-                        <span className="intel-card__speaker">{voc.executive}</span>
-                        <span className="intel-card__date">{voc.quarter}</span>
-                      </div>
-                      <div className="vocal-metrics-grid">
-                        <div className="vocal-metric">
-                          <span className="vocal-metric__lbl">HEURISTIC SCORE (UNVALIDATED)</span>
-                          <span className={`vocal-metric__val${isHigh ? ' is-alert' : ''}`}>
-                            {pct}%
-                          </span>
-                        </div>
-                        <div className="vocal-metric">
-                          <span className="vocal-metric__lbl">PITCH JITTER (F0)</span>
-                          <span className="vocal-metric__val">{(voc.f0Jitter * 100).toFixed(2)}%</span>
-                        </div>
-                        <div className="vocal-metric">
-                          <span className="vocal-metric__lbl">SHIMMER</span>
-                          <span className="vocal-metric__val">{(voc.shimmer * 100).toFixed(2)}%</span>
-                        </div>
-                        <div className="vocal-metric">
-                          <span className="vocal-metric__lbl">PAUSE RATIO</span>
-                          <span className="vocal-metric__val">{(voc.pauseRatio * 100).toFixed(1)}%</span>
-                        </div>
-                      </div>
-                      {voc.evasiveAnswersDetected > 0 && (
-                        <div className="intel-triggers">
-                          <span className="intel-trigger-badge is-warn">
-                            {voc.evasiveAnswersDetected} tracked phrase matches (text only)
-                          </span>
-                        </div>
-                      )}
-                    </article>
-                  );
-                })}
-              </section>
-            </div>
+            <IntelDocsPane
+              sym={sym}
+              connected={connected}
+              hiddenNames={docsHidden}
+              filteredDiffs={filteredDiffs}
+              filteredStress={filteredStress}
+            />
           )}
 
-          {/* TAB 2: GOV <GO> */}
+          {/* TAB 2: GOV */}
           {activeTab === 'GOV' && (
-            <div className="intel-tab-pane" data-testid="pane-gov">
-              <section className="intel-section">
-                <div className="intel-section__head">
-                  <span className="intel-section__tag">USASpending.gov DoD AWARDS</span>
-                  <h3 className="intel-section__title">Government &amp; Defense Contracts</h3>
-                </div>
-                <p className="intel-section__desc">
-                  Live official federal procurement allocations matched against FlowMap defense &amp; tech tickers.
-                </p>
-
-                {filteredContracts.length === 0 && <div className="intel-empty">{unavailable}</div>}
-                {filteredContracts.map((c) => (
-                  <article key={c.id} className="intel-card intel-card--contract">
-                    <div className="intel-card__top">
-                      <span className="intel-card__sym">🛡️ {c.symbol}</span>
-                      <span className="intel-card__amount">
-                        {c.amount === undefined ? 'Amount not supplied' : `$${(c.amount / 1_000_000).toLocaleString('en-US', { maximumFractionDigits: 1 })}M`}
-                      </span>
-                      <span className="intel-card__date">{c.date}</span>
-                    </div>
-                    {(c.recipient || c.agency) && <div className="intel-card__recipient">{[c.recipient, c.agency].filter(Boolean).join(' · ')}</div>}
-                    <div className="intel-card__desc">{c.description}</div>
-                    {c.awardId && <div className="intel-card__award-id">Award ID: {c.awardId}</div>}
-                  </article>
-                ))}
-              </section>
-
-              <section className="intel-section">
-                <div className="intel-section__head">
-                  <span className="intel-section__tag">STOCK WATCHER CAPITOL HILL</span>
-                  <h3 className="intel-section__title">Congressional &amp; Senate Trades</h3>
-                </div>
-                <p className="intel-section__desc">
-                  Transactions disclosed under the STOCK Act by members of Armed Services, Intelligence, and Banking committees.
-                </p>
-
-                {filteredTrades.length === 0 && <div className="intel-empty">{unavailable}</div>}
-                {filteredTrades.map((t) => (
-                  <article key={t.id} className="intel-card intel-card--capitol">
-                    <div className="intel-card__top">
-                      <span className="intel-card__sym">🏛️ {t.symbol}</span>
-                      {t.transactionType && <span className={`intel-card__side is-${t.transactionType.toLowerCase()}`}>
-                        {t.transactionType.toUpperCase()}
-                      </span>}
-                      <span className="intel-card__date">{t.date}</span>
-                    </div>
-                    {(t.politician || t.chamber) && <div className="intel-card__politician">
-                      <strong>{t.politician}</strong> {t.chamber && `(${t.chamber})`}
-                    </div>}
-                    {t.committee && <div className="intel-card__committee">Committee: {t.committee}</div>}
-                    {t.amountRange && <div className="intel-card__amount-range">Amount: {t.amountRange}</div>}
-                  </article>
-                ))}
-              </section>
-            </div>
+            <IntelGovPane
+              sym={sym}
+              connected={connected}
+              hiddenNames={govHidden}
+              filteredContracts={filteredContracts}
+              filteredTrades={filteredTrades}
+            />
           )}
 
-          {/* TAB 3: FLOW <GO> */}
+          {/* TAB 3: FLOW */}
           {activeTab === 'FLOW' && (
-            <div className="intel-tab-pane" data-testid="pane-flow">
-              <section className="intel-section">
-                <div className="intel-section__head">
-                  <span className="intel-section__tag">CBOE &amp; BLACK-SCHOLES ENGINE</span>
-                  <h3 className="intel-section__title">Gamma Exposure (GEX) Microstructure</h3>
-                </div>
-                <p className="intel-section__desc">
-                  Gamma estimate from an observed option chain. Calls positive and puts negative is a model assumption; dealer inventory is unknown.
-                </p>
-
-                {!currentGex && <div className="intel-empty">{unavailable}</div>}
-                {currentGex && (
-                  <div className="gex-summary-card">
-                    <div className="gex-stat">
-                      <span className="gex-stat__lbl">NET GEX (MODEL)</span>
-                      <span className={`gex-stat__val ${currentGex.netGex >= 0 ? 'is-pos' : 'is-neg'}`}>
-                        {currentGex.netGex >= 0 ? '+' : ''}${(currentGex.netGex / 1_000_000).toFixed(1)}M / 100% spot move
-                      </span>
-                      <span className="gex-stat__sub">
-                        {currentGex.netGex >= 0 ? 'Positive under call/put sign assumption' : 'Negative under call/put sign assumption'}
-                      </span>
-                    </div>
-
-                    <div className="gex-levels-grid">
-                      <div className="gex-level-item is-call">
-                        <span className="gex-level-item__name">CALL WALL (CEILING)</span>
-                        <span className="gex-level-item__px">${currentGex.callWall.toFixed(2)}</span>
-                        <span className="gex-level-item__note">Largest call gamma magnitude</span>
-                      </div>
-                      <div className="gex-level-item is-put">
-                        <span className="gex-level-item__name">PUT WALL (FLOOR)</span>
-                        <span className="gex-level-item__px">${currentGex.putWall.toFixed(2)}</span>
-                        <span className="gex-level-item__note">Largest put gamma magnitude</span>
-                      </div>
-                      <div className="gex-level-item is-flip">
-                        <span className="gex-level-item__name">GAMMA FLIP (TRIGGER)</span>
-                        <span className="gex-level-item__px">${currentGex.gammaFlip.toFixed(2)}</span>
-                        <span className="gex-level-item__note">Vol Regime Inflection Strike</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </section>
-
-              <section className="intel-section">
-                <div className="intel-section__head">
-                  <span className="intel-section__tag">FINRA REG SHO &amp; OTC TRANSPARENCY</span>
-                  <h3 className="intel-section__title">Dark Pool (Off-Exchange) TRF Volumes</h3>
-                </div>
-                <p className="intel-section__desc">
-                  ATS (Alternative Trading Systems) daily off-exchange volume. Ratios &gt;50% flag institutional accumulation or distribution.
-                </p>
-
-                {!currentDarkPool && <div className="intel-empty">{unavailable}</div>}
-                {currentDarkPool && (
-                  <div className="darkpool-card">
-                    <div className="darkpool-row">
-                      <span className="darkpool-lbl">OFF-EXCHANGE SHORT RATIO:</span>
-                      <strong className={`darkpool-ratio ${currentDarkPool.shortRatio > 0.5 ? 'is-high' : ''}`}>
-                        {(currentDarkPool.shortRatio * 100).toFixed(1)}%
-                      </strong>
-                    </div>
-                    <div className="darkpool-bar">
-                      <div
-                        className="darkpool-bar__fill"
-                        style={{ width: `${Math.min(100, currentDarkPool.shortRatio * 100)}%` }}
-                      />
-                    </div>
-                    <div className="darkpool-details">
-                      <div>Total Volume: {currentDarkPool.totalVolume.toLocaleString('en-US')}</div>
-                      <div>Off-Exchange Short: {currentDarkPool.shortVolume.toLocaleString('en-US')}</div>
-                      <div>OTC Non-ATS: {currentDarkPool.otcVolume.toLocaleString('en-US')}</div>
-                    </div>
-                    <div className="darkpool-flag">
-                      INSTITUTIONAL SIGNAL:{' '}
-                      <span className={`darkpool-flag-badge is-${currentDarkPool.institutionalFlag.toLowerCase()}`}>
-                        {currentDarkPool.institutionalFlag}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </section>
-            </div>
+            <IntelFlowPane
+              sym={sym}
+              connected={connected}
+              hiddenNames={flowHidden}
+              currentGex={currentGex}
+              currentDarkPool={currentDarkPool}
+            />
           )}
 
-          {/* TAB 4: GEO & EXHAUST <GO> */}
+          {/* TAB 4: GEO */}
           {activeTab === 'GEO' && (
-            <div className="intel-tab-pane" data-testid="pane-geo">
-              <section className="intel-section">
-                <div className="intel-section__head">
-                  <span className="intel-section__tag">OPENSKY NETWORK ADS-B TELEMETRY</span>
-                  <h3 className="intel-section__title">Corporate Jet M&amp;A Radar</h3>
-                </div>
-                <p className="intel-section__desc">
-                  FAA ICAO24 transponder tracking. Flights to private executive hubs (Omaha, Zurich, Sun Valley) alert potential M&amp;A or restructuring.
-                </p>
-
-                {filteredJets.length === 0 && <div className="intel-empty">{unavailable}</div>}
-                {filteredJets.map((j) => (
-                  <article key={j.id} className="intel-card intel-card--jet">
-                    <div className="intel-card__top">
-                      <span className="intel-card__sym">✈️ {j.symbol}</span>
-                      <span className="intel-card__tail">{j.tailNumber} {j.icao24 && `(${j.icao24})`}</span>
-                      <span className="intel-card__date">{j.date}</span>
-                    </div>
-                    {(j.origin || j.destination) && <div className="intel-jet-route">
-                      <span>{j.origin}</span>
-                      <span className="intel-jet-arrow">──✈──▶</span>
-                      <span>{j.destination}</span>
-                    </div>}
-                    {j.isMaHub && j.hubName && (
-                      <div className="intel-triggers">
-                        <span className="intel-trigger-badge is-alert">
-                          🎯 Executive Transit Alert: {j.hubName}
-                        </span>
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </section>
-
-              <section className="intel-section">
-                <div className="intel-section__head">
-                  <span className="intel-section__tag">GREENHOUSE &amp; LEVER ATS FEED</span>
-                  <h3 className="intel-section__title">Talent Velocity &amp; Headcount Velocity</h3>
-                </div>
-                <p className="intel-section__desc">
-                  Weekly differential of open engineering and R&amp;D positions. Identifies covert product cycles or unannounced hiring freezes.
-                </p>
-
-                {!currentTalent && <div className="intel-empty">{unavailable}</div>}
-                {currentTalent && (
-                  <div className="talent-card">
-                    <div className="talent-row">
-                      <span>OPEN POSITIONS MOMENTUM (&Delta;%):</span>
-                      <strong className={`talent-delta ${currentTalent.talentDeltaPct >= 0 ? 'is-pos' : 'is-neg'}`}>
-                        {currentTalent.talentDeltaPct >= 0 ? '+' : ''}
-                        {currentTalent.talentDeltaPct.toFixed(1)}%
-                      </strong>
-                    </div>
-                    <div className="talent-stats-grid">
-                      <div>R&amp;D Openings: <strong>{currentTalent.rdOpenings}</strong></div>
-                      <div>Total Listings: <strong>{currentTalent.totalOpenings}</strong></div>
-                      <div>
-                        Status:{' '}
-                        <span className={`talent-badge ${currentTalent.hiringFreeze ? 'is-freeze' : 'is-active'}`}>
-                          {currentTalent.hiringFreeze ? 'HIRING FREEZE' : 'EXPANDING'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </section>
-            </div>
+            <IntelGeoPane
+              sym={sym}
+              connected={connected}
+              hiddenNames={geoHidden}
+              filteredJets={filteredJets}
+              currentTalent={currentTalent}
+            />
           )}
+
         </div>
 
-        {/* Macro Liquidity Ticker Footer */}
-        <div className="intel-drawer__macro-bar" data-testid="intel-macro-bar">
-          <div className="macro-chip">
-            <span className="macro-chip__lbl">SOFR</span>
-            <span className="macro-chip__val">{macro ? `${macro.sofrRate.toFixed(2)}%` : '—'}</span>
-          </div>
-          <div className="macro-chip">
-            <span className="macro-chip__lbl">HY SPREAD (OAS)</span>
-            <span className="macro-chip__val">{macro ? `${macro.hySpreadBps.toFixed(0)} bps` : '—'}</span>
-          </div>
-          <div className="macro-chip">
-            <span className="macro-chip__lbl">10Y-2Y YIELD CURVE</span>
-            <span className={`macro-chip__val ${macro ? (macro.yieldCurve10Y2Y < 0 ? 'is-neg' : 'is-pos') : ''}`}>
-              {macro ? `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${macro.yieldCurve10Y2Y.toFixed(2)}% ${macro.yieldCurve10Y2Y < 0 ? '(INVERTED)' : ''}` : '—'}
-            </span>
-          </div>
-          <div className={`macro-regime-badge is-${macro?.stressRegime.toLowerCase() ?? 'unavailable'}`} title={!macro ? unavailable : macro.status}>
-            {demo ? 'DEMO · ' : ''}{macro ? `${macro.stressRegime} CREDIT STRESS` : 'MACRO UNAVAILABLE'}
-          </div>
-        </div>
+        <IntelMacroBar macro={macro} demo={demo} />
       </aside>
     </>
   );

@@ -1,7 +1,5 @@
 /**
- * First-run onboarding (lane CE) — a 3-step welcome wizard (ported from the
- * old-branch ui/Onboarding, re-scoped to the contract's 3 steps and re-worded
- * through i18n):
+ * First-run onboarding: a 3-step welcome wizard whose copy comes from i18n:
  *   1. Connect a market (symbol search + Live/Replay).
  *   2. Mouse & keys basics (drag/wheel, arrows, +/-, F).
  *   3. Where every shortcut lives (`?`) — plus the `T` theme cycle.
@@ -9,15 +7,15 @@
  * Persistence is deliberate, not incidental: ONLY `Skip` and the final
  * `Done` write `flowmap.onboarded=1` (dismissed forever). Escape and the
  * scrim merely CLOSE — a stray key never silently suppresses the tour, it
- * returns on the next launch (old-branch honesty culture).
+ * returns on the next launch.
  *
  * Modal contract mirrors ShortcutsOverlay: nothing renders while closed; an
  * Escape window listener exists only while open; focus moves to the panel on
  * open, is TRAPPED inside it while open (Tab wraps both directions, WCAG
  * 2.4.3), and the previously focused element is restored on close.
  *
- * Re-open any time (INT can wire it to a SettingsDrawer button later) via
- * the exported {@link openOnboarding}. All copy goes through i18n (C7).
+ * Re-open any time (for example from a SettingsDrawer button) via the exported
+ * {@link openOnboarding}. All copy goes through i18n.
  */
 
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
@@ -89,11 +87,19 @@ export function closeOnboarding(): void {
 export interface OnboardStep {
   titleKey: string;
   bodyKey: string;
+  /** Extra disclosures shown under the body (simulated data, on-disk recording). */
+  noteKeys?: readonly string[];
 }
 
-/** The three steps, in reading order. Keys resolve through i18n (C7). */
+/** The three steps, in reading order. Keys resolve through i18n. */
 export const ONBOARDING_STEPS: readonly OnboardStep[] = [
-  { titleKey: 'onboarding.step.connect.title', bodyKey: 'onboarding.step.connect.body' },
+  {
+    titleKey: 'onboarding.step.connect.title',
+    bodyKey: 'onboarding.step.connect.body',
+    // First launch shows a SIMULATED feed, and recording writes to disk by default.
+    // Both must be said before the user reads the heatmap as a real market.
+    noteKeys: ['onboarding.step.connect.sim', 'onboarding.step.connect.record'],
+  },
   { titleKey: 'onboarding.step.mouse.title', bodyKey: 'onboarding.step.mouse.body' },
   { titleKey: 'onboarding.step.shortcuts.title', bodyKey: 'onboarding.step.shortcuts.body' },
 ];
@@ -133,7 +139,7 @@ export function OnboardingCard(): JSX.Element | null {
   // exists only while the overlay is open, and the tour joins the open-overlay
   // registry while it does (ui/overlayStack): when a Settings drawer opened it
   // (or sits underneath), ONE keystroke closes only the topmost surface — the
-  // drawer's own window listener defers to whoever pushed later (QA12 M-1).
+  // drawer's own window listener defers to whoever pushed later.
   useEffect(() => {
     if (!isOpen) return;
     const off = pushOverlay('onboard');
@@ -213,6 +219,13 @@ export function OnboardingCard(): JSX.Element | null {
         <p className="onboard__body" data-testid="onboarding-body">
           {t(stepKeys.bodyKey)}
         </p>
+        {stepKeys.noteKeys && stepKeys.noteKeys.length > 0 && (
+          <ul className="onboard__notes" data-testid="onboarding-notes">
+            {stepKeys.noteKeys.map((key) => (
+              <li key={key}>{t(key)}</li>
+            ))}
+          </ul>
+        )}
         <div className="onboard__dots" aria-hidden="true">
           {ONBOARDING_STEPS.map((s, i) => (
             <span

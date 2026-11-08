@@ -1,9 +1,9 @@
-"""REST surface tests (M1 plan Task 8; equity capability M3 T2): /api/health,
+"""REST surface tests: /api/health,
 /api/symbols, CORS.
 
 Runs against ``create_app`` through httpx's ASGITransport — no real server,
 no network. The symbol directory is: the sim symbol (capability taken from
-SimFeed) + a static crypto shortlist (noted "live in T9") + a static equity
+SimFeed) + a static crypto shortlist + a static equity
 shortlist whose capability is read off EquityFeed (live keyless SYNTH tier,
 no note); handlers must never do network I/O.
 """
@@ -52,15 +52,15 @@ async def test_health_operational_fields(client):
 
 async def test_health_reports_active_sessions(app, client):
     """One row per active session with its feed kind, state, and the
-    session_id that joins stats.staleness_ms (survey-1 #8)."""
+    session_id that joins stats.staleness_ms."""
 
     class _StubFeed:
         market = "sim"
         symbol = "SIM-DEMO"
 
     class _StubSession:
-        _feed = _StubFeed()
-        _feed_state = "live"
+        feed = _StubFeed()
+        feed_state = "live"
         session_id = "sim:SIM-DEMO:live:abc123def456"
 
     manager = app.state.manager
@@ -83,14 +83,15 @@ async def test_health_reports_active_sessions(app, client):
 
 
 async def test_health_survives_mixed_replay_window_keys(app, client):
-    """Regression (campaign-4 R1-H1): replay keys carry ``(start_t, end_t)``
+    """Regression: replay keys carry ``(start_t, end_t)``
     with int|None shapes. Two sessions agreeing on (market, symbol, mode,
     source, band) but differing in window shape must not make the never-500
     health probe raise None-vs-int TypeError from a bare sorted()."""
 
     class _StubSession:
-        _feed = None
-        _feed_state = "live"
+        feed = None
+        feed_state = "live"
+        session_id = ""
 
     manager = app.state.manager
     manager._sessions = {
@@ -148,14 +149,17 @@ async def test_symbols_sim_capability_from_simfeed(client):
     entry = next(s for s in r.json()["symbols"] if s["symbol"] == "SIM-DEMO")
     assert entry["market"] == "sim"
     assert entry["capability"]["depth"] == "L2"
-    assert "note" not in entry  # sim is fully live at M1
+    # The sim really emits a full L2 book with generator-assigned sides; honesty
+    # is carried by the synthetic flag rather than by a weaker depth tier.
+    assert entry["capability"]["synthetic"] is True
+    assert "note" not in entry  # sim is fully live
 
 
 async def test_symbols_crypto_shortlist(client):
     r = await client.get("/api/symbols", params={"q": "btc"})
     entry = next(s for s in r.json()["symbols"] if s["symbol"] == "BTCUSDT")
     assert entry["market"] == "binance-spot"
-    # GOAL 3: crypto capability now advertises exchange-true side + CVD.
+    # Crypto capability now advertises exchange-true side + CVD.
     assert entry["capability"] == {
         "depth": "L2",
         "tape": "tick",
@@ -170,7 +174,7 @@ async def test_symbols_equity_shortlist(client):
     r = await client.get("/api/symbols", params={"q": "aapl"})
     entry = next(s for s in r.json()["symbols"] if s["symbol"] == "AAPL")
     assert entry["market"] == "equity"
-    # Honest capability mirrored from EquityFeed's keyless tier (M3 T2).
+    # Honest capability mirrored from EquityFeed's keyless tier.
     assert entry["capability"]["depth"] == "SYNTH"
     assert entry["capability"]["tape"] == "poll"
     assert entry["capability"]["trade_side"] == "na"
@@ -189,7 +193,7 @@ async def test_symbols_empty_q_returns_all(client):
         "BTCUSDT", "ETHUSDT", "SOLUSDT",
         "AAPL", "MSFT", "NVDA", "TSLA", "SPY",
     } <= names
-    # GOAL 2: the directory is now the FULL bundled universe.
+    # The directory is the full bundled universe.
     assert len(syms) == 1 + len(CRYPTO_SYMBOLS) + len(EQUITY_TICKERS)
     assert len(syms) > 100
 

@@ -8,7 +8,7 @@ import {
   REGION_RECON,
 } from './regionFloor';
 
-describe('reconFloorFor — the relative per-region floor (lane F17, D5 L1)', () => {
+describe('reconFloorFor — the relative per-region floor', () => {
   it('scales the live floor by the recon multiplier and keeps slider 0 an exact no-op', () => {
     expect(reconFloorFor(0.0128, 0.25)).toBeCloseTo(0.0032, 12);
     expect(reconFloorFor(0, 0.25)).toBe(0);

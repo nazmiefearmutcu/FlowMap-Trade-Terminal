@@ -1,6 +1,6 @@
-"""Session recording + rehydration wiring tests (M1 T11; spec §7, §8.1).
+"""Session recording + rehydration wiring tests.
 
-Pins the five behaviors deferred from T10 into the session layer:
+Pins five session-layer recording behaviors:
 
 a. a live session records epochs/columns/trades and flushes at the
    REC_FLUSH_COLS cadence, at feed end, and on teardown (close()),
@@ -33,6 +33,7 @@ import msgspec
 import pytest
 
 import flowmap_server.core.session as session_mod
+import flowmap_server.core.session_recording as rec_mod
 from flowmap_server.core.grid import Grid, GridCfg
 from flowmap_server.core.record import Recorder, SessionRecorder
 from flowmap_server.core.record import TailData
@@ -252,7 +253,7 @@ async def _wait_for(predicate, timeout=10.0):
 async def test_live_session_records_columns_epochs_trades_with_cadence(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(session_mod, "REC_FLUSH_COLS", 8)
+    monkeypatch.setattr(rec_mod, "REC_FLUSH_COLS", 8)
     flush_sizes: list[int] = []
     orig_flush = SessionRecorder.flush_buffers
 
@@ -345,8 +346,8 @@ async def test_transient_flush_failure_retries_and_session_continues(
     recording: the failed snapshot's rows are restored to the buffers and the
     flush retries after the cooldown — the rows land on the retry, and the
     feed loop keeps broadcasting throughout."""
-    monkeypatch.setattr(session_mod, "REC_FLUSH_COLS", 4)
-    monkeypatch.setattr(session_mod, "_REC_RETRY_BASE_S", 0.05)  # fast cooldown
+    monkeypatch.setattr(rec_mod, "REC_FLUSH_COLS", 4)
+    monkeypatch.setattr(rec_mod, "_REC_RETRY_BASE_S", 0.05)  # fast cooldown
     orig = SessionRecorder.flush_buffers
     state = {"n": 0}
 
@@ -415,7 +416,7 @@ async def test_flush_failure_cooldown_skips_immediate_retry(tmp_path, monkeypatc
     """Inside the cooldown the cadence must NOT re-enter the flush (the
     backoff ladder is why the delay exists); after it expires, the retry
     proceeds."""
-    monkeypatch.setattr(session_mod, "REC_FLUSH_COLS", 2)
+    monkeypatch.setattr(rec_mod, "REC_FLUSH_COLS", 2)
     calls = {"n": 0}
 
     def failing(self, bufs):
@@ -468,7 +469,7 @@ async def test_broken_recorder_still_disables_recording(
 ):
     """Only a recorder that cannot even take its rows BACK (restore fails)
     permanently disables recording — the old last-resort contract."""
-    monkeypatch.setattr(session_mod, "REC_FLUSH_COLS", 2)
+    monkeypatch.setattr(rec_mod, "REC_FLUSH_COLS", 2)
 
     def failing(self, bufs):
         raise OSError("disk gone")
@@ -530,7 +531,12 @@ async def test_rehydration_snapshot_gap_marker_and_live_continuation(tmp_path):
     assert len(gap_markers) == 1
     assert gap_markers[0].text.startswith("restart:")
     assert newest_t0 <= gap_markers[0].ts_ns < newest_t0 + DT
-    assert any(isinstance(e, Trade) for e in snap)  # tape warm-up from tail
+    tape = [e for e in snap if isinstance(e, Trade)]
+    assert tape  # tape warm-up from tail
+    # Recordings do not store the wire seq, so rehydrated prints are numbered
+    # on load. A reconnect re-delivers this tape, and the client drops repeats.
+    assert all(t.seq > 0 for t in tape)
+    assert len({t.seq for t in tape}) == len(tape)
 
     # Live events resume at "now": col_seq continues past the tail with a
     # strictly newer t0 (no overlap; the gap marker covers the discontinuity).
@@ -847,7 +853,7 @@ async def test_cadence_flush_runs_off_loop(tmp_path, monkeypatch):
     stalled the event loop for the whole part write, every REC_FLUSH_COLS
     columns, per session. While the write is in flight a concurrent
     event-loop task keeps ticking."""
-    monkeypatch.setattr(session_mod, "REC_FLUSH_COLS", 4)
+    monkeypatch.setattr(rec_mod, "REC_FLUSH_COLS", 4)
     orig = SessionRecorder.flush_buffers
 
     def slow_flush(self, bufs):
@@ -894,7 +900,7 @@ async def test_rows_recorded_during_flush_land_in_next_flush(tmp_path, monkeypat
     """Buffers are swapped out on the loop before the thread write: rows
     recorded WHILE a flush is in flight stay buffered and land later —
     nothing is lost or double-written by the off-loop flush."""
-    monkeypatch.setattr(session_mod, "REC_FLUSH_COLS", 2)
+    monkeypatch.setattr(rec_mod, "REC_FLUSH_COLS", 2)
     orig = SessionRecorder.flush_buffers
     calls = {"n": 0}
 
@@ -1025,7 +1031,7 @@ async def test_wedged_flush_is_detected_then_recovers(tmp_path, monkeypatch, cap
         return orig_flush(self, bufs)
 
     monkeypatch.setattr(SessionRecorder, "flush_buffers", wedged_flush)
-    monkeypatch.setattr(session_mod, "REC_FLUSH_COLS", 2)
+    monkeypatch.setattr(rec_mod, "REC_FLUSH_COLS", 2)
 
     clock = {"now": 0}
     stats = SessionStats(clock=lambda: clock["now"], wall_clock=lambda: clock["now"])
@@ -1055,6 +1061,9 @@ async def test_wedged_flush_is_detected_then_recovers(tmp_path, monkeypatch, cap
     await _wait_for(lambda: stats.snapshot()["recording"]["flush_stalls"] == 1)
     assert any("WEDGED" in r.getMessage() for r in caplog.records)
     assert sess._flush_stall_logged is True
+    # The wedge is also a live state on /api/health, not only a stall count.
+    assert stats.snapshot()["recording"]["wedged"] == 1
+    assert sess._capability()["recording_degraded"] is True
 
     # Release the thread: the flush lands and the watchdog state clears.
     gate.set()
@@ -1063,6 +1072,9 @@ async def test_wedged_flush_is_detected_then_recovers(tmp_path, monkeypatch, cap
         lambda: bool(list((tmp_path / "rec").rglob("*-columns-*.parquet"))) or None
     )
     assert sess._flush_stall_logged is False
+    assert stats.snapshot()["recording"]["wedged"] == 0
+    # The flag clears when the write lands, not at the next column.
+    assert "recording_degraded" not in sess._capability()
     feed.q.put_nowait(None)
     await asyncio.wait_for(sess.run_task, timeout=5)
 
@@ -1108,7 +1120,7 @@ async def test_retention_walk_gated_by_min_interval(tmp_path, monkeypatch):
     """The rglob/stat retention walk runs at most once per
     ``retention_min_interval_s`` of session clock - not after EVERY cadence
     flush (per-flush walks over a multi-GB tree were pure disk churn)."""
-    monkeypatch.setattr(session_mod, "REC_FLUSH_COLS", 2)
+    monkeypatch.setattr(rec_mod, "REC_FLUSH_COLS", 2)
     calls = {"retention": 0, "flushes": 0}
     real_ret = Recorder.enforce_retention
 
@@ -1169,7 +1181,7 @@ async def test_retention_walk_gated_by_min_interval(tmp_path, monkeypatch):
 async def test_restart_backoff_doubles_with_full_jitter():
     """Full-jitter backoff: the backoff STATE still doubles deterministically
     (1 -> 2 -> 4 ... cap 30), and each sleep draws from [0, backoff) via the
-    rng seam (pinned by call ORDER, never by wall timing - campaign rule 6)."""
+    rng seam (pinned by call ORDER, never by wall timing)."""
     class _FakeRng:
         def __init__(self):
             self.calls: list[float] = []
@@ -1240,7 +1252,7 @@ async def test_retired_session_close_and_retention_never_block_subscribe_or_shut
 
     def held_retention(self):
         entered.set()
-        assert release.wait(3), "test watchdog: retention was not released"
+        assert release.wait(10), "test watchdog: retention was not released"
         return real_retention(self)
 
     def close(self):
@@ -1249,14 +1261,16 @@ async def test_retired_session_close_and_retention_never_block_subscribe_or_shut
 
     monkeypatch.setattr(Recorder, "enforce_retention", held_retention)
     monkeypatch.setattr(SessionRecorder, "close", close)
-    watchdog = threading.Timer(2.0, release.set)
+    # Generous watchdog: the ordering assertions below must not race a timer.
+    watchdog = threading.Timer(10.0, release.set)
     watchdog.start()
     try:
         await manager.unsubscribe(session, first)
-        before = time.monotonic()
         timer.entries[-1].fire()
-        assert time.monotonic() - before < 0.1
-        assert await asyncio.to_thread(entered.wait, 1)
+        # fire() returned while the retention worker is still parked on
+        # `release`: a synchronous retention run would have blocked right here.
+        assert not release.is_set()
+        assert await asyncio.to_thread(entered.wait, 5)
         assert session in manager._retiring_sessions
         shutdown = asyncio.create_task(manager.flush_all())
         await asyncio.sleep(0)
@@ -1321,3 +1335,35 @@ async def test_boot_retirement_drains_failed_inflight_flush_before_one_close(tmp
     assert len(calls) == 2 and closes == [True]
     tail = root.load_tail(MARKET, SYMBOL, max_age_ns=10**18, now_ns=10**18, limit_cols=100)
     assert tail is not None and [column.col_seq for column in tail.columns] == [0]
+
+
+async def test_recorder_refused_rows_are_counted_on_stats(tmp_path):
+    """SessionRecorder.dropped_rows (buffer overflow) is a write-only
+    counter unless the session hands its running total to SessionStats; the
+    health snapshot then reports it as recording.dropped_rows and drops the
+    session's share when the session leaves the table."""
+    stats = SessionStats(clock=lambda: 0, wall_clock=lambda: 0)
+    root = Recorder(tmp_path / "rec", 20.0)
+    feed = DrivenFeed()
+    sess = Session(
+        "dropped",
+        feed=feed,
+        grid=Grid(_cfg()),
+        recorder=root,
+        timer=FakeTimer(),
+        clock=lambda: 0,
+        stats=stats,
+    )
+    sess.attach(ClientTx())
+    await sess.start()
+    assert stats.snapshot()["recording"]["dropped_rows"] == 0
+    sess._rec.dropped_rows["trade"] = 3
+    sess._flush_recording()
+    assert stats.snapshot()["recording"]["dropped_rows"] == 3
+    sess._rec.dropped_rows["trade"] = 5
+    sess._flush_recording()
+    assert stats.snapshot()["recording"]["dropped_rows"] == 5
+    feed.q.put_nowait(None)
+    await asyncio.wait_for(sess.run_task, timeout=5)
+    stats.forget_session("dropped")
+    assert stats.snapshot()["recording"]["dropped_rows"] == 0

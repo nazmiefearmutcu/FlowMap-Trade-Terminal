@@ -1,5 +1,5 @@
 /**
- * Price↔row scale (§8.1) — the map between a grid row and a price.
+ * Price↔row scale — the map between a grid row and a price.
  *
  * Until now this was a single LINEAR affine, `price = p0 + row·step`, inlined at
  * every consumer. That is fine for a narrow grid, but it makes range and

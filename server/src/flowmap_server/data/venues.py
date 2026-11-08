@@ -1,9 +1,8 @@
 """Live venue + symbol enumeration, straight from the market engine.
 
-The bundled lists in :mod:`flowmap_server.data.universe` exist because the
-*pinned* engine had no enumerator. The merged engine does, so this module is
-the live path and the bundled lists become the offline fallback rather than
-the whole truth.
+The engine enumerates venues and symbols, so this module is the live path.
+The bundled lists in :mod:`flowmap_server.data.universe` are the offline
+fallback, not the whole truth.
 
 Two things are enumerated, and they have very different costs:
 
@@ -58,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 # Segments that mean "derivatives" to ccxt's `defaultType`.
 _SWAP_SEGMENTS = frozenset({"usdm", "coinm", "linear", "inverse", "swap", "perp", "futures"})
+# ccxt market flag that identifies a segment's settlement family (USDT- vs coin-margined).
+_SETTLE_FLAG = {"usdm": "linear", "linear": "linear", "coinm": "inverse", "inverse": "inverse"}
 
 # One venue's instrument list is stable on the scale of a session; re-listing
 # per search keystroke would be a rate-limit incident, not a feature.
@@ -102,10 +103,9 @@ class VenueInfo:
         # Crypto: a native connector streams true book diffs, a ccxt venue is
         # re-read whole each tick, and the client badges the difference — so the
         # `native` flag IS the depth there. Off the crypto side it is not:
-        # deriving it made this endpoint claim L2 for equity, which no equity
-        # tier serves (keyless is SYNTH, Alpaca is L1) and which contradicted
-        # what /api/universe reports for the same market. Non-crypto venues
-        # therefore state their own depth, read off the feed.
+        # no equity tier serves L2 (keyless is SYNTH, Alpaca is L1), and
+        # /api/universe reports the same market. Non-crypto venues therefore
+        # state their own depth, read off the feed.
         self.depth = depth or ("L2" if native else "L2-snapshot")
 
     def as_dict(self) -> dict[str, object]:
@@ -143,7 +143,8 @@ def _equity_depth() -> str:
 
     try:
         cfg = Config.from_env(os.environ)
-    except Exception:  # noqa: BLE001 — a bad env falls back to keyless defaults
+    except Exception:  # a bad env falls back to keyless defaults
+        logger.warning("invalid server environment; using keyless defaults", exc_info=True)
         cfg = Config()
     return _feed_depth(EquityFeed("AAPL", cfg).capability)
 
@@ -197,7 +198,7 @@ async def venue_symbols(market: str, *, now_ns: int | None = None) -> list[str]:
         except (TimeoutError, asyncio.TimeoutError):
             logger.warning("symbol enumeration timed out for %r", market)
             symbols = []
-        except Exception:  # noqa: BLE001 — discovery must not fail on a venue outage
+        except Exception:  # discovery must not fail on a venue outage
             logger.warning("symbol enumeration failed for %r", market, exc_info=True)
             symbols = []
         # Stamp the time the answer was OBTAINED, not the time the request
@@ -225,7 +226,7 @@ async def _list_symbols(market: str) -> list[str]:
         if native:
             return native
         logger.info("native listing empty for %r; falling back to ccxt", market)
-    return await _ccxt_symbols(exchange)
+    return await _ccxt_symbols(market, exchange, segment)
 
 
 async def _native_symbols(exchange: str, segment: str) -> list[str]:
@@ -252,11 +253,12 @@ async def _native_symbols(exchange: str, segment: str) -> list[str]:
     finally:
         await _close_quietly(conn)
     market = f"{exchange}-{segment}" if segment else exchange
-    _price_ticks[market] = {
-        str(i.symbol_raw): float(i.tick_size)
-        for i in instruments
-        if getattr(i, "tick_size", None) is not None and math.isfinite(i.tick_size) and i.tick_size > 0
-    }
+    ticks: dict[str, float] = {}
+    for i in instruments:
+        tick = getattr(i, "tick_size", None)
+        if tick is not None and math.isfinite(tick) and tick > 0:
+            ticks[str(i.symbol_raw)] = float(tick)
+    _price_ticks[market] = ticks
     return sorted({str(i.symbol_raw) for i in instruments if i.symbol_raw})
 
 
@@ -265,7 +267,7 @@ def ccxt_knows(exchange: str) -> bool:
 
     NOT ``factory.is_ccxt_exchange``: that answers "is this venue SERVED BY the
     ccxt connector", which is False for every venue that also has a native
-    connector — measured against the pinned engine + ccxt 4.5.69, six of the ten
+    connector — measured against crocodile 0.3.2 and ccxt 4.5.69, six of the ten
     natives are also ccxt ids (binance, bybit, coinbase, deribit, derive, okx).
     Those are exactly the venues where we still want ccxt for what the native
     reader does not do — symbol translation and kline backfill — so the question
@@ -278,29 +280,54 @@ def ccxt_knows(exchange: str) -> bool:
     return exchange in ccxt.exchanges
 
 
-async def _ccxt_symbols(exchange: str) -> list[str]:
+async def _ccxt_symbols(market: str, exchange: str, segment: str = "") -> list[str]:
+    """ccxt's listing for *market*, restricted to the market segment it names.
+
+    The segment is passed to ccxt as ``defaultType`` so ``binance-usdm`` lists
+    perpetuals, not the spot table. A segment this fallback cannot map is not
+    listed at all, rather than silently listing a different market type.
+    """
     if not ccxt_knows(exchange):
+        return []
+    if segment and segment not in _SWAP_SEGMENTS and segment != "spot":
+        logger.warning("no ccxt market type for segment %r of %r; not listing", segment, market)
         return []
     import ccxt.async_support as ccxt_async
 
-    ex = getattr(ccxt_async, exchange)({"enableRateLimit": True})
+    options: dict[str, object] = {}
+    if segment:
+        options["defaultType"] = "swap" if segment in _SWAP_SEGMENTS else "spot"
+    config: dict[str, object] = {"enableRateLimit": True}
+    if options:
+        config["options"] = options
+    ex = getattr(ccxt_async, exchange)(config)
     try:
-        markets = await ex.load_markets()
+        loaded = await ex.load_markets()
     finally:
         await ex.close()
+    # defaultType "swap" loads every settlement family at once (USDT- and coin-margined
+    # perpetuals alike), so keep only the family the segment names. An unknown flag is
+    # kept; only an explicit False removes a market.
+    settle_flag = _SETTLE_FLAG.get(segment)
+    markets = {
+        sym: m for sym, m in loaded.items()
+        if settle_flag is None or (m or {}).get(settle_flag) is not False
+    }
     # Universal connectors already load this table for discovery. Reuse its
     # price precision rather than assigning the simulation tick to each coin.
+    # Ticks are keyed by the full market string, the key venue_price_tick reads.
     ticks: dict[str, float] = {}
     for sym, item in markets.items():
-        precision = (item or {}).get("precision", {}).get("price")
+        precision = ((item or {}).get("precision") or {}).get("price")
         tick = _ccxt_price_tick(precision, ex.precisionMode)
         if tick is not None:
             ticks[str(sym)] = tick
             raw = (item or {}).get("id")
             if raw:
                 ticks[str(raw)] = tick
-    _price_ticks[exchange] = ticks
-    return sorted(str(sym) for sym, m in markets.items() if (m or {}).get("active", True))
+    _price_ticks[market] = ticks
+    # Only an explicit `active: False` removes a market; ccxt uses None for unknown status.
+    return sorted(str(sym) for sym, m in markets.items() if (m or {}).get("active") is not False)
 
 
 def _ccxt_price_tick(precision: object, mode: int) -> float | None:
@@ -374,7 +401,7 @@ async def resolve_symbol(market: str, symbol: str) -> str:
             return str(venue_id) if venue_id else symbol
         finally:
             await ex.close()
-    except Exception:  # noqa: BLE001 — a failed translation must not block a subscribe
+    except Exception:  # a failed translation must not block a subscribe
         logger.warning("symbol translation failed for %s:%s", market, symbol, exc_info=True)
         return symbol
 
@@ -384,5 +411,5 @@ async def _close_quietly(conn: object) -> None:
     if session is not None and not getattr(session, "closed", True):
         try:
             await session.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # teardown: the connection is gone either way
+            logger.debug("venue session close failed", exc_info=True)

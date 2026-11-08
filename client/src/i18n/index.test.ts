@@ -1,5 +1,5 @@
 /**
- * i18n core tests (lane CE, C7): fallback chain (locale → English → key),
+ * i18n core tests: fallback chain (locale → English → key),
  * {var} interpolation, persistence, notification, labels.
  */
 
@@ -14,6 +14,7 @@ import {
   initLocale,
   isLocale,
   localeLabel,
+  registerTextVar,
   setLocale,
   subscribeLocale,
   t,
@@ -37,9 +38,9 @@ describe('tables', () => {
     for (const key of Object.keys(tr)) {
       expect(en[key], `tr key ${key} exists in en`).toBeDefined();
     }
-    // Every EN key has a TR entry except the documented brand exception.
+    // Every EN key has a TR entry.
     const trOnlyMissing = Object.keys(en).filter((k) => tr[k] === undefined);
-    expect(trOnlyMissing).toEqual(['app.title']);
+    expect(trOnlyMissing).toEqual([]);
   });
 });
 
@@ -54,8 +55,24 @@ describe('t / tFor', () => {
     expect(t('topbar.searchPlaceholder')).toBe('Sembol ara');
   });
 
-  it('falls back to the English string when a locale lacks the key', () => {
-    expect(tFor('tr', 'app.title')).toBe(en['app.title']);
+  it('uses the singular entry only for a count of one', () => {
+    expect(tFor('en', 'search.symbolCount', { count: '1' })).toBe('1 symbol');
+    expect(tFor('en', 'search.symbolCount', { count: 2 })).toBe('2 symbols');
+    expect(tFor('en', 'search.symbolCount', { count: 0 })).toBe('0 symbols');
+    expect(tFor('en', 'search.venuesOf', { count: 1, total: 3 })).toBe('1 of 3 venues');
+    expect(tFor('en', 'search.venuesOf', { count: 1, total: 1 })).toBe('1 of 1 venue');
+    expect(tFor('en', 'search.scopeSection', { scope: 'NYSE', count: 1 })).toBe('NYSE · 1 symbol');
+    expect(tFor('en', 'search.symbolsPreparing', { count: 1, ready: 0, total: 0 })).toBe('1 symbol — preparing previews 0/0');
+    expect(tFor('tr', 'search.symbolCount', { count: 1 })).toBe('1 sembol');
+  });
+
+  it('does not read a grouped count such as 1,000 or 1.000 as one', () => {
+    expect(tFor('en', 'search.symbolCount', { count: '1,000' })).toBe('1,000 symbols');
+    expect(tFor('tr', 'search.symbolCount', { count: '1.000' })).toBe('1.000 sembol');
+  });
+
+  it('reads the stale-quote age with the Turkish seconds unit', () => {
+    expect(tFor('tr', 'search.staleCrypto', { age: `12 ${tFor('tr', 'unit.s')}` })).toBe('7/24 açık · 12 sn önce güncellendi');
   });
 
   it('falls back to the key itself when no table knows it', () => {
@@ -69,6 +86,15 @@ describe('t / tFor', () => {
     expect(tFor('tr', 'banner.opensIn', { time: '01:02:03' })).toBe('01:02:03 sonra açılır');
     expect(tFor('en', 'onboarding.stepOf')).toBe('Step {current} of {total}');
     expect(tFor('en', 'onboarding.stepOf', { nope: 1 })).toBe('Step {current} of {total}');
+  });
+
+  it('resolves registered computed placeholders per locale, and explicit vars win', () => {
+    expect(tFor('en', 'keysheet.theme')).toBe('cycle color theme: {themes}');
+    registerTextVar('themes', (locale) => `LIST-${locale}`);
+    expect(tFor('en', 'keysheet.theme')).toBe('cycle color theme: LIST-en');
+    expect(tFor('tr', 'keysheet.theme')).toBe('renk temasını değiştir: LIST-tr');
+    expect(tFor('en', 'keysheet.theme', { themes: 'EXPLICIT' })).toBe('cycle color theme: EXPLICIT');
+    expect(tFor('en', 'onboarding.stepOf', { current: 1, total: 2 })).toBe('Step 1 of 2');
   });
 });
 
@@ -126,13 +152,13 @@ describe('locale metadata', () => {
   });
 });
 
-describe('lane D shell keys (campaign 4)', () => {
+describe('shell keys', () => {
   /**
-   * Every key introduced by the i18n + themes + settings-drawer lane. Pinned
-   * here so a component can never reference a string the tables do not own
+   * Shell keys the components use across the drawer, banners, tape and keyboard
+   * reference. Pinned here so a component can never reference a string the tables do not own
    * (the tables' own completeness test separately guarantees EN→TR coverage).
    */
-  const LANE_D_KEYS = [
+  const SHELL_KEYS = [
     // TopBar visible text
     'topbar.png',
     'topbar.rail',
@@ -221,10 +247,37 @@ describe('lane D shell keys (campaign 4)', () => {
     // shortcuts overlay footer
     'shortcuts.footerToggle',
     'shortcuts.footerClose',
+    'shortcuts.singleKeys',
+    'shortcuts.singleKeysHint',
+    'about.fontsTitle',
+    'about.fontLicence',
+    'about.sourceCode',
+    'replayPicker.recordingOff',
+    'replayPicker.errorRecordingOff',
+    // single-key switch: the labels and hints that name a bare key, in their switch-off form
+    'shortcuts.singleKeysOffHint',
+    'shortcuts.keyOff',
+    'settings.hudNoKey',
+    'settings.drawToolbarNoKey',
+    'settings.indicatorPickerNoKey',
+    'settings.channelHint.imbalanceNoKey',
+    'topbar.exportPngHintNoKey',
+    'search.openTitleNoSlash',
+    'axis.autoWaitingNoKey',
+    'axis.autoOnNoKey',
+    'axis.autoOffNoKey',
+    'alerts.emptyHintNoKey',
+    'alerts.pressAHintNoKey',
+    // bid and ask side letters on the BBO badge, localised so they never read as tape marks
+    'overlay.bbo.bidSide',
+    'overlay.bbo.askSide',
+    'chartStartup.historyUnavailableDetail',
+    'chartStartup.searchSymbols',
+    'chartStartup.noFeedHint',
   ] as const;
 
-  it('every lane-D key resolves in BOTH tables (never raw-key garbage)', () => {
-    for (const key of LANE_D_KEYS) {
+  it('every shell key resolves in BOTH tables (never raw-key garbage)', () => {
+    for (const key of SHELL_KEYS) {
       expect(en[key], `en owns ${key}`).toBeDefined();
       expect(tr[key], `tr owns ${key}`).toBeDefined();
       expect(tFor('en', key)).not.toBe(key);

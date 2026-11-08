@@ -13,7 +13,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ChartMapPair } from './MeasureTool';
-import { IndicatorOverlayCanvas } from './IndicatorOverlayCanvas';
+import { IndicatorOverlayCanvas, timeMapSig } from './IndicatorOverlayCanvas';
+import type { TimeMap } from '../gl/overlays/coords';
 import { resetIndicatorStoreForTest, useIndicatorStore } from '../indicators/store';
 import { ingestForTest as ingestCandleMsg, getSnapshot as getCandleSnapshot, resetForTest as resetCandles } from '../candles/store';
 import { MsgType, type DepthColumn, type Trade } from '../proto/types';
@@ -165,7 +166,7 @@ describe('IndicatorOverlayCanvas — mount/visibility', () => {
   });
 
   it('mounting the canvas wires the candles stream: store.onStream is subscribed and trades reach the synth', () => {
-    // Regression (R2): the canvas polls candles `getSnapshot()` and never
+    // Regression: the canvas polls candles `getSnapshot()` and never
     // called `subscribe`, so the lazily-wired stream feed never started and
     // every indicator drew nothing in the app. Mounting must register the
     // store's stream handler, and that handler must feed the synth.
@@ -207,7 +208,7 @@ describe('IndicatorOverlayCanvas — draw pipeline', () => {
   it('draws the sub-pane strip with labels for sub-pane indicators', () => {
     ingestCandleMsg(depthCol());
     // One print per MINUTE: 39 closed candles + the forming one, enough for
-    // RSI(14) to leave its warm-up and give the lane a value range.
+    // RSI(14) to leave its warm-up and give the sub-pane a value range.
     for (let i = 0; i < 40; i += 1) ingestCandleMsg(trade(i, 0, 100 + (i % 5)));
     render(<IndicatorOverlayCanvas chartMap={MAP} />);
     act(() => {
@@ -241,7 +242,7 @@ describe('IndicatorOverlayCanvas — draw pipeline', () => {
     expect(ctx.__calls.stroke).toBe(strokesAfterPaint); // no repaint storm
   });
 
-  it('clears the canvas when the LAST indicator is removed (S3 C-1 regression)', () => {
+  it('clears the canvas when the LAST indicator is removed', () => {
     ingestCandleMsg(depthCol());
     ingestCandleMsg(trade(0, 0, 100));
     ingestCandleMsg(trade(0, 30, 102));
@@ -269,6 +270,36 @@ describe('IndicatorOverlayCanvas — draw pipeline', () => {
     expect(clearMock.mock.calls.length).toBeGreaterThan(clearsAfterAdd);
     // Nothing is drawn on the cleared canvas (no stale polyline of the removed one).
     expect(ctx.__calls.stroke).toBe(strokesAfterAdd);
+  });
+
+  it('repaints when the column-time slot table changes with no camera or candle move', () => {
+    ingestCandleMsg(depthCol());
+    ingestCandleMsg(trade(0, 0, 100));
+    let tb: TimeMap = { anchorSeq: 0, anchorT0Ns: 0n, dtNs: 1_000_000_000 };
+    render(<IndicatorOverlayCanvas chartMap={MAP} getTimeBase={() => tb} />);
+    act(() => {
+      useIndicatorStore.getState().add('vwap');
+    });
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    const after1 = ctx.__calls.stroke;
+    act(() => {
+      // Same affine anchor, but reconstructed history now supplies slot knots.
+      tb = { ...tb, slots: { t0: new Float64Array([0, 1_000_000_000, 2_000_000_000]), startSeq: 0 } };
+      vi.advanceTimersByTime(600);
+    });
+    expect(ctx.__calls.stroke).toBeGreaterThan(after1);
+  });
+
+  it('timeMapSig separates the affine map from a slot table and its shape', () => {
+    const affine: TimeMap = { anchorSeq: 1, anchorT0Ns: 5n, dtNs: 10 };
+    const slotted: TimeMap = { ...affine, slots: { t0: new Float64Array([0, 10, 20]), startSeq: 1 } };
+    const longer: TimeMap = { ...affine, slots: { t0: new Float64Array([0, 10, 20, 30]), startSeq: 1 } };
+    expect(timeMapSig(null)).toBe('tm0');
+    expect(timeMapSig(affine)).not.toBe(timeMapSig(slotted));
+    expect(timeMapSig(slotted)).not.toBe(timeMapSig(longer));
+    expect(timeMapSig(slotted)).toBe(timeMapSig({ ...affine, slots: { t0: new Float64Array([0, 10, 20]), startSeq: 1 } }));
   });
 
   it('repaints when the camera moves (chartMap output changes)', () => {

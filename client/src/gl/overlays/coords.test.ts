@@ -102,6 +102,10 @@ describe('toBigNs (cold-JSON ns may be number, hot ns is bigint)', () => {
     ring[0] = toBigNs(321388319477); // would throw if passed the raw number
     expect(ring[0]).toBe(321388319477n);
   });
+  it('maps a non-finite timestamp to 0n instead of throwing a RangeError', () => {
+    expect(toBigNs(Number.NaN)).toBe(0n);
+    expect(toBigNs(Number.POSITIVE_INFINITY)).toBe(0n);
+  });
 });
 
 describe('visibleColRange', () => {
@@ -250,7 +254,7 @@ describe('GridMap.refill (micro GC — reused per dirty frame)', () => {
   });
 });
 
-describe('TimeMap.slots — piecewise ts⇄col (CP2, survey S2 D1)', () => {
+describe('TimeMap.slots — piecewise ts⇄col', () => {
   /**
    * A reconstructed history block: columns 100..101 are 60 s apart (1 m
    * candles), then the live cadence resumes at 250 ms (102..104). The affine

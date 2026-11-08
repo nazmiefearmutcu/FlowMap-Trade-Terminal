@@ -59,7 +59,7 @@ export interface SubscribeInit {
   /** Price-grid coverage preset ('native' | 'wide' | 'full' | 'deep'). */
   band?: string | null;
   /**
-   * Optional EXCLUSIVE replay-window end (wall-clock ns), contract P6. Mirrors
+   * Optional EXCLUSIVE replay-window end (wall-clock ns). Mirrors
    * `events.Subscribe.end_t` (appended LAST there). Omitted from the wire when
    * null/undefined so an unbounded subscribe stays BYTE-IDENTICAL to the
    * pre-end_t encoder — the committed `cold_subscribe` golden pins exactly that.

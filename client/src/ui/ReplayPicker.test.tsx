@@ -1,6 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setTimeZonePref, zonedWallText, zonedWallToNs } from '../i18n/format';
 import { ReplayPicker, utcDateTime, utcDateTimeNs } from './ReplayPicker';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -11,29 +12,31 @@ let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 const button = (text: string): HTMLButtonElement => Array.from(document.querySelectorAll('button'))
   .find((b) => b.textContent === text)!;
-async function mount(onClose = vi.fn(), onConfirm = vi.fn()): Promise<void> {
+async function mount(onClose = vi.fn(), onConfirm = vi.fn(), market = 'binance-spot'): Promise<void> {
   container = document.createElement('div'); document.body.appendChild(container);
   await act(async () => {
     root = createRoot(container!);
-    root.render(<ReplayPicker market="binance-spot" symbol="BTCUSDT" onClose={onClose} onConfirm={onConfirm} />);
+    root.render(<ReplayPicker market={market} symbol="BTCUSDT" onClose={onClose} onConfirm={onConfirm} />);
   });
 }
+// The suites below pin the picker to UTC unless a test says otherwise.
+beforeEach(() => setTimeZonePref('utc'));
 afterEach(() => {
   act(() => root?.unmount()); root = null; container?.remove(); container = null;
-  document.body.replaceChildren(); vi.unstubAllGlobals();
+  document.body.replaceChildren(); vi.unstubAllGlobals(); setTimeZonePref('local');
 });
 describe('ReplayPicker', () => {
   it('defaults to the latest short interval, shows zone/buckets and confirms only a checked bounded range', async () => {
     const confirm = vi.fn();
-    const fetch = vi.fn().mockResolvedValueOnce({ ok: true, json: async () => availability })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ start_ns: (T0 - 120_000_000_000n).toString(),
-        end_ns: (T0 + 250_000_000n).toString(), columns: 481 }) });
+    const fetch = vi.fn().mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify(availability )})
+      .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify(({ start_ns: (T0 - 120_000_000_000n).toString(),
+        end_ns: (T0 + 250_000_000n).toString(), columns: 481 }) )});
     vi.stubGlobal('fetch', fetch);
     await mount(vi.fn(), confirm);
     const inputs = document.querySelectorAll<HTMLInputElement>('input');
     expect(utcDateTimeNs(inputs[0].value)).toBe(T0 - 300_000_000_000n);
     expect(utcDateTimeNs(inputs[1].value)).toBe(T0 + 1_000_000_000n);
-    expect(document.body.textContent).toContain('Local time zone:');
+    expect(document.body.textContent).toContain('Time zone:');
     expect(document.body.textContent).toContain('gaps may exist');
     expect(button('Open paused')).toBeUndefined();
     await act(async () => button('Check interval').click());
@@ -45,17 +48,47 @@ describe('ReplayPicker', () => {
     expect(confirm).toHaveBeenCalledWith(T0 - 300_000_000_000n, T0 + 1_000_000_000n);
   });
   it.each(['replay window exceeds 4096 columns; choose a shorter interval', 'no recorded columns in selected interval'])(
-    'keeps the stream untouched and shows a selection error: %s', async (detail) => {
+    'keeps the stream untouched and shows a localized selection error, never the raw server detail: %s', async (detail) => {
       const confirm = vi.fn();
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, json: async () => availability })
-        .mockResolvedValueOnce({ ok: false, status: 422, json: async () => ({ detail }) }));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify(availability )})
+        .mockResolvedValueOnce({ ok: false, status: 422, text: async () => JSON.stringify(({ detail }) )}));
       await mount(vi.fn(), confirm);
       await act(async () => button('Check interval').click());
-      expect(document.querySelector('[role="alert"]')!.textContent).toBe(detail);
+      expect(document.querySelector('[role="alert"]')!.textContent).toContain('cannot be replayed');
+      expect(document.querySelector('[role="alert"]')!.textContent).not.toContain(detail);
       expect(button('Open paused')).toBeUndefined(); expect(confirm).not.toHaveBeenCalled();
     });
+  it('reports an HTML error page as an unreachable engine, never as a JSON parse error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500,
+      text: async () => '<html><body>Internal Server Error</body></html>' }));
+    await mount();
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert!.textContent).toContain('Cannot reach the FlowMap engine');
+    expect(alert!.textContent).not.toMatch(/JSON|Unexpected token|object Object|HTTP/);
+  });
+
+  it('explains a missing recording store (404) instead of showing the server text', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404,
+      text: async () => JSON.stringify({ detail: 'no recording store' }) }));
+    await mount();
+    const alert = document.querySelector('[role="alert"]')!.textContent ?? '';
+    expect(alert).toContain('The engine has no recording store');
+    expect(alert).not.toContain('{');
+  });
+
+  it('says recording is turned off, not that no recordings exist, when /api/health reports it disabled', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify({ ...availability, hours: [], latest_column_ns: null }) })
+      .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify({ recording_enabled: false }) });
+    vi.stubGlobal('fetch', fetch);
+    await mount();
+    expect(document.body.textContent).toContain('Recording is turned off');
+    expect(document.body.textContent).not.toContain('No recordings for this instrument.');
+    expect(fetch.mock.calls[1][0]).toContain('/api/health');
+  });
+
   it('shows no recording and closes with Escape while restoring opener focus', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...availability, hours: [], latest_column_ns: null }) }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify(({ ...availability, hours: [], latest_column_ns: null }) )}));
     const opener = document.createElement('button'); document.body.appendChild(opener); opener.focus();
     const close = vi.fn(); await mount(close);
     expect(document.body.textContent).toContain('No recordings for this instrument.');
@@ -67,7 +100,7 @@ describe('ReplayPicker', () => {
     expect(document.activeElement).toBe(opener);
   });
   it('traps keyboard focus within the compact dialog', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => availability }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify(availability )}));
     await mount(); const first = document.querySelector<HTMLButtonElement>('button')!;
     const last = button('Check interval'); last.focus();
     act(() => last.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })));
@@ -92,9 +125,9 @@ describe('ReplayPicker', () => {
       const confirm = vi.fn();
       const fetch = vi.fn().mockImplementation(async (url: string) => {
         const params = new URL(url, 'http://localhost').searchParams;
-        return { ok: true, json: async () => url.includes('/availability?') ?
+        return { ok: true, text: async () => JSON.stringify(url.includes('/availability?') ?
           { hours: [anchor.toString()], latest_column_ns: anchor.toString(), max_columns: 4096 } :
-          { start_ns: params.get('start_ns'), end_ns: params.get('end_ns'), columns: 20 } };
+          { start_ns: params.get('start_ns'), end_ns: params.get('end_ns'), columns: 20 } )};
       });
       vi.stubGlobal('fetch', fetch); await mount(vi.fn(), confirm);
       expect(document.querySelectorAll('label')[1].textContent).toContain('(UTC)');
@@ -112,7 +145,7 @@ describe('ReplayPicker', () => {
       await checkAndConfirm(anchor, anchor + 900_000_000_000n);
     });
   it('manual UTC edits invalidate preview and reject reversed/empty ranges without requesting or confirming', async () => {
-    const confirm = vi.fn(), fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => availability });
+    const confirm = vi.fn(), fetch = vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify(availability )});
     vi.stubGlobal('fetch', fetch); await mount(vi.fn(), confirm);
     const inputs = document.querySelectorAll<HTMLInputElement>('input');
     const edit = (input: HTMLInputElement, value: string): void => {
@@ -128,8 +161,8 @@ describe('ReplayPicker', () => {
     await act(async () => button('Check interval').click());
     expect(fetch).toHaveBeenCalledTimes(1);
     act(() => edit(inputs[1], '2026-11-01T06:31:00.125'));
-    fetch.mockResolvedValueOnce({ ok: true, json: async () => ({
-      start_ns: '1793514600125000000', end_ns: '1793514660125000000', columns: 20 }) });
+    fetch.mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify(({
+      start_ns: '1793514600125000000', end_ns: '1793514660125000000', columns: 20 }) )});
     await act(async () => button('Check interval').click());
     const start = BigInt(Date.parse('2026-11-01T06:30:00.125Z')) * 1_000_000n;
     expect(fetch.mock.calls.at(-1)![0]).toContain(`start_ns=${start}&end_ns=${start + 60_000_000_000n}`);
@@ -137,5 +170,51 @@ describe('ReplayPicker', () => {
     expect(confirm).toHaveBeenCalledWith(start, start + 60_000_000_000n);
     act(() => edit(inputs[0], '2026-11-01T06:30:01.125'));
     expect(button('Open paused')).toBeUndefined();
+  });
+
+  it('reads the edges and the hour list in the Settings zone and keeps the instant when the zone changes', async () => {
+    const ny = 'America/New_York';
+    const fetch = vi.fn().mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify(availability) })
+      .mockResolvedValue({ ok: true, text: async () => JSON.stringify({ start_ns: '0', end_ns: '0', columns: 1 }) });
+    vi.stubGlobal('fetch', fetch);
+    setTimeZonePref('exchange');
+    await mount(vi.fn(), vi.fn(), 'equity');
+    const inputs = document.querySelectorAll<HTMLInputElement>('input');
+    const startMs = Number((T0 - 300_000_000_000n) / 1_000_000n);
+    expect(inputs[0].value).toBe(zonedWallText(startMs, ny));
+    expect(document.body.textContent).toContain('Time zone:');
+    const hourLabel = zonedWallText(Number(BigInt(availability.hours[0]) / 1_000_000n), ny).slice(0, 16).replace('T', ' ');
+    expect(document.querySelector('select')!.options[1].textContent).toContain(hourLabel);
+    act(() => setTimeZonePref('utc'));
+    expect(inputs[0].value).toBe(zonedWallText(startMs, 'UTC'));
+    await act(async () => button('Check interval').click());
+    expect(fetch.mock.calls.at(-1)![0]).toContain(`start_ns=${T0 - 300_000_000_000n}&end_ns=${T0 + 1_000_000_000n}`);
+  });
+
+  it('reads a typed edge in the Settings zone before it asks the engine for the window', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify(availability) })
+      .mockResolvedValue({ ok: true, text: async () => JSON.stringify({ start_ns: '0', end_ns: '0', columns: 1 }) });
+    vi.stubGlobal('fetch', fetch);
+    setTimeZonePref('exchange');
+    await mount(vi.fn(), vi.fn(), 'equity');
+    const inputs = document.querySelectorAll<HTMLInputElement>('input');
+    const edit = (input: HTMLInputElement, value: string): void => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    // 07:30 in New York in January (EST, UTC-5) is 12:30 UTC.
+    act(() => edit(inputs[0], '2026-01-15T07:30:00.125'));
+    act(() => edit(inputs[1], '2026-01-15T07:31:00.125'));
+    await act(async () => button('Check interval').click());
+    const start = BigInt(Date.UTC(2026, 0, 15, 12, 30, 0, 125)) * 1_000_000n;
+    expect(fetch.mock.calls.at(-1)![0]).toContain(`start_ns=${start}&end_ns=${start + 60_000_000_000n}`);
+  });
+
+  it('uses the system zone for its edges when the Settings zone is local', async () => {
+    setTimeZonePref('local');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify(availability) }));
+    await mount();
+    const input = document.querySelector<HTMLInputElement>('input')!;
+    expect(zonedWallToNs(input.value, undefined)).toBe(T0 - 300_000_000_000n);
   });
 });

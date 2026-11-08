@@ -1,6 +1,5 @@
 /**
- * Versioned localStorage persistence for chart drawings (campaign 3, lane CF —
- * ported from the old branch's drawings/persist.ts, re-anchored to time-ns).
+ * Versioned localStorage persistence for chart drawings, anchored to time-ns.
  *
  * Each market:symbol scope gets its own key so switching instruments never
  * bleeds one chart's trendlines onto another:
@@ -21,9 +20,9 @@
  * validated (known tool; id / tool / points / createdAt / style present and
  * well-typed; exact anchor arity for the tool; finite price; integral tNs) and
  * invalid entries are dropped while their valid siblings survive. The
- * per-symbol cap is enforced on load too: only the NEWEST
- * {@link MAX_DRAWINGS_PER_SYMBOL} entries (by createdAt, then array order)
- * survive. Writes are best-effort: quota / security errors are swallowed.
+ * per-symbol limit ({@link MAX_DRAWINGS_PER_SYMBOL}) REFUSES new placements
+ * (see {@link hasDrawingRoom}); it never evicts stored drawings on load or
+ * save. Writes are best-effort: quota / security errors are swallowed.
  */
 
 import { drawingBounds } from './model';
@@ -33,7 +32,7 @@ import type { ChartPoint, Drawing, DrawingsDoc } from './types';
 /** Current schema version. Bump ONLY with a migration story in parseDoc. */
 export const DRAWINGS_SCHEMA_VERSION = 1;
 
-/** Max drawings retained per symbol (contract: bounded 200/symbol). */
+/** Max drawings retained per symbol (bounded at 200). */
 export const MAX_DRAWINGS_PER_SYMBOL = 200;
 
 /** Namespaced storage key holding one market:symbol's drawing document. */
@@ -54,20 +53,11 @@ export function serializeDoc(doc: DrawingsDoc): string {
  */
 export function parseDoc(raw: string | null): Drawing[] {
   if (raw === null || raw === '') return [];
+  // No value-based reviver: a digit-only text label (an order or ticket number)
+  // must stay a string. tNs is revived by coerceTNs alone, from its own field.
   let doc: unknown;
   try {
-    doc = JSON.parse(raw, (_k, v: unknown) => {
-      // Revive the tNs decimal strings back to exact bigints. Only a string of
-      // digits revives — anything else is left alone and validated downstream.
-      if (typeof v === 'string' && /^-?\d+$/.test(v) && v.length > 12) {
-        try {
-          return BigInt(v);
-        } catch {
-          return v;
-        }
-      }
-      return v;
-    });
+    doc = JSON.parse(raw);
   } catch {
     return [];
   }
@@ -80,18 +70,17 @@ export function parseDoc(raw: string | null): Drawing[] {
     const d = coerceDrawing(entry);
     if (d !== null) out.push(d);
   }
-  return capDrawings(out);
+  // Every valid stored drawing is kept, even above the placement limit: a
+  // silent trim here would make the loss permanent on the next save.
+  return out;
 }
 
-/** Keep the newest `MAX_DRAWINGS_PER_SYMBOL` drawings (createdAt, then order). */
-export function capDrawings(items: Drawing[]): Drawing[] {
-  if (items.length <= MAX_DRAWINGS_PER_SYMBOL) return items;
-  const indexed = items.map((d, i) => ({ d, i }));
-  indexed.sort((a, b) => a.d.createdAt - b.d.createdAt || a.i - b.i);
-  // Newest (last of the ascending sort) survive; paint order is restored.
-  const keep = indexed.slice(indexed.length - MAX_DRAWINGS_PER_SYMBOL);
-  keep.sort((a, b) => a.i - b.i);
-  return keep.map((x) => x.d);
+/**
+ * Whether one more drawing fits under the per-symbol limit. Placement is
+ * REFUSED at the limit (the store raises a notice); nothing is evicted.
+ */
+export function hasDrawingRoom(count: number): boolean {
+  return count < MAX_DRAWINGS_PER_SYMBOL;
 }
 
 /** Structural guard: a plain object (not null, not an array). */
@@ -193,14 +182,13 @@ export function saveDrawings(
 ): void {
   if (storage === null) return;
   try {
-    const capped = capDrawings(items);
-    if (capped.length === 0) {
+    if (items.length === 0) {
       storage.removeItem?.(drawingsKey(market, symbol));
       return;
     }
     storage.setItem(
       drawingsKey(market, symbol),
-      serializeDoc({ version: DRAWINGS_SCHEMA_VERSION, drawings: capped }),
+      serializeDoc({ version: DRAWINGS_SCHEMA_VERSION, drawings: items }),
     );
   } catch {
     /* quota / security errors — persistence is best-effort, the session keeps working */

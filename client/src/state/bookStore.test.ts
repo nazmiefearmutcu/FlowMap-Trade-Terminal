@@ -155,6 +155,20 @@ describe('bookStore buffer', () => {
     expect(getSnapshot().trades).toHaveLength(0);
   });
 
+  it('keeps the book and BBO identity across a trade-only update (the DOM ladder guard relies on it)', () => {
+    ingestForTest(depthCol(1, 1, [2, 0], [0, 3]));
+    ingestForTest(bbo(100, 2, 101, 3));
+    const before = getSnapshot();
+    ingestForTest(trade(3, 100, 1, SIDE_BUY));
+    const after = getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.trades).not.toBe(before.trades);
+    expect(after.book).toBe(before.book);
+    expect(after.bbo).toBe(before.bbo);
+    expect(after.sessionVersion).toBe(before.sessionVersion);
+    expect(after.sessionKey).toBe(before.sessionKey);
+  });
+
   it('keeps side attribution and genuine duplicate prints intact', () => {
     const print = { ...trade(1, 100, 2, SIDE_BUY), side_src: 2 };
     ingestForTest(print);

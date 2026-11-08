@@ -1,39 +1,70 @@
 name: CI
 
 # Fast push/PR gate:
-#   - client typecheck + lint (eslint) + unit tests (ubuntu + windows)
+#   - client typecheck + lint (eslint, warning budget) + unit tests (ubuntu + windows)
 #   - client production bundle (tsc -b && vite build) — a broken prod build
 #     no longer ships green
-#   - server pytest + lint (ruff) (ubuntu + windows; the product is
-#     Windows-packaged, so the server suite is exercised on both OSes)
-#   - Tauri shell `cargo test` (ubuntu, with the Tauri 2 Linux system deps)
-#   - full browser e2e (ubuntu, Playwright chromium via SwiftShader)
-# The heavier release/packaging pipeline lives in release.yml.
+#   - server pytest (ubuntu + windows; the product is Windows-packaged, so the
+#     server suite is exercised on both OSes), ruff lint and the mypy type gate
+#     (ubuntu only)
+#   - release tooling: the nine-field version gate and the release-asset
+#     validator tests (ubuntu)
+#   - dependency advisories: npm audit (high and above), pip-audit on the locked
+#     Python graph and cargo audit on the locked Rust graph (ubuntu)
+#   - Tauri shell `cargo test` and clippy (ubuntu, windows and macos) and
+#     fmt (ubuntu only), with the Tauri 2 Linux system deps on ubuntu
+#   - full browser e2e (ubuntu, Playwright chromium via SwiftShader), with a
+#     skip/flake budget that fails the job when it is exceeded
+#
+# Runs on pushes to any branch (so the release branch is verified before it is
+# merged), on pull requests to main, on demand, and as a reusable workflow: the
+# release pipeline (release.yml) calls it on the tagged commit before anything
+# is built or published.
+# The heavier packaging pipeline lives in release.yml.
 on:
+  # No path filter: a doc-only change still runs the release-tooling job, which
+  # holds the Markdown link check (scripts/check_doc_links.py).
   push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+    branches: ["**"]
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit or tag to verify (defaults to the caller's commit)."
+        required: false
+        type: string
+        default: ""
 
-# A new push to the same branch/PR supersedes an in-flight run.
+# A newer push supersedes an in-flight PR run. Pushes always run to completion,
+# so every commit that lands on a branch or a release has a finished verdict.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Exact versions of the tools that build or test the Python side and the desktop
+  # shell. Bump them deliberately. release.yml, windows-benchmark.yml,
+  # browser-diagnostics.yml and macos-runtime-audit.yml carry the same values
+  # (scripts/test_release_workflow.py fails when they drift).
+  UV_VERSION: "0.12.12"
+  RUST_TOOLCHAIN: "1.98.0"
+
+permissions:
+  contents: read
 
 jobs:
   client:
-    name: client (tsc + lint + vitest, ubuntu)
+    name: client (tsc + lint + vitest + process-comment gate, ubuntu)
     runs-on: ubuntu-latest
     steps:
       # Every action ref in every workflow is pinned to a full commit SHA
       # (SECURITY.md's claim); the same pins are used across ci/release.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -45,26 +76,33 @@ jobs:
         working-directory: client
         run: npm ci
 
-      - name: Typecheck
+      # `npm run verify` (client/package.json) is the one local and CI check:
+      # tsc -b, eslint with a warning budget (--max-warnings), vitest run.
+      # eslint flat config: client/eslint.config.js.
+      - name: Verify (typecheck, lint, unit tests)
         working-directory: client
-        run: npx tsc -b
+        run: npm run verify
 
-      # eslint flat config (client/eslint.config.js): typescript-eslint
-      # recommended + react-hooks correctness rules. Curated to pass on the
-      # current tree — warnings are allowed, errors fail the job.
-      - name: Lint (eslint)
-        working-directory: client
-        run: npm run lint
+      # ESLint cannot read CSS, so raw pixel font sizes in stylesheets are counted
+      # per file against a ratchet (scripts/check_css_font_sizes.py). The rule for
+      # TS/TSX literals is in client/eslint.config.js.
+      - name: Font sizes in stylesheets come from tokens (ratchet)
+        run: python3 scripts/check_css_font_sizes.py
 
-      - name: Unit tests
-        working-directory: client
-        run: npx vitest run
+      # Comments describe the code, not the process that produced it: ticket,
+      # lane, swarm and campaign identifiers belong in CHANGELOG.md. The server
+      # enforces the same rule in server/tests/test_process_comments.py.
+      - name: No process identifiers in client comments
+        run: python3 scripts/check_process_comments.py
 
   client-build:
     name: client (production bundle)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -87,6 +125,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -107,16 +148,23 @@ jobs:
         run: npx vitest run
 
   server:
-    name: server (pytest + lint, ubuntu)
+    name: server (pytest + lint + mypy, ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       # Same pinned action as release.yml. uv installs exactly the versions
-      # resolved in server/uv.lock — including the crocodile git dependency
-      # that is not on PyPI and has no meaningful pip pin. server/pyproject.toml
-      # requires Python >= 3.13, which uv resolves (and downloads if needed).
+      # resolved in server/uv.lock — including the crocodile engine, which is a
+      # vendored wheel (server/vendor/crocodile-0.3.2-py3-none-any.whl, a path
+      # source in server/pyproject.toml, pinned by sha256 in server/uv.lock).
+      # server/pyproject.toml requires Python >= 3.13, which uv resolves (and
+      # downloads if needed).
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: ${{ env.UV_VERSION }}
 
       # --frozen: a lockfile that drifted from pyproject.toml fails the build
       # instead of being silently re-resolved. testpaths/timeout/asyncio config
@@ -132,13 +180,26 @@ jobs:
         working-directory: server
         run: uv run ruff check .
 
+      # Static type gate: [tool.mypy] in server/pyproject.toml scopes it to the
+      # feeds, data, nlp and proto packages and api/ws.py. mypy is in the locked dev
+      # group, so the sync above installed it. ubuntu only, like ruff: one
+      # interpreter is enough.
+      - name: Type check (mypy)
+        working-directory: server
+        run: uv run mypy
+
   server-windows:
     name: server (pytest, windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: ${{ env.UV_VERSION }}
 
       # The Windows leg guards the packaged product's own platform: path
       # handling, file locks and event-loop behavior differ enough that a
@@ -151,11 +212,125 @@ jobs:
         working-directory: server
         run: uv run pytest -q
 
-  shell:
-    name: shell (cargo test, tauri deps)
+  # Known vulnerabilities in the locked dependency graphs the release ships. Each
+  # ecosystem fails on an advisory it can resolve: npm audit on high and critical
+  # (--audit-level=high), pip-audit and cargo audit on any advisory. cargo audit
+  # reports unmaintained and unsound crates as warnings, which do not fail the job.
+  # Dependabot (.github/dependabot.yml) opens the update PRs.
+  dependency-audit:
+    name: dependency advisories (npm, pip-audit, cargo audit, ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      # The production and development packages of the lock. npm audit reads the
+      # lock file only, so nothing is installed.
+      - name: Client advisories (npm, production packages)
+        working-directory: client
+        run: npm audit --omit=dev --audit-level=high
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      # The exported lock lists the vendored crocodile wheel as a local path
+      # (./vendor/...). It is not on PyPI, so pip-audit cannot look it up; its
+      # sha256 is pinned in server/uv.lock and checked by `uv sync --frozen`.
+      - name: Server advisories (pip-audit on the locked graph)
+        working-directory: server
+        run: |
+          set -euo pipefail
+          uv export --frozen --no-emit-project --no-hashes --all-groups --output-file "$RUNNER_TEMP/server-requirements.txt"
+          grep -v '^\./vendor/' "$RUNNER_TEMP/server-requirements.txt" > "$RUNNER_TEMP/server-requirements-audit.txt"
+          uvx --from pip-audit==2.9.0 pip-audit --requirement "$RUNNER_TEMP/server-requirements-audit.txt" --no-deps --disable-pip --strict
+
+      # cargo-audit reads the locked crate graph and the RustSec advisory database.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal
+          rustup default ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Shell advisories (cargo audit on the locked crate graph)
+        working-directory: app/src-tauri
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
+
+  # The nine version fields must agree on every push, not only at tag time
+  # (drift used to surface only when a release was cut). The release-asset
+  # validator and its tests guard the publish step, so they run here too.
+  release-tooling:
+    name: release tooling (versions, doc links, release-asset validator, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Nine version fields agree
+        run: python3 scripts/check_release_versions.py
+
+      # The committed DMG background names the version it was rendered for. A
+      # stale stamp would put the old number on the macOS installer, so it fails
+      # here rather than in the release build. Fix: scripts/check_dmg_art.py prints
+      # the make-bg.py command to run.
+      - name: DMG artwork matches the app version
+        run: python3 scripts/check_dmg_art.py
+
+      # The market-data engine is one vendored wheel that server/pyproject.toml and
+      # server/uv.lock both name. A second wheel left in server/vendor would be
+      # bundled without being used, so exactly one must be present.
+      - name: Exactly one vendored crocodile wheel
+        run: |
+          set -euo pipefail
+          count="$(ls server/vendor/crocodile-*.whl 2>/dev/null | wc -l | tr -d ' ')"
+          if [ "$count" != "1" ]; then
+            echo "expected exactly one server/vendor/crocodile-*.whl, found $count" >&2
+            exit 1
+          fi
+          echo "vendored wheel: $(ls server/vendor/crocodile-*.whl)"
+
+      # Every Markdown link to a local file or heading must resolve.
+      - name: Documentation links resolve
+        run: python3 scripts/check_doc_links.py
+
+      # stdlib unittest, no dependency install. The validator tests execute the
+      # real publish-step shell block with a fake `gh`, so the step must run
+      # where bash is available (ubuntu).
+      - name: Release and documentation tooling tests
+        run: python3 -m unittest discover -s scripts -p "test_*.py" -v
+
+      # The bundling pins guard the release runtime: app/scripts/requirements_pins.py
+      # refuses an unhashed or drifted requirement, and bundle-python.sh runs it on
+      # every release leg. Its tests are pytest cases, so they get a private venv with
+      # the pytest version the server lock uses (server/uv.lock) and never touch the
+      # runner's Python.
+      - name: Bundling pin tests
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/pins-venv"
+          "$RUNNER_TEMP/pins-venv/bin/pip" install --quiet "pytest==9.1.1"
+          "$RUNNER_TEMP/pins-venv/bin/python" -m pytest app/scripts/tests -q -p no:cacheprovider
+
+  shell:
+    name: shell (cargo test + clippy + fmt, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       # Tauri 2 Linux build dependencies (webkit2gtk-4.1 and friends) — the
       # `tauri` crate cannot compile without them, so `cargo test` needs them
@@ -189,36 +364,143 @@ jobs:
         run: npm ci && npm run build
 
       # tauri.linux.conf.json bundles resources/pyruntime/ (the packaged Python
-      # runtime, produced by scripts/package.sh and gitignored). tauri-build
-      # validates every resource path at compile time, so an empty placeholder
-      # is required for `cargo test` on a bare checkout.
+      # runtime, produced by app/scripts/bundle-python.sh and gitignored).
+      # tauri-build validates every resource path at compile time, so an empty
+      # placeholder is required for `cargo test` on a bare checkout.
       - name: Placeholder pyruntime resource dir
         run: mkdir -p app/src-tauri/resources/pyruntime
 
       # src-tauri/icons/ is a generated set (app/.gitignore) that generate_context!
       # embeds at compile time; produce it from the tracked 1024px source exactly
-      # as scripts/build-dmg.sh does (`cargo tauri icon`), via the pinned npm CLI.
+      # as app/scripts/build-dmg.sh does (`cargo tauri icon`), via the npm CLI
+      # pinned to the same version as the locked tauri crate.
       - name: Generate Tauri icon set
         working-directory: app/src-tauri
-        run: npx --yes @tauri-apps/cli@2.11.4 icon ../icons/icon-1024.png
+        run: npx --yes @tauri-apps/cli@2.11.5 icon ../icons/icon-1024.png
 
-      # Stable Rust is preinstalled on GitHub runners; no toolchain action is
-      # added, keeping the every-action-is-SHA-pinned claim trivially true.
+      # The runner's preinstalled Rust floats, so install the exact toolchain the
+      # release builds with through rustup. No new action is added, which keeps the
+      # every-action-is-SHA-pinned claim true.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal -c clippy -c rustfmt
+          rustup default ${{ env.RUST_TOOLCHAIN }}
+
       - name: Shell tests
         working-directory: app/src-tauri
         run: cargo test --locked
 
+      - name: Shell clippy
+        working-directory: app/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Shell formatting
+        working-directory: app/src-tauri
+        run: cargo fmt --check
+
+  # The Windows shell is the primary target and the one with the strongest
+  # sidecar guarantee (the job-object teardown). Its Windows-only tests and
+  # cfg(windows) code paths compile and run only here.
+  shell-windows:
+    name: shell (cargo test, windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Build client bundle (needed by generate_context!)
+        working-directory: client
+        run: npm ci && npm run build
+
+      - name: Placeholder pyruntime resource dir
+        shell: bash
+        run: mkdir -p app/src-tauri/resources/pyruntime
+
+      - name: Generate Tauri icon set
+        working-directory: app/src-tauri
+        run: npx --yes @tauri-apps/cli@2.11.5 icon ../icons/icon-1024.png
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal -c clippy -c rustfmt
+          rustup default ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Shell tests (includes the Windows job-object teardown test)
+        working-directory: app/src-tauri
+        run: cargo test --locked
+
+      # The cfg(windows) dialogs, job object and focus helper compile only here,
+      # so their lints are checked here too. Same flags as the ubuntu job.
+      - name: Shell clippy (Windows-only code paths)
+        working-directory: app/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  # The macOS shell has its own cfg(target_os = "macos") code: the session-token
+  # ownership check (listener.rs, which runs lsof), the dialogs and the dock hooks.
+  # Nothing else in the gate compiles or tests it, so this leg does, on the same
+  # Apple Silicon image the release builds on, with the pinned toolchain.
+  shell-macos:
+    name: shell (cargo test + clippy, macos)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Build client bundle (needed by generate_context!)
+        working-directory: client
+        run: npm ci && npm run build
+
+      - name: Placeholder pyruntime resource dir
+        run: mkdir -p app/src-tauri/resources/pyruntime
+
+      - name: Generate Tauri icon set
+        working-directory: app/src-tauri
+        run: npx --yes @tauri-apps/cli@2.11.5 icon ../icons/icon-1024.png
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal -c clippy -c rustfmt
+          rustup default ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Shell tests (includes the macOS session-token ownership check)
+        working-directory: app/src-tauri
+        run: cargo test --locked
+
+      - name: Shell clippy (macOS-only code paths)
+        working-directory: app/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
   # Full browser e2e against the real stack (uv server + vite, recording off).
   # Playwright's webServer boots both; CI=1 makes it boot fresh (no reuse) and
   # enables the config's retries: 2. Chromium renders WebGL2 via SwiftShader
-  # (flags in client/playwright.config.ts) — software GL is slow, and the perf
-  # spec's fps gate is the known flake risk on shared runners.
+  # (flags in client/playwright.config.ts) — software GL is slow. The perf spec's
+  # absolute fps numbers are advisory (annotated, not asserted); its same-run
+  # history-independence ratio and ring memory bound are the blocking gates.
   e2e:
     name: e2e (playwright chromium, ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -237,6 +519,8 @@ jobs:
       # The webServer in playwright.config.ts runs `uv run python -m
       # flowmap_server` from ../server, so the frozen env must exist first.
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: ${{ env.UV_VERSION }}
 
       - name: Sync server deps
         working-directory: server
@@ -248,6 +532,12 @@ jobs:
           CI: "1"
           PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/results.json
         run: npx playwright test --reporter=line,json,./tests/reporters/ciFailureReporter.ts
+
+      # Skipped and flaky tests are counted, not hidden: the job fails when they
+      # exceed the committed budget (client/tests/reporters/e2e-budget.json).
+      - name: Enforce the e2e skip and flake budget
+        working-directory: client
+        run: node tests/reporters/checkBudget.mjs test-results/results.json tests/reporters/e2e-budget.json
 
       - name: Retain browser test evidence
         if: always()

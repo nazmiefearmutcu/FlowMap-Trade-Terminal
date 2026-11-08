@@ -1,12 +1,11 @@
 /**
- * Symbol directory helpers (§9 top bar, T12) — pure, so the grouping / filtering
+ * Symbol directory helpers (top bar) — pure, so the grouping / filtering
  * / capability-chip logic is unit-tested without the network or the DOM.
  *
  * The server's `GET /api/symbols?q=` already substring-filters; these helpers add
  * the client-side concerns: mapping a wire `market` to a display group (crypto /
- * equity / sim), ordering + partitioning the flat list into groups for the
- * dropdown, deriving the small capability chips each row shows, and flattening the
- * groups back to a linear order for keyboard navigation.
+ * equity / sim), deriving the small capability chips each row shows, and ranking
+ * the directory for the picker.
  *
  * The venue half of this module (`VenueInfo` → `venueOptions`) backs the picker's
  * venue selector. `GET /api/venues` reports ~106 venues; a market string is a
@@ -16,6 +15,9 @@
  * guessing, and the old string heuristic survives only as the pre-fetch fallback.
  */
 
+import { tFor } from '../i18n';
+import { honestDepthTier } from '../gl/depthTier';
+
 export interface SymbolEntry {
   market: string;
   symbol: string;
@@ -24,12 +26,6 @@ export interface SymbolEntry {
 }
 
 export type SymbolGroupKey = 'crypto' | 'equity' | 'sim';
-
-export interface SymbolGroup {
-  key: SymbolGroupKey;
-  label: string;
-  entries: SymbolEntry[];
-}
 
 /** One venue as `GET /api/venues` reports it. */
 export interface VenueInfo {
@@ -59,19 +55,23 @@ export interface VenueOption {
 /** The scope that serves the bundled, instant `market=all` directory. */
 export const ALL_VENUES = 'all';
 
-const GROUP_ORDER: SymbolGroupKey[] = ['crypto', 'equity', 'sim'];
-const GROUP_LABEL: Record<SymbolGroupKey, string> = {
+/** English group names, kept as search aliases in every locale. Never rendered. */
+const GROUP_SEARCH_ALIAS: Record<SymbolGroupKey, string> = {
   crypto: 'Crypto',
   equity: 'Equity',
   sim: 'Simulated',
 };
 
-/** Short group labels for the top bar's venue chip (the long form says 'Simulated'). */
-const VENUE_GROUP_LABEL: Record<SymbolGroupKey, string> = {
-  crypto: 'Crypto',
-  equity: 'Equity',
-  sim: 'Sim',
+/** Translation keys for the short group words on the top bar's venue chip (the long form says 'Simulated'). */
+const VENUE_GROUP_KEY: Record<SymbolGroupKey, string> = {
+  crypto: 'search.group.crypto',
+  equity: 'search.group.equity',
+  sim: 'search.group.sim',
 };
+
+/** Translates a message key; the pure helpers default to English. */
+export type Translate = (key: string) => string;
+const englishT: Translate = (key) => tFor('en', key);
 
 // --- venue catalog registry -------------------------------------------------
 // A plain module-level cache rather than a subscribable store: every consumer
@@ -137,9 +137,18 @@ export function marketGroup(market: string): SymbolGroupKey {
  * `binance-usdm`) — with ~104 venues, "Crypto" alone no longer identifies
  * anything — while equity / sim keep their group word, which IS their venue.
  */
-export function venueLabel(market: string): string {
+export function venueLabel(market: string, t: Translate = englishT): string {
   const group = marketGroup(market);
-  return group === 'crypto' ? market : VENUE_GROUP_LABEL[group];
+  return group === 'crypto' ? market : t(VENUE_GROUP_KEY[group]);
+}
+
+/**
+ * The translated group word (`Crypto` / `Kripto`, `Equity` / `Hisse`, `Sim`).
+ * Surfaces that name a group in running text (a tooltip, a row hint) use this
+ * rather than the internal key (`crypto`, `equity`, `sim`), which is not UI text.
+ */
+export function venueGroupLabel(group: SymbolGroupKey, t: Translate = englishT): string {
+  return t(VENUE_GROUP_KEY[group]);
 }
 
 /** Every market string a venue can be subscribed as (one per segment, else the bare id). */
@@ -200,41 +209,33 @@ export function rankVenueOptions(
 
 /**
  * Case-insensitive substring filter over symbol AND market (defensive dedupe of
- * the server filter), plus the derived display group key/label so typing
- * 'crypto' / 'equity' / 'sim' (or 'Simulated') surfaces the whole group.
+ * the server filter), plus the derived display group so typing a group word
+ * surfaces the whole group: its key (`crypto`), its English alias (`Simulated`)
+ * and its translated word in the active locale (`Kripto`, `Hisse`).
  */
-export function filterSymbols(entries: readonly SymbolEntry[], q: string): SymbolEntry[] {
-  const needle = q.trim().toLowerCase();
+export function filterSymbols(
+  entries: readonly SymbolEntry[],
+  q: string,
+  t: Translate = englishT,
+): SymbolEntry[] {
+  const needle = searchKey(q.trim());
   if (needle === '') return [...entries];
   return entries.filter((e) => {
-    if (e.symbol.toLowerCase().includes(needle) || e.market.toLowerCase().includes(needle)) return true;
+    if (searchKey(e.symbol).includes(needle) || searchKey(e.market).includes(needle)) return true;
     const key = marketGroup(e.market);
-    return key.includes(needle) || GROUP_LABEL[key].toLowerCase().includes(needle);
+    return key.includes(needle)
+      || searchKey(GROUP_SEARCH_ALIAS[key]).includes(needle)
+      || searchKey(venueGroupLabel(key, t)).includes(needle);
   });
 }
 
-/** Partition entries into ordered, non-empty display groups. Order within a group is preserved. */
-export function groupSymbols(entries: readonly SymbolEntry[]): SymbolGroup[] {
-  const buckets = new Map<SymbolGroupKey, SymbolEntry[]>();
-  for (const e of entries) {
-    const key = marketGroup(e.market);
-    const bucket = buckets.get(key);
-    if (bucket) bucket.push(e);
-    else buckets.set(key, [e]);
-  }
-  const out: SymbolGroup[] = [];
-  for (const key of GROUP_ORDER) {
-    const bucket = buckets.get(key);
-    if (bucket && bucket.length > 0) {
-      out.push({ key, label: GROUP_LABEL[key], entries: bucket });
-    }
-  }
-  return out;
-}
-
-/** Flatten grouped entries back into the linear order the dropdown renders (for keyboard nav). */
-export function flattenGroups(groups: readonly SymbolGroup[]): SymbolEntry[] {
-  return groups.flatMap((g) => g.entries);
+/**
+ * Match key for symbol search: canonical decomposition with combining marks
+ * removed, then lowercased. `İ` (I + U+0307) and decomposed `é` then match their
+ * plain forms, so a composed and a decomposed spelling of the same name agree.
+ */
+export function searchKey(s: string): string {
+  return s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
 /**
@@ -319,15 +320,24 @@ export function fuzzyRank(entries: readonly SymbolEntry[], q: string, limit = 60
 }
 
 /**
- * Small capability chips for a directory row / the top bar. Honest (§7): shows the
- * real depth + tape tiers straight off the capability descriptor, uppercased.
+ * Small capability chips for a directory row / the top bar. Honest: shows the
+ * depth tier the chart is actually drawn with (`honestDepthTier`, the same
+ * verdict the renderer's ramp and the DOM ladder badge use) plus the tape and
+ * side tiers, uppercased.
+ *
+ * A recorded-density replay keeps its real depth tier (a keyless equity
+ * recording still reads `SYNTH`) and adds `RECORDED DENSITY` as a provenance
+ * chip beside it. A replay with no recorded provenance reads `SYNTH`, because
+ * the chart is drawn that way. A simulated feed (`synthetic: true`) adds a
+ * `SIM` chip.
  */
 export function capabilityChips(capability: Record<string, unknown> | null | undefined): string[] {
   if (!capability) return [];
   const chips: string[] = [];
-  const depth = capability.depth;
+  const depth = honestDepthTier(capability);
+  if (typeof depth === 'string') chips.push(depth.toUpperCase());
   if (capability.depth_provenance === 'recorded-density') chips.push('RECORDED DENSITY');
-  else if (typeof depth === 'string') chips.push(depth.toUpperCase());
+  if (capability.synthetic === true) chips.push('SIM');
   const tape = capability.tape ?? capability.trades;
   if (typeof tape === 'string') chips.push(`TAPE ${tape.toUpperCase()}`);
   const side = capability.trade_side;
@@ -336,7 +346,7 @@ export function capabilityChips(capability: Record<string, unknown> | null | und
 }
 
 /**
- * THE capability-chip classifier (§7 honesty). One function, every surface — the
+ * THE capability-chip classifier (honesty first). One function, every surface — the
  * top bar and the symbol palette must make the same fidelity claim about the same
  * string, or the app contradicts itself depending on where you look.
  *
@@ -354,6 +364,8 @@ export function capabilityChips(capability: Record<string, unknown> | null | und
  *                           spellings of one thing (server core/session.py keeps
  *                           `SYNTH_PROFILE` for compatibility), so they MUST
  *                           classify identically.
+ * - `cap--synth`            also `SIM`: a simulated feed (`synthetic: true`) whose
+ *                           book, prints and sides are generated, not observed.
  * - `cap--na`               NO CLAIM: `N/A` — the finnhub equity tier ships no
  *                           book at all (server feeds/equity.py) — and
  *                           `UNKNOWN`, the fallback `data/venues.py::_feed_depth`
@@ -367,11 +379,14 @@ export function capabilityChips(capability: Record<string, unknown> | null | und
  */
 export function capabilityChipClass(chip: string): string {
   if (chip === 'RECORDED DENSITY') return 'cap cap--depth cap--caution';
+  // A simulated feed generates its book, prints and sides: fabricated, so the synthetic accent.
+  if (chip === 'SIM') return 'cap cap--synth';
   if (chip.startsWith('TAPE')) {
     return chip.includes('POLL') ? 'cap cap--tape cap--caution' : 'cap cap--tape';
   }
   if (chip.startsWith('SIDE')) {
-    return chip.includes('INFERRED') || chip.includes('NA') ? 'cap cap--caution' : 'cap';
+    const side = sideValue(chip);
+    return side.includes('INFERRED') || isNoSideClaim(side) ? 'cap cap--caution' : 'cap';
   }
   // --- depth chips ---
   if (chip.startsWith('SYNTH')) return 'cap cap--synth';
@@ -389,35 +404,41 @@ function isNoClaimTier(chip: string): boolean {
   return chip === 'N/A' || chip === 'NA' || chip === 'NONE' || chip === 'UNKNOWN' || chip === '';
 }
 
-/** Hover text spelling out what a lower-fidelity chip actually means, or undefined. */
-export function capabilityChipTitle(chip: string): string | undefined {
-  if (chip === 'RECORDED DENSITY') return 'recorded time-weighted density; reconstructed quotes use row centres, not original raw L2 snapshots';
+/** The value after the `SIDE ` word of a side chip (`SIDE NA` → `NA`). */
+function sideValue(chip: string): string {
+  return chip.slice('SIDE'.length).trim();
+}
+
+/**
+ * Side values that assert NO aggressor attribution: the feed reported none (`NA`,
+ * `N/A`, `NONE`), or we do not know it (`UNKNOWN`). A bare `SIDE UNKNOWN` read as
+ * a clean chip before this, which claimed more than the data carried.
+ */
+function isNoSideClaim(side: string): boolean {
+  return side === 'NA' || side === 'N/A' || side === 'NONE' || side === 'UNKNOWN' || side === '';
+}
+
+/**
+ * Hover text spelling out what a lower-fidelity chip actually means, or undefined.
+ * The text is a translation key (`depthChip.*`) resolved through `t`; without a
+ * translator it reads in English.
+ */
+export function capabilityChipTitle(chip: string, t: Translate = englishT): string | undefined {
+  if (chip === 'RECORDED DENSITY') return t('depthChip.recorded');
+  if (chip === 'SIM') return t('depthChip.simulated');
   if (chip.startsWith('TAPE')) {
-    return chip.includes('POLL')
-      ? 'polled tape — real venue prints, but re-read on a timer rather than streamed, so bursts arrive coalesced'
-      : undefined;
+    return chip.includes('POLL') ? t('depthChip.tapePoll') : undefined;
   }
   if (chip.startsWith('SIDE')) {
-    if (chip.includes('INFERRED')) {
-      return 'inferred aggressor side — derived from the quote/tick rule, not reported by the venue';
-    }
-    if (chip.includes('NA')) {
-      return 'no aggressor side — this tier cannot say who lifted whom, so CVD is not computed';
-    }
+    const side = sideValue(chip);
+    if (side.includes('INFERRED')) return t('depthChip.sideInferred');
+    if (isNoSideClaim(side)) return t('depthChip.sideNone');
     return undefined;
   }
-  if (chip.startsWith('SYNTH')) return 'synthetic depth — reconstructed, not a real order book';
-  if (chip === 'UNKNOWN') {
-    return 'no depth tier reported — the feed states none, so make no assumption about what the book here is';
-  }
-  if (isNoClaimTier(chip)) {
-    return 'no depth at all — this tier ships no order book, so the heatmap has nothing but the tape to draw from';
-  }
-  if (chip.includes('SNAPSHOT')) {
-    return 'snapshot depth — the whole book is re-read each tick (ccxt polling), not streamed as incremental venue diffs';
-  }
-  if (chip === 'L1') {
-    return 'top of book only — the real best bid/ask, extruded into a band; there is no depth ladder behind it';
-  }
+  if (chip.startsWith('SYNTH')) return t('depthChip.synth');
+  if (chip === 'UNKNOWN') return t('depthChip.unknown');
+  if (isNoClaimTier(chip)) return t('depthChip.none');
+  if (chip.includes('SNAPSHOT')) return t('depthChip.snapshot');
+  if (chip === 'L1') return t('depthChip.l1');
   return undefined;
 }

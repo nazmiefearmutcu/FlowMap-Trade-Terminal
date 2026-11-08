@@ -1,10 +1,10 @@
-"""WS connection unit tests (campaign SB items 3 + 4) — deterministic fakes.
+"""WS connection unit tests — deterministic fakes.
 
 - Re-subscribe stale-frame leak: subscribing a second symbol on the same
   connection must drain the shared ClientTx (and bump the subscription
   epoch) so no OLD-symbol frame can flush after the NEW session's
   Hello/snapshot. Unit-level on purpose: an e2e variant would have to race
-  the 50 ms flush tick (forbidden by the campaign's no-phase-pinning rule).
+  the 50 ms flush tick (tests must not pin the flush phase).
 - Real latency fields: the measured Pong RTT feeds the manager's stats
   producer (`record_rtt`, getattr-guarded) and the refusal Status frame;
   `Subscribe.client_ts_ns` (optional proto field) becomes the clock skew.
@@ -136,6 +136,7 @@ async def test_pong_updates_latency_and_feeds_stats_record_rtt():
     stats = FakeStats()
     conn = ws_mod._Connection(FakeWS(), FakeManager(stats=stats))
     sent_ns = time.monotonic_ns()
+    conn._note_ping(sent_ns)  # a Pong only measures when it echoes a ping we sent
     await conn._dispatch(
         events.Pong(echo_ns=sent_ns, client_recv_ns=time.monotonic_ns())
     )
@@ -146,8 +147,10 @@ async def test_pong_updates_latency_and_feeds_stats_record_rtt():
 async def test_pong_without_stats_producer_is_harmless():
     """getattr-guarded: a manager without `stats` (pre-SessionStats core)."""
     conn = ws_mod._Connection(FakeWS(), FakeManager(stats=None))
+    sent_ns = time.monotonic_ns()
+    conn._note_ping(sent_ns)
     await conn._dispatch(
-        events.Pong(echo_ns=time.monotonic_ns(), client_recv_ns=0)
+        events.Pong(echo_ns=sent_ns, client_recv_ns=0)
     )
     assert conn.latency_ms >= 0.0
 
@@ -184,13 +187,13 @@ async def test_refusal_status_carries_measured_latency():
     assert ev.clock_skew_ms == pytest.approx(-12.5)
 
 
-# --- item 6: unknown-market refusals reach the C1 counter --------------------
+# --- Unknown-market refusals reach the stats counter --------------------
 
 
 async def test_unknown_market_refusal_counts_rejected():
     """NotImplementedError (no feed for the market) is refused by the WS
     layer, not the core — it must still land in sessions.rejected
-    (survey-1 #6)."""
+."""
     stats = FakeStats()
     conn = ws_mod._Connection(FakeWS(), FakeManager(stats=stats, raise_nie=True))
     assert not await conn._subscribe(_sub("NOPE"))

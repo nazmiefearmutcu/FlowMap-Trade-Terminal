@@ -31,6 +31,12 @@ ALGORITHM = "native-integral-dyadic-v1"
 LEAF_COLUMNS = 64
 METADATA_PAGE_SIZE = 1024
 DERIVED_CACHE_BYTES = 2 * 1024 * 1024 * 1024
+# Manifest memory the resident pyramid LRU may hold across all recordings. Each
+# store keeps its manifest twice (worker document and published query copy), so
+# the estimate is 2x the manifest bytes. Count alone (16) let a fragmented
+# recording pin hundreds of MB.
+RESIDENT_MANIFEST_BYTES = 512 * 1024 * 1024
+MAX_RESIDENT_PYRAMIDS = 16
 
 
 def geometry_fingerprint(params: EpochParams) -> str:
@@ -231,11 +237,16 @@ class PersistentPyramid:
                         raise ValueError("invalid summary dependencies")
             self._doc = doc
             self._doc.setdefault("aggregates", {})
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, msgspec.DecodeError):
             self.stats["manifest_misses"] += 1
         # A published query document never changes in place. Construction and
         # GC mutate only the private worker document; queries pin one version.
         self._query_doc = copy.deepcopy(self._doc)
+        try:
+            manifest_bytes = self.manifest.stat().st_size
+        except OSError:
+            manifest_bytes = 0
+        self.resident_bytes = 2 * manifest_bytes
 
     def snapshot(self):
         with self._doc_lock:
@@ -340,7 +351,9 @@ class PersistentPyramid:
                         ):
                             mapping.pop(i)
                 return maps
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, msgspec.DecodeError):
+                # A malformed or partially written epoch_index must fall back to
+                # the raw epoch scan; msgspec.ValidationError is not a ValueError.
                 pass
         return _recording_epochs(
             self.root._symbol_dir(self.market, self.symbol),
@@ -463,7 +476,9 @@ class PersistentPyramid:
             (name, s["stamp"], s["sha256"]) for name, s in sorted(self._doc["sources"].items())
         ]
         self._doc["generation"] = hashlib.sha256(msgspec.json.encode(fingerprints)).hexdigest()
-        _atomic(self.manifest, msgspec.json.encode(self._doc))
+        encoded = msgspec.json.encode(self._doc)
+        _atomic(self.manifest, encoded)
+        self.resident_bytes = 2 * len(encoded)
         published = copy.deepcopy(self._doc)
         with self._doc_lock:
             self._query_doc = published
@@ -651,7 +666,7 @@ class PersistentPyramid:
         raw_dir = self.root._symbol_dir(self.market, self.symbol).resolve()
         if resolved == raw_dir or self.directory.is_symlink():
             raise ValueError("derived GC requires its dedicated cache directory")
-        for name, source in list(self._doc["sources"].items()):
+        for name in list(self._doc["sources"]):
             if purge or self._valid(raw_dir / name, doc=self._doc) is None:
                 self._doc["sources"].pop(name, None)
                 result["evicted_cache_parts"] += 1
@@ -1055,18 +1070,28 @@ def pyramid_for(root, market, symbol, recording_id):
         stores.setdefault(key, created)
         if isinstance(stores, OrderedDict):
             stores.move_to_end(key)
-            while len(stores) > 16:
+            # Evict least-recently-used stores by count AND estimated manifest
+            # bytes; the store just touched is never evicted by its own insert.
+            while len(stores) > 1 and (
+                len(stores) > MAX_RESIDENT_PYRAMIDS
+                or sum(getattr(s, "resident_bytes", 0) for s in stores.values())
+                > RESIDENT_MANIFEST_BYTES
+            ):
                 stores.popitem(last=False)
         return stores[key]
 
 
-def collect_retained_caches(root, directories):
-    """Reclaim inactive recording sidecars after intentional raw retention.
+def collect_retained_caches(root, directories, *, purge: bool = False) -> int:
+    """Reclaim derived cache files under recording directories.
 
     Only the recording-ID-derived namespace and known cache filenames are
     eligible. Existing workers finish first; their own post-prepare GC handles
     a skipped busy store. Unknown directories and symlinks are preserved.
+    ``purge=True`` evicts every derived entry (the raw parts stay), which is how
+    the global retention budget reclaims derived bytes before raw parts.
+    Returns the number of bytes freed.
     """
+    freed = 0
     for directory in set(directories):
         cache_root = directory / ".flowmap-pyramid"
         if cache_root.is_symlink() or not cache_root.is_dir():
@@ -1093,11 +1118,13 @@ def collect_retained_caches(root, directories):
                     store = PersistentPyramid(root, market, symbol, identity)
                 if store._prepare_lock.acquire(blocking=False):
                     try:
-                        store._collect_cache_locked()
+                        result = store._collect_cache_locked(purge=purge)
+                        freed += int(result.get("deleted_cache_bytes", 0))
                     finally:
                         store._prepare_lock.release()
-            except (OSError, ValueError, KeyError, TypeError):
+            except (OSError, ValueError, KeyError, TypeError, msgspec.DecodeError):
                 logger.warning("optional derived retention cleanup failed for %s", namespace)
+    return freed
 
 
 def _validate_entry(entry):

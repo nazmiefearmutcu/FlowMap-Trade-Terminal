@@ -1,4 +1,4 @@
-"""WS origin gate + per-process connection cap (campaign SB item 2).
+"""WS origin gate + per-process connection cap.
 
 Unit half: the policy function against an env dict (production reads
 ``os.environ`` at CALL time, so monkeypatched env reaches a LIVE server too).

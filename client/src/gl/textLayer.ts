@@ -1,5 +1,5 @@
 /**
- * 2D text layer (§8.3: "one 2D-canvas text layer", M2 T10).
+ * 2D text layer.
  *
  * A single `<canvas>` for ALL overlay text — axis tick labels, BBO price badges,
  * marker labels, future readouts — layered over the GL canvas (or, for the price
@@ -23,7 +23,7 @@ const FONT_STACK = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Conso
 export const DEFAULT_TEXT_SIZE = 11;
 /** Default font size (CSS px) for {@link TextLayer.badge} plates (unused by axis
  *  pills today, which pass their own size; exported for the same reason). */
-export const DEFAULT_BADGE_SIZE = 11;
+const DEFAULT_BADGE_SIZE = 11;
 
 export interface TextOpts {
   /** Font size in CSS px (default 11). */
@@ -119,7 +119,7 @@ export class TextLayer {
    *     pixel CENTER: one crisp row/column, exactly the old DPR1 behavior;
    *   - even device width (1 CSS px at DPR 2 = 2 device px) → center on a device
    *     pixel BOUNDARY: two full rows/columns instead of the `0.5/1/0.5` smear
-   *     that pixel-center snapping produces for even widths (QA10 M1).
+   * that pixel-center snapping produces for even widths.
    * The edges land at `round(v·dpr − dw/2)` and `+ dw` — both integers whenever
    * the device width `dw` is an integer, for every DPR.
    */
@@ -143,6 +143,17 @@ export class TextLayer {
     ctx.textBaseline = opts.baseline ?? 'alphabetic';
     ctx.fillStyle = opts.color ?? OVERLAY.axis.css;
     ctx.fillText(str, x, y);
+  }
+
+  /**
+   * Measured advance width (CSS px) of `str` in the style {@link text} would
+   * draw it with. Callers box labels with this instead of a per-character guess
+   * (emoji and wide glyphs advance differently from the estimate).
+   */
+  measure(str: string, opts: TextOpts = {}): number {
+    const ctx = this.ctx;
+    ctx.font = `${opts.weight ?? 400} ${opts.size ?? DEFAULT_TEXT_SIZE}px ${FONT_STACK}`;
+    return ctx.measureText(str).width;
   }
 
   /** A filled background badge with centered text — for price/BBO/marker labels. */
@@ -188,15 +199,19 @@ export class TextLayer {
    * how the price line gets its TradingView-smooth look: 2D-canvas stroking has
    * real AA + join geometry, which the raw GL triangle batches cannot give.
    */
-  polyline(pts: Pt[], opts: { width: number; color: string; alpha?: number } = { width: 1, color: '#fff' }): void {
+  polyline(
+    pts: Pt[],
+    opts: { width: number; color: string; alpha?: number; square?: boolean } = { width: 1, color: '#fff' },
+  ): void {
     if (pts.length < 2) return;
     const ctx = this.ctx;
     ctx.save();
     if (opts.alpha !== undefined) ctx.globalAlpha = opts.alpha;
     ctx.strokeStyle = opts.color;
     ctx.lineWidth = opts.width;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
+    // Pixel style strokes with square joins and caps, so steps stay crisp.
+    ctx.lineJoin = opts.square ? 'miter' : 'round';
+    ctx.lineCap = opts.square ? 'square' : 'round';
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
@@ -261,7 +276,7 @@ export class TextLayer {
    *  DPR 2). Snapping only the CONSTANT axis of an axis-aligned run keeps every
    *  other shape's anti-aliasing untouched. `alpha` (default 1) is for chrome
    *  that must read quieter than the labels it serves — e.g. the axis tick
-   *  marks, which are deliberately dimmer than the tick text (§9 Bookmap-class
+   *  marks, which are deliberately dimmer than the tick text (Bookmap-class
    *  axis: the ladder data is the ink, the ticks are guides). */
   line(x0: number, y0: number, x1: number, y1: number, color: string, width = 1, alpha = 1): void {
     const ctx = this.ctx;

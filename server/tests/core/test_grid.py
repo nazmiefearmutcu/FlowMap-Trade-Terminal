@@ -1,6 +1,6 @@
-"""Density grid tests (design spec §8.1–8.2).
+"""Density grid tests.
 
-The first six tests are the frozen contract from the M1 plan (verbatim).
+The first six tests pin the grid contract verbatim.
 The rest pin down trade/bar semantics, ring wraparound, history slicing,
 partial emission, out-of-range handling, and re-anchor behavior.
 """
@@ -442,7 +442,7 @@ def test_duplicate_ts_at_boundary_reemits_same_column():
 
 
 def test_epoch_params_table_survives_reanchors():
-    """Per-epoch params table (spec §6.3): epoch 0 present at construction,
+    """Per-epoch params table: epoch 0 present at construction,
     every re-anchor recorded, old epochs retrievable, current matches."""
     g = Grid(CFG)
     p_zero = g.epoch_params_for(0)
@@ -468,7 +468,7 @@ def test_epoch_params_table_survives_reanchors():
         raise AssertionError("expected KeyError for an unknown epoch")
 
 
-# --- preload (spec §8.1 rehydration; M1 T11) ---------------------------------
+# --- preload ---------------------------------
 
 DT = CFG.dt_ns
 
@@ -585,7 +585,7 @@ def test_preload_validation():
     # Non-contiguous (increasing but gapped) col_seq is rejected — history()
     # would otherwise dereference the unwritten slot between them. This is the
     # cross-restart hazard when a prior gap-cap skip leaves a hole; _apply_tail
-    # turns this ValueError into a §8.1 cold start rather than crashing attach.
+    # turns this ValueError into a cold start rather than crashing attach.
     src5, cols5 = _driven_cols(5)
     ep0b = src5.epoch_params_for(0)
     with pytest.raises(ValueError, match="contiguous"):
@@ -605,7 +605,7 @@ def test_preload_validation():
     assert g3.oldest_retained_t0_ns() is None
 
 
-# --- percentage price band (§8.1) -------------------------------------------
+# --- percentage price band -------------------------------------------
 
 
 def test_band_frame_covers_the_requested_range():

@@ -73,7 +73,7 @@ describe('normalizeWatchlist', () => {
 });
 
 describe('loadWatchlist', () => {
-  it('round-trips a saved list through the exact contract key', () => {
+  it('round-trips a saved list through the exact storage key', () => {
     saveWatchlist(store, ['sim:A', 'crypto:BTCUSDT']);
     expect(store.map.has(WATCHLIST_KEY)).toBe(true);
     expect(loadWatchlist(store)).toEqual(['sim:A', 'crypto:BTCUSDT']);

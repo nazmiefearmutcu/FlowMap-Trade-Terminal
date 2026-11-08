@@ -1,7 +1,7 @@
 /**
  * MACD kernel — fast EMA − slow EMA, signal EMA over the MACD line, histogram.
  * Composes three SMA-seeded EMA cores (emaCore.ts), so the math and the
- * warm-up alignment are exactly the old branch's `macd()`: the MACD line opens
+ * warm-up alignment are exactly the reference implementation's `macd()`: the MACD line opens
  * after `slow − 1` closes, the signal after the first `signalPeriod` non-null
  * MACD values (the same compacted-tail policy, naturally expressed by feeding
  * the signal core only defined MACD values).

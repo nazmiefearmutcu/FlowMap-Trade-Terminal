@@ -33,7 +33,7 @@ uniform int u_groupNewest;
 // Tile-local destination column of the pass's LAST group (itself for a 1-wide
 // pass) — reconstructs each fragment's group end from u_groupNewest.
 uniform int u_xEnd;
-// Row-only mode (campaign visual 2026-09-11, R2-M1): each destination texel
+// Row-only mode: each destination texel
 // sums the 4 ROWS of the SINGLE source column at the same x — no column summing,
 // so a collapsing price axis no longer drags the 4-column block average into a
 // deeply time-zoomed view. Groups are one column wide here.

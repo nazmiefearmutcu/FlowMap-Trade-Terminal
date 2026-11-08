@@ -1,5 +1,5 @@
 /**
- * Overlay visibility toggles (§9 settings: which overlays are on), M2 T10.
+ * Overlay visibility toggles: which overlays are on.
  *
  * A compact button row in the top bar. Default all on except the volume profile
  * (a denser, opt-in overlay). Each click flips one overlay via the renderer's
@@ -8,18 +8,11 @@
  */
 
 import type { OverlayVisibility } from '../gl/overlays/frame';
+import { useT } from '../i18n/useT';
 
-const ITEMS: Array<[keyof OverlayVisibility, string, string]> = [
-  ['price', 'Price', 'Price — last-price line over the heatmap'],
-  ['bubbles', 'Bubbles', 'Bubbles — trade size bubbles on the tape'],
-  ['volume', 'Volume', 'Volume — traded volume bars along the chart bottom'],
-  ['bbo', 'BBO', 'BBO — best bid/offer'],
-  ['vwap', 'VWAP', 'VWAP — volume-weighted average price'],
-  ['cvd', 'CVD', 'CVD — cumulative volume delta (lower pane)'],
-  ['profile', 'Liquidity', 'Liquidity profile — resting orders by price; not executed trade volume'],
-  ['gex', 'GEX', 'GEX — Gamma Exposure boundaries (Call/Put Walls, Gamma Flip)'],
-  ['markers', 'Markers', 'Markers — event markers'],
-  ['axes', 'Axes', 'Axes — price/time axes'],
+// Labels and hints are translated per key (overlay.<key>.label / .hint).
+const ITEMS: ReadonlyArray<keyof OverlayVisibility> = [
+  'price', 'bubbles', 'volume', 'bbo', 'vwap', 'cvd', 'profile', 'gex', 'markers', 'axes',
 ];
 
 interface OverlayTogglesProps {
@@ -28,21 +21,25 @@ interface OverlayTogglesProps {
 }
 
 export function OverlayToggles({ visibility, onToggle }: OverlayTogglesProps): JSX.Element {
+  const t = useT();
   return (
-    <div className="overlay-toggles" role="group" aria-label="overlay toggles">
-      {ITEMS.map(([key, label, description]) => (
-        <button
-          key={key}
-          type="button"
-          className={`overlay-toggle${visibility[key] ? ' is-on' : ''}`}
-          aria-pressed={visibility[key]}
-          aria-label={description}
-          title={description}
-          onClick={() => onToggle(key)}
-        >
-          {label}
-        </button>
-      ))}
+    <div className="overlay-toggles" role="group" aria-label={t('overlay.group')}>
+      {ITEMS.map((key) => {
+        const description = t(`overlay.${key}.hint`);
+        return (
+          <button
+            key={key}
+            type="button"
+            className={`overlay-toggle${visibility[key] ? ' is-on' : ''}`}
+            aria-pressed={visibility[key]}
+            aria-label={description}
+            title={description}
+            onClick={() => onToggle(key)}
+          >
+            {t(`overlay.${key}.label`)}
+          </button>
+        );
+      })}
     </div>
   );
 }

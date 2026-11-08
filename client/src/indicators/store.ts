@@ -1,8 +1,8 @@
 /**
- * Active-indicator store (campaign 3, lane CG) — which indicators are on the
+ * Active-indicator store — which indicators are on the
  * chart, with which params and colors, per symbol.
  *
- * Small zustand slice (the app's own store is session state; this is a lane
+ * Small zustand slice (the app's own store is session state; this is a
  * feature, kept self-contained). Persistence is per-symbol localStorage under
  * `flowmap.indicators.<symbol>`; the active list is BOUNDED at
  * {@link MAX_ACTIVE_INDICATORS} — adding past the bound evicts the OLDEST
@@ -12,12 +12,69 @@
  * valid entries — unknown defIds are dropped, params are clamped through the
  * registry schema, colors must be strings (else they fall back to the theme
  * var). The picker's open state lives here too so `toggleIndicatorPicker()`
- * (exported for INT's key bindings) works from anywhere.
+ * (exported for App's key bindings) works from anywhere.
  */
 
 import { create } from 'zustand';
 
-import { clampParam, defById, defaultParams, INDICATOR_DEFS, type IndicatorDef } from './registry';
+import { clampParam, defById, defaultParams, type IndicatorDef } from './registry';
+
+/**
+ * Ordered parameter pairs that a per-field clamp cannot enforce. MACD
+ * needs fast < slow: a fast period at or above the slow one throws in the kernel
+ * and the indicator silently draws nothing.
+ */
+const ORDERED_PAIRS: Readonly<Record<string, { lo: string; hi: string }>> = {
+  macd: { lo: 'fast', hi: 'slow' },
+};
+
+/**
+ * Make an ordered pair valid by moving the field that was NOT just edited (or,
+ * on load with no edit, the lower one) to the nearest legal value. Pure.
+ */
+export function enforceOrder(
+  defId: string,
+  params: Record<string, number>,
+  editedKey?: string,
+): Record<string, number> {
+  const pair = ORDERED_PAIRS[defId];
+  const def = defById(defId);
+  if (pair === undefined || def === null) return params;
+  const lo = params[pair.lo];
+  const hi = params[pair.hi];
+  if (!(lo >= hi)) return params;
+  const out = { ...params };
+  const loField = def.params.find((p) => p.key === pair.lo);
+  const hiField = def.params.find((p) => p.key === pair.hi);
+  if (loField === undefined || hiField === undefined) return params;
+  if (editedKey === pair.lo) out[pair.hi] = clampParam(hiField, lo + 1);
+  else out[pair.lo] = clampParam(loField, hi - 1);
+  return out;
+}
+
+/**
+ * Whether writing `value` to `key` makes the store move the paired field.
+ * Pure: the picker shows its hint from this, the store does the move itself.
+ */
+export function orderConflict(
+  defId: string,
+  params: Record<string, number>,
+  key: string,
+  value: number,
+): boolean {
+  const pair = ORDERED_PAIRS[defId];
+  const def = defById(defId);
+  if (pair === undefined || def === null || (key !== pair.lo && key !== pair.hi)) return false;
+  const field = def.params.find((p) => p.key === key);
+  if (field === undefined) return false;
+  const next = { ...params, [key]: clampParam(field, value) };
+  const fixed = enforceOrder(defId, next, key);
+  const other = key === pair.lo ? pair.hi : pair.lo;
+  return fixed[other] !== next[other];
+}
+
+/** A hex colour (3, 4, 6 or 8 digits) or an rgb()/rgba()/hsl()/hsla() function. */
+export const CSS_COLOR_RE = /^(#[0-9a-f]{3,4}|#[0-9a-f]{6}|#[0-9a-f]{8}|(rgba?|hsla?)\(\s*[\d.,%\s/]+\))$/i;
 
 /** Hard cap on simultaneously active indicators. */
 export const MAX_ACTIVE_INDICATORS = 8;
@@ -74,14 +131,17 @@ function reviveEntry(raw: PersistedEntry): ActiveIndicator | null {
       }
     }
   }
+  const ordered = enforceOrder(def.id, params);
   const colors: Record<string, string | null> = {};
   if (raw.colors !== null && typeof raw.colors === 'object') {
     for (const out of def.outputs) {
       const v = (raw.colors as Record<string, unknown>)[out.key];
-      colors[out.key] = typeof v === 'string' && v.length > 0 ? v : null;
+      // Only a real CSS colour is kept; anything else falls back to the default
+      // (the drawings store validates its colours the same way).
+      colors[out.key] = typeof v === 'string' && CSS_COLOR_RE.test(v) ? v : null;
     }
   }
-  return { uid: makeUid(def), defId: def.id, params, colors };
+  return { uid: makeUid(def), defId: def.id, params: ordered, colors };
 }
 
 let uidCounter = 0;
@@ -166,7 +226,11 @@ export const useIndicatorStore = create<IndicatorState>((set, get) => {
       if (def === null) return;
       const field = def.params.find((p) => p.key === key);
       if (field === undefined) return;
-      const params = { ...current[idx].params, [key]: clampParam(field, value) };
+      const params = enforceOrder(
+        current[idx].defId,
+        { ...current[idx].params, [key]: clampParam(field, value) },
+        key,
+      );
       const active = current.map((a, i) => (i === idx ? { ...a, params } : a));
       set({ active });
       persist(active);
@@ -178,6 +242,9 @@ export const useIndicatorStore = create<IndicatorState>((set, get) => {
       if (idx < 0) return;
       const def = defById(current[idx].defId);
       if (def === null || !def.outputs.some((o) => o.key === outputKey)) return;
+      // Only a real CSS colour is stored (the same rule persisted entries pass),
+      // so a malformed value cannot reach the canvas or the saved list.
+      if (color !== null && !CSS_COLOR_RE.test(String(color))) return;
       const colors = { ...current[idx].colors, [outputKey]: color === null ? null : String(color) };
       const active = current.map((a, i) => (i === idx ? { ...a, colors } : a));
       set({ active });
@@ -204,13 +271,10 @@ export const useIndicatorStore = create<IndicatorState>((set, get) => {
   };
 });
 
-/** Module-level toggle — INT binds this (e.g. the `I` key) without React context. */
+/** Module-level toggle — App binds this (e.g. the `I` key) without React context. */
 export function toggleIndicatorPicker(): void {
   useIndicatorStore.getState().togglePicker();
 }
-
-/** All registry ids in display order (picker convenience). */
-export const INDICATOR_IDS: readonly string[] = INDICATOR_DEFS.map((d) => d.id);
 
 /** Test seam: reset the store (localStorage cleanup is the test's job). */
 export function resetIndicatorStoreForTest(): void {

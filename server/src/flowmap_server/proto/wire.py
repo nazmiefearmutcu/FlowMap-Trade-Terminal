@@ -1,4 +1,4 @@
-"""FlowMap wire framing (design spec §6.2).
+"""FlowMap wire framing.
 
 Envelope
 --------
@@ -33,9 +33,12 @@ replicate this behavior deliberately.
 
 Error taxonomy: ALL malformed input (truncated envelope/payload, version
 mismatch, payload_len inconsistent with the type's layout, venue/count
-overruns, bad UTF-8/JSON) raises ``ValueError`` — never a raw struct.error,
-IndexError, or UnicodeDecodeError. Unknown msg_types are NOT errors: they are
-skipped via payload_len (``decode`` returns ``(None, next_offset)``).
+overruns, bad UTF-8/JSON, a nested HISTORY_RESP inside HISTORY_RESP) raises
+``ValueError`` — never a raw struct.error, IndexError, UnicodeDecodeError or
+RecursionError. A version mismatch raises :class:`ProtocolVersionError`, a
+``ValueError`` subclass that carries the peer's version. Unknown msg_types are
+NOT errors: they are skipped via payload_len (``decode`` returns
+``(None, next_offset)``).
 
 Payload layouts (little-endian throughout)
 ------------------------------------------
@@ -43,7 +46,9 @@ DEPTH_COL   <IIqBBHI> epoch, col_seq, t0_ns, mode, final, _pad(u16)=0, n_rows
             then bid f32*n_rows, ask f32*n_rows (ask omitted iff mode==SYNTH_PROFILE)
 BAR_COL     <IIq> epoch, col_seq, t0_ns; <dddd> o,h,l,c;
             <ddddd> vol_buy, vol_sell, cvd_cum, vwap_num_cum, vwap_den_cum
-TRADE       <qddBBBB> ts_ns, price, size, side, side_src, _pad, _pad;
+TRADE       <qddBBH> ts_ns, price, size, side, side_src, seq;
+            seq is a per-session trade counter (uint16, 0 = unknown); two trades
+            that share ts_ns, price and size stay distinct through it.
             then venue as u8 length + UTF-8 bytes (message padded to 4 per the rule)
 BBO         <qdddd> ts_ns, bid_px, bid_sz, ask_px, ask_sz
 PING        <q> server_send_ns
@@ -59,7 +64,6 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Callable
-from pathlib import Path
 
 import msgspec
 import numpy as np
@@ -68,6 +72,21 @@ from . import events
 
 PROTO_VER = 1
 FLAG_JSON = 0x0001
+
+
+class ProtocolVersionError(ValueError):
+    """An envelope carries a protocol version this build does not speak.
+
+    ``got`` is the peer's version byte and ``expected`` is :data:`PROTO_VER`.
+    A ``ValueError`` so the existing malformed-frame handling still applies;
+    the typed form lets the WS layer answer a version-skewed peer with a clear
+    refusal instead of silently dropping its frames.
+    """
+
+    def __init__(self, got: int, expected: int = PROTO_VER) -> None:
+        super().__init__(f"protocol version mismatch: got {got}, expected {expected}")
+        self.got = got
+        self.expected = expected
 
 # --- MsgType tags: 0x01-0x3F data, 0x40-0x7F control, 0x80+ reserved -----------
 MSG_HELLO = 0x01
@@ -96,7 +115,7 @@ MSG_PONG = 0x47
 _ENVELOPE = struct.Struct("<BBHI")  # 8 bytes
 _DEPTH_HDR = struct.Struct("<IIqBBHI")  # 24 bytes -> f32 data at msg offset 32
 _BAR = struct.Struct("<IIqddddddddd")  # 88 bytes
-_TRADE_HDR = struct.Struct("<qddBBBB")  # 28 bytes
+_TRADE_HDR = struct.Struct("<qddBBH")  # 28 bytes: seq sits where pad bytes were
 _BBO = struct.Struct("<qdddd")  # 40 bytes
 _PING = struct.Struct("<q")
 _PONG = struct.Struct("<qq")
@@ -148,7 +167,9 @@ def _enc_trade(ev: events.Trade) -> bytes:
     venue = ev.venue.encode("utf-8")
     if len(venue) > 255:
         raise ValueError("Trade.venue exceeds 255 UTF-8 bytes")
-    hdr = _TRADE_HDR.pack(ev.ts_ns, ev.price, ev.size, ev.side, ev.side_src, 0, 0)
+    if not 0 <= ev.seq <= 0xFFFF:
+        raise ValueError("Trade.seq must fit a uint16 (0..65535)")
+    hdr = _TRADE_HDR.pack(ev.ts_ns, ev.price, ev.size, ev.side, ev.side_src, ev.seq)
     return hdr + bytes([len(venue)]) + venue
 
 
@@ -231,7 +252,7 @@ def _dec_bar(buf: bytes, off: int, plen: int) -> events.BarColumn:
 def _dec_trade(buf: bytes, off: int, plen: int) -> events.Trade:
     if plen < _TRADE_HDR.size + 1:
         raise ValueError(f"TRADE payload too short: {plen} < {_TRADE_HDR.size + 1}")
-    ts_ns, price, size, side, side_src, _p1, _p2 = _TRADE_HDR.unpack_from(buf, off)
+    ts_ns, price, size, side, side_src, seq = _TRADE_HDR.unpack_from(buf, off)
     vlen_off = off + _TRADE_HDR.size
     vlen = buf[vlen_off]
     if _TRADE_HDR.size + 1 + vlen > plen:
@@ -240,7 +261,7 @@ def _dec_trade(buf: bytes, off: int, plen: int) -> events.Trade:
         )
     venue = bytes(buf[vlen_off + 1:vlen_off + 1 + vlen]).decode("utf-8")
     return events.Trade(ts_ns=ts_ns, price=price, size=size,
-                        side=side, side_src=side_src, venue=venue)
+                        side=side, side_src=side_src, venue=venue, seq=seq)
 
 
 def _dec_bbo(buf: bytes, off: int, plen: int) -> events.BBO:
@@ -282,6 +303,11 @@ def _dec_history(buf: bytes, off: int, plen: int) -> events.HistoryResponse:
                     "HistoryResponse: nested counts overrun payload_len "
                     f"(cursor={cursor - off}, payload_len={plen})"
                 )
+            # HISTORY_RESP is the only type whose decoder re-enters decode(), so
+            # refusing a nested one HERE, before the recursive decode, bounds the
+            # recursion at one level for any input.
+            if buf[cursor] == MSG_HISTORY_RESP:
+                raise ValueError("HistoryResponse: nested HISTORY_RESP is not allowed")
             nested, cursor = decode(buf, cursor)
             if cursor > end:
                 raise ValueError("HistoryResponse: nested message overruns payload_len")
@@ -393,7 +419,7 @@ def decode(buf, offset: int = 0):
         raise ValueError("truncated envelope")
     msg_type, ver, flags, plen = _ENVELOPE.unpack_from(buf, offset)
     if ver != PROTO_VER:
-        raise ValueError(f"protocol version mismatch: got {ver}, expected {PROTO_VER}")
+        raise ProtocolVersionError(ver)
     payload_off = offset + _ENVELOPE.size
     if payload_off + plen > len(buf):
         raise ValueError("truncated payload")
@@ -433,7 +459,7 @@ def golden_fixture_events() -> dict:
 
     Values are hard-coded constants: NO randomness, NO clock reads. The
     encoded bytes of each event are frozen under tests/proto/golden/ and the
-    TS client must decode them byte-for-byte (M2 lockstep tests).
+    TS client must decode them byte-for-byte (lockstep tests).
     """
     t0 = 1_752_710_400_000_000_000  # fixed ns timestamp (2025-07-17T00:00:00Z)
 
@@ -489,7 +515,7 @@ def golden_fixture_events() -> dict:
     # and prove nothing. Treat the contents as opaque bytes, not documentation.
     subscribe = events.Subscribe(market="crypto", symbol="BTCUSDT", mode="live",
                                  source="crypcodile", start_t=None)
-    # NEW optional field (campaign SB item 4): a Subscribe carrying the client
+    # NEW optional field: a Subscribe carrying the client
     # wall-clock timestamp. Separate fixture so the plain subscribe above stays
     # the minimal form; the trailing null key in the plain form is what the
     # field addition adds to this vector's bytes (regenerated in place — the
@@ -499,7 +525,7 @@ def golden_fixture_events() -> dict:
                                            mode="live", source="crypcodile",
                                            start_t=None, band=None,
                                            client_ts_ns=1_752_710_400_000_000_000)
-    # NEW optional field (campaign SA / NEEDS-CORE #2): a Subscribe carrying a
+    # NEW optional field: a Subscribe carrying a
     # replay window end. Separate fixture; the plain subscribe above gains one
     # more trailing null key ("end_t") from the field addition (regenerated in
     # place — backward-compatible in BOTH directions, same discipline as
@@ -527,14 +553,3 @@ def golden_fixture_events() -> dict:
         "cold_subscribe_end_t": subscribe_end_t,
     }
 
-
-def write_golden_vectors(dir) -> list[Path]:
-    """Encode every fixture event into ``dir`` as ``<name>.bin`` files."""
-    out_dir = Path(dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    written = []
-    for name, ev in golden_fixture_events().items():
-        path = out_dir / f"{name}.bin"
-        path.write_bytes(encode(ev))
-        written.append(path)
-    return written

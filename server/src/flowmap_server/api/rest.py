@@ -1,5 +1,5 @@
-"""REST routes (M1 T8; equity capability M3 T2; universe GOAL 2): health +
-symbol directory (spec §5) + on-disk recording inventory.
+"""REST routes: health +
+symbol directory + on-disk recording inventory.
 
 Handlers are pure in-memory lookups — network calls are FORBIDDEN here. The
 directory is now the FULL bundled universe (``data/universe.py``): the sim
@@ -21,12 +21,14 @@ from what a subscribe actually delivers:
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 
 from flowmap_server import __version__
+from flowmap_server.api.errors import ApiError
 from flowmap_server.config import Config
 from flowmap_server.data.universe import build_directory, filter_directory
 from flowmap_server.feeds.equity import EquityFeed
@@ -35,12 +37,14 @@ from flowmap_server.proto import wire
 
 __all__ = ["router", "current_directory", "CRYPTO_CAPABILITY"]
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api")
 
 # SimFeed's constructor does no I/O; seed is irrelevant for the capability.
 _SIM_CAPABILITY = SimFeed(seed=0).capability
 
-# Crypto directory capability (spec §7 honesty; GOAL 3 cvd). Mirrors the core
+# Crypto directory capability. Mirrors the core
 # keys a crypto subscribe delivers — L2 depth, tick tape, exchange-true side and
 # CVD. (Per-market marker lists live on the feed itself.)
 CRYPTO_CAPABILITY: dict[str, object] = {
@@ -54,13 +58,28 @@ CRYPTO_CAPABILITY: dict[str, object] = {
 def _equity_capability() -> dict[str, object]:
     """Equity capability mirrored from :class:`EquityFeed`'s own tier selection
     so the directory never lies about an equity subscribe. Keys are auto-detected
-    from env (spec §7): keyless -> SYNTH on this machine; Alpaca/Finnhub keyed
+    from env: keyless -> SYNTH on this machine; Alpaca/Finnhub keyed
     tiers activate with no code change. Construction is pure (no I/O)."""
     try:
         cfg = Config.from_env(os.environ)
-    except Exception:  # noqa: BLE001 — a bad env falls back to keyless defaults
+    except Exception as exc:  # a bad env falls back to keyless defaults
+        # Visible, not silent: the message names the setting (never a key value).
+        logger.warning("configuration rejected, using keyless defaults: %s", exc)
         cfg = Config()
     return EquityFeed("AAPL", cfg).capability
+
+
+def _config_error() -> str | None:
+    """The reason the environment fails :meth:`Config.from_env`, or ``None``.
+
+    Surfaced on ``/api/health`` as ``config_error`` so a desktop shell can show
+    that a malformed setting was ignored (rather than silently running on the
+    keyless defaults). The text names the offending variable, never a secret."""
+    try:
+        Config.from_env(os.environ)
+    except Exception as exc:  # reported, not raised: health never 500s
+        return str(exc)
+    return None
 
 
 def current_directory() -> tuple[dict[str, object], ...]:
@@ -75,20 +94,18 @@ def current_directory() -> tuple[dict[str, object], ...]:
 
 @router.get("/health")
 async def health(request: Request) -> dict[str, object]:
-    """Liveness + operational snapshot (v3, campaign SB item 1 / contract C1).
+    """Liveness + operational snapshot (v3).
 
     No auth, NO sensitive fields. Goes beyond the legacy ``{status, version}``
     liveness ping so an operator (or the desktop wrapper) can answer "is the
     sidecar alive AND is it actually feeding?" in one call: process uptime,
     wire protocol version, whether recording is enabled, one row per ACTIVE
     session with its feed kind and live/degraded state — and, when the core
-    mounts a stats producer, its ``snapshot()`` dict VERBATIM under ``stats``
-    (contract C1 freezes the field names; this surface must not reshape it).
+    mounts a stats producer, its ``snapshot()`` dict VERBATIM under ``stats``.
 
-    Everything reads defensively via ``getattr`` — the health probe must
-    never 500 (a missing manager, a core without ``stats``, or a snapshot
-    that raises degrades to ``stats: null`` + ``stats_available: false``,
-    still ``status: ok``).
+    Reads are defensive: the health probe must never 500. A missing manager, a
+    core without ``stats``, or a snapshot that raises degrades to
+    ``stats: null`` + ``stats_available: false``, still ``status: ok``.
     """
     cfg: Config | None = getattr(request.app.state, "cfg", None)
     manager = getattr(request.app.state, "manager", None)
@@ -97,32 +114,33 @@ async def health(request: Request) -> dict[str, object]:
     # end_t); the band is geometry, not identity, so it is not surfaced here.
     # session_id is the join key to stats.staleness_ms (core/stats.py keys by
     # session id) — without it an operator had to string-parse ids to learn
-    # WHICH symbol is stale (survey-1 #8).
+    # WHICH symbol is stale.
     #
     # Sort with a TOTAL key: the tuple carries None (source for replay/plain
     # subscribes; start_t/end_t on unbounded windows) and ints, so a bare
     # sorted() raises TypeError the moment two sessions agree on
     # (market, symbol, mode, band) but differ in shape — exactly the mixed
-    # replay-window state this round introduces. Same treatment as
+    # replay-window state. Same treatment as
     # export.py `_session_sort_key` (None → ""), inlined to keep this hot
     # probe dependency-free.
+    active = manager.active_sessions() if manager is not None else []
     for key, s in sorted(
-        getattr(manager, "_sessions", {}).items(),
+        active,
         key=lambda kv: tuple("" if part is None else str(part) for part in kv[0]),
     ):
-        feed = getattr(s, "_feed", None)
+        feed = s.feed
         feeds.append(
             {
                 "market": str(getattr(feed, "market", key[0]) if feed else key[0]),
                 "symbol": str(getattr(feed, "symbol", key[1]) if feed else key[1]),
                 "mode": str(key[2]),
-                "state": str(getattr(s, "_feed_state", "unknown")),
-                "session_id": str(getattr(s, "session_id", "")),
+                "state": str(s.feed_state),
+                "session_id": str(s.session_id),
             }
         )
     started = getattr(request.app.state, "started_monotonic_ns", None)
     uptime_s = max(0.0, (time.monotonic_ns() - started) / 1e9) if started else 0.0
-    # C1: the core-owned stats producer (SessionStats). Rendered VERBATIM —
+    # The server-wide stats producer (SessionStats). Rendered VERBATIM —
     # whatever keys snapshot() returns go on the wire untouched.
     stats: dict[str, object] | None = None
     snapshot = getattr(getattr(manager, "stats", None), "snapshot", None)
@@ -131,8 +149,8 @@ async def health(request: Request) -> dict[str, object]:
             snap = snapshot()
             if isinstance(snap, dict):
                 stats = snap
-        except Exception:  # noqa: BLE001 — a broken producer must not 500 health
-            pass
+        except Exception:  # a broken producer must not 500 health
+            logger.warning("health stats producer failed", exc_info=True)
     return {
         "status": "ok",
         "version": __version__,
@@ -143,6 +161,7 @@ async def health(request: Request) -> dict[str, object]:
         "feeds": feeds,
         "stats": stats,
         "stats_available": stats is not None,
+        "config_error": _config_error(),
     }
 
 
@@ -157,7 +176,7 @@ def recordings(request: Request) -> dict[str, list[dict[str, object]]]:
     so walking a large recordings tree never blocks the event loop. The
     server is loopback-only and the surface is read-only listing."""
     manager = getattr(request.app.state, "manager", None)
-    recorder = getattr(manager, "_recorder", None)
+    recorder = manager.recorder if manager is not None else None
     rows = recorder.inventory() if recorder is not None else []
     return {"recordings": rows}
 
@@ -174,11 +193,18 @@ async def symbols(q: str = "") -> dict[str, list[dict[str, object]]]:
 @router.get("/recordings/availability")
 def recording_availability(request: Request, market: str, symbol: str) -> dict:
     manager = getattr(request.app.state, "manager", None)
-    recorder = getattr(manager, "_recorder", None)
+    recorder = manager.recorder if manager is not None else None
     result = recorder.availability(market, symbol) if recorder is not None else {
         "market": market, "symbol": symbol, "hours": [], "latest_column_ns": None,
         "coverage": "filename-hour-buckets"}
-    return {**result, "max_columns": getattr(getattr(manager, "_cfg", None), "ring_columns", 0)}
+    cfg = manager.cfg if manager is not None else None
+    # recording_enabled lets the client explain an empty list: "no
+    # recordings" with the switch off is a settings problem, not an empty store.
+    return {
+        **result,
+        "max_columns": cfg.ring_columns if cfg is not None else 0,
+        "recording_enabled": bool(cfg is not None and cfg.recording_enabled),
+    }
 
 
 @router.get("/recordings/window")
@@ -190,10 +216,14 @@ def recording_window(request: Request, market: str, symbol: str, start_ns: int, 
     """
     from flowmap_server.core.session import ReplayUnavailableError
     manager = getattr(request.app.state, "manager", None)
-    if manager is None or getattr(manager, "_recorder", None) is None:
-        raise HTTPException(404, "no recording store")
+    if manager is None or manager.recorder is None:
+        raise ApiError(404, "recording_store_missing", "no recording store is configured")
     try:
-        feed, _ = manager._replay_feed_blocking(market, symbol, start_ns, end_ns)
-    except (ReplayUnavailableError, ValueError) as exc:
-        raise HTTPException(422, str(exc)) from exc
+        feed, _ = manager.replay_feed_blocking(market, symbol, start_ns, end_ns)
+    except ReplayUnavailableError as exc:
+        logger.info("replay window unavailable for %s/%s: %s", market, symbol, exc)
+        raise ApiError(422, "replay_unavailable", "no replayable recording covers this window") from exc
+    except ValueError as exc:
+        logger.info("replay window rejected for %s/%s: %s", market, symbol, exc)
+        raise ApiError(422, "invalid_window", "the requested replay window is invalid") from exc
     return feed.playback()

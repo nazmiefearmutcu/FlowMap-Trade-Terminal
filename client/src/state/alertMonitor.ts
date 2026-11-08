@@ -1,5 +1,5 @@
 /**
- * Alert monitor (campaign-4 contract P4, lane C1) — the walk-away guarantee.
+ * Alert monitor — the walk-away guarantee.
  *
  * Before this hook, only the ACTIVE symbol's alerts were evaluated (ui/PriceAlerts
  * reads the shared book at ~10 Hz). An alert set on BTC was dead the moment the
@@ -14,10 +14,9 @@
  * `reachable === false` (provider down) is SKIPPED — an alert must fire on a
  * real trade, not on an interim display mark. The REST quote is LIVE data even
  * while the chart subscription is in replay mode, so the monitor is not gated on
- * the subscription mode (PriceAlerts carries the replay guard for the book path;
- * see P7).
+ * the subscription mode (PriceAlerts carries the replay guard for the book path).
  *
- * Mount once (INT does, next to the other app-level hooks).
+ * Mount once, next to the other app-level hooks.
  */
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
@@ -31,21 +30,11 @@ import {
 } from './alertsStore';
 import { subscribeQuotes } from './quoteFeed';
 import { useFlowMapStore } from './store';
-import { playAlertSound } from '../ui/alertSound';
-import { loadSettings } from '../ui/settings';
+import { alertSoundEnabled, playAlertSound } from '../ui/alertSound';
 
 /** The active subscription's `market:symbol` key, or null before the first Hello. */
 function activeKeyNow(sub: { market: string; symbol: string } | null): string | null {
   return sub === null ? null : `${sub.market}:${sub.symbol}`;
-}
-
-/** The persisted `alertSound` flag (absent/blocked storage → ON, the default). */
-function soundEnabled(): boolean {
-  try {
-    return loadSettings(typeof window !== 'undefined' ? window.localStorage : null).alertSound;
-  } catch {
-    return true;
-  }
 }
 
 /** Every key with at least one alert except `activeKey`, sorted (stable join). */
@@ -74,10 +63,10 @@ export function useAlertMonitor(): void {
       const px = quote.price;
       if (typeof px !== 'number' || !Number.isFinite(px)) return;
       const fired = evaluateAlerts(key, px);
-      // R2-M1: a monitor fire is exactly the walk-away case the chime exists
-      // for — the active symbol's chime lives in PriceAlerts; this covers the
-      // rest. One chime per fired batch, gated by the persisted setting.
-      if (fired.length > 0 && soundEnabled()) playAlertSound();
+      // A monitor fire is exactly the walk-away case the chime exists for — the
+      // active symbol's chime lives in PriceAlerts; this covers the rest. One
+      // chime per fired batch, gated by the persisted setting.
+      if (fired.length > 0 && alertSoundEnabled()) playAlertSound();
     });
   }, [fingerprint]);
 }

@@ -1,6 +1,6 @@
 /**
- * Shared polling feed for display-only `/api/quote` snapshots (campaign-4
- * contract P2, lane C1; consumed by C2's watchlist and C1's alert monitor).
+ * Shared polling feed for display-only `/api/quote` snapshots, consumed by the
+ * watchlist and the alert monitor.
  *
  * The server exposes `GET /api/quote?market=..&symbol=..` returning
  * `{price, changePct, spark, stale, reachable}` behind a 15 s TTL cache with
@@ -15,17 +15,26 @@
  *     out to every subscriber of that key, so two panels polling the same
  *     symbol cost one request per cycle.
  *   - Duplicate keys in one call collapse; malformed keys are skipped.
- *   - AbortController per fetch; unsubscribing the LAST subscriber for a key
- *     aborts its in-flight request.
- *   - Honest passthrough: the `Quote` handed to the callback is the server's
- *     response, unmodified. A failed/unreachable HTTP request produces NO
- *     callback (never a fabricated quote); the next cycle retries.
+ *   - AbortController per fetch, aborted after {@link QUOTE_TIMEOUT_MS} so one
+ *     hung request cannot silence its key; unsubscribing the LAST subscriber for
+ *     a key aborts its in-flight request.
+ *   - Egress: each poll is answered by the sidecar from its own upstream (venue
+ *     klines for crypto, the Yahoo chart API for equities). It needs no stream
+ *     subscription, so watchlist rows and alert symbols reach those hosts whenever
+ *     the app runs.
+ *   - Honest passthrough: a successful response reaches the callback as the
+ *     server sent it, unmodified. A failed request (non-2xx, network error,
+ *     timeout, unparsable body) is reported as an UNREACHABLE quote: the last
+ *     good quote for the key relabelled `stale: true, reachable: false`, or an
+ *     empty `price: null` quote when none was ever received. It never invents a
+ *     price, and consumers that skip `reachable === false` (the alert monitor)
+ *     never fire on it. The next cycle retries.
  *
  * React-free by design (the alertsStore/bookStore pattern) so it is unit
  * testable with fake timers and an injected visibility source.
  */
 
-import { apiBase } from '../net/serverBase';
+import { apiBase, withSessionHeader } from '../net/serverBase';
 
 /** The `/api/quote` response subset consumers see (camelCase, server-verbatim). */
 export interface Quote {
@@ -60,6 +69,8 @@ export interface QuoteFeedOptions {
 
 /** Default poll cadence — comfortably inside the server's 15 s quote TTL. */
 export const DEFAULT_QUOTE_INTERVAL_MS = 10_000;
+/** Per-request ceiling, kept below the poll cadence so a hung request ends before the next cycle. */
+export const QUOTE_TIMEOUT_MS = 8_000;
 
 interface ParsedKey {
   market: string;
@@ -81,6 +92,8 @@ const groups = new Set<Group>();
 const keyRefs = new Map<string, number>();
 /** At most one in-flight request per key at any moment. */
 const inflight = new Map<string, AbortController>();
+/** Last successful quote per key — the base of an unreachable (stale) report. */
+const lastGood = new Map<string, Quote>();
 
 function documentVisibility(): VisibilitySource {
   return {
@@ -95,7 +108,26 @@ function documentVisibility(): VisibilitySource {
 }
 
 function boundFetch(): typeof fetch {
-  return (input, init) => globalThis.fetch(input, init);
+  return (input, init) => globalThis.fetch(input, withSessionHeader(init));
+}
+
+/**
+ * The quote reported when a request fails: the last good value, labelled stale
+ * and unreachable (so a watchlist can keep the number and say it is not live),
+ * or an empty unreachable quote when this key never produced one.
+ */
+function unreachableQuote(key: string, parsed: ParsedKey): Quote {
+  const base = lastGood.get(key);
+  if (base !== undefined) return { ...base, stale: true, reachable: false };
+  return {
+    market: parsed.market,
+    symbol: parsed.symbol,
+    price: null,
+    changePct: null,
+    spark: [],
+    stale: true,
+    reachable: false,
+  };
 }
 
 /** Parse a `market:symbol` key; null for malformed keys (skipped honestly). */
@@ -127,31 +159,79 @@ function pollGroup(g: Group): void {
   }
 }
 
+/**
+ * Settle with `p`, or reject as soon as `signal` aborts. A real fetch already
+ * rejects on abort; this also covers an injected fetch that ignores the signal,
+ * so a hung request can never hold its key's single-flight slot forever.
+ */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('flowmap: quote request aborted'));
+      return;
+    }
+    const onAbort = (): void => reject(new Error('flowmap: quote request aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** Fan one quote out to every visible subscriber of `key`. */
+function fanOut(key: string, quote: Quote): void {
+  for (const other of groups) {
+    if (!other.keys.has(key) || other.vis.isHidden()) continue;
+    try {
+      other.cb(key, quote);
+    } catch (err) {
+      // One misbehaving consumer must not break the others, but its failure is
+      // still a bug to see in the console, not a silent drop.
+      console.error('[flowmap] quote consumer failed', err);
+    }
+  }
+}
+
 async function fetchQuote(
   g: Group,
   key: string,
   parsed: ParsedKey,
   ctrl: AbortController,
 ): Promise<void> {
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctrl.abort();
+  }, QUOTE_TIMEOUT_MS);
   try {
     const path = `/api/quote?market=${encodeURIComponent(parsed.market)}&symbol=${encodeURIComponent(parsed.symbol)}`;
-    const r = await g.fetchImpl(`${apiBase()}${path}`, { signal: ctrl.signal });
-    if (!r.ok) return; // failed request → honest silence; the next cycle retries
-    const quote = (await r.json()) as Quote;
-    if (ctrl.signal.aborted) return;
-    // Fan the ONE response out to every subscriber of this key. Hidden groups
-    // are paused and do not receive callbacks.
-    for (const other of groups) {
-      if (!other.keys.has(key) || other.vis.isHidden()) continue;
-      try {
-        other.cb(key, quote);
-      } catch {
-        /* one misbehaving consumer must not break the others */
-      }
+    const r = await untilAborted(
+      g.fetchImpl(`${apiBase()}${path}`, { signal: ctrl.signal }),
+      ctrl.signal,
+    );
+    if (!r.ok) {
+      fanOut(key, unreachableQuote(key, parsed));
+      return;
     }
+    const quote = await untilAborted(r.json() as Promise<Quote>, ctrl.signal);
+    if (ctrl.signal.aborted) return;
+    lastGood.set(key, quote);
+    fanOut(key, quote);
   } catch {
-    // AbortError or network failure — no callback; the next tick retries.
+    // A deliberate abort (last unsubscribe / reset) reports nothing: nobody is
+    // listening. A timeout, a network error or an unparsable body is a real
+    // failure the consumers must see.
+    if (ctrl.signal.aborted && !timedOut) return;
+    fanOut(key, unreachableQuote(key, parsed));
   } finally {
+    clearTimeout(timer);
     if (inflight.get(key) === ctrl) inflight.delete(key);
   }
 }
@@ -220,6 +300,7 @@ export function subscribeQuotes(
       keyRefs.delete(key);
       inflight.get(key)?.abort();
       inflight.delete(key);
+      lastGood.delete(key);
     }
   };
 }
@@ -234,4 +315,5 @@ export function resetQuoteFeedForTest(): void {
   keyRefs.clear();
   for (const ctrl of inflight.values()) ctrl.abort();
   inflight.clear();
+  lastGood.clear();
 }

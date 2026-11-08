@@ -1,0 +1,21 @@
+/*
+ * App shell helpers that belong to no single panel. Colours come from the theme
+ * tokens; nothing here paints anything visible.
+ */
+
+/*
+ * Text that only assistive technology reads (for example the chart canvas's
+ * keyboard reference). It stays in the accessibility tree and out of layout.
+ */
+.app-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

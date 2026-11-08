@@ -1,3 +1,4 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Campaign-4 lane E2 — GL invariants pinned at the pixel level.
+ * GL invariants pinned at the pixel level.
  *
  * Five probes over the EXISTING e2e surfaces (no src changes):
  *   1. `?test=heatmap` hook: `setLevelFloor(2)`/`levelInfoWithFloor(2)` force the
@@ -38,7 +39,7 @@ async function waitForLive(page: Page, minCols: number): Promise<void> {
   await page.goto('/?spy=1');
   await page.waitForFunction(
     (min) => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       if (!live || !live.renderer) return false;
       const r = live.renderer;
       return (
@@ -74,7 +75,7 @@ test('tick grouping floor forces the SUM-mip level and coarsens the painted cell
 
   const result = await page.evaluate(
     (cfg) => {
-      const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+      const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
       api.init(cfg.rows, cfg.layers, cfg.width, cfg.height, /* mips */ true);
 
       // A SINGLE bright wall row, everything else zero: at level 0 it is a
@@ -191,7 +192,7 @@ test('setTickGrouping(16) pins the crosshair group at the chart center (?spy)', 
   await waitForLive(page, 64);
 
   const probe = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const canvas = document.querySelector('canvas#gl') as HTMLCanvasElement;
     const at = () => r.probeAt(canvas.clientWidth / 2, canvas.clientHeight / 2);
     const baseline = { grouping: r.getTickGrouping(), level: r.currentMipLevel };
@@ -233,7 +234,7 @@ test('deep time zoom-out selects the SUM mip by the COLUMN axis and keeps liquid
   await waitForLive(page, 512);
 
   const configured = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const canvas = document.querySelector('canvas#gl') as HTMLCanvasElement;
     const gl = canvas.getContext('webgl2') as WebGL2RenderingContext;
     const dbw = Math.max(1, gl.drawingBufferWidth);
@@ -272,7 +273,7 @@ test('deep time zoom-out selects the SUM mip by the COLUMN axis and keeps liquid
   const result = await page.evaluate(async (configured) => {
     // @ts-expect-error Vite production module
     const { projectedRowsPerPixel } = await import('/src/gl/priceProjection.ts');
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const canvas = document.querySelector('canvas#gl') as HTMLCanvasElement;
 
     // Pixel probe: count non-background (thermal) pixels over the whole canvas.
@@ -325,7 +326,7 @@ test('imbalance channel paints a divergent sample and sum restores the frame (?s
   await waitForLive(page, 560);
 
   const result = await page.evaluate(async () => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const canvas = document.querySelector('canvas#gl') as HTMLCanvasElement;
 
     // Pure-heatmap frame for a fair channel comparison (the price line / BBO
@@ -386,8 +387,8 @@ test('imbalance channel paints a divergent sample and sum restores the frame (?s
         const gg = d[i + 1];
         const bb = d[i + 2];
         const l = 0.299 * rr + 0.587 * gg + 0.114 * bb;
-        // Painted = differs from the ramp background (5,8,14). The campaign-4.1
-        // dark-field default keeps typical levels well under luma 25, so an
+        // Painted = differs from the ramp background (5,8,14). The dark-field
+        // default keeps typical levels well under luma 25, so an
         // absolute-luma probe would read a painted field as blank.
         if (Math.abs(rr - 5) + Math.abs(gg - 8) + Math.abs(bb - 14) > 9) painted++;
         if (l > 20 && rr > bb + 12) warm++;
@@ -410,11 +411,11 @@ test('imbalance channel paints a divergent sample and sum restores the frame (?s
     };
 
     await settle();
-    // R2-M2: pin the viewport norm so the EMA glide cannot move pixels between
+    // Pin the viewport norm so the EMA glide cannot move pixels between
     // the grabs (freezeNormForTest; reset by any session reset).
     r.freezeNormForTest();
 
-    // R2-M2 cont'd: the live sim can SPLICE its history once shortly after the
+    // Continued: the live sim can SPLICE its history once shortly after the
     // settle (a one-time frame change in a sealed window — measured: adjacent
     // grabs differ by ~8k px ONCE, then stay byte-identical for the rest of the
     // probe). Wait for a run of byte-identical adjacent frames before starting
@@ -432,7 +433,7 @@ test('imbalance channel paints a divergent sample and sum restores the frame (?s
     r.setDepthChannel('sum');
     await frames(3);
 
-    // R2-M2: retry the channel round-trip until one lands in a quiet window.
+    // Retry the channel round-trip until one lands in a quiet window.
     // The live sim's history loader splices pages asynchronously, and a splice
     // that intersects the sealed view moves a band of pixels regardless of the
     // norm being pinned (measured ~5–10k px, a few frames wide). A real restore
@@ -507,7 +508,7 @@ test('context loss preserves follow-OFF intent and the renderer recovers (?spy)'
   await waitForLive(page, 64);
 
   const before = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     r.setFollowTime(false);
     return {
       following: r.following,
@@ -518,27 +519,27 @@ test('context loss preserves follow-OFF intent and the renderer recovers (?spy)'
   expect(before.following, 'follow turned off before the loss').toBe(false);
 
   const lost = await page.evaluate(() =>
-    (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.loseContextForTest(),
+    (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.loseContextForTest(),
   );
   test.skip(!lost, 'WEBGL_lose_context is unavailable under this GL backend');
 
   await page.waitForFunction(
-    (n) => (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.contextLostCount > n,
+    (n) => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.contextLostCount > n,
     before.lost,
     { timeout: 10_000 },
   );
   await page.evaluate(() =>
-    (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.restoreContextForTest(),
+    (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.restoreContextForTest(),
   );
   await page.waitForFunction(
     (n) =>
-      (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer.contextRestoredCount > n,
+      (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.contextRestoredCount > n,
     before.restored,
     { timeout: 15_000 },
   );
 
   const after = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     return { following: r.following, restored: r.contextRestoredCount };
   });
   expect(after.restored, 'context was restored').toBeGreaterThan(before.restored);
@@ -547,7 +548,7 @@ test('context loss preserves follow-OFF intent and the renderer recovers (?spy)'
   // Recovery: the live feed repopulates the rebuilt ring.
   await page.waitForFunction(
     () => {
-      const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+      const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
       const range = r.residentRange();
       return range !== null && range.count > 0;
     },

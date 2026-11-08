@@ -5,10 +5,11 @@ maintainer will check before merging.
 
 ## Dev setup
 
-Prerequisites: Python 3.13 with [uv](https://docs.astral.sh/uv/), Node 22 with npm.
+Prerequisites: Python 3.13 with [uv](https://docs.astral.sh/uv/), Node.js 22.13+ (or 24) with npm.
+Rust 1.89 or newer is needed only to run the desktop shell's tests in `app/src-tauri`.
 
 ```bash
-# server venv + deps (crocodile is pinned to a git rev in server/pyproject.toml)
+# server venv + deps (crocodile is a vendored wheel: server/vendor/, pinned by sha256 in server/uv.lock)
 cd server && uv sync
 
 # client deps
@@ -50,11 +51,13 @@ docs: document FLOWMAP_LOG_FILE
 
 Before opening a PR, please confirm:
 
-- [ ] **Tests green.** `cd client && npm test` (~1243 vitest tests across 85 files) and
-  `cd server && uv run pytest -q` (~664 pytest tests) both pass locally, and new behavior has
-  tests.
-- [ ] **Lint clean.** `cd client && npm run lint` (eslint) and
-  `cd server && uv run ruff check .` both pass.
+- [ ] **Tests green.** `cd client && npm run verify` (typecheck, eslint with zero warnings allowed,
+  and vitest) and `cd server && uv run pytest -q` both pass locally, and new behavior has tests.
+  CI prints the current test counts; this guide does not repeat them.
+- [ ] **Lint clean.** `cd client && npm run lint` (eslint, with zero warnings allowed) and
+  `cd server && uv run ruff check .` both pass. Colours and font sizes in TypeScript come from the
+  theme tokens in `client/src/theme`, and `python3 scripts/check_css_font_sizes.py` must pass for
+  any stylesheet you touch.
 - [ ] **TypeScript clean.** `npx tsc -b` in `client/` reports no errors.
 - [ ] **The honest-data rule holds.** Never render, badge, or replay data that the feed did not
   actually deliver: capability badges (`L2`/`L1`/`SYNTH`, `TAPE TICK`/`TAPE POLL`) must reflect
@@ -69,9 +72,10 @@ Before opening a PR, please confirm:
   security-adjacent).
 - [ ] **No new binary assets** in a PR that doesn't explicitly need them.
 
-CI runs lint, both test suites and the full Playwright e2e suite on every push and PR
-(`.github/workflows/ci.yml`); a maintainer will ask for rebases rather than merge commits if
-the branch has drifted.
+CI runs lint, both test suites and the full Playwright e2e suite (`.github/workflows/ci.yml`) on every
+push and on every PR to `main`, including changes that touch only Markdown or `docs/`; the
+release-tooling job checks the documentation links.
+A maintainer will ask for rebases rather than merge commits if the branch has drifted.
 
 ## Reporting bugs and vulnerabilities
 

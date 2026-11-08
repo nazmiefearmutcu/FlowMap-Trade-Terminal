@@ -22,15 +22,15 @@
 }
 
 .intel-drawer__badge {
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   color: var(--focus);
 }
 
 .intel-drawer__title {
-  font-size: 15px;
+  font-size: var(--fs-xl);
   font-weight: 600;
   color: var(--text);
 }
@@ -52,8 +52,8 @@
   border: none;
   border-bottom: 2px solid transparent;
   color: var(--text-2);
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -71,7 +71,7 @@
 }
 
 .intel-tab__hint {
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   opacity: 0.75;
   margin-top: 1px;
 }
@@ -83,8 +83,8 @@
   padding: 6px var(--sp-4, 16px);
   background: var(--bg-inset);
   border-bottom: 1px solid var(--line);
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
 }
 
 .intel-drawer__target strong {
@@ -96,7 +96,7 @@
   border: 1px solid var(--line);
   border-radius: 3px;
   color: var(--text-2);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   padding: 2px 8px;
   cursor: pointer;
 }
@@ -123,8 +123,8 @@
 }
 
 .intel-section__tag {
-  font-family: var(--font-mono, monospace);
-  font-size: 9px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--text-3);
@@ -132,14 +132,14 @@
 
 .intel-section__title {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--text);
 }
 
 .intel-section__desc {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
   color: var(--text-2);
 }
@@ -152,14 +152,14 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .intel-card__top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .intel-card__sym {
@@ -171,16 +171,16 @@
 .intel-card__speaker,
 .intel-card__tail {
   color: var(--text-2);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .intel-card__date {
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .intel-card__heading {
-  font-size: 12px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
 }
@@ -193,7 +193,7 @@
 }
 
 .intel-trigger-badge {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   padding: 2px 6px;
   border-radius: 3px;
   background: color-mix(in srgb, var(--sell) 8%, var(--bg-inset));
@@ -218,7 +218,7 @@
   border: 1px solid var(--line);
   border-radius: 3px;
   padding: 6px 8px;
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   line-height: 1.45;
   margin-top: 4px;
   display: flex;
@@ -258,12 +258,12 @@
 }
 
 .vocal-metric__lbl {
-  font-size: 8.5px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
 }
 
 .vocal-metric__val {
-  font-size: 12px;
+  font-size: var(--fs-md);
   font-weight: 700;
   color: var(--text);
 }
@@ -279,12 +279,12 @@
 
 .intel-card__recipient,
 .intel-card__politician {
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 
 .intel-card__desc {
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--text-2);
   line-height: 1.35;
 }
@@ -292,14 +292,14 @@
 .intel-card__award-id,
 .intel-card__committee,
 .intel-card__amount-range {
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
 }
 
 .intel-card__side {
   padding: 2px 6px;
   border-radius: 3px;
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
 }
 
@@ -330,15 +330,15 @@
 }
 
 .gex-stat__lbl {
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .gex-stat__val {
-  font-size: 18px;
+  font-size: var(--fs-xl);
   font-weight: 700;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .gex-stat__val.is-pos {
@@ -350,7 +350,7 @@
 }
 
 .gex-stat__sub {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-2);
 }
 
@@ -368,7 +368,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .gex-level-item.is-call {
@@ -384,18 +384,18 @@
 }
 
 .gex-level-item__name {
-  font-size: 8.5px;
+  font-size: var(--fs-2xs);
   color: var(--text-2);
 }
 
 .gex-level-item__px {
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   color: var(--text);
 }
 
 .gex-level-item__note {
-  font-size: 8px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
 }
 
@@ -407,18 +407,18 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .darkpool-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .darkpool-ratio {
-  font-size: 14px;
+  font-size: var(--fs-lg);
   color: var(--text-2);
 }
 
@@ -442,12 +442,12 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 4px;
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
   color: var(--text-2);
 }
 
 .darkpool-flag {
-  font-size: 11px;
+  font-size: var(--fs-sm);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -458,7 +458,7 @@
   padding: 2px 6px;
   border-radius: 3px;
   font-weight: 700;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .darkpool-flag-badge.is-accumulation {
@@ -480,13 +480,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--text);
 }
 
 .intel-jet-arrow {
   color: var(--focus);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .talent-card {
@@ -497,18 +497,18 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .talent-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .talent-delta {
-  font-size: 14px;
+  font-size: var(--fs-lg);
 }
 
 .talent-delta.is-pos {
@@ -523,7 +523,7 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-2);
 }
 
@@ -531,7 +531,7 @@
   padding: 2px 6px;
   border-radius: 3px;
   font-weight: 700;
-  font-size: 9px;
+  font-size: var(--fs-2xs);
 }
 
 .talent-badge.is-active {
@@ -551,8 +551,8 @@
   padding: 8px var(--sp-4, 16px);
   background: var(--bg-inset);
   border-top: 1px solid var(--line);
-  font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
 }
 
 .macro-chip {
@@ -562,7 +562,7 @@
 }
 
 .macro-chip__lbl {
-  font-size: 8px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
 }
 
@@ -576,7 +576,7 @@
 }
 
 .macro-regime-badge {
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   padding: 2px 6px;
   border-radius: 3px;
@@ -599,8 +599,8 @@
 
 .intel-empty {
   color: var(--text-3);
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
   padding: 12px;
   text-align: center;
   background: var(--bg-2);
@@ -616,15 +616,15 @@
   background: var(--bg-2);
   border: 1px solid var(--line);
   border-radius: var(--r-1, 3px);
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 
 .macro-ticker__lbl {
   color: var(--text-3);
   font-weight: 700;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .macro-ticker__item {
@@ -649,7 +649,7 @@
 }
 
 .macro-ticker__badge {
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   padding: 1px 5px;
   border-radius: 2px;
@@ -680,4 +680,24 @@
 .tbtn.is-intel:hover {
   background: var(--bg-3);
   border-color: var(--focus);
+}
+
+/* Modules hidden because no source is connected: a quiet count, not a panel. */
+.intel-hidden {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-2);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+/* Windows High Contrast (forced colors): the active tab and filter lose their
+   author background, so they keep a system outline (WCAG 1.4.1). */
+@media (forced-colors: active) {
+  .intel-tab.is-active,
+  .intel-filter-toggle.is-on {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }

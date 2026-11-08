@@ -29,7 +29,6 @@ export interface DarkPoolData {
   totalVolume: number;
   shortVolume: number;
   otcVolume: number;
-  institutionalFlag: 'ACCUMULATION' | 'DISTRIBUTION' | 'NEUTRAL';
 }
 
 export interface SecDiffData {
@@ -201,7 +200,6 @@ const SEED_DARK_POOL: Record<string, DarkPoolData> = {
     totalVolume: 48_500_000,
     shortVolume: 26_578_000,
     otcVolume: 22_100_000,
-    institutionalFlag: 'ACCUMULATION',
   },
   TSLA: {
     symbol: 'TSLA',
@@ -209,7 +207,6 @@ const SEED_DARK_POOL: Record<string, DarkPoolData> = {
     totalVolume: 62_100_000,
     shortVolume: 36_142_200,
     otcVolume: 31_050_000,
-    institutionalFlag: 'DISTRIBUTION',
   },
   PLTR: {
     symbol: 'PLTR',
@@ -217,7 +214,6 @@ const SEED_DARK_POOL: Record<string, DarkPoolData> = {
     totalVolume: 31_200_000,
     shortVolume: 16_255_200,
     otcVolume: 14_900_000,
-    institutionalFlag: 'ACCUMULATION',
   },
   LMT: {
     symbol: 'LMT',
@@ -225,7 +221,6 @@ const SEED_DARK_POOL: Record<string, DarkPoolData> = {
     totalVolume: 1_850_000,
     shortVolume: 817_700,
     otcVolume: 790_000,
-    institutionalFlag: 'NEUTRAL',
   },
   'SIM-DEMO': {
     symbol: 'SIM-DEMO',
@@ -233,7 +228,6 @@ const SEED_DARK_POOL: Record<string, DarkPoolData> = {
     totalVolume: 10_000_000,
     shortVolume: 5_350_000,
     otcVolume: 4_800_000,
-    institutionalFlag: 'ACCUMULATION',
   },
 };
 
@@ -246,13 +240,13 @@ const SEED_SEC_DIFFS: SecDiffData[] = [
     title: 'Export Control & Advanced Semiconductor Restrictions',
     addedLines: [
       '+ The Bureau of Industry and Security (BIS) issued an interim final rule expanding licensing requirements for semiconductor shipments to specific regions.',
-      '+ In August 2026, the Department of Justice issued a subpoena requesting documents regarding distribution channels and high-bandwidth interconnect bundling practices.',
+      '+ [synthetic example] Illustrative line about regulatory inquiries; not a filing excerpt.',
       '+ These restrictions could materially and adversely affect our business, operating results, and market share in key enterprise computing corridors.',
     ],
     removedLines: [
       '- Management previously believed non-license alternative configurations would fulfill localized compute demand without material disruptions.',
     ],
-    criticalTriggers: ['DOJ subpoena', 'Antitrust bundling', 'BIS export controls'],
+    criticalTriggers: ['Synthetic trigger A', 'Synthetic trigger B', 'BIS export controls'],
   },
   {
     id: 'diff-2',
@@ -431,18 +425,51 @@ const SEED_MACRO: MacroStressData = {
   updatedAt: Date.now(),
 };
 
-/** Synthetic fixtures only. Never insert these into live state or chart overlays. */
-export const DEMO_INTELLIGENCE = {
-  gex: SEED_GEX,
-  darkPool: SEED_DARK_POOL,
-  secDiffs: SEED_SEC_DIFFS,
-  vocalStress: SEED_VOCAL_STRESS,
-  contracts: SEED_CONTRACTS,
-  capitolTrades: SEED_CAPITOL_TRADES,
-  corporateJets: SEED_JETS,
-  talent: SEED_TALENT,
-  macro: SEED_MACRO,
-};
+/**
+ * Synthetic fixtures only. The drawer reads these ONLY in a development
+ * build for the SIM-DEMO symbol, never in a shipped build. Their wording is
+ * illustrative: no line here is a real filing, subpoena or award.
+ * Never insert these into live state or chart overlays.
+ *
+ * The seeds only exist in development builds (state-16): `import.meta.env.DEV`
+ * is a compile-time false in a shipped bundle, so the invented filing and award
+ * text never reaches production. A production build gets an empty set instead.
+ */
+export interface DemoIntelligence {
+  gex: Record<string, GexData>;
+  darkPool: Record<string, DarkPoolData>;
+  secDiffs: SecDiffData[];
+  vocalStress: VocalStressData[];
+  contracts: ContractData[];
+  capitolTrades: CapitolTradeData[];
+  corporateJets: CorporateJetData[];
+  talent: Record<string, TalentData>;
+  macro: MacroStressData;
+}
+
+export const DEMO_INTELLIGENCE: DemoIntelligence = import.meta.env.DEV
+  ? {
+      gex: SEED_GEX,
+      darkPool: SEED_DARK_POOL,
+      secDiffs: SEED_SEC_DIFFS,
+      vocalStress: SEED_VOCAL_STRESS,
+      contracts: SEED_CONTRACTS,
+      capitolTrades: SEED_CAPITOL_TRADES,
+      corporateJets: SEED_JETS,
+      talent: SEED_TALENT,
+      macro: SEED_MACRO,
+    }
+  : {
+      gex: {},
+      darkPool: {},
+      secDiffs: [],
+      vocalStress: [],
+      contracts: [],
+      capitolTrades: [],
+      corporateJets: [],
+      talent: {},
+      macro: { sofrRate: 0, hySpreadBps: 0, yieldCurve10Y2Y: 0, stressRegime: 'UNKNOWN', updatedAt: 0 },
+    };
 
 function finite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);

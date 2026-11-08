@@ -1,5 +1,5 @@
 /**
- * useT hook tests (lane CE): the component re-renders on locale change and
+ * useT hook tests: the component re-renders on locale change and
  * renders the new locale's strings.
  */
 

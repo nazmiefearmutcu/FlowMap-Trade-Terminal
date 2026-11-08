@@ -1,9 +1,8 @@
-"""TTL-cached market data behind an injectable network seam (GOAL 2).
+"""TTL-cached market data behind an injectable network seam.
 
-The REST discovery handlers (``/api/movers``, ``/api/quote``) must never call a
-provider directly — all network lives here, behind a TTL cache that debounces
-per-keystroke traffic so typing in the search box cannot hammer Yahoo / the
-exchange REST. Providers are injected as async seams
+The REST discovery handlers (``/api/movers``, ``/api/quote``) reach providers
+only through this TTL cache, which debounces per-keystroke traffic so typing in
+the search box cannot hammer Yahoo or the exchange REST. Providers are injected as async seams
 (``quote_fn`` / ``movers_fn``), so pytest feeds canned data and never touches the
 network; the production seams (:func:`default_quote_fn` / :func:`default_movers_fn`)
 are imported lazily and wired in :func:`~flowmap_server.api.app.create_app`.
@@ -45,6 +44,9 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 
 import msgspec
+from crocodile.core.scheduler.calendar import USMarketCalendar
+
+from flowmap_server.feeds._yahoo import UnknownSymbolError, YahooUnavailableError
 
 __all__ = [
     "QuoteData",
@@ -58,13 +60,17 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_NS = 15 * 10**9  # 15 s: fresh enough for a mover strip, cheap on providers
+# A symbol whose FIRST fetch failed (nothing cached) is not re-requested for
+# this long, so hovering a dead or delisted symbol cannot hit the provider on
+# every read. Shorter than the success TTL: a transient outage recovers fast.
+NEGATIVE_TTL_NS = 30 * 10**9
 # Bound on cached entries (quotes AND movers lists) so a long-lived server
 # that browses thousands of distinct symbols cannot grow the dicts forever.
 # 512 quotes ~ far more than any real browsing session touches; eviction is
-# oldest-INSERTED-first (see MarketDataCache._evict).
+# least-recently-STORED-first (see MarketDataCache._evict).
 DEFAULT_MAX_ENTRIES = 512
 SPARK_MAX = 64  # cap sparkline points on the wire
-# Wall-clock deadline for ONE movers candidate sweep (A2-5). The sweep is
+# Wall-clock deadline for ONE movers candidate sweep. The sweep is
 # bounded (~40-100 quotes) but gathered concurrently with no deadline of its
 # own, so one hung provider used to hold the whole endpoint. Past the deadline
 # whatever ranked already — partial results, honestly — is served.
@@ -73,7 +79,7 @@ EQUITY_MOVERS_CONCURRENCY = 4
 CRYPTO_MOVERS_CONCURRENCY = 4
 # The movers cache always fetches this many rows (the same clamp /api/movers
 # enforces) and slices per caller: caching the FIRST caller's limit poisoned
-# a later, larger request for a whole TTL (survey-1 #4).
+# a later, larger request for a whole TTL.
 _MOVERS_MAX = 100
 _PREVIEW_QUOTE_TIMEOUT_S = 15.0
 
@@ -169,6 +175,8 @@ class MarketDataCache:
         self._preview_generation = uuid.uuid4().hex
         self._quote_revision = 0
         self._quote_revisions: dict[tuple[str, str], int] = {}
+        # Monotonic clock of the last failed FIRST fetch per key (negative cache).
+        self._failures: dict[tuple[str, str], int] = {}
 
     # -- quotes ----------------------------------------------------------------
 
@@ -219,12 +227,18 @@ class MarketDataCache:
                 cached = self._quotes.get(key)
                 if cached is not None and self._fresh(cached[0]):
                     return cached[1]
+                if cached is None and self._recent_failure(key):
+                    # The last first-fetch for this key failed moments ago:
+                    # answer the explicit empty quote without a provider call.
+                    return self._fallback_quote(market, symbol, None)
                 try:
                     q = await self._quote_fn(market, symbol.upper())
-                except Exception:  # noqa: BLE001 — never raise into the handler
+                except Exception:  # never raise into the handler
                     logger.debug("quote fetch failed for %s:%s", market, symbol, exc_info=True)
                     fallback = self._fallback_quote(market, symbol, cached)
-                    if self._stale_while_revalidate and cached is not None:
+                    if cached is None:
+                        self._record_failure(key)
+                    elif self._stale_while_revalidate:
                         # A failed refresh has its own TTL, avoiding a new
                         # request on every hover while preserving useful data.
                         self._store_quote(key, fallback)
@@ -240,15 +254,15 @@ class MarketDataCache:
             # AFTER the async with released the lock (and any waiters that
             # grabbed it have either finished or are holding it) — pruning
             # INSIDE the block never worked: locked() was always True while
-            # the caller still held it (survey-1 #5).
+            # the caller still held it.
             self._release_lock(self._quote_locks, key, lock)
 
     def _evict(self, store: dict) -> None:
-        """Bound a cache store: drop OLDEST-INSERTED entries while over cap.
+        """Bound a cache store: drop the LEAST-RECENTLY-STORED entries first.
 
-        Fresh fetches overwrite in place without reinserting, so dict order
-        stays a faithful insertion-time ordering; oldest-first biases
-        retention toward the RECENTLY browsed working set. Only successful
+        Every store re-inserts its key at the back (see :meth:`_store_quote`),
+        so dict order is store recency and a symbol refreshed every TTL is never
+        the first candidate while colder symbols remain. Only successful
         inserts pay this cost — error fallbacks never grow the store.
         """
         while len(store) > self._max_entries:
@@ -258,10 +272,30 @@ class MarketDataCache:
                 self._quote_revisions.pop(key, None)
 
     def _store_quote(self, key: tuple[str, str], quote: QuoteData) -> None:
+        # Pop before inserting: a plain assignment would keep the key's old
+        # position, so a hot symbol refreshed in place stayed first in line for
+        # eviction.
+        self._quotes.pop(key, None)
         self._quotes[key] = (self._clock(), quote)
         self._quote_revision += 1
         self._quote_revisions[key] = self._quote_revision
+        self._failures.pop(key, None)
+        over_cap = len(self._quotes) > self._max_entries
         self._evict(self._quotes)
+        if over_cap:
+            # Incremental preview clients still hold the evicted keys, and an
+            # upsert-only delta can never remove them. A new generation makes
+            # every client take a full reset.
+            self._preview_generation = uuid.uuid4().hex
+
+    def _recent_failure(self, key: tuple[str, str]) -> bool:
+        at = self._failures.get(key)
+        return at is not None and self._clock() - at < NEGATIVE_TTL_NS
+
+    def _record_failure(self, key: tuple[str, str]) -> None:
+        self._failures.pop(key, None)
+        self._failures[key] = self._clock()
+        self._evict(self._failures)
 
     def preview_snapshot(self, after: int = 0, generation: str | None = None) -> dict[str, object]:
         """Pure bounded cache read: no provider calls, refreshes or awaited work.
@@ -297,7 +331,7 @@ class MarketDataCache:
         with every symbol ever browsed over a long server lifetime.
 
         A queued waiter resumption window exists where ``locked()`` is False
-        while ``_waiters`` is non-empty (R1-L3): pruning then would let a third
+        while ``_waiters`` is non-empty: pruning then would let a third
         caller create a NEW lock and run a duplicate fetch. Keep the mapping
         whenever waiters are queued; the eventual holder prunes after release."""
         if getattr(lock, "_waiters", None):
@@ -340,14 +374,14 @@ class MarketDataCache:
                     return cached[1][:take]
                 try:
                     ranked = await self._movers_fn(market, _MOVERS_MAX)
-                except Exception:  # noqa: BLE001 — never raise into the handler
+                except Exception:  # never raise into the handler
                     logger.debug("movers fetch failed for %s", market, exc_info=True)
                     return cached[1][:take] if cached is not None else []
                 self._movers[market] = (self._clock(), ranked)
                 self._evict(self._movers)
                 return ranked[:take]
         finally:
-            # Prune run AFTER the async with released the lock (survey-1 #5).
+            # Prune run AFTER the async with released the lock.
             self._release_lock(self._movers_locks, market, lock)
 
     # -- background prewarm (production only) ----------------------------------
@@ -405,7 +439,12 @@ class MarketDataCache:
         by ``create_app``'s lifespan for the production cache (cancelled on
         shutdown); every cycle is wrapped so one bad refresh never stops the
         loop. Refreshes the full ``_MOVERS_MAX`` cache row set so every
-        caller's slice is served warm."""
+        caller's slice is served warm.
+
+        This is outbound traffic that no subscription asked for. For as long as
+        the process runs, every ``interval_s`` it queries the provider endpoints
+        behind the movers set of each market (venue REST for crypto, the Yahoo
+        chart endpoint for equities), whether or not any client is connected."""
         while not self._closed:
             # A slow crypto sweep must not prevent equities warming at all.
             await asyncio.gather(*(self.movers(market, limit=_MOVERS_MAX) for market in markets))
@@ -435,7 +474,12 @@ class MarketDataCache:
 
 
 async def default_quote_fn(market: str, symbol: str) -> QuoteData:
-    """Production single-symbol quote seam (crypto klines / equity Yahoo)."""
+    """Production single-symbol quote seam (crypto klines / equity Yahoo).
+
+    Outbound requests go to the Binance klines endpoint for crypto and to the
+    Yahoo chart endpoint for equities. They run only on a cache miss, and the
+    watchlist, alerts and symbol palette reach them through the same cache.
+    """
     from flowmap_server.feeds.crypto import is_crypto_market
     from flowmap_server.feeds.equity import EQUITY_MARKETS
 
@@ -506,32 +550,39 @@ async def default_movers_fn(market: str, limit: int, *, quote_fn: QuoteFn | None
     """
     from flowmap_server.data.universe import CRYPTO_SYMBOLS, EQUITY_TICKERS
 
-    if market in ("equity",):
+    fetch: Callable[[str], Awaitable[QuoteData]]
+    if market == "equity":
         candidates = EQUITY_TICKERS[:40]
         fetch = _equity_quote
         mkt = "equity"
         max_in_flight = EQUITY_MOVERS_CONCURRENCY
-    else:
+    elif market == "crypto":
         candidates = CRYPTO_SYMBOLS
         fetch = lambda s: _crypto_quote("binance-spot", s)  # noqa: E731
         mkt = "binance-spot"
         max_in_flight = CRYPTO_MOVERS_CONCURRENCY
+    else:
+        # Refuse rather than rank Binance rows under an unrelated label.
+        raise ValueError(f"no movers pool for market {market!r}")
     if quote_fn is not None:
         fetch = lambda symbol: quote_fn(mkt, symbol)  # noqa: E731
     results = await _bounded_quote_sweep(
         fetch, candidates, MOVERS_DEADLINE_S, max_in_flight=max_in_flight
     )
-    quotes = [q for q in results if q is not None and q.change_pct is not None]
+    # Copies, not relabelled originals: the quotes come from the shared quote
+    # cache, which other readers hold.
+    quotes = [
+        msgspec.structs.replace(q, market=mkt)
+        for q in results if q is not None and q.change_pct is not None
+    ]
     quotes.sort(key=lambda q: abs(q.change_pct or 0.0), reverse=True)
-    for q in quotes:
-        q.market = mkt
     return quotes[:limit]
 
 
 async def _safe_quote(fetch: Callable[[str], Awaitable[QuoteData]], symbol: str) -> QuoteData | None:
     try:
         return await fetch(symbol)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -565,10 +616,21 @@ async def _crypto_quote(market: str, symbol: str) -> QuoteData:
 async def _equity_quote(symbol: str) -> QuoteData:
     import datetime
 
-    from crocodile.core.scheduler.calendar import USMarketCalendar
     from flowmap_server.feeds._yahoo import equity_bars
 
-    bars = await equity_bars(symbol.upper())
+    try:
+        bars = await equity_bars(symbol.upper())
+    except UnknownSymbolError:
+        # Yahoo answered and the ticker does not exist. That is an explicit,
+        # cacheable answer, not an outage: the provider was reached, there is
+        # no price, so it is stale like any other no-data quote and never a
+        # fresh mark. The client's alert monitor skips stale quotes.
+        return QuoteData(market="equity", symbol=symbol.upper(), reachable=True,
+                         stale=True, as_of_ns=time.time_ns())
+    except YahooUnavailableError:
+        # Outage: no price and an unreachable marker, never a fake "fresh" quote.
+        return QuoteData(market="equity", symbol=symbol.upper(), reachable=False,
+                         stale=True, as_of_ns=time.time_ns())
     closes = [float(b.close) for b in bars if b.close is not None]
     now = time.time_ns()
     if not closes:

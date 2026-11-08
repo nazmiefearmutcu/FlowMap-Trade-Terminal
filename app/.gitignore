@@ -10,9 +10,9 @@ src-tauri/resources/.cache/
 # later step (see app/scripts/import-gate.py). Build output, not source.
 src-tauri/resources/.import-skip
 
-# Tauri-generated icon set (regenerated from ../icons/icon-1024.png by
-# `cargo tauri icon` in scripts/build-dmg.sh)
-src-tauri/icons/
+# The Tauri icon set (src-tauri/icons) is tracked: it is generated from
+# ../icons/icon-1024.png by `cargo tauri icon` (scripts/build-dmg.sh regenerates
+# it), and a clean clone must be able to build without running that tool first.
 
 # Built artifacts
 *.dmg

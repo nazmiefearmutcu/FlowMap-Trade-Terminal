@@ -1,5 +1,10 @@
 # FlowMap — Release Prep & Public Distribution — Design
 
+> **Historical record.** This is the release-preparation design of 2026-07-18, kept as written.
+> Current behaviour is documented in [CHANGELOG.md](../../../CHANGELOG.md),
+> [docs/architecture.md](../../architecture.md), [docs/development.md](../../development.md) and
+> [app/README.md](../../../app/README.md).
+
 **Date:** 2026-07-18 · **Status:** Approved (user) · **Branch:** `main` (== v2 after the cutover)
 
 Prepare FlowMap for public release: strip the internal `v2` milestone label and the retired brand

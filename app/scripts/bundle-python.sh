@@ -99,25 +99,83 @@ echo "==> Resolving python-build-standalone asset (tag $PBS_TAG)"
 # this request intermittently comes back 403 and fails the whole build. A token
 # raises the cap to 5000/hour. --retry-all-errors also covers 403/429, which
 # plain --retry ignores.
+# API_AUTH may stay empty. Under `set -u` an empty array expansion is an
+# unbound-variable error on bash 3.2 (the macOS /bin/bash), so the curl call below
+# uses the ${arr[@]+...} idiom, which expands to nothing when the array is empty.
 API_AUTH=()
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
   API_AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
 fi
-ASSET_URL="$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 "${API_AUTH[@]}" \
-  "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/${PBS_TAG}" \
-  | grep -oE "https://github.com/[^\"]*${ASSET_RE}" | grep -v freethreaded | grep -v stripped | head -1)"
+# A prefetched copy of the release JSON skips the API call entirely. CI can fetch
+# it once, with a token, in a step of its own and pass the path here, so the build
+# job itself never makes an anonymous API request.
+if [[ -n "${FLOWMAP_PBS_RELEASE_JSON:-}" ]]; then
+  [[ -r "$FLOWMAP_PBS_RELEASE_JSON" ]] || {
+    echo "ERROR: FLOWMAP_PBS_RELEASE_JSON is not readable: $FLOWMAP_PBS_RELEASE_JSON" >&2; exit 1; }
+  echo "    release metadata: $FLOWMAP_PBS_RELEASE_JSON (prefetched)"
+  RELEASE_META="$(cat "$FLOWMAP_PBS_RELEASE_JSON")"
+else
+  RELEASE_META="$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 ${API_AUTH[@]+"${API_AUTH[@]}"} \
+    "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/${PBS_TAG}")"
+fi
+ASSET_URL="$(printf '%s\n' "$RELEASE_META" \
+  | grep -oE "https://github.com/[^\"]*${ASSET_RE}" | grep -v freethreaded | grep -v stripped | head -1 || true)"
 if [[ -z "$ASSET_URL" ]]; then
   echo "ERROR: could not resolve a ${PY_SERIES} ${TRIPLE} install_only asset for tag ${PBS_TAG}" >&2
   exit 1
 fi
 TARBALL="$CACHE_DIR/$(basename "$ASSET_URL")"
 echo "    asset: $ASSET_URL"
+
+# --- 1b. Verify the tarball against its pinned SHA-256 ------------------------
+# The pins are the `digest` values GitHub publishes for the PBS_TAG release assets
+# (api.github.com/repos/astral-sh/python-build-standalone/releases/tags/<tag>).
+# A tarball that does not match is never extracted: the runtime becomes the
+# interpreter inside every installer, so a swapped or truncated archive must
+# stop the build. A cached tarball is re-checked on every run, not only when it
+# is downloaded. When PBS_TAG changes, the pins change with it.
+pinned_sha256() {
+  case "$1" in
+    aarch64-apple-darwin)      echo "804c86c8665b18eb0df5070a79d828229018d145baea38a71a5c74c03f9b11d4" ;;
+    x86_64-apple-darwin)       echo "cd0023fb84de358d285c8e116cffd2f433086b943e752955dade521c12e78cab" ;;
+    x86_64-pc-windows-msvc)    echo "646254b53fbac69c1b3c25131c237c9136e9bbed7444123880cea8deaf555e1f" ;;
+    aarch64-pc-windows-msvc)   echo "d425c0fa7fe5e9889760b199c87e45cb84d793639ed63231f9313ffa894cb25a" ;;
+    x86_64-unknown-linux-gnu)  echo "7fd02919461b368adafea3896ad082f5c4f759816d69681dcc6559bfbcd892af" ;;
+    aarch64-unknown-linux-gnu) echo "1199b22c83725a339ebaef36d39476d037fb7267187513090b6cc83bb4579477" ;;
+    *) return 1 ;;
+  esac
+}
+EXPECTED_SHA256="$(pinned_sha256 "$TRIPLE")" || {
+  echo "ERROR: no pinned SHA-256 for ${TRIPLE} in tag ${PBS_TAG}; refusing to use an unverified runtime" >&2
+  exit 1
+}
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+tarball_matches() {
+  [[ "$(sha256_of "$1")" == "$EXPECTED_SHA256" ]]
+}
+
+if [[ -f "$TARBALL" ]] && ! tarball_matches "$TARBALL"; then
+  echo "    cached $(basename "$TARBALL") does not match its pinned SHA-256; discarding it"
+  rm -f "$TARBALL"
+fi
 if [[ ! -f "$TARBALL" ]]; then
   echo "==> Downloading $(basename "$TARBALL")"
   curl -fSL --retry 5 --retry-all-errors --retry-delay 3 -o "$TARBALL" "$ASSET_URL"
 else
   echo "    (cached)"
 fi
+if ! tarball_matches "$TARBALL"; then
+  echo "ERROR: $(basename "$TARBALL") SHA-256 mismatch (expected ${EXPECTED_SHA256})" >&2
+  rm -f "$TARBALL"
+  exit 1
+fi
+echo "    sha256 verified"
 
 # --- 2. Extract into resources/pyruntime --------------------------------------
 echo "==> Extracting runtime"
@@ -143,7 +201,10 @@ fi
 echo "    interpreter: $PY"
 "$PY" -c "import sys; print('    python', sys.version.split()[0])"
 
-# Ensure pip is present in the standalone runtime.
+# Ensure pip is present in the standalone runtime. ensurepip installs the pip wheel
+# that ships inside the python-build-standalone archive, so no index is contacted;
+# that archive is the one checked against its pinned SHA-256 above. The locked
+# export below covers the application's own dependencies, not pip itself.
 if ! "$PY" -m pip --version >/dev/null 2>&1; then
   echo "==> Bootstrapping pip"
   "$PY" -m ensurepip --upgrade
@@ -152,7 +213,7 @@ fi
 # --- 3. Install the server + its deps into the runtime ------------------------
 echo "==> Exporting locked requirements from server/uv.lock"
 REQS="$CACHE_DIR/flowmap-reqs.txt"
-( cd "$SERVER_DIR" && uv export --locked --no-dev --no-emit-project --no-hashes -o "$(native_path "$REQS")" )
+( cd "$SERVER_DIR" && uv export --locked --no-dev --no-emit-project -o "$(native_path "$REQS")" )
 echo "    $(grep -cvE '^\s*(#|$)' "$REQS") requirement lines"
 
 # --- 3b. Per-target dependency exceptions -------------------------------------
@@ -188,54 +249,19 @@ echo "    $(grep -cvE '^\s*(#|$)' "$REQS") requirement lines"
 # of quietly shipping a different dependency set than the one described here.
 # Re-check PyPI for win_arm64 wheels before touching it.
 #
-# Seeded with the flags every target uses, so the array is never empty — an
-# empty array expansion is an "unbound variable" under `set -u` on bash 3.2,
-# which is what /bin/bash still is on the macOS runners.
-# The export includes the entire dependency closure. Install those exact pins
-# without letting pip resolve the wheel's metadata against a newer index.
+# Install exactly the pins in the export. It is the complete dependency closure,
+# so --no-deps stops pip from re-resolving metadata against a newer index.
+# --require-hashes makes pip accept only artifacts whose sha256 is listed in the
+# export (wheels and, for the source builds below, the sdist). The guard that runs
+# just before the install guarantees every requirement has such a listing.
 # Run from SERVER_DIR below so the vendored wheel's relative path is portable.
-PIP_INSTALL_ARGS=(--no-warn-script-location --disable-pip-version-check --no-deps)
+# Seeded with the flags every target uses, so the array is never empty: an empty
+# array expansion is an "unbound variable" under `set -u` on bash 3.2, which is
+# what /bin/bash still is on the macOS runners.
+PIP_INSTALL_ARGS=(--no-warn-script-location --disable-pip-version-check --no-deps --require-hashes)
 if [[ "$TRIPLE" == "aarch64-pc-windows-msvc" ]]; then
   echo "==> Applying the win-arm64 dependency exceptions"
-  "$PY" - "$(native_path "$REQS")" <<'PYEOF'
-import pathlib, re, sys
-
-DROP = ("pyarrow", "zlib-ng", "aiohttp-fast-zlib")
-REPIN = {"cryptography": ("49.0.0", "46.0.3")}
-
-path = pathlib.Path(sys.argv[1])
-lines = path.read_text().splitlines()
-out, dropped, repinned, i = [], set(), set(), 0
-while i < len(lines):
-    line = lines[i]
-    m = re.match(r"^([A-Za-z0-9._-]+)\s*(==|@)", line)
-    name = m.group(1).lower().replace("_", "-") if m else None
-    if name in DROP:
-        dropped.add(name)
-        i += 1
-        # swallow the indented "# via ..." block that belongs to this pin
-        while i < len(lines) and lines[i][:1].isspace() and lines[i].lstrip().startswith("#"):
-            i += 1
-        continue
-    if name in REPIN:
-        old, new = REPIN[name]
-        if f"=={old}" not in line:
-            sys.exit(f"ERROR: win-arm64 exception list expects {name}=={old}, lock has: {line!r}\n"
-                     f"       Re-check PyPI for a win_arm64 wheel before adjusting the pin.")
-        line = line.replace(f"=={old}", f"=={new}")
-        repinned.add(name)
-    out.append(line)
-    i += 1
-
-stale = (set(DROP) - dropped) | (set(REPIN) - repinned)
-if stale:
-    sys.exit(f"ERROR: win-arm64 exception list names packages the lock no longer contains: "
-             f"{sorted(stale)}\n       The exception is obsolete — remove it from bundle-python.sh.")
-
-path.write_text("\n".join(out) + "\n")
-print("    dropped:  " + ", ".join(sorted(dropped)))
-print("    re-pinned: " + ", ".join(f"{k}=={v[0]}->{v[1]}" for k, v in sorted(REPIN.items())))
-PYEOF
+  "$PY" "$REPO_ROOT/app/scripts/requirements_pins.py" win-arm64 "$(native_path "$REQS")"
   # The export is already a complete, pinned closure, so resolution adds nothing
   # — and here it would actively undo the exceptions above (pip would re-pull
   # pyarrow and cryptography==49.0.0 to satisfy crocodile's and ccxt's metadata).
@@ -264,6 +290,13 @@ if [[ "$TRIPLE" == "x86_64-apple-darwin" ]]; then
   PIP_INSTALL_ARGS+=(--no-cache-dir --no-binary=cryptography)
   echo "    OpenSSL prefix: $OPENSSL_DIR (static)"
 fi
+# Every requirement must carry the sha256 of the artifact it installs. The guard
+# runs on the final file, after the win-arm64 rewrite, and stops the build when
+# a line is missing its hash rather than letting pip install it unverified.
+"$PY" "$REPO_ROOT/app/scripts/requirements_pins.py" check-hashes "$(native_path "$REQS")"
+# The exact set this leg installs, kept per target so the release job can write
+# third-party notices from the same list the installer ships.
+cp "$REQS" "$CACHE_DIR/installed-requirements-$TRIPLE.txt"
 echo "==> Installing dependencies into the runtime (this fetches native wheels)"
 ( cd "$SERVER_DIR" && "$PY" -m pip install "${PIP_INSTALL_ARGS[@]}" -r "$(native_path "$REQS")" )
 

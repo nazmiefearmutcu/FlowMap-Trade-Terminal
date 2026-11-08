@@ -1,5 +1,7 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 
+import { en } from '../../src/i18n/en';
+
 export interface ReplayControl {
   type: number;
   market?: string;
@@ -121,16 +123,40 @@ export async function openRecordedReplayPicker(page: Page): Promise<OpenPicker> 
   return opened;
 }
 
+// The English copy the picker renders (en.ts is the source of truth; the suite
+// seeds the English locale for these specs).
+const NO_RECORDINGS_COPY = en['replayPicker.empty'];
+const RECORDING_OFF_COPY = en['replayPicker.recordingOff'];
+
+/** The engine's recording switch, read the way ReplayPicker reads it (/api/health is token-exempt). */
+const recordingEnabled = (page: Page): Promise<boolean> =>
+  page.evaluate(async () => {
+    const health = await fetch('/api/health').then(
+      (response) => response.json() as Promise<{ recording_enabled?: boolean }>,
+    );
+    return health.recording_enabled !== false;
+  });
+
+/**
+ * A date-time input in the picker. Its label carries the zone name (the Time zone
+ * setting decides it), so the input is found by the stable part of its label.
+ */
+export const edgeInput = (picker: Locator, key: 'replayPicker.start' | 'replayPicker.end'): Locator =>
+  picker.locator('label').filter({ hasText: en[key] }).locator('input[type="datetime-local"]');
+
 /** The recording-disabled stack must leave an unavailable selection unconfirmable. */
 export async function expectEmptyPickerAndCancel(page: Page, opened: OpenPicker): Promise<void> {
   const { picker, availability } = opened;
   expect(availability.hours).toEqual([]);
-  await expect(picker.getByText('No recordings for this instrument.', { exact: true })).toBeVisible();
+  // The picker explains an empty list with the recording-off copy only when the
+  // engine reports recording disabled; with recording on it is the plain empty copy.
+  const copy = (await recordingEnabled(page)) ? NO_RECORDINGS_COPY : RECORDING_OFF_COPY;
+  await expect(picker.getByText(copy, { exact: true })).toBeVisible();
   await expect(picker.getByRole('button', { name: 'Check interval', exact: true })).toBeDisabled();
   await expect(picker.getByRole('button', { name: 'Open paused', exact: true })).toHaveCount(0);
   await expect(picker.getByRole('combobox', { name: 'Recorded dates / hours', exact: true })).toHaveCount(0);
-  await expect(picker.getByLabel('Start date and time (UTC)', { exact: true })).toHaveCount(0);
-  await expect(picker.getByLabel('End date and time (exclusive) (UTC)', { exact: true })).toHaveCount(0);
+  await expect(edgeInput(picker, 'replayPicker.start')).toHaveCount(0);
+  await expect(edgeInput(picker, 'replayPicker.end')).toHaveCount(0);
   await expectLiveUnchanged(page, opened);
   // Header close and footer Cancel share their accessible name: scope deliberately.
   await picker.locator('footer').getByRole('button', { name: 'Cancel', exact: true }).click();

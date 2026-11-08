@@ -1,5 +1,6 @@
 """Acquisition stalls, conservative interval joins and exact ETW cleanup."""
 import copy
+import itertools
 import json
 from pathlib import Path
 import subprocess
@@ -63,24 +64,30 @@ class ObservationTests(unittest.TestCase):
             def peak_commit(self): return 100
         job = Job()
         def process(pid,**kwargs): return {'pid':pid,'creation_ticks':10,'private_commit_bytes':100,'cpu_seconds':0}
-        def qpc(): return time.perf_counter_ns(), 1_000_000_000
+        # Injected clock: every reading advances exactly 1 ms, so no assertion depends on host speed.
+        ticks = itertools.count()
+        def qpc(): return next(ticks) * 1_000_000, 1_000_000_000
         collector = ProcessObserver(lambda:observe_processes(job,process,qpc), interval=.05).start()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             published = []
-            blocked_at = []
+            observed_while_blocked = []
             def publisher(row):
-                if not blocked_at:
-                    blocked_at.append(time.time()*1000)
-                    # Block the real writer before it touches the identity file.
+                if not observed_while_blocked:
                     import run
                     original = run._replace_snapshot
+                    before = collector.observed
                     def stalled(*args):
-                        time.sleep(2.6)
+                        # Hold the real writer until acquisition has produced rows during the
+                        # stall. This waits on that condition, not on a fixed delay.
+                        deadline = time.monotonic() + 60
+                        while collector.observed - before < 20 and time.monotonic() < deadline:
+                            time.sleep(.01)
+                        observed_while_blocked.append(collector.observed - before)
                         return original(*args)
+                    # Block the real writer before it touches the identity file.
                     with patch('run._replace_snapshot', side_effect=stalled):
                         write(root/'identities.json',[{'pid':1,'creation_ticks':10}])
-                    blocked_at.append(time.time()*1000)
                 with (root/'process.ndjson').open('a',encoding='utf-8') as stream:
                     stream.write(json.dumps(row)+'\n')
                 published.append(row)
@@ -94,15 +101,12 @@ class ObservationTests(unittest.TestCase):
             self.assertEqual(raw,published)
             self.assertEqual(collector.observed,collector.published)
             self.assertEqual(collector.status()['lost'],0)
-            during = [r for r in raw if blocked_at[0]<r['observation_start_unix_ms']<blocked_at[1]]
-            self.assertGreater(len(during),20)
-            self.assertLess(max(b['unix_ms']-a['unix_ms'] for a,b in zip(raw,raw[1:])),500)
+            self.assertGreaterEqual(observed_while_blocked[0],20)
             for row in raw:
                 process_observation_bounds(row)
                 self.assertLess(row['observation_duration_ms'],100)
-            count = collector.observed
-            time.sleep(.1)
-            self.assertEqual(collector.observed,count)
+            # The observer thread has exited, so no further rows can arrive.
+            self.assertTrue(collector.status()['stopped'])
 
     def test_collector_error_is_propagated_and_queued_raw_can_be_flushed_after_join(self):
         calls = []

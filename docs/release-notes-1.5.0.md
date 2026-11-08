@@ -1,5 +1,10 @@
 # FlowMap 1.5.0
 
+> **Historical note.** The intelligence panels (FLOW, GOV, DOCS, GEO and MACRO) described below are
+> not fed in the current build. No server producer runs for them, so the drawer lists their sources
+> as "Not connected, hidden". See the *Fixed* entries under Unreleased in
+> [CHANGELOG.md](../CHANGELOG.md), which replace the claims in this section.
+
 This release improves recorded liquidity-history inspection, the orderflow
 workspace, and integration with supported public L2 sources.
 

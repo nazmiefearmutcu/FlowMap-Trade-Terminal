@@ -1,13 +1,21 @@
 /**
- * Candle store (campaign 3, lane CG) — module-scoped bridge between the live
+ * Candle store — module-scoped bridge between the live
  * trade stream and the candle synth, following the bookStore pattern exactly:
  * high-frequency stream data lives OUTSIDE React; panels ask for a memoized
  * snapshot and get coalesced (~60 Hz) change notifications.
  *
  * Responsibilities:
  *  - Subscribe ONCE to `useFlowMapStore.onStream` and feed every TRADE into
- *    {@link createCandleSynth} (live AND replayed trades both ride this stream;
- *    the synth's dedup/idempotency covers reconnect overlaps).
+ *    {@link createCandleSynth} (live AND replayed trades both ride this stream).
+ *    A re-delivered trade is dropped only when it repeats a connection sequence
+ *    ({@link tradeSeq}) with the same timestamp. A trade without a sequence always
+ *    merges. Value equality is never used to drop a trade.
+ *  - Reset on every ATTACH. Each Hello bumps `attachEpoch`, including a reconnect
+ *    into the same session (which keeps its session id). The attach snapshot that
+ *    follows re-sends the recent tape, so the ring is cleared before it lands and
+ *    each re-sent trade counts exactly once, at the cost of a history gap for the
+ *    dropped interval. The return to `live` after a drop or an explicit close
+ *    resets too.
  *  - Track the column⇄time affine (`TimeMap`, the gl/overlays/coords.ts
  *    contract) from DEPTH_COL anchors so a candle's bucket start can be placed
  *    in chart column space: `col = anchorSeq + (t0 − anchorT0)/dtNs`.
@@ -21,13 +29,14 @@
  * `big_trades` (a size-filtered SUBSET — biased OHLC) and `bar_cols` (depth-grid
  * column aggregates, not trades). Synthesizing "past candles" from either would
  * fabricate price structure the tape never printed, so the store starts LIVE
- * and the synth fills as the session flows (honesty §7).
+ * and the synth fills as the session flows.
  */
 
-import type { StreamMsg } from '../net/connection';
+import type { ConnStatus, StreamMsg } from '../net/connection';
 import { MsgType, type DepthColumn, type Trade } from '../proto/types';
 import { useFlowMapStore } from '../state/store';
 import { LIVE_UPDATE_MS } from '../state/cadence';
+import { toBigNs } from './bigNs';
 import { createCandleSynth, type Candle, type CandleSynth, type SynthStats } from './synth';
 
 /** Column⇄time affine for the current epoch (mirrors gl/overlays/coords.TimeMap). */
@@ -42,7 +51,7 @@ export interface CandleTimeframe {
   ns: number;
 }
 
-/** Selectable candle timeframes (task spec: 1m default; 5m, 15m). */
+/** Selectable candle timeframes: 1m (default), 5m and 15m. */
 export const CANDLE_TIMEFRAMES: readonly CandleTimeframe[] = [
   { label: '1m', ns: 60_000_000_000 },
   { label: '5m', ns: 300_000_000_000 },
@@ -61,6 +70,13 @@ export interface CandleSnapshot {
   /** Column affine for placing candle times on the chart grid; null until a column lands. */
   timeMap: CandleTimeMap | null;
   stats: SynthStats;
+  /**
+   * Bumps on every session reset. Streaming indicator state from an earlier
+   * session must be discarded, even when the candle list is empty.
+   */
+  sessionEpoch: number;
+  /** The synth's {@link CandleSynth.closedRevision}: a merge into a closed bucket. */
+  closedRevision: number;
 }
 
 // --- module-scoped state (never in React state) ---------------------------------
@@ -71,6 +87,7 @@ let anchorEpoch: number | null = null;
 let anchorSeq = -1;
 let version = 0;
 let cached: CandleSnapshot | null = null;
+let sessionEpoch = 0;
 
 const listeners = new Set<(s: CandleSnapshot) => void>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -78,6 +95,8 @@ let streamUnsub: (() => void) | null = null;
 let storeUnsub: (() => void) | null = null;
 let lastSessionKey: string | null = null;
 let lastSessionId: string | null = null;
+let lastStatus: ConnStatus | null = null;
+let lastAttachEpoch: number | null = null;
 
 function loadStoredTfNs(): number {
   try {
@@ -98,13 +117,6 @@ function persistTf(ns: number): void {
   }
 }
 
-/** Coerce a canonical ns field to bigint (cold-JSON small ints decode as number). */
-function toBigNs(x: bigint | number): bigint {
-  if (typeof x === 'bigint') return x;
-  if (!Number.isFinite(x)) return 0n;
-  return BigInt(Math.round(x));
-}
-
 function bump(): void {
   version += 1;
   cached = null;
@@ -120,10 +132,21 @@ function flush(): void {
 
 function resetForNewSession(): void {
   synth.reset();
+  sessionEpoch += 1;
   timeMap = null;
   anchorEpoch = null;
   anchorSeq = -1;
   bump();
+}
+
+/**
+ * The connection sequence of a trade record, when the decoder supplies one (it
+ * sets `seq` only on frames that carry a non-zero sequence). Read structurally
+ * so legacy frames without the field take the merge-every-trade path.
+ */
+function tradeSeq(tr: Trade): number | undefined {
+  const seq = (tr as Trade & { seq?: unknown }).seq;
+  return typeof seq === 'number' ? seq : undefined;
 }
 
 /** The single raw-stream handler (also the test-injection seam). */
@@ -135,7 +158,7 @@ function handle(msg: StreamMsg): void {
       // A dup/late/quarantined trade mutates no candle, so the store version
       // only moves when the synth's does — idle charts never repaint.
       const before = synth.version();
-      synth.push(toBigNs(tr.ts_ns), tr.price, tr.size);
+      synth.push(toBigNs(tr.ts_ns), tr.price, tr.size, tradeSeq(tr));
       if (synth.version() !== before) bump();
       return;
     }
@@ -158,12 +181,27 @@ function handle(msg: StreamMsg): void {
   }
 }
 
-/** Watch session identity (subscription key + Hello session) like App.tsx does. */
+/**
+ * Watch session identity (subscription key + Hello session) like App.tsx does,
+ * the attach epoch (every Hello, reconnects included), and the connection's
+ * return to `live` after a drop.
+ *
+ * A reconnect into the same session keeps its session id, so the id alone cannot
+ * flag it. The Hello bumps `attachEpoch`, and the attach snapshot that follows
+ * re-sends the recent tape, which would merge a second time into candles the drop
+ * left resident. The reset therefore lands on the Hello, before the snapshot is
+ * read. The status edge into `live` covers a return after an explicit close.
+ */
 function watchSession(): void {
   const check = (): void => {
     const s = useFlowMapStore.getState();
     const sub = s.subscription;
     const key = sub ? `${sub.market}:${sub.symbol}:${sub.band}` : null;
+    const wasDown = lastStatus === 'reconnecting' || lastStatus === 'closed';
+    const reconnected = wasDown && s.status === 'live';
+    const attached = s.attachEpoch !== lastAttachEpoch;
+    lastStatus = s.status;
+    lastAttachEpoch = s.attachEpoch;
     if (key !== lastSessionKey) {
       const had = lastSessionKey !== null;
       lastSessionKey = key;
@@ -173,10 +211,9 @@ function watchSession(): void {
     }
     // Frames for the old symbol are still in flight after the ask-time reset;
     // the new session's Hello IS the moment the stream provably swapped.
-    if (s.sessionId !== null && s.sessionId !== lastSessionId) {
-      lastSessionId = s.sessionId;
-      resetForNewSession();
-    }
+    const idChanged = s.sessionId !== null && s.sessionId !== lastSessionId;
+    if (idChanged) lastSessionId = s.sessionId;
+    if (idChanged || attached || reconnected) resetForNewSession();
   };
   storeUnsub = useFlowMapStore.subscribe(check);
   lastSessionKey = (() => {
@@ -184,6 +221,8 @@ function watchSession(): void {
     return sub ? `${sub.market}:${sub.symbol}:${sub.band}` : null;
   })();
   lastSessionId = useFlowMapStore.getState().sessionId;
+  lastStatus = useFlowMapStore.getState().status;
+  lastAttachEpoch = useFlowMapStore.getState().attachEpoch;
 }
 
 function ensureStarted(): void {
@@ -204,6 +243,8 @@ export function getSnapshot(): CandleSnapshot {
       timeframes: CANDLE_TIMEFRAMES,
       timeMap,
       stats: synth.stats(),
+      sessionEpoch,
+      closedRevision: synth.closedRevision(),
     };
   }
   return cached;
@@ -272,4 +313,6 @@ export function resetForTest(): void {
   }
   lastSessionKey = null;
   lastSessionId = null;
+  lastStatus = null;
+  lastAttachEpoch = null;
 }

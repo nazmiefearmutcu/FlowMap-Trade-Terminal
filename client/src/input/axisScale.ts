@@ -1,5 +1,5 @@
 /**
- * Axis-scale input math (§9) — wheel/drag deltas → camera zoom factors.
+ * Axis-scale input math — wheel/drag deltas → camera zoom factors.
  *
  * Pure and DOM-free (the `input/keys.ts` precedent), so the feel of every
  * gesture is pinned by unit tests rather than by trying it in a browser:

@@ -1,4 +1,4 @@
-"""First-launch history backfill tests (GOAL 1) — canned candles, NO network.
+"""First-launch history backfill tests — canned candles, NO network.
 
 Covers the two layers:
 
@@ -259,7 +259,7 @@ def test_stretch_repeats_each_candle_as_a_contiguous_band():
         assert [c.t0_ns - base.t0_ns for c in group] == [0, 60 * DT, 120 * DT, 180 * DT]
     assert [cols[i].bar.col_seq for i in range(0, 16, 4)] == [0, 4, 8, 12]
     # Shipped default (stretch 16 on a 1 m candle) -> 3.75 s column steps: the
-    # exact delta the reconstructed-history e2e pin (chart-reconstructed.spec)
+    # exact delta the reconstructed-history e2e pin
     # tolerates as >= dt and < 60 s.
     cols16, _ = columns_from_candles(_candles(2), cfg, stretch=DEFAULT_BACKFILL_STRETCH)
     assert len(cols16) == 32
@@ -364,7 +364,7 @@ async def test_session_backfill_seeds_ring_and_badges_history():
         flat = _flatten(frames)
         hello = flat[0]
         assert isinstance(hello, Hello)
-        # honesty badge (GOAL 1): reconstructed history flagged in capability.
+        # honesty badge: reconstructed history flagged in capability.
         assert hello.capability.get("history") == "reconstructed"
         # the reconstructed columns are in the snapshot.
         assert sum(isinstance(m, DepthColumn) for m in flat) > 0

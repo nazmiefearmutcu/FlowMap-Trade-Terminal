@@ -1,5 +1,5 @@
 /**
- * Recent symbols (A5) — pure localStorage-backed recents for the palette.
+ * Recent symbols — pure localStorage-backed recents for the palette.
  * The contract worth pinning: MRU order, dedupe, the 5 cap, and the honesty
  * failure mode — a corrupted or foreign payload degrades to "no recents",
  * never to junk rows.

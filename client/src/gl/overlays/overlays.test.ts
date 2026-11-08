@@ -28,7 +28,7 @@ import { sessionVwap } from './vwap';
 import { makeHybrid, rowToPrice } from '../priceScale';
 
 /**
- * Live BTCUSDT anchor — measured from the owner's own recordings
+ * Live BTCUSDT anchor — measured from local recordings
  * (`~/.flowmap/recordings/binance-spot/BTCUSDT`, 40 part files, n=278 prints):
  *   p50 5.3e-4 · p75 6.4e-3 · p90 3.0e-2 · p95 6.9e-2 · p99 2.5e-1 · max 1.07
  * The adaptive reference lands on p90 ≈ 0.03; the band is 6–24 px diameter.
@@ -54,8 +54,8 @@ describe('bubbleRadiusPx (√-area scaling, 6–24 px band)', () => {
   });
   it('spreads the measured live BTC percentiles across the band', () => {
     // p75 → floor (6 px dot), p90 → 10 px, p95 → ~15 px, p99/max → cap (24 px).
-    // Pre-F25 (refSize 4, cap 20) EVERY print below ~2 BTC measured 2–4 px of
-    // ink (QA19 H5 = 3/10); these pins are the measured calibration.
+    // Before the size policy (refSize 4, cap 20) EVERY print below ~2 BTC measured 2–4 px of
+    // ink (3/10 on the review scale); these pins are the measured calibration.
     expect(bubbleRadiusPx(6.4e-3, BUBBLE_SCALE)).toBe(3);
     expect(bubbleRadiusPx(3.0e-2, BUBBLE_SCALE)).toBeCloseTo(5);
     expect(bubbleRadiusPx(6.9e-2, BUBBLE_SCALE)).toBeCloseTo(5 * Math.sqrt(6.9e-2 / LIVE_REF));
@@ -139,7 +139,7 @@ describe('adaptive size reference (p90 of the session tape)', () => {
   });
 });
 
-describe('overlap thinning (F25 clutter control)', () => {
+describe('overlap thinning', () => {
   const ANCHOR = 5n * 250_000_000n;
   const DT = 250_000_000;
   const gm = (): GridMap =>
@@ -218,7 +218,7 @@ describe('accumulateProfile (volume-by-price over columns)', () => {
     expect(r.pocRow).toBe(-1);
   });
 
-  it('reuses a caller-supplied buffer with identical results (B-8 scratch path)', () => {
+  it('reuses a caller-supplied buffer with identical results (scratch path)', () => {
     const cols: Record<number, { bid: Float32Array; ask: Float32Array | null }> = {
       0: { bid: Float32Array.from([1, 2, 0, 0]), ask: Float32Array.from([0, 0, 3, 4]) },
       1: { bid: Float32Array.from([1, 2, 0, 0]), ask: Float32Array.from([0, 0, 3, 4]) },
@@ -239,7 +239,7 @@ describe('accumulateProfile (volume-by-price over columns)', () => {
   });
 });
 
-describe('accumulateProfile — mip-block row bound (survey #4)', () => {
+describe('accumulateProfile — mip-block row bound', () => {
   const ROWS = 16;
 
   /** A uniform background of 1 with a wall at `wallRow` in every column. */
@@ -267,7 +267,7 @@ describe('accumulateProfile — mip-block row bound (survey #4)', () => {
     const sampled = accumulateProfile(0, 1, 0, ROWS - 1, get, undefined, undefined, 4);
     expect(sampled.pocRow).toBe(8); // the max SCANNED cell - the shown profile
     expect(sampled.max).toBe(2 * 99);
-    expect(sampled.sampled, 'stride>1 is a subsample (R1-M1 honesty flag)').toBe(true);
+    expect(sampled.sampled, 'stride>1 is a subsample (honesty flag)').toBe(true);
     // Unscanned rows stay zero (they are never drawn); the scanned rows are the
     // absolute 4-block starts.
     const nonzero = Array.from(sampled.bins)
@@ -317,7 +317,7 @@ describe('accumulateProfile — mip-block row bound (survey #4)', () => {
     );
   });
 
-  it('documents the subsample limit: a quiet block can lose to a sampled loud row (R1-M1)', () => {
+  it('documents the subsample limit: a quiet block can lose to a sampled loud row', () => {
     // Rows 0..3 each density 1 (true 4-row block sum 4); row 4 density 3
     // (block sum 3). A true block-sum profile would put the POC in the row-0
     // block; the sampled pass sees row 0 (=1) < row 4 (=3) and reports row 4.
@@ -379,14 +379,14 @@ describe('deriveL2Bbo (inside quote from the L2 book)', () => {
   });
 });
 
-describe('L6 price-line ink tuning', () => {
-  // Shipped constants this lane intentionally moved (brief L6 §1).
+describe('price-line ink tuning', () => {
+  // Shipped constants that were intentionally moved.
   const VIEW = { colOffset: 0, colScale: 10, rowOffset: 0, rowScale: 100 };
   const DIMS = { drawW: 800, drawH: 400, cssW: 800, cssH: 400 };
   const PRICE = { p0: 0, step: 0.5 };
   const TIME: TimeMap = { anchorSeq: 5, anchorT0Ns: 5n * 250_000_000n, dtNs: 250_000_000 };
 
-  it('pins the tightened widths/alphas (no area-wash constant — F4 removed it)', () => {
+  it('pins the tightened widths/alphas (no area-wash constant: removed it)', () => {
     expect(PRICE_LINE_WIDTH).toBe(2.0);
     expect(PRICE_GLOW_WIDTH).toBe(4.0);
     expect(PRICE_GLOW_ALPHA).toBe(1);
@@ -401,7 +401,7 @@ describe('L6 price-line ink tuning', () => {
     expect(withAlpha('not-a-color', 0.5)).toBe('not-a-color');
   });
 
-  it('draw paints glow/stub/core/level and NEVER an area fill (F4: QA3 H-1 wash removed)', () => {
+  it('draw paints glow/stub/core/level and NEVER an area fill', () => {
     const g = new GridMap(VIEW, DIMS, TIME, PRICE);
     const pl = new PriceLine();
     pl.add({ col_seq: 4, c: 5 } as never);
@@ -432,7 +432,7 @@ describe('L6 price-line ink tuning', () => {
     pl.draw({ gm: g, text, resident: null } as unknown as OverlayFrame);
 
     expect(fill).toEqual([]); // NO area wash — the line + glow carry the trace
-    expect(lines[0]).toEqual({ width: 4, alpha: 1, color: OVERLAY.priceHalo.css }); // glow (softened W6 swarm2)
+    expect(lines[0]).toEqual({ width: 4, alpha: 1, color: OVERLAY.priceHalo.css }); // glow
     expect(lines[1]).toEqual({ width: 4, alpha: undefined, color: OVERLAY.priceHalo.css });
     expect(lines[2]).toEqual({ width: 2, alpha: 0.7, color: OVERLAY.price.css }); // right-edge stub
     expect(lines[3]).toEqual({ width: 2, alpha: undefined, color: OVERLAY.price.css }); // bright core
@@ -444,7 +444,7 @@ describe('L6 price-line ink tuning', () => {
   });
 });
 
-describe('L6 bubble ink (alpha cap via the palette path)', () => {
+describe('bubble ink (alpha cap via the palette path)', () => {
   it('caps the palette alpha at 0.85, hue untouched, and leaves low alphas alone', () => {
     expect(bubbleAlpha([0.12, 0.71, 0.65, 0.95])).toBe(0.85);
     expect(bubbleAlpha([0.88, 0.33, 0.33, 0.8])).toBe(0.8);

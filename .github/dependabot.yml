@@ -1,0 +1,32 @@
+# Opens update pull requests for the four dependency graphs the release ships.
+# The advisory gate that fails a build on a known vulnerability is the
+# dependency-audit job in ci.yml; Dependabot is what proposes the fixed versions.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 14
+
+  - package-ecosystem: "npm"
+    directory: "/client"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 14
+
+  - package-ecosystem: "cargo"
+    directory: "/app/src-tauri"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 14
+
+  - package-ecosystem: "uv"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 14

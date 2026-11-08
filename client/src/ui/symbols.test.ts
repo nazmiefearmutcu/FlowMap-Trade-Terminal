@@ -1,21 +1,21 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { tFor } from '../i18n';
 import {
   ALL_VENUES,
   capabilityChipClass,
   capabilityChipTitle,
   capabilityChips,
   filterSymbols,
-  flattenGroups,
   fuzzyRank,
   fuzzyScore,
   getVenueCatalog,
-  groupSymbols,
   marketGroup,
   marketVenueId,
   rankVenueOptions,
   resetVenueCatalog,
   setVenueCatalog,
+  venueGroupLabel,
   venueLabel,
   venueMarkets,
   venueOptions,
@@ -31,7 +31,6 @@ const BTC: SymbolEntry = {
   market: 'binance-spot',
   symbol: 'BTCUSDT',
   capability: { depth: 'L2', tape: 'tick' },
-  note: 'live in T9',
 };
 const ETH: SymbolEntry = { market: 'binance-spot', symbol: 'ETHUSDT', capability: { depth: 'L2', tape: 'tick' } };
 const AAPL: SymbolEntry = { market: 'equity', symbol: 'AAPL', capability: { depth: 'SYNTH', tape: 'poll' } };
@@ -196,37 +195,46 @@ describe('filterSymbols', () => {
     expect(filterSymbols(DIRECTORY, 'Simulated')).toEqual([SIM]);
     expect(filterSymbols(DIRECTORY, 'sim')).toEqual([SIM]);
   });
-});
 
-describe('groupSymbols', () => {
-  it('orders groups crypto → equity → sim and drops empties', () => {
-    const groups = groupSymbols(DIRECTORY);
-    expect(groups.map((g) => g.key)).toEqual(['crypto', 'equity', 'sim']);
-    expect(groups[0].entries).toEqual([BTC, ETH]);
-    expect(groups[0].label).toBe('Crypto');
-    expect(groups[1].entries).toEqual([AAPL]);
-    expect(groups[2].entries).toEqual([SIM]);
-  });
-
-  it('omits a group with no members', () => {
-    const groups = groupSymbols([BTC, ETH]);
-    expect(groups.map((g) => g.key)).toEqual(['crypto']);
-  });
-});
-
-describe('flattenGroups', () => {
-  it('reproduces the linear render order for keyboard nav', () => {
-    const flat = flattenGroups(groupSymbols(DIRECTORY));
-    expect(flat).toEqual([BTC, ETH, AAPL, SIM]);
+  it('matches a group by its word in the active locale', () => {
+    expect(filterSymbols(DIRECTORY, 'kripto', (key) => tFor('tr', key))).toEqual([BTC, ETH]);
+    expect(filterSymbols(DIRECTORY, 'hisse', (key) => tFor('tr', key))).toEqual([AAPL]);
   });
 });
 
 describe('capabilityChips', () => {
   it('discloses recorded aggregates and reconstructed quotes instead of claiming original L2', () => {
     expect(capabilityChips({ depth: 'L2', tape: 'tick', depth_provenance: 'recorded-density' }))
-      .toEqual(['RECORDED DENSITY', 'TAPE TICK']);
+      .toEqual(['L2', 'RECORDED DENSITY', 'TAPE TICK']);
     expect(capabilityChipClass('RECORDED DENSITY')).toContain('cap--caution');
     expect(capabilityChipTitle('RECORDED DENSITY')).toContain('row centres');
+  });
+
+  it('keeps the honest SYNTH tier on a replayed keyless equity recording, with the provenance beside it', () => {
+    // The payload the server really sends for a replay: replay.py stamps
+    // depth_provenance on every recording, and playback is set by the session.
+    const replayed = {
+      depth: 'SYNTH',
+      tape: 'poll',
+      trade_side: 'na',
+      cvd: 'na',
+      replay: true,
+      depth_provenance: 'recorded-density',
+      quote_provenance: 'recorded-row-centres',
+      playback: { speed: 1, paused: false },
+    };
+    const chips = capabilityChips(replayed);
+    expect(chips).toEqual(['SYNTH', 'RECORDED DENSITY', 'TAPE POLL', 'SIDE NA']);
+    expect(capabilityChipClass(chips[0])).toBe('cap cap--synth');
+    expect(capabilityChipClass(chips[1])).toBe('cap cap--depth cap--caution');
+  });
+
+  it('shows the SIM chip only for a feed that reports itself synthetic', () => {
+    expect(capabilityChips({ depth: 'L2', tape: 'tick', synthetic: true })).toEqual(['L2', 'SIM', 'TAPE TICK']);
+    expect(capabilityChips({ depth: 'L2', tape: 'tick', synthetic: false })).toEqual(['L2', 'TAPE TICK']);
+    expect(capabilityChips({ depth: 'L2', tape: 'tick' })).toEqual(['L2', 'TAPE TICK']);
+    expect(capabilityChipClass('SIM')).toBe('cap cap--synth');
+    expect(capabilityChipTitle('SIM')).toContain('generated');
   });
   it('derives honest depth + tape (+ side) chips', () => {
     expect(capabilityChips({ depth: 'L2', tape: 'tick' })).toEqual(['L2', 'TAPE TICK']);
@@ -339,6 +347,16 @@ describe('capabilityChipTitle', () => {
     expect(capabilityChipTitle('SIDE NA')).toContain('no aggressor');
   });
 
+  it('reads the chip titles and the venue group words through the caller\'s translator', () => {
+    const tr = (key: string): string => tFor('tr', key);
+    expect(capabilityChipTitle('L1', tr)).toContain('yalnızca en iyi fiyat');
+    expect(capabilityChipTitle('SYNTH', tr)).toContain('sentetik derinlik');
+    expect(capabilityChipTitle('N/A', tr)).toContain('hiç derinlik yok');
+    expect(venueLabel('equity', tr)).toBe('Hisse');
+    expect(venueLabel('sim', tr)).toBe('Sim');
+    expect(venueLabel('kraken', tr)).toBe('kraken');
+  });
+
   it('leaves the honest full-fidelity tiers untitled', () => {
     expect(capabilityChipTitle('L2')).toBeUndefined();
     expect(capabilityChipTitle('TAPE TICK')).toBeUndefined();
@@ -361,7 +379,7 @@ describe('fuzzyScore — tiered ranking', () => {
   it('empty query matches everything with score 0', () => {
     expect(fuzzyScore('', 'anything')).toBe(0);
   });
-  it('rewards subsequence hits on word boundaries (A5)', () => {
+  it('rewards subsequence hits on word boundaries', () => {
     // `EU` against `ETH/USD`: the `u` sits right after the `/` separator, so it
     // outranks the same letters scattered mid-word at the same text length
     // (`zesuad` — scattered, and crucially NOT a substring hit).
@@ -374,7 +392,7 @@ describe('fuzzyScore — tiered ranking', () => {
     // there is no inner word start to reward): same score, raw or lowercased.
     expect(fuzzyScore('sd', 'BTCUSDT')).toBe(fuzzyScore('sd', 'btcusdt'));
   });
-  it('ranks a boundary-hit subsequence above a scattered one (A5)', () => {
+  it('ranks a boundary-hit subsequence above a scattered one', () => {
     // `TU` against `XBT/USD`: the `u` is an after-separator word start; against
     // `atzubd` the same letters are scattered mid-word.
     expect(fuzzyScore('tu', 'xbt/usd')).toBeGreaterThan(fuzzyScore('tu', 'atzubd'));
@@ -414,5 +432,67 @@ describe('fuzzyRank — best symbol match first', () => {
     const r = fuzzyRank(uni, 'btc usdt');
     expect(r.length).toBeGreaterThan(0);
     expect(r[0].symbol).toBe('BTCUSDT');
+  });
+});
+
+describe('side chips never claim attribution the feed did not report', () => {
+  it('reads every no-attribution side value as a caution step-down', () => {
+    for (const chip of ['SIDE NA', 'SIDE N/A', 'SIDE NONE', 'SIDE UNKNOWN', 'SIDE INFERRED']) {
+      expect(capabilityChipClass(chip)).toBe('cap cap--caution');
+    }
+    expect(capabilityChipClass('SIDE EXCHANGE')).toBe('cap');
+  });
+
+  it('explains the no-attribution side values on hover', () => {
+    expect(capabilityChipTitle('SIDE UNKNOWN')).toBe(tFor('en', 'depthChip.sideNone'));
+    expect(capabilityChipTitle('SIDE N/A')).toBe(tFor('en', 'depthChip.sideNone'));
+    expect(capabilityChipTitle('SIDE INFERRED')).toBe(tFor('en', 'depthChip.sideInferred'));
+    expect(capabilityChipTitle('SIDE EXCHANGE')).toBeUndefined();
+  });
+});
+
+describe('replay capability chips (honest defaults for a recording without provenance)', () => {
+  it('shows no side chip when the replay descriptor reports no trade side', () => {
+    // The payload the server sends for a keyless equity replay (replay.py): provenance
+    // and synthetic are always stamped, and no trade side is reported.
+    const descriptor = {
+      depth: 'SYNTH',
+      tape: 'poll',
+      replay: true,
+      synthetic: true,
+      depth_provenance: 'recorded-density',
+      playback: { speed: 1, paused: false },
+    };
+    expect(capabilityChips(descriptor)).toEqual(['SYNTH', 'RECORDED DENSITY', 'SIM', 'TAPE POLL']);
+  });
+
+  it('reads SYNTH for a replay without recorded provenance, the way the chart draws it', () => {
+    expect(capabilityChips({ depth: 'L2', tape: 'tick', playback: { speed: 1 } })).toEqual(['SYNTH', 'TAPE TICK']);
+  });
+
+  it('keeps a recorded real tier on a recorded replay, with the provenance beside it', () => {
+    expect(capabilityChips({
+      depth: 'L2-snapshot',
+      tape: 'tick',
+      depth_provenance: 'recorded-density',
+      playback: { speed: 1 },
+    })).toEqual(['L2-SNAPSHOT', 'RECORDED DENSITY', 'TAPE TICK']);
+  });
+
+  it('shows SYNTH depth, polled tape and no side claim for a keyless equity recording', () => {
+    const chips = capabilityChips({ depth: 'SYNTH', tape: 'poll', trade_side: 'na', cvd: 'na', replay: true });
+    expect(chips).toEqual(['SYNTH', 'TAPE POLL', 'SIDE NA']);
+    expect(capabilityChipClass(chips[0])).toBe('cap cap--synth');
+    expect(capabilityChipClass(chips[1])).toBe('cap cap--tape cap--caution');
+    expect(capabilityChipClass(chips[2])).toBe('cap cap--caution');
+    expect(capabilityChipTitle(chips[0])).toBeDefined();
+  });
+});
+
+describe('venueGroupLabel', () => {
+  it('returns the translated group word, never the internal key', () => {
+    expect(venueGroupLabel('crypto')).toBe('Crypto');
+    expect(venueGroupLabel('equity', (k) => tFor('tr', k))).toBe(tFor('tr', 'search.group.equity'));
+    expect(venueGroupLabel('crypto', (k) => tFor('tr', k))).not.toBe('crypto');
   });
 });

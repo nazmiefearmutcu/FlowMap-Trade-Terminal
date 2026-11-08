@@ -8,9 +8,9 @@ Replay is labeled RECORDED DENSITY. Quotes are reconstructed from occupied row c
 
 Returning to LIVE restores your time and price follow preferences, including a change made immediately before opening replay.
 
-Yahoo resets and intraday conversion run in background workers. Equity preloading admits at most four quote workers. Its cutoff prevents new work and rejects late results; cleanup can take longer while a blocking Yahoo call finishes.
+Yahoo resets and intraday conversion run in a background worker. Equity preloading stops admitting new work at its cutoff and rejects late results; cleanup can take longer while a blocking Yahoo call finishes.
 
-Crypto certificate loading and fallback market setup also run in workers, with at most four quote workers admitted during preloading. This keeps that setup work off the live server loop; cancellation waits for owned workers to finish cleanup.
+Crypto certificate loading and fallback market setup also run in workers. This keeps that setup work off the live server loop; cancellation waits for owned workers to finish cleanup.
 
 Server log output and first-time Yahoo loading run in workers too. Slow log writes no longer run on the live server loop. If the bounded log buffer fills, dropped diagnostics are counted and reported once output resumes.
 
@@ -18,7 +18,7 @@ The timeline thumb now follows chart movement directly. Its labels keep their sl
 
 Windows measurements on this PC passed graphics gates in a 10-minute LIVE trial and a 30-minute history test. History retains its original PASS output; retrospective assessment is INCOMPLETE because the final loss/recorder end tail was not observed. Its graphics/input/resource measurements remain usable. Overall qualification remains NOTQUALIFIED; LIVE source debt failed and no complete matched sustained campaign exists. The [benchmark report](windows-minimum-benchmark.md) preserves original outcomes and hashes; CPU limits describe this Ryzen and RAM is a planning estimate from 32 GiB hardware.
 
-The measured private build08 predates the picker correction and corrected external health harness. The original traces used the earlier harness. Corrected release source has not undergone new native performance, campaign, installer or pixel validation.
+The measured private build predates the picker correction and corrected external health harness. The original traces used the earlier harness. Corrected release source has not undergone new native performance, campaign, installer or pixel validation.
 
 Stable publication waits for all eight platform installers and their checksum manifest.
 

@@ -1,5 +1,5 @@
 /**
- * Axis tick generation (§9: price axis right, time axis bottom). Pure + testable.
+ * Axis tick generation (: price axis right, time axis bottom). Pure + testable.
  *
  * Given the VISIBLE price / time range (derived from the camera each frame), pick
  * human-friendly tick positions ("nice" 1/2/5×10ᵏ prices; human time intervals)
@@ -7,6 +7,8 @@
  * the shared {@link GridMap}, so the axes stay pinned to the heatmap under
  * pan/zoom. Cost is O(ticks) ≈ O(1) per frame.
  */
+
+import { formatClock, type TimeZonePref } from '../../i18n/format';
 
 /** Round a rough interval up to the nearest 1, 2 or 5 × 10ᵏ. */
 export function niceStep(rough: number): number {
@@ -183,8 +185,7 @@ export function fmtClockMs(ns: bigint): string {
 }
 
 /**
- * The time-axis label formatter for a chosen tick step (S4-Q5, amended by
- * review R2-M1): millisecond precision at or below a 0.5 s step (the 250 ms /
+ * The time-axis label formatter for a chosen tick step: millisecond precision at or below a 0.5 s step (the 250 ms /
  * 100 ms / 25 ms cadences AND the 0.5 s ladder itself — at exactly 0.5 s two
  * consecutive labels would otherwise both truncate to the same HH:MM:SS
  * second, a duplicated-label readout); coarser steps read as clean HH:MM:SS.
@@ -193,6 +194,22 @@ export function fmtClockMs(ns: bigint): string {
  */
 export function timeLabelFormatter(stepNs: bigint): (ns: bigint) => string {
   return stepNs > 0n && stepNs <= 500_000_000n ? fmtClockMs : fmtClock;
+}
+
+/**
+ * The same cadence rule for ABSOLUTE (wall-clock) timestamps, rendered in the
+ * active Time zone preference. `utc` keeps the byte-identical
+ * {@link timeLabelFormatter}. Session-relative (sim) axes must keep that one: their
+ * ns are not wall-clock instants, so a zone shift would be meaningless there.
+ */
+export function timeLabelFormatterFor(
+  stepNs: bigint,
+  pref: TimeZonePref,
+  exchangeZone = 'UTC',
+): (ns: bigint) => string {
+  if (pref === 'utc') return timeLabelFormatter(stepNs);
+  const withMs = stepNs > 0n && stepNs <= 500_000_000n;
+  return (ns: bigint): string => formatClock(Number(ns / 1_000_000n), pref, exchangeZone, withMs);
 }
 
 /**

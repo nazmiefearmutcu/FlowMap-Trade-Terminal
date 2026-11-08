@@ -1,24 +1,23 @@
+import type { LooseProbe } from './probe';
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Campaign 2026-09-11-chart, lane E — GHOST-INK regression specs (lane C's
- * indicator-clear fix + lane B1/B2's CP3 clear APIs), on the REAL sim feed.
+ * Ghost-ink regression specs, on the REAL sim feed: stale pixels must not survive
+ * a clear. Four stale-ink classes are pinned here:
+ *  - removing the last indicator left its `.indi-canvas` line inked forever;
+ *  - turning every overlay off (Price off LAST) could never clear the 2D text
+ *    layer, so the last frame's ~130k ghost pixels stayed over the chart;
+ *  - `resetForSession()` (the symbol/band-switch teardown) left the text layer
+ *    and both gutter canvases inked until the new session's first frame;
+ *  - toggling Axes off left the price/time gutter labels (and the price pill).
  *
- * Survey S3 measured three stale-ink classes; each is pinned here:
- *  - C-1: removing the last indicator left its `.indi-canvas` line inked forever.
- *  - C-2: turning every overlay off (Price off LAST) could never clear the 2D
- *         text layer — the last frame's ~130k ghost pixels stayed over the chart.
- *  - C-3: `resetForSession()` (the symbol/band-switch teardown) left the text
- *         layer + both gutter canvases inked until the new session's first frame.
- *  - C-4: toggling Axes off left the price/time gutter labels (and the price pill).
- *
- * Ink metric = count of pixels with alpha > 8 on the named canvas (the same
- * metric the S3 survey used: `.overlay-text`, `.price-axis .axis-canvas`,
- * `.time-axis .axis-canvas`, `.indi-canvas`). Every wait is a condition poll.
+ * Ink metric = count of pixels with alpha > 8 on the named canvas: `.overlay-text`,
+ * `.price-axis .axis-canvas`, `.time-axis .axis-canvas`, `.indi-canvas`. Every
+ * wait is a condition poll.
  *
  * Determinism note (honest, per the lane brief): the sim universe has exactly
  * ONE symbol (`SIM-DEMO`), so a real palette symbol switch is not available on
- * the sim session; the C-3 spec drives the same `renderer.resetForSession()`
+ * the sim session; the session-reset spec drives the same `renderer.resetForSession()`
  * path the App uses on a `sessionResetKey` change (also used by
  * session-switch.spec) and measures SYNCHRONOUSLY inside one evaluate — the
  * cleared state is observed in the same JS task the reset runs in, so no live
@@ -50,7 +49,7 @@ async function bootSim(page: Page): Promise<void> {
   await page.goto('/?spy=1');
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       if (!live || !live.renderer) return false;
       const range = live.renderer.residentRange();
       return live.store.getState().status === 'live' && range !== null && range.count > 5;
@@ -60,7 +59,7 @@ async function bootSim(page: Page): Promise<void> {
   );
 }
 
-test('removing the last indicator clears .indi-canvas (S3 C-1)', async ({ page }) => {
+test('removing the last indicator clears .indi-canvas', async ({ page }) => {
   test.setTimeout(90_000);
   const consoleErrors: string[] = [];
   page.on('console', (m) => {
@@ -89,7 +88,7 @@ test('removing the last indicator clears .indi-canvas (S3 C-1)', async ({ page }
   expect(consoleErrors, `console/page errors: ${consoleErrors.join(' | ')}`).toEqual([]);
 });
 
-test('overlays off (Price last) and Axes off clear the 2D text + gutters (S3 C-2/C-4)', async ({
+test('overlays off (Price last) and Axes off clear the 2D text + gutters', async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -114,16 +113,16 @@ test('overlays off (Price last) and Axes off clear the 2D text + gutters (S3 C-2
   await page.getByTestId('settings-open').click();
   await expect(page.getByTestId('settings-drawer')).toBeVisible({ timeout: 5_000 });
 
-  // --- Axes OFF must clear BOTH gutter canvases (S3 C-4). -----------------------
+  // --- Axes OFF must clear BOTH gutter canvases. -----------------------
   const axes = page.locator('.overlay-toggle[aria-label^="Axes "]');
   await axes.click();
   await expect(axes).toHaveAttribute('aria-pressed', 'false');
   await expect.poll(() => ink(page, INK_SELECTORS.priceGutter), { timeout: 10_000 }).toBe(0);
   await expect.poll(() => ink(page, INK_SELECTORS.timeGutter), { timeout: 10_000 }).toBe(0);
 
-  // --- Everything else off, then PRICE LAST (S3 C-2 worst order). ---------------
-  // NOTE: 'Volume' (F26 vol-bars, Bookmap H7) also paints on the shared text
-  // layer, so it belongs to the same all-off contract (2026-09-14).
+  // --- Everything else off, then PRICE LAST (worst order). ---------------
+  // NOTE: 'Volume' (vol-bars) also paints on the shared text
+  // layer, so it belongs to the same all-off contract.
   for (const label of ['Bubbles', 'BBO', 'VWAP', 'CVD', 'Liquidity', 'GEX', 'Markers', 'Volume']) {
     const toggle = page.locator(`.overlay-toggle[aria-label^="${label} "]`);
     if ((await toggle.getAttribute('aria-pressed')) === 'true') await toggle.click();
@@ -156,7 +155,7 @@ test('overlays off (Price last) and Axes off clear the 2D text + gutters (S3 C-2
   expect(consoleErrors, `console/page errors: ${consoleErrors.join(' | ')}`).toEqual([]);
 });
 
-test('session reset clears text + gutters synchronously (S3 C-3/rForSession path)', async ({
+test('session reset clears text + gutters synchronously (resetForSession path)', async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -194,7 +193,7 @@ test('session reset clears text + gutters synchronously (S3 C-3/rForSession path
       for (let i = 3; i < d.length; i += 4) if (d[i] > 8) n++;
       return n;
     };
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const sels = {
       text: '.overlay-text',
       priceGutter: '.price-axis .axis-canvas',

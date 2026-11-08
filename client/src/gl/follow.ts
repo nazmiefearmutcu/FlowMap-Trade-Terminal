@@ -1,5 +1,5 @@
 /**
- * Auto-follow policy — the pure math behind per-axis follow (§8.3, camera.ts).
+ * Auto-follow policy — the pure math behind per-axis follow (, camera.ts).
  *
  * `camera.ts` owns the transform; this module owns the DECISIONS that drive it:
  * which axes a drag releases, where "the price" currently is, whether it has
@@ -32,7 +32,7 @@ import { KILL_BOTH, KILL_NONE, KILL_PRICE, KILL_TIME, type FollowKill } from './
  */
 export const PRICE_DEADBAND_FRACTION = 1;
 /** Bring an escaped price 10% inside the edge without discarding the history. */
-export const PRICE_RETURN_PADDING = 0.1;
+const PRICE_RETURN_PADDING = 0.1;
 
 /**
  * Exponential time constant (ms) for the recentre glide. ~90 ms reads as a
@@ -78,7 +78,7 @@ export function panFollowKill(peakDx: number, peakDy: number): FollowKill {
  * closest thing to "the price" that needs no BBO channel, no capability check
  * and no overlay state. The `>=` matters: real L2 columns routinely quantize
  * the best bid and best ask onto the SAME row (`bidTop === askBot` — the BTC
- * case in survey S1/D2), for which the formula yields exactly `bidTop + 0.5`,
+ * case), for which the formula yields exactly `bidTop + 0.5`,
  * the density-cell centre. With the old strict `>` that whole class fell
  * through to the extent midpoint, so the tracked row was pulled toward the
  * far wings (and moved whenever a wall appeared) instead of the inside quote.
@@ -129,6 +129,32 @@ export function approach(current: number, target: number, dtMs: number, tauMs: n
   return current + (target - current) * (1 - Math.exp(-dtMs / tauMs));
 }
 
+/** The OS reduced-motion preference, as a media query the renderer keeps live. */
+export const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+/**
+ * The reduced-motion query for `win`, or `null` where matchMedia is unavailable
+ * (SSR, jsdom without a shim). Read `.matches` per frame: it stays live when the
+ * OS setting flips, with no listener to manage.
+ */
+export function reducedMotionQuery(win: { matchMedia?: (query: string) => MediaQueryList } | null | undefined): MediaQueryList | null {
+  if (!win || typeof win.matchMedia !== 'function') return null;
+  try {
+    return win.matchMedia(REDUCED_MOTION_QUERY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Glide time constant under the motion preference. Zero makes {@link approach}
+ * return its target at once, so a reduced-motion user gets the snap, not the
+ * ease (WCAG 2.3.3).
+ */
+export function glideTauMs(reduced: boolean): number {
+  return reduced ? 0 : PRICE_GLIDE_TAU_MS;
+}
+
 /** Whether an absolute column falls inside the view's horizontal window. */
 export function isColVisible(view: HeatmapView, col: number): boolean {
   return col >= view.colOffset && col < view.colOffset + view.colScale;
@@ -157,8 +183,7 @@ export const TIME_GLIDE_STEADY_LAG = 2;
  * queue flushes 2-4 finalized columns at once, and a backpressured dev proxy
  * can deliver 30+ after a stall — and the lag must absorb the WHOLE burst,
  * because every clamped column becomes an instant forward jump of the display
- * (the "perde perde" wave; measured 2026-09-20 on live BTCUSDT: multi-column
- * leaps within single frames). Between bursts the excess drains smoothly
+ * (measured on live BTCUSDT: multi-column leaps within single frames). Between bursts the excess drains smoothly
  * (TIME_GLIDE_CATCHUP_MS) at ~lag/1.2 s, so on a steady feed the trail sits at
  * the steady reserve and the cap is never reached; after a big burst the view
  * sweeps back to the live edge in about a second instead of teleporting.
@@ -166,7 +191,7 @@ export const TIME_GLIDE_STEADY_LAG = 2;
 export const TIME_GLIDE_MAX_LAG = 24;
 
 /** Time constant for draining burst backlog above the steady reserve (ms). */
-export const TIME_GLIDE_CATCHUP_MS = 1200;
+const TIME_GLIDE_CATCHUP_MS = 1200;
 
 /** The glide is converged below this residual (columns); the view snaps exact. */
 export const TIME_GLIDE_SETTLE_EPS = 0.002;
@@ -215,4 +240,20 @@ export function stepLiveEdgeLag(
   if (next < 0) next = 0;
   if (next > TIME_GLIDE_MAX_LAG) next = TIME_GLIDE_MAX_LAG;
   return next;
+}
+
+/**
+ * One frame of the live-edge lag, as the renderer drives it. While the view
+ * follows live the lag advances through {@link stepLiveEdgeLag}; when released
+ * it drains at one column per 250 ms; under reduced motion it is zero at once,
+ * so the view lands on the live edge (WCAG 2.3.3). The spare-interval start
+ * is the caller's: it must happen before the frame's arrivals are counted.
+ */
+export function advanceLiveEdgeLag(
+  lag: number,
+  frame: { following: boolean; arrivals: number; dtMs: number; intervalMs: number; reduced: boolean },
+): number {
+  if (frame.reduced) return 0;
+  if (frame.following) return stepLiveEdgeLag(lag, frame.arrivals, frame.dtMs, frame.intervalMs);
+  return lag > 0 ? Math.max(0, lag - frame.dtMs / 250) : lag;
 }

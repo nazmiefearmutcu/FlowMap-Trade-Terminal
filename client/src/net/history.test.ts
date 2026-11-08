@@ -5,7 +5,7 @@ import { Residency, type ResidentRange } from '../gl/tileRing';
 import { MODE_L2, MsgType, type DepthColumn, type HistoryResponse, type Marker } from '../proto/types';
 
 /**
- * The T8 backfill range-computation + debounce logic is pure — driven here by a
+ * The backfill range-computation + debounce logic is pure — driven here by a
  * fake `requestHistory` and a mutable resident window. No GL, no transport.
  */
 
@@ -197,7 +197,7 @@ describe('history upload frame budget', () => {
   });
 });
 
-describe('HistoryLoader (T8 backfill)', () => {
+describe('HistoryLoader (backfill)', () => {
   it('fires a HistoryRequest when the view pans left past the resident window', async () => {
     const h = harness(/* oldestAvailable */ -1_000_000n); // server has lots older
     h.loader.noteColumn(100, BigInt(100 * DT)); // seed exact t0 of oldest resident
@@ -660,6 +660,7 @@ describe('HistoryLoader — session reset + page hygiene', () => {
 
   it('a transient failure does NOT latch exhaustion — the next pan retries and success clears the error', async () => {
     let fail = true;
+    let clockMs = 0;
     const spliced: number[] = [];
     const loader = new HistoryLoader({
       requestHistory: (before_t): Promise<HistoryResponse> => {
@@ -679,6 +680,7 @@ describe('HistoryLoader — session reset + page hygiene', () => {
       residentRange: () => ({ oldest: 100, newest: 199, count: 100 }),
       budgetCols: () => 256,
       dtNs: () => DT,
+      now: () => clockMs,
     });
     loader.noteColumn(100, BigInt(100 * DT));
 
@@ -688,7 +690,14 @@ describe('HistoryLoader — session reset + page hygiene', () => {
     expect(loader.startOfHistory).toBe(false); // NOT latched on a transient error
     expect(loader.inFlight).toBe(false); // channel freed for a retry
 
+    // The failed range is held for its backoff: a pan frame right after the
+    // failure must not re-issue the same request.
+    loader.ensureVisible({ leftCol: 0, span: 80, level: 0 });
+    await flush();
+    expect(loader.requestCount).toBe(1);
+
     fail = false;
+    clockMs += 1_000; // the first retry delay has passed
     loader.ensureVisible({ leftCol: 0, span: 80, level: 0 });
     await flush();
     expect(loader.requestCount).toBe(2);
@@ -697,14 +706,34 @@ describe('HistoryLoader — session reset + page hygiene', () => {
   });
 });
 
-// --- repaired-skip band refetch (F24) ------------------------------------------
+describe('HistoryLoader — prefetch failure hygiene', () => {
+  it('a failed page ends the eager prefetch instead of re-issuing the range up to 64 times', async () => {
+    let calls = 0;
+    const loader = new HistoryLoader({
+      requestHistory: (): Promise<HistoryResponse> => {
+        calls += 1;
+        return Promise.reject(new Error('history request 9 timed out'));
+      },
+      spliceColumn: () => {},
+      residentRange: () => ({ oldest: 100, newest: 199, count: 100 }),
+      budgetCols: () => 1024,
+      dtNs: () => DT,
+    });
+    loader.noteColumn(100, BigInt(100 * DT));
+    await loader.prefetch(400);
+    expect(calls).toBe(1);
+    expect(loader.error).toMatch(/timed out/);
+  });
+});
+
+// --- repaired-skip band refetch ------------------------------------------
 // A server tx_lag drop evicts only THIS client's queue; the columns stay in the
 // session grid ring and `history(before_t)` still serves them. The renderer's
 // repair zeroes the skipped band; this refetch replaces the zeroes with the
 // real columns when the server still holds them (bounded, single-flight, and a
 // no-op fallback — the zeroes stay — on failure or an empty page).
 
-describe('HistoryLoader — repaired-skip band refetch (F24)', () => {
+describe('HistoryLoader — repaired-skip band refetch', () => {
   interface BandHarness {
     loader: HistoryLoader;
     spliced: number[];
@@ -840,14 +869,14 @@ describe('HistoryLoader — repaired-skip band refetch (F24)', () => {
   });
 });
 
-// --- page seam honesty + stale anchor prune (QA3 C-1) -------------------------
+// --- page seam honesty + stale anchor prune -------------------------
 // A history page can belong to a DIFFERENT grid than the resident window (a
 // reconstructed page, a session replacement under the same subscription). The
 // loader must (a) surface the seq→time break as a gap Marker on the response
 // the renderer forwards, and (b) re-seed its (col_seq→t0) anchors when the map
 // is re-anchored, so the OLD grid's exhaustion latch can't kill scroll-back.
 
-describe('HistoryLoader — page seam honesty (QA3 C-1)', () => {
+describe('HistoryLoader — page seam honesty', () => {
   const ANCHOR = 1000;
 
   interface PageHarness {

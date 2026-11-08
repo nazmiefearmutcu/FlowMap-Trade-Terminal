@@ -1,9 +1,9 @@
 /**
- * Bottom volume-bar strip (Bookmap H7; swarm2 wave 4, F26).
+ * Bottom volume-bar strip.
  *
  * A histogram of TRADED volume along the chart's bottom edge, directly above
  * the time axis — the Bookmap "volume bars" component our chart lacked
- * (reference decomposition D3 §H7 scored it 1.5/10: "we have none"). One bar
+ *. One bar
  * per visible time bucket: height follows its average buy+sell volume,
  * color = the bucket's dominant aggressor side (theme `buy`/`sell` tokens).
  *
@@ -11,7 +11,7 @@
  * (`vol_buy`/`vol_sell` — the server Grid accumulates them from real aggressor
  * sides), and reconstructed crypto history carries the same split from kline
  * taker volumes. Columns WITHOUT a split (keyless equity, SIDE_UNKNOWN-only
- * trades) are never drawn: absence stays a gap, never a fake bar (§7 honesty).
+ * trades) are never drawn: absence stays a gap, never a fake bar (honesty).
  *
  * Rendering: ONE 2D-canvas pass over the visible buckets, on a dedicated
  * opaque strip below the price canvas (real canvas AA at 1 px). Buckets
@@ -46,15 +46,15 @@ export const VOLBAR_HEIGHT_FRAC = 0.07;
 /** Minimum strip height (CSS px) — readable on very short charts. */
 export const VOLBAR_MIN_STRIP_PX = 16;
 /** Maximum strip height (CSS px) — Bookmap's default strip is a low band. */
-export const VOLBAR_MAX_STRIP_PX = 44;
+const VOLBAR_MAX_STRIP_PX = 44;
 /** Minimum bar height (CSS px) for a bucket that carries any volume — a
  *  nonzero bucket must be visible, but one pixel is the honest minimum. */
-export const VOLBAR_MIN_PX = 1;
+const VOLBAR_MIN_PX = 1;
 /** Maximum bar width (CSS px) when zoomed in far (bars thin down as buckets
  *  outnumber pixels; they never fatten into blocks). */
 export const VOLBAR_MAX_BAR_PX = 14;
 /** Keep dense time views readable: aggregate before intervals become hairlines. */
-export const VOLBAR_MIN_BUCKET_PX = 3;
+const VOLBAR_MIN_BUCKET_PX = 3;
 /** Bar opacity over the strip's opaque background. */
 export const VOLBAR_ALPHA = 0.92;
 
@@ -62,7 +62,7 @@ export function volumeStripHeight(cssH: number): number {
   return Math.max(VOLBAR_MIN_STRIP_PX, Math.min(VOLBAR_MAX_STRIP_PX, cssH * VOLBAR_HEIGHT_FRAC));
 }
 /** Robust reference over completed buckets; values above it stay distinct. */
-export const VOLBAR_CAP_PERCENTILE = 0.9;
+const VOLBAR_CAP_PERCENTILE = 0.9;
 
 /** Smooth, bounded height with no hard upper cutoff. The reference maps to
  *  71% of the strip, leaving room to distinguish larger traded volumes. */

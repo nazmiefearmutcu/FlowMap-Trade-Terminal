@@ -1,10 +1,8 @@
-"""Bundled symbol universe + directory builder (GOAL 2, no network).
+"""Bundled symbol universe + directory builder (no network).
 
 These lists are the OFFLINE FALLBACK and the first-paint default — not the
 reachable universe. Live per-venue enumeration lives in
-:mod:`flowmap_server.data.venues`, which the merged engine made possible
-(``crypto.instruments.universe`` and the native connectors' ``list_instruments``
-did not exist in the fork this file was written against).
+:mod:`flowmap_server.data.venues`, which the engine's enumerators make possible.
 
 They are still worth shipping:
 
@@ -19,13 +17,14 @@ They are still worth shipping:
 
 The directory builder is pure: callers pass in the honest, feed-derived
 capability dicts (so a directory entry can never claim more than a real subscribe
-delivers) and get back the merged ``(sim + crypto + equity)`` universe. Both
+delivers) and get back the combined ``(sim + crypto + equity)`` universe. Both
 ``/api/symbols`` and ``/api/universe`` build on this one function.
 """
 
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 
 __all__ = [
@@ -51,7 +50,7 @@ def build_directory(
     crypto_capability: dict[str, object],
     equity_capability: dict[str, object],
 ) -> tuple[dict[str, object], ...]:
-    """The merged ``(sim + crypto + equity)`` directory.
+    """The combined ``(sim + crypto + equity)`` directory.
 
     Capabilities are passed in (feed-derived) so the directory can never drift
     from what a real subscribe delivers. Crypto entries carry a ``note`` (live
@@ -83,15 +82,15 @@ def filter_directory(
     market: str = "all",
     limit: int | None = None,
 ) -> list[dict[str, object]]:
-    """Case-insensitive substring filter over symbols, optional market gate and
-    result cap. ``market`` is ``all`` | ``crypto`` | ``equity`` | ``sim`` (or an
-    exact market string like ``binance-spot``)."""
-    needle = q.lower()
+    """Substring filter over symbols (matched through :func:`search_key`),
+    optional market gate and result cap. ``market`` is ``all`` | ``crypto`` |
+    ``equity`` | ``sim`` (or an exact market string like ``binance-spot``)."""
+    needle = search_key(q.strip())
     out: list[dict[str, object]] = []
     for e in directory:
         if not _market_matches(str(e["market"]), market):
             continue
-        if needle and needle not in str(e["symbol"]).lower():
+        if needle and needle not in search_key(str(e["symbol"])):
             continue
         out.append(e)
         if limit is not None and len(out) >= limit:
@@ -99,11 +98,22 @@ def filter_directory(
     return out
 
 
+def search_key(text: str) -> str:
+    """Match key for symbol search, mirroring the client's ``searchKey``.
+
+    Canonical decomposition, combining marks removed, then lowercased. A composed
+    and a decomposed spelling agree, and Turkish dotted capital ``İ`` (I + U+0307)
+    folds onto plain ``i``.
+    """
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.category(ch).startswith("M")).lower()
+
+
 def _market_matches(entry_market: str, want: str) -> bool:
     if want in ("", "all"):
         return True
     if want == "crypto":
-        # Any venue the engine can reach, not the three this file used to know.
+        # Any venue the engine can reach, not just a fixed shortlist.
         from flowmap_server.feeds.crypto import is_crypto_market
 
         return is_crypto_market(entry_market)

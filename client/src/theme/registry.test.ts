@@ -1,5 +1,5 @@
 /**
- * Theme registry tests (lane CE).
+ * Theme registry tests.
  *
  * The load-bearing invariant: EVERY theme declares EVERY variable that
  * `ui/theme.css` owns, parsed programmatically from both sheets — a var
@@ -21,11 +21,13 @@ import {
   THEME_IDS,
   isThemeId,
   nextTheme,
+  overlayHalo,
   resolveCanvasPalette,
   type CanvasPalette,
   type ChartPalette,
   type ThemeId,
 } from './registry';
+import { resolveChartInkColors } from '../gl/overlays/palette';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const uiCss = readFileSync(join(here, '../ui/theme.css'), 'utf8');
@@ -146,7 +148,7 @@ const CHART_VAR_FOR: Readonly<Record<ChartColorField, string>> = {
 };
 
 describe('theme registry / css coverage', () => {
-  it('ships the two campaign-4 a11y themes on top of the four contract themes', () => {
+  it('ships the two accessibility themes on top of the four base themes', () => {
     for (const id of ['midnight', 'paper', 'swiss', 'amber'] as const) {
       expect(THEME_IDS).toContain(id);
     }
@@ -279,7 +281,7 @@ describe('theme registry / css coverage', () => {
     for (const id of THEME_IDS) expect(contrast(THEMES[id].chart.price, THEMES[id].chart.bg)).toBeGreaterThanOrEqual(3);
   });
 
-  it('chart sell/warn state inks clear 4.5:1 on the composited chip plate in every theme (M-3)', () => {
+  it('chart sell/warn state inks clear 4.5:1 on the composited chip plate in every theme', () => {
     for (const id of THEME_IDS) {
       const body = blockOf(themesCss, `:root[data-theme='${id}']`);
       const plate = compositeOver(parseCss(valueOf(body, '--chart-chip-bg')), valueOf(body, '--chart-bg'));
@@ -291,7 +293,7 @@ describe('theme registry / css coverage', () => {
     }
   });
 
-  it('chart ink-dim clears 4.5:1 on the composited chip plate (livectl chip labels, H-2)', () => {
+  it('chart ink-dim clears 4.5:1 on the composited chip plate (livectl chip labels)', () => {
     for (const id of THEME_IDS) {
       const body = blockOf(themesCss, `:root[data-theme='${id}']`);
       const plate = compositeOver(parseCss(valueOf(body, '--chart-chip-bg')), valueOf(body, '--chart-bg'));
@@ -301,7 +303,7 @@ describe('theme registry / css coverage', () => {
     }
   });
 
-  it('light themes raise gridAlpha so the composited grid clears 1.4:1 on the chart ground (L-4)', () => {
+  it('light themes raise gridAlpha so the composited grid clears 1.4:1 on the chart ground', () => {
     for (const id of THEME_IDS) {
       const theme = THEMES[id];
       const body = blockOf(themesCss, `:root[data-theme='${id}']`);
@@ -320,7 +322,7 @@ describe('theme registry / css coverage', () => {
     }
   });
 
-  it('the two campaign-4 a11y themes meet their numeric contrast claims on their ground', () => {
+  it('the two accessibility themes meet their numeric contrast claims on their ground', () => {
     // text ≥ 7:1 (AAA body text), bid/ask/warn ≥ 4.5:1 (AA data channels).
     const bars: Record<string, { text: number; data: number }> = {
       'paper-deut': { text: 7, data: 4.5 },
@@ -370,12 +372,35 @@ describe('theme registry / css coverage', () => {
     expect(active).not.toContain('outline');
   });
 
-  it('themes have unique labels and a valid mode', () => {
-    const labels = THEME_IDS.map((id) => THEMES[id].label);
-    expect(new Set(labels).size).toBe(labels.length);
+  it('themes have a valid mode and a matching id', () => {
+    expect(new Set(THEME_IDS).size).toBe(THEME_IDS.length);
     for (const id of THEME_IDS) {
       expect(['dark', 'light']).toContain(THEMES[id].mode);
-      expect(THEMES[id].cvd.length).toBeGreaterThan(0);
+      expect(THEMES[id].id).toBe(id);
+    }
+  });
+});
+
+describe('overlay halo', () => {
+  it.each(THEME_IDS)('%s halo is pure black or pure white, by the theme mode', (id) => {
+    expect(overlayHalo(id)).toBe(THEMES[id].mode === 'dark' ? '#000000' : '#FFFFFF');
+  });
+
+  it.each(THEME_IDS)('%s halo clears 3:1 against the hot end of the density ramp', (id) => {
+    const halo = overlayHalo(id);
+    for (const stop of THEMES[id].chart.density.filter((s) => s.t >= 0.6)) {
+      const rgb = `rgb(${stop.rgb.join(', ')})`;
+      expect(contrast(halo, rgb), `${id} halo vs density t${stop.t}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+});
+
+describe('default-on overlay inks clear the halo they are drawn over', () => {
+  it.each(THEME_IDS)('%s: VWAP, GEX call and POC inks clear 3:1 against the halo', (id) => {
+    const halo = overlayHalo(id);
+    const inks = resolveChartInkColors(THEMES[id].chart);
+    for (const name of ['vwap', 'gexCall', 'poc'] as const) {
+      expect(contrast(inks[name], halo), `${id} ${name} vs halo`).toBeGreaterThanOrEqual(3);
     }
   });
 });

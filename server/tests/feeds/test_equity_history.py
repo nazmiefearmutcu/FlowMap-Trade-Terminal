@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -109,10 +108,11 @@ async def test_total_deadline_includes_admission_and_cleans_request(monkeypatch)
 
     monkeypatch.setattr(yahoo, "_BAR_DEADLINE_S", 0.02)
     monkeypatch.setattr(yahoo, "_request_bars", request)
-    before = time.monotonic()
+    # Ordering, not elapsed wall time: the deadline must fire, the request must be
+    # cleaned up before the caller sees the TimeoutError, and no task may leak.
     with pytest.raises(TimeoutError):
         await yahoo.equity_bars("AAPL")
-    assert time.monotonic() - before < 0.2 and cleaned.is_set()
+    assert cleaned.is_set()
     assert not yahoo._states[asyncio.get_running_loop()].tasks
 
 

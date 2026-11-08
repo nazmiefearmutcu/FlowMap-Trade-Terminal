@@ -86,7 +86,7 @@ describe('floorForTolerance — calibrated visible-density cut', () => {
 });
 
 describe('the black-point remap the fragment shader applies', () => {
-  it('is the exact identity at floor 0 â€” every existing pixel spec is untouched', () => {
+  it('is the exact identity at floor 0 — every existing pixel spec is untouched', () => {
     for (const t of [0, 0.001, 0.25, 0.5, 0.9999, 1]) {
       expect(remap(t, 0)).toBe(t);
     }
@@ -99,7 +99,7 @@ describe('the black-point remap the fragment shader applies', () => {
     expect(remap(f * 0.5, f)).toBe(0);
   });
 
-  it('keeps the WHITE point pinned â€” raising tolerance must not dim the walls', () => {
+  it('keeps the WHITE point pinned — raising tolerance must not dim the walls', () => {
     // Without the re-expansion, the survivors would land on [f,1] of the LUT and
     // the whole field would darken as the slider rises.
     for (const v of [0, 25, 50, 75, 100]) {
@@ -118,8 +118,8 @@ describe('the black-point remap the fragment shader applies', () => {
   });
 
   it('does not degenerate at the cap (the reason the cap exists)', () => {
-    // At floor â†’ 1 the 1/(1-floor) scale blows up and even the p99 white point
-    // would map to 0, i.e. a black screen â€” the opposite of "endpoints fixed".
+    // At floor → 1 the 1/(1-floor) scale blows up and even the p99 white point
+    // would map to 0, i.e. a black screen — the opposite of "endpoints fixed".
     const f = TOLERANCE_MAX_FLOOR;
     expect(f).toBeLessThan(1);
     expect(remap(1, f)).toBeCloseTo(1, 12);
@@ -140,9 +140,9 @@ describe('gammaForContrast', () => {
   });
 
   it('puts the default slider position at the below-knee low-end lift', () => {
-    // Wave 3 / F10: with DEFAULT_TOLERANCE 0 the floor no longer hides the
-    // faint fill, but F2 measured ~28pp of the newly-painted cells at ≤3 luma
-    // on the ramp head. F10's frozen-BTC A/B measured the below-knee exponent
+    // With DEFAULT_TOLERANCE 0 the floor no longer hides the
+    // faint fill, but measured ~28pp of the newly-painted cells at ≤3 luma
+    // on the ramp head. The frozen-BTC A/B measured the below-knee exponent
     // as the lever that moves that band (γ 0.86 → 15.5pp sub-3-luma, median
     // 20.0; γ 0.653 → 3.5pp, median 27.1) while the wall band stays pinned
     // (knee → 217, white → 255, max luma unchanged). The old dark-field 0.86
@@ -156,19 +156,19 @@ describe('gammaForContrast', () => {
   });
 });
 
-describe('default visibility â€” the boxed heatmap must show the field, not just walls', () => {
-  // Heavy-tail model: log-normal with Ïƒ chosen so the MEDIAN active cell is 2% of
+describe('default visibility — the boxed heatmap must show the field, not just walls', () => {
+  // Heavy-tail model: log-normal with σ chosen so the MEDIAN active cell is 2% of
   // the p99 white point (observed order-flow shape: a handful of walls dwarf the
-  // ladder). Lane F moved the WHITE point to p99.7 while p97 stays the KNEE, so
+  // ladder). The white point moved to p99.7 while p97 stays the knee, so
   // every quantile below is derived from the same shape at the NEW white point.
-  const SIGMA = Math.log(50) / 2.3263; // p99/median = exp(2.3263Â·Ïƒ) = 50 â†’ Ïƒ â‰ˆ 1.68
+  const SIGMA = Math.log(50) / 2.3263; // p99/median = exp(2.3263·σ) = 50 → σ ≈ 1.68
   const P99 = Math.exp(2.3263 * SIGMA);
   const P97 = Math.exp(1.8808 * SIGMA); // standard-normal quantile for 97%
   const P99_7 = Math.exp(2.7478 * SIGMA); // standard-normal quantile for 99.7%
   /** The live knee fraction once the normalizer is attached: p97 / p99.7. */
   const KNEE = P97 / P99_7;
 
-  /** Standard-normal CDF (Abramowitzâ€“Stegun 26.2.17, |err| < 7.5e-8). */
+  /** Standard-normal CDF (Abramowitz–Stegun 26.2.17, |err| < 7.5e-8). */
   function phi(z: number): number {
     const t = 1 / (1 + 0.2316419 * Math.abs(z));
     const d = 0.3989422804014327 * Math.exp((-z * z) / 2);
@@ -185,7 +185,7 @@ describe('default visibility â€” the boxed heatmap must show the field, not
     return 0.02 * P99 * Math.exp(z * SIGMA);
   }
 
-  /** The fragment shader chain: normalize â†’ black point â†’ transfer â†’ LUT index. */
+  /** The fragment shader chain: normalize → black point → transfer → LUT index. */
   function lut(cellDensity: number, norm: number, floor: number, gamma: number): number {
     const t = Math.min(1, Math.max(0, cellDensity / norm));
     const remapped = Math.min(1, Math.max(0, (t - floor) / Math.max(1 - floor, 1e-6)));
@@ -204,7 +204,7 @@ describe('default visibility â€” the boxed heatmap must show the field, not
     const floor = floorForTolerance(DEFAULT_TOLERANCE);
     const after = visibleFraction(floor, P99_7); // now: tol 0 + p99.7 white
     const before = visibleFraction(0.85 * Math.pow(0.15, 1.4), P99); // pre-fix: tol 15 + p99
-    // F2's measurement, in model terms: tol 5 still hid ≈56% of active cells;
+    // Measured in model terms: tol 5 still hid ≈56% of active cells;
     // tol 0 hides exactly none — every cell with data paints. The pre-fix
     // default (the "empty heatmap") hid ≈74%.
     expect(after).toBe(1);
@@ -219,7 +219,7 @@ describe('default visibility â€” the boxed heatmap must show the field, not
     const whiteLut = lut(P99_7, P99_7, floor, gamma);
     // The wall band spreads across the ramp instead of all clamping to the top:
     // p97 (the knee) sits at the low-span boundary (LUT 217 — the fixed 0.85
-    // share; above-knee, so the F10 gamma lift does not move it), p99 mid-high
+    // share; above-knee, so the gamma lift does not move it), p99 mid-high
     // (LUT 239), p99.7 white. Measured on the model with the new defaults.
     expect(kneeLut).toBeGreaterThanOrEqual(210);
     expect(kneeLut).toBeLessThanOrEqual(225);
@@ -232,7 +232,7 @@ describe('default visibility â€” the boxed heatmap must show the field, not
   it('paints the faint tail at the tol-0 default; the pre-fix default hid it exactly', () => {
     const floor = floorForTolerance(DEFAULT_TOLERANCE);
     const gamma = gammaForContrast(DEFAULT_CONTRAST);
-    // At p99.7 white + the F10 below-knee gamma: the median active cell paints
+    // At p99.7 white + the below-knee gamma: the median active cell paints
     // at LUT ≈27 (faint but painted — the point of the change; the old default
     // left it at LUT 0), p70 ≈49, and p90 is a clear indigo ≈112. Bands are
     // the honest measured values ±8; the wall pins above are the floor.
@@ -250,7 +250,7 @@ describe('default visibility â€” the boxed heatmap must show the field, not
   });
 });
 
-describe('selectLevel (SUM-mip selection) â€” unchanged by the tolerance work', () => {
+describe('selectLevel (SUM-mip selection) — unchanged by the tolerance work', () => {
   it('stays on level 0 when rows do not collapse', () => {
     expect(selectLevel(1, 2)).toEqual({ level: 0, blk: 1, nRowTaps: 1 });
     expect(selectLevel(0.25, 2)).toEqual({ level: 0, blk: 1, nRowTaps: 1 });
@@ -260,7 +260,7 @@ describe('selectLevel (SUM-mip selection) â€” unchanged by the tolerance wo
     expect(selectLevel(64, 0)).toEqual({ level: 0, blk: 1, nRowTaps: 1 });
   });
 
-  it('climbs a level per 4Ã— of rows-per-pixel, capped at maxLevel', () => {
+  it('climbs a level per 4× of rows-per-pixel, capped at maxLevel', () => {
     expect(selectLevel(4, 2).level).toBe(1);
     expect(selectLevel(16, 2).level).toBe(2);
     expect(selectLevel(4096, 2).level).toBe(2);
@@ -274,14 +274,14 @@ describe('selectLevel (SUM-mip selection) â€” unchanged by the tolerance wo
     expect(selectLevel(4096, 2).nRowTaps).toBeLessThanOrEqual(4);
   });
 
-  it('never under-samples the footprint (ceil, campaign 4.2)', () => {
-    // rpp in (blk, 2*blk) previously rounded DOWN to one tap â€” a 5.8-row pixel
+  it('never under-samples the footprint (ceil)', () => {
+    // rpp in (blk, 2*blk) previously rounded DOWN to one tap — a 5.8-row pixel
     // sampled 4 rows and painted dashed price rows when zoomed far out.
     for (const rpp of [4.1, 5, 5.8, 6, 7.9, 8.1, 12, 15.9, 16.1, 31.9, 60]) {
       const sel = selectLevel(rpp, 2);
       const covered = sel.nRowTaps * sel.blk;
       // The tap block spans the footprint whenever the clamp allows it; above
-      // 64 rows (4 taps Ã— level-2 blk) the grid's own 4096-row cap takes over.
+      // 64 rows (4 taps × level-2 blk) the grid's own 4096-row cap takes over.
       if (covered < rpp) {
         expect(covered, `rpp ${rpp} must hit the 4-tap clamp`).toBe(64);
       }
@@ -298,7 +298,7 @@ describe('selectLevel (SUM-mip selection) â€” unchanged by the tolerance wo
     for (let k = 2; k <= 13; k++) {
       expect(selectLevel(4 ** k - 1, 16).level).toBe(k - 1);
     }
-    // Campaign-4.1: the ROW axis reaches level 1 at rpp â‰¥ 2.5 (footprint
+    // The ROW axis reaches level 1 at rpp ≥ 2.5 (footprint
     // smoothing on the SUM mip instead of an aliasing level-0 single sample).
     expect(selectLevel(2.4, 16).level).toBe(0);
     expect(selectLevel(2.5, 16).level).toBe(1);
@@ -307,7 +307,7 @@ describe('selectLevel (SUM-mip selection) â€” unchanged by the tolerance wo
   });
 });
 
-describe('selectLevel â€” the TIME axis counts (survey #3)', () => {
+describe('selectLevel — the TIME axis counts', () => {
   it('is bit-identical to the row-only selector when colsPerPixel is defaulted/1', () => {
     for (const rpp of [0.25, 1, 2, 4, 8, 64, 4096]) {
       expect(selectLevel(rpp, 2)).toEqual(selectLevel(rpp, 2, 1));
@@ -316,8 +316,8 @@ describe('selectLevel â€” the TIME axis counts (survey #3)', () => {
   });
 
   it('climbs a level for time zoom-out while price is zoomed IN (the aliasing fix)', () => {
-    // Whole-session review gesture: colSpan â‰« drawingBufferWidth (hundreds of
-    // columns per pixel) at rowsPerPixel â‰¤ 1 â€” historically forced level 0.
+    // Whole-session review gesture: colSpan ≫ drawingBufferWidth (hundreds of
+    // columns per pixel) at rowsPerPixel ≤ 1 — historically forced level 0.
     expect(selectLevel(1, 2, 1).level).toBe(0);
     expect(selectLevel(1, 2, 4).level).toBe(1);
     expect(selectLevel(1, 2, 16).level).toBe(2);
@@ -334,7 +334,7 @@ describe('selectLevel â€” the TIME axis counts (survey #3)', () => {
 
   it('keeps the row-tap bookkeeping consistent at col-driven levels', () => {
     // A col-driven level with price zoomed IN collapses to ONE row tap (the
-    // pixel's row footprint â‰¤ blk) â€” the same (level, taps) a price zoom to
+    // pixel's row footprint ≤ blk) — the same (level, taps) a price zoom to
     // that level would produce, so intensity semantics do not fork per axis.
     const sel = selectLevel(1, 2, 20);
     expect(sel).toEqual({ level: 2, blk: 16, nRowTaps: 1 });
@@ -345,8 +345,8 @@ describe('selectLevel â€” the TIME axis counts (survey #3)', () => {
   });
 });
 
-describe('selectLevel â€” tick-grouping floor (contract P1)', () => {
-  it('levelFloor=0 (the default) is bit-identical to the pre-P1 selector', () => {
+describe('selectLevel — tick-grouping floor', () => {
+  it('levelFloor=0 (the default) is bit-identical to the pre-floor selector', () => {
     for (const rpp of [0.25, 1, 2.5, 4, 8, 64, 4096]) {
       for (const cpp of [0.5, 1, 3, 16]) {
         expect(selectLevel(rpp, 2, cpp, 0)).toEqual(selectLevel(rpp, 2, cpp));
@@ -375,16 +375,16 @@ describe('selectLevel â€” tick-grouping floor (contract P1)', () => {
 
   it('keeps the row-tap footprint consistent at a forced level', () => {
     // Forced level 2 with price zoomed in: one 16-row tap, same as if the pixel
-    // had demanded it â€” intensity/floor semantics do not fork.
+    // had demanded it — intensity/floor semantics do not fork.
     expect(selectLevel(1, 2, 1, 2)).toEqual({ level: 2, blk: 16, nRowTaps: 1 });
-    // Forced level 1 but the pixel already covers 8 rows â†’ 2 taps of 4.
+    // Forced level 1 but the pixel already covers 8 rows → 2 taps of 4.
     expect(selectLevel(8, 2, 1, 1)).toEqual({ level: 1, blk: 4, nRowTaps: 2 });
     // Non-finite floors degrade to no floor.
     expect(selectLevel(1, 2, 1, Number.NaN)).toEqual(selectLevel(1, 2, 1));
   });
 });
 
-describe('depth channel modes (contract C2) â€” the intensity chain', () => {
+describe('depth channel modes — the intensity chain', () => {
   // A fixed synthetic column: a bid-heavy wall low in the grid, an ask band
   // higher up, mirrored here exactly as the fragment shader computes it.
   const bid = new Float32Array(16);
@@ -400,13 +400,13 @@ describe('depth channel modes (contract C2) â€” the intensity chain', () =>
   const GAMMA = 0.45;
   const BLK = 1; // level 0: intensity = density (the common live view)
 
-  /** The shader chain from acc.rg to the LUT index â€” mirrored 1:1 from GLSL. */
+  /** The shader chain from acc.rg to the LUT index — mirrored 1:1 from GLSL. */
   function lutIndex(accR: number, accG: number, channel: number): number {
-    // GLSL int() truncates toward zero â€” the historical LUT-index conversion.
+    // GLSL int() truncates toward zero — the historical LUT-index conversion.
     const toIdx = (t: number): number => Math.trunc(t * 255 + 0.5);
     if (channel === 3) {
       const denom = accR + accG;
-      if (denom <= 0) return -1; // background() â€” flagged, not a ramp index
+      if (denom <= 0) return -1; // background() — flagged, not a ramp index
       const d = Math.min(1, Math.max(-1, (accR - accG) / denom));
       return toIdx(d * 0.5 + 0.5);
     }
@@ -437,8 +437,8 @@ describe('depth channel modes (contract C2) â€” the intensity chain', () =>
 
   it('mode 0 computes the EXACT historical intensity expression', () => {
     // The shader's intensity expression for mode 0 must remain the shipped
-    // string â€” the golden pixel parity e2e depends on it verbatim. The transfer
-    // AFTER it (lane F) is mirrored 1:1 in `lutIndex`.
+    // string — the golden pixel parity e2e depends on it verbatim. The transfer
+    // AFTER it is mirrored 1:1 in `lutIndex`.
     expect(HEATMAP_FRAG).toContain(
       'float intensity = (acc.r + acc.g) * u_decodeScale / float(blk);',
     );
@@ -473,19 +473,19 @@ describe('depth channel modes (contract C2) â€” the intensity chain', () =>
     }
   });
 
-  it('imbalance is signed, fixed-domain, and maps blue â†” neutral â†” orange', () => {
+  it('imbalance is signed, fixed-domain, and maps blue ↔ neutral ↔ orange', () => {
     const imb = buildImbalanceLUT();
-    // Pure bid wall â†’ orange half of the divergent row; pure ask â†’ blue half.
+    // Pure bid wall → orange half of the divergent row; pure ask → blue half.
     const bidIdx = lutIndex(250, 0, 3);
     const askIdx = lutIndex(0, 120, 3);
     expect(bidIdx).toBeGreaterThan(128); // t > 0.5
     expect(askIdx).toBeLessThan(128); // t < 0.5
     expect(imb[bidIdx * 4]).toBeGreaterThan(imb[bidIdx * 4 + 2]); // R > B (orange)
     expect(imb[askIdx * 4 + 2]).toBeGreaterThan(imb[askIdx * 4]); // B > R (blue)
-    // Balanced density â†’ the quiet neutral midpoint, NOT background red.
+    // Balanced density → the quiet neutral midpoint, NOT background red.
     const mid = lutIndex(60, 60, 3);
     expect(mid).toBe(128);
-    // Magnitude is brightness per side: stronger dominance â†’ farther from 128.
+    // Magnitude is brightness per side: stronger dominance → farther from 128.
     expect(lutIndex(250, 10, 3)).toBeGreaterThan(lutIndex(120, 10, 3));
     expect(lutIndex(10, 250, 3)).toBeLessThan(lutIndex(10, 120, 3));
   });
@@ -495,7 +495,7 @@ describe('depth channel modes (contract C2) â€” the intensity chain', () =>
     const flow = buildFlowLUT();
     const luma = (lut: Uint8Array, i: number): number =>
       0.299 * lut[i * 4] + 0.587 * lut[i * 4 + 1] + 0.114 * lut[i * 4 + 2];
-    // Midpoint â‰ˆ the terminal background (a balanced book must not light up).
+    // Midpoint ≈ the terminal background (a balanced book must not light up).
     expect(luma(imb, 128)).toBeLessThan(30);
     // Both extremes are bright and hue-pure (CVD-safe blue/orange axis).
     expect(luma(imb, 0)).toBeGreaterThan(120);
@@ -507,9 +507,9 @@ describe('depth channel modes (contract C2) â€” the intensity chain', () =>
   });
 });
 
-describe('smoothPlanFor — the width-scaled Gaussian sampler plan (lane F)', () => {
+describe('smoothPlanFor — the width-scaled Gaussian sampler plan', () => {
   it('pins the law: sigma = clamp(2.5 * cpp, 0.12, 2.0) with 3-sigma tap tiers', () => {
-    // Deep zoom: sigma in PIXELS is the constant 2.5 â†’ sigmaCols = 2.5 * cpp.
+    // Deep zoom: sigma in PIXELS is the constant 2.5 → sigmaCols = 2.5 * cpp.
     expect(SMOOTH_SIGMA_PX).toBe(2.5);
     expect(SMOOTH_MAX_TAPS).toBe(9);
     expect(smoothPlanFor(0.5)).toEqual({ sigmaCols: 1.25, taps: 5 });
@@ -550,7 +550,7 @@ describe('smoothPlanFor — the width-scaled Gaussian sampler plan (lane F)', ()
   });
 });
 
-describe('rowSmoothDyFor — pixel-denominated vertical softening (wave 2, 2026-09-14)', () => {
+describe('rowSmoothDyFor — pixel-denominated vertical softening', () => {
   it('pins the screen-pixel law and is ACTIVE at the default book zoom', () => {
     expect(SMOOTH_ROW_SIGMA_PX).toBe(2.2);
     // The default live view (rpp ≈ 3.05) was the old mechanism's dead zone
@@ -583,8 +583,8 @@ describe('rowSmoothDyFor — pixel-denominated vertical softening (wave 2, 2026-
 describe('rowMipSoftenFor — deep-row (row-mip) softening gate (2026-09-13)', () => {
   it('pins the enable value and the sub-regime no-op endpoint', () => {
     expect(SMOOTH_ROW_MIP_DY).toBe(1);
-    // Inside the row-mip regime (rpp >= 1.5 — wave-3 F10 moved the edge down
-    // from 2.5 to close D4's 2.0–2.5 barcode zone): the vertical Gaussian that
+    // Inside the row-mip regime (rpp >= 1.5, moved down from 2.5 to close the
+    // 2.0–2.5 barcode zone): the vertical Gaussian that
     // turns sub-pixel-row hairlines into soft bands.
     expect(rowMipSoftenFor(1.5)).toBe(1);
     expect(rowMipSoftenFor(2.0)).toBe(1);
@@ -629,7 +629,7 @@ describe('rowMipSoftenFor — deep-row (row-mip) softening gate (2026-09-13)', (
   });
 });
 
-describe('F14 §L2 — DPR softness portability (wave 4 / F20)', () => {
+describe('DPR softness portability', () => {
   function makeHeatmap(): { heatmap: Heatmap; gl: FakeGL } {
     const gl = makeFakeGL({ colorBufferFloat: true });
     const ctx: GLContext = {
@@ -688,17 +688,13 @@ describe('F14 §L2 — DPR softness portability (wave 4 / F20)', () => {
     // the cpp/rpp: colScale 0.125·320 with dpr 2 == 0.25·320 at dpr 1;
     // rowsPerPixel 3.05/2 with dpr 2 == 3.05 at dpr 1.
     const dpr2 = makeHeatmap();
-    try {
-      vi.spyOn(window, 'devicePixelRatio', 'get').mockReturnValue(2);
-      dpr2.heatmap.draw({
-        colOffset: 0,
-        colScale: 0.125 * 320,
-        rowOffset: 0,
-        rowScale: (3.05 / 2) * 240,
-      });
-    } finally {
-      vi.restoreAllMocks();
-    }
+    dpr2.heatmap.dpr = 2;
+    dpr2.heatmap.draw({
+      colOffset: 0,
+      colScale: 0.125 * 320,
+      rowOffset: 0,
+      rowScale: (3.05 / 2) * 240,
+    });
     const dpr1 = makeHeatmap();
     dpr1.heatmap.draw({ colOffset: 0, colScale: 0.25 * 320, rowOffset: 0, rowScale: 3.05 * 240 });
     // Byte-level identical selection + softness across the two DPRs.
@@ -719,12 +715,8 @@ describe('F14 §L2 — DPR softness portability (wave 4 / F20)', () => {
     // and the level-0 sparse triple (~1 px hairlines) would paint. CSS-px
     // eligibility keeps DPR1's row-mip path: rowFade 0.5, soften 1, taps 1.
     const { heatmap, gl } = makeHeatmap();
-    try {
-      vi.spyOn(window, 'devicePixelRatio', 'get').mockReturnValue(2);
-      heatmap.draw({ colOffset: 0, colScale: 0.125 * 320, rowOffset: 0, rowScale: (2 / 2) * 240 });
-    } finally {
-      vi.restoreAllMocks();
-    }
+    heatmap.dpr = 2;
+    heatmap.draw({ colOffset: 0, colScale: 0.125 * 320, rowOffset: 0, rowScale: (2 / 2) * 240 });
     expect(lastInt(gl, 'u_rowOnly')).toBe(1);
     expect(lastFloat(gl, 'u_rowFade')).toBeCloseTo(0.5, 9);
     expect(lastFloat(gl, 'u_rowMipSoften')).toBe(SMOOTH_ROW_MIP_DY);
@@ -738,14 +730,26 @@ describe('F14 §L2 — DPR softness portability (wave 4 / F20)', () => {
     clean.heatmap.draw(view);
     for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       const { heatmap, gl } = makeHeatmap();
-      try {
-        vi.spyOn(window, 'devicePixelRatio', 'get').mockReturnValue(bad);
-        heatmap.draw(view);
-      } finally {
-        vi.restoreAllMocks();
-      }
+      heatmap.dpr = bad;
+      heatmap.draw(view);
       expect(drawDigest(heatmap, gl), `dpr ${bad}`).toEqual(drawDigest(clean.heatmap, clean.gl));
     }
+  });
+
+  it('draw(): one cached DPR, so the window ratio is never read at draw time', () => {
+    // The renderer syncs `dpr` on every resize; a stray live read of
+    // window.devicePixelRatio would split the buffer ratio from the footprint math.
+    const view = { colOffset: 0, colScale: 0.125 * 320, rowOffset: 0, rowScale: 3.05 * 240 };
+    const clean = makeHeatmap();
+    clean.heatmap.draw(view);
+    const { heatmap, gl } = makeHeatmap();
+    vi.spyOn(window, 'devicePixelRatio', 'get').mockReturnValue(2);
+    try {
+      heatmap.draw(view);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(drawDigest(heatmap, gl)).toEqual(drawDigest(clean.heatmap, clean.gl));
   });
 });
 
@@ -772,7 +776,7 @@ describe('transferCurve — the two-segment transfer (low-span calibrated)', () 
     expect(transferCurve(0.7, base)).toBeCloseTo(above(0.7), 12);
     // The below-knee segment owns a FIXED output share: a tiny knee (the live
     // heavy-tail case ≈0.18) must not cap the mid-field near LUT 45 — the
-    // 2026-09-13 owner-reported black-field regression.
+    // Regression guard for the black-field case.
     expect(transferCurve(0.18, { ...base, knee: 0.18 })).toBeCloseTo(S, 12);
     expect(transferCurve(0.09, { ...base, knee: 0.18 })).toBeCloseTo(
       S * Math.pow(0.5, 0.86),
@@ -798,7 +802,7 @@ describe('transferCurve — the two-segment transfer (low-span calibrated)', () 
   });
 });
 
-describe('rowFadeFor / effectiveRowMode â€” the smooth row-mip cross-fade (lane P)', () => {
+describe('rowFadeFor / effectiveRowMode — the smooth row-mip cross-fade', () => {
   it('is exactly 0 at/below 1.5 rows-per-pixel and on non-finite input', () => {
     expect(rowFadeFor(1.4)).toBe(0);
     expect(rowFadeFor(1.5)).toBe(0);
@@ -819,11 +823,11 @@ describe('rowFadeFor / effectiveRowMode â€” the smooth row-mip cross-fade (
   });
 
   it('ramps linearly through the middle (band [1.5, 2.5])', () => {
-    // F10 wave-3 coverage extension: the old [2.0, 3.0] band left [2.0, 2.5]
-    // (one wheel notch in from the default, D4's d3/d4/d5 zone) on the SPARSE
+    // Coverage extension: the old [2.0, 3.0] band left [2.0, 2.5]
+    // (one wheel notch in from the default, the d3/d4/d5 zone) on the SPARSE
     // level-0 triple — 98% sub-3-px hairlines. The edge moved to 1.5 so the
     // dense row-mip kernel reaches that zone; the default (rpp 3.05) keeps
-    // F1's completed handoff (fade 1).
+    // The completed handoff (fade 1).
     expect(rowFadeFor(1.75)).toBeCloseTo(0.25, 12);
     expect(rowFadeFor(2.0)).toBeCloseTo(0.5, 12);
     expect(rowFadeFor(2.25)).toBeCloseTo(0.75, 12);
@@ -879,7 +883,7 @@ describe('rowFadeFor / effectiveRowMode â€” the smooth row-mip cross-fade (
   });
 });
 
-describe('the row-mip cross-fade in the fragment shader source (lane P)', () => {
+describe('the row-mip cross-fade in the fragment shader source', () => {
   it('declares u_rowFade and blends the level-0 sample with the row sums', () => {
     expect(HEATMAP_FRAG).toContain('uniform float u_rowFade;');
     expect(HEATMAP_FRAG).toContain(
@@ -890,12 +894,12 @@ describe('the row-mip cross-fade in the fragment shader source (lane P)', () => 
   it('skips the row fetches at the legacy endpoint and the level-0 sample at the full endpoint', () => {
     expect(HEATMAP_FRAG).toContain('if (u_rowFade > 0.001) {');
     expect(HEATMAP_FRAG).toContain('if (u_rowFade >= 0.999) {');
-    // The historical lane-P intensity correction still keys off u_rowOnly.
+    // The historical intensity correction still keys off u_rowOnly.
     expect(HEATMAP_FRAG).toContain('if (u_rowOnly == 1) intensity *= float(blk);');
   });
 });
 
-describe('the Gaussian sampler + transfer curve in the fragment shader source (lane F)', () => {
+describe('the Gaussian sampler + transfer curve in the fragment shader source', () => {
   it('declares the sampler/transfer uniforms and retires blur/crisp', () => {
     expect(HEATMAP_FRAG).toContain('uniform int u_smoothTaps;');
     expect(HEATMAP_FRAG).toContain('uniform float u_smoothOffsets[9];');
@@ -938,7 +942,7 @@ describe('the Gaussian sampler + transfer curve in the fragment shader source (l
   });
 
   it('applies the transfer AFTER the black point with exact endpoints', () => {
-    // Lane F17: the black point is now the REGION-SELECTED floor (live floor for
+    // The black point is now the REGION-SELECTED floor (live floor for
     // untagged columns — mix(a,b,0) is exactly a — and the relative recon floor
     // for tagged ones). The transfer itself is unchanged.
     expect(HEATMAP_FRAG).toContain(
@@ -965,7 +969,7 @@ describe('the Gaussian sampler + transfer curve in the fragment shader source (l
   });
 });
 
-describe('selectLevel â€” row-only mip at deep time zoom (campaign visual 2026-09-11, R2-M1)', () => {
+describe('selectLevel — row-only mip at deep time zoom', () => {
   it('flags rowOnly for the collapsing-price / deep-time gesture', () => {
     const a = selectLevel(3.05, 2, 0.25);
     expect(a.rowOnly).toBe(true);
@@ -978,8 +982,8 @@ describe('selectLevel â€” row-only mip at deep time zoom (campaign visual 2
   it('stays off when price is zoomed in, time is zoomed out, or there are no mips', () => {
     expect(selectLevel(1, 2, 0.2).rowOnly).toBeUndefined(); // rpp < 1.5
     expect(selectLevel(1.4, 2, 0.2).rowOnly).toBeUndefined();
-    // Wave 3 / F10: 2.4 is INSIDE the regime now (the edge moved 2.5 → 1.5),
-    // which is exactly D4's d3/d4/d5 barcode zone the row-mip must reach.
+    // 2.4 is INSIDE the regime now (the edge moved 2.5 → 1.5),
+    // which is exactly the d3/d4/d5 barcode zone the row-mip must reach.
     expect(selectLevel(2.4, 2, 0.2).rowOnly).toBe(true);
     expect(selectLevel(1.6, 2, 0.2).rowOnly).toBe(true);
     expect(selectLevel(3, 2, 2).rowOnly).toBeUndefined(); // cpp >= 1.5
@@ -1022,9 +1026,9 @@ describe('the row-only mip path in the fragment shader source', () => {
       'vec2 keep = clamp(1.0 - 2.0 * neighborMax / max(center, vec2(1e-6)), 0.0, 1.0);',
     );
     expect(HEATMAP_FRAG).toContain('return mix(acc, center, keep);');
-    // Both the full row endpoint and the lane-P fade branch gate on the
+    // Both the full row endpoint and the fade branch gate on the
     // 1-tap footprint; wider footprints (rpp > 4) go through the per-tap soft
-    // branch (wave 3 / F10: D4 zone a measured 88–90% sub-3-px hairlines while
+    // branch (zone a measured 88–90% sub-3-px hairlines while
     // the bare block sum had no vertical kernel)…
     expect(HEATMAP_FRAG).toContain('if (u_rowMipSoften > 0.0 && u_nRowTaps == 1) {');
     expect(HEATMAP_FRAG).toContain('} else if (u_rowMipSoften > 0.0) {');
@@ -1034,7 +1038,7 @@ describe('the row-only mip path in the fragment shader source', () => {
     expect(HEATMAP_FRAG).toContain(
       'accRow += rowMipSoft(x0, layer, float(y), u_rowSmoothDy * 0.25);',
     );
-    // Wave 2: the row-mip sites go through rowMipSoft — the SAME pixel-
+    // The row-mip sites go through rowMipSoft — the SAME pixel-
     // denominated triple the level-0 field uses, converted to mip texels
     // (u_rowSmoothDy * 0.25) — so the DEFAULT view is softened too.
     expect(HEATMAP_FRAG).toContain('vec2 rowMipSoft(int x, int layer, float yMip, float dyMip) {');
@@ -1052,7 +1056,7 @@ describe('the row-only mip path in the fragment shader source', () => {
   });
 });
 
-describe('levelBlendFor â€” the SUM-mip LOD cross-fade (wave P2)', () => {
+describe('levelBlendFor — the SUM-mip LOD cross-fade', () => {
   it('is pure level 0 with no blend for tiny/non-finite footprints', () => {
     expect(levelBlendFor(0.5, 2)).toEqual({ level: 0, finerLevel: -1, fade: 0 });
     expect(levelBlendFor(1, 2)).toEqual({ level: 0, finerLevel: -1, fade: 0 });
@@ -1072,7 +1076,7 @@ describe('levelBlendFor â€” the SUM-mip LOD cross-fade (wave P2)', () => {
   });
 
   it('blends across the 4^1 boundary: pure 0 below 2.2, pure 1 at 4.0', () => {
-    // 0.55*4 = 2.2 â€” the (widened) band start: fade 0, pure level 0 == old output.
+    // 0.55*4 = 2.2 — the (widened) band start: fade 0, pure level 0 == old output.
     expect(levelBlendFor(2.2, 2)).toEqual({ level: 0, finerLevel: -1, fade: 0 });
     // Mid-band: 0 < fade < 1, coarse level k=1 with the finer level 0 mixed in.
     const band = levelBlendFor(3.2, 2);
@@ -1132,7 +1136,7 @@ describe('levelBlendFor â€” the SUM-mip LOD cross-fade (wave P2)', () => {
   it('matches selectLevel outside the bands (byte-identity at the old switch points)', () => {
     // Column-driven fps (rows stay at 1): the blend's pure endpoints must equal
     // the historical selector everywhere outside the (widened) bands. Inside the
-    // bands they intentionally differ â€” that IS the cross-fade.
+    // bands they intentionally differ — that IS the cross-fade.
     for (const fp of [0.5, 1, 1.5, 2.0, 2.19, 4.0, 4.5, 8, 8.79, 16, 20, 64, 4096]) {
       expect(levelBlendFor(fp, 2).level, `fp ${fp}`).toBe(selectLevel(1, 2, fp).level);
     }
@@ -1159,7 +1163,7 @@ describe('levelBlendFor â€” the SUM-mip LOD cross-fade (wave P2)', () => {
   });
 });
 
-describe('the SUM-mip level cross-fade in the fragment shader source (wave P2)', () => {
+describe('the SUM-mip level cross-fade in the fragment shader source', () => {
   it('declares the fade uniforms and mixes the finer sample into the SUM branch', () => {
     expect(HEATMAP_FRAG).toContain('uniform float u_levelFade;');
     expect(HEATMAP_FRAG).toContain('uniform int u_nRowTapsFine;');
@@ -1187,7 +1191,7 @@ describe('the SUM-mip level cross-fade in the fragment shader source (wave P2)',
   });
 });
 
-describe('Heatmap.draw â€” SUM-path level cross-fade uniform wiring (wave P2)', () => {
+describe('Heatmap.draw — SUM-path level cross-fade uniform wiring', () => {
   function makeMipHeatmap(): { heatmap: Heatmap; gl: FakeGL } {
     const gl = makeFakeGL({ colorBufferFloat: true });
     const ctx: GLContext = {
@@ -1239,13 +1243,13 @@ describe('Heatmap.draw â€” SUM-path level cross-fade uniform wiring (wave P
   it('uploads u_rowMipSoften + an ACTIVE u_rowSmoothDy inside the row-mip regime (barcode fix)', () => {
     const { heatmap, gl } = makeMipHeatmap();
     // rpp 3.05 (the live-book default zoom), cpp 0.25: inside the regime. The
-    // pixel-denominated dy is 2.2 px worth of rows there — the wave-2 mandate
-    // ("ACTIVE at the default"): the shader's rowMipSoft triple consumes it.
+    // pixel-denominated dy is 2.2 px worth of rows there, and it stays active
+    // at the default zoom: the shader's rowMipSoft triple consumes it.
     heatmap.draw({ colOffset: 0, colScale: 0.25 * 320, rowOffset: 600, rowScale: 3.05 * 240 });
     expect(lastFloat(gl, 'u_rowMipSoften')).toBe(SMOOTH_ROW_MIP_DY);
     expect(lastFloat(gl, 'u_rowSmoothDy')).toBeCloseTo(2.2 * 3.05, 6);
     expect(lastInt(gl, 'u_rowOnly')).toBe(1);
-    // rpp 2.0 (D4's d3/d4 zone): wave 3 / F10 moved the row-mip edge to 1.5,
+    // rpp 2.0 (the d3/d4 zone): the row-mip edge moved to 1.5,
     // so this is INSIDE the regime — soften 1, the dense row-mip kernel mixed
     // in at rowFade 0.5 (was: fully on the sparse level-0 triple).
     heatmap.draw({ colOffset: 0, colScale: 0.25 * 320, rowOffset: 0, rowScale: 2 * 240 });
@@ -1301,7 +1305,7 @@ describe('Heatmap.draw â€” SUM-path level cross-fade uniform wiring (wave P
     expect(info.finerLevel).toBe(-1);
   });
 
-  it('lane F: uploads the knee fallback, log scale and the CPU Gaussian tap table', () => {
+  it('uploads the knee fallback, log scale and the CPU Gaussian tap table', () => {
     const { heatmap, gl } = makeMipHeatmap();
     // The jsdom FakeGL predates array uniforms; record the optional call so the
     // tap table can be asserted. Real WebGL2 always exposes uniform1fv.
@@ -1313,7 +1317,7 @@ describe('Heatmap.draw â€” SUM-path level cross-fade uniform wiring (wave P
     expect(lastFloat(gl, 'u_logScale')).toBeCloseTo(TRANSFER_LOG_SCALE, 12);
     expect(lastFloat(gl, 'u_lowSpan')).toBeCloseTo(TRANSFER_LOW_SPAN, 12);
     // Vertical barcode-fix soften: rpp = 240/240 = 1 → 2.2 px worth of rows
-    // (wave 2: no row-unit cap below the ≤10 px band bound).
+    // (no row-unit cap below the ≤10 px band bound).
     expect(lastFloat(gl, 'u_rowSmoothDy')).toBeCloseTo(2.2, 12);
     // cpp 0.5 → sigma 1.25 columns → the 5-tap tier (≥3σ truncation).
     expect(lastInt(gl, 'u_smoothTaps')).toBe(5);
@@ -1338,7 +1342,7 @@ describe('Heatmap.draw â€” SUM-path level cross-fade uniform wiring (wave P
     expect(info.smoothTaps).toBe(5);
   });
 
-  it('lane F: with a normalizer attached, uploads the clamped knee/white ratio', () => {
+  it('with a normalizer attached, uploads the clamped knee/white ratio', () => {
     const { heatmap, gl } = makeMipHeatmap();
     const n = new ViewportNormalizer({ colsPerTile: COLS_PER_TILE, floor: 0 });
     n.addColumn(0, new Float32Array(100).fill(10), null);
@@ -1354,7 +1358,7 @@ describe('Heatmap.draw â€” SUM-path level cross-fade uniform wiring (wave P
     expect(lastFloat(gl, 'u_knee')).toBeCloseTo(0.95, 12);
   });
 
-  it('lane F: a seeded-only normalizer still yields a safe in-band knee', () => {
+  it('a seeded-only normalizer still yields a safe in-band knee', () => {
     const { heatmap, gl } = makeMipHeatmap();
     const n = new ViewportNormalizer({ colsPerTile: COLS_PER_TILE, floor: 0 });
     n.seed(42);
@@ -1391,7 +1395,7 @@ describe('Heatmap.draw â€” SUM-path level cross-fade uniform wiring (wave P
   });
 });
 
-describe('per-region reconstruction floor — lane F17 (D5 L1, owner scrollback)', () => {
+describe('per-region reconstruction floor', () => {
   function makeRegionHeatmap(layers = 2): { heatmap: Heatmap; gl: FakeGL; ring: TileRing } {
     const gl = makeFakeGL();
     const ctx: GLContext = {
@@ -1543,3 +1547,15 @@ describe('per-region reconstruction floor — lane F17 (D5 L1, owner scrollback)
   });
 });
 
+
+
+describe('per-draw kernel tables are reused while their inputs hold', () => {
+  it('row-mip weights: same sigma returns the same table; a new sigma recomputes', () => {
+    const a = rowMipWeightsFor(2);
+    expect(rowMipWeightsFor(2)).toBe(a);
+    expect(rowMipWeightsFor(4)).not.toBe(a);
+    // The recomputed table is the same numbers as a fresh build for rpp 2.
+    expect(Array.from(rowMipWeightsFor(2))).toEqual(Array.from(a));
+    expect(a.reduce((acc, v) => acc + v, 0)).toBeCloseTo(1, 6);
+  });
+});

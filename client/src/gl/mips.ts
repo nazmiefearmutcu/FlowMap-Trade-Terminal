@@ -1,5 +1,5 @@
 /**
- * SUM-mips for correct zoom-out (§8.3, M2 T7).
+ * SUM-mips for correct zoom-out.
  *
  * When the price axis is zoomed OUT, many rows collapse into one screen pixel.
  * A plain average-downsampled mip (what `generateMipmap` produces) would render
@@ -13,13 +13,13 @@
  *   - level-1: `colsPerTile/4 × rows/4 × layers`  (each texel = SUM of a 4×4 block of level 0)
  *   - level-2: `colsPerTile/16 × rows/16 × layers`(each texel = SUM of a 4×4 block of level 1)
  *   - row-only: `colsPerTile × rows/4 × layers`   (each texel = SUM of 4 ROWS of ONE
- *     column — no column summing). The R2-M1 decoupling: when the price axis
+ * column — no column summing). The decoupling: when the price axis
  *     collapses rows per pixel (rpp ≥ 2.5) but time is deep-zoomed (cpp < 1.5),
  *     the 4×4 SUM mip would paint 4-column blocks; the row-only chain groups
  *     price alone and keeps the time axis crisp.
  *
  * All are `RG32F` and color-renderable (needs `EXT_color_buffer_float`, a hard
- * §8.3 requirement) so the downsample runs on the GPU: an FBO ping-pong where a
+ * requirement) so the downsample runs on the GPU: an FBO ping-pong where a
  * fragment shader reads the finer level via `texelFetch` and writes the 4×4 sum
  * into the coarser level's FBO-attached layer. The per-texel coordinate mapping
  * matches the ring exactly (same layer, x/4^L within the tile), so the heatmap
@@ -39,10 +39,9 @@
  * group alignment stays valid; the row-only grouping is per-column and thus has
  * no alignment constraint at all.
  *
- * Saturation: sums are clamped at 60 000 (f16 max is 65 504; a fully-dense 4×4
- * block of near-max values, compounded across levels, would otherwise overflow).
- * Saturation is visually inert because the normalization percentile sits far
- * below it, and the crosshair readout comes from the CPU cache, not these texels.
+ * Range: sums are stored as RG32F and are not clamped, so a fully-dense 4×4
+ * block compounded across levels stays exact in f32. The crosshair readout still
+ * comes from the CPU cache, not these texels.
  */
 
 import { checkGLError, checkGLHotPath, type GLContext } from './context';
@@ -132,7 +131,7 @@ export class MipChain {
     const gl = ctx.gl;
     if (!ctx.caps.colorBufferFloat) {
       throw new Error(
-        'flowmap/mips: EXT_color_buffer_float required (§8.3: RG16F must be color-renderable for SUM mip FBO passes)',
+        'flowmap/mips: EXT_color_buffer_float required (RG32F must be color-renderable for SUM mip FBO passes)',
       );
     }
     if (colsPerTile % 16 !== 0) {
@@ -268,12 +267,12 @@ export class MipChain {
    *  - The row-only chain has no group alignment: one batched pass per tile-layer
    *    segment of the WHOLE spliced range [fromSeq..hi], validFrom-masked.
    *  - Level-2 bakes only the FULLY rebuilt, fully post-gap 16-groups (the same
-   *    R2 H-1 rule updateFrom applies, lifted to range granularity): starts at
+   * The updateFrom rule applies, lifted to range granularity): starts at
    *    the first 16-aligned start ≥ max(a0, validFrom-aligned-up), so no level-2
    *    texel mixes pre-gap level-1 columns with post-gap rebuilds.
    *  - Ragged edges that fall outside the aligned range keep today's behavior:
    *    they were baked when their group last completed, and they self-heal on
-   *    wrap (same contract as the level-2 skip).
+   * wrap (same contract as the level-2 skip).
    */
   updateRange(ring: TileRing, fromSeq: number, toSeq: number): void {
     if (!this.usableFlag || toSeq < fromSeq) return;
@@ -417,7 +416,7 @@ export class MipChain {
     // the heatmap falls back to the exact level-0 path — instead of baking
     // broken mips that a zoomed-out view would sample forever.
     // Storage allocation/errors and EXT_color_buffer_float are checked at
-    // creation. These immutable, in-range RG16F attachments are complete by
+    // creation. These immutable, in-range RG32F attachments are complete by
     // construction. Only diagnostics query the driver after uploads/draws:
     // even the FIRST query can block on lazy texture clearing/shader work.
     let checked = this.checkedTargets.get(dstTex);

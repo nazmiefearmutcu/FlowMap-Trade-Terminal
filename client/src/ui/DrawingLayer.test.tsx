@@ -1,5 +1,5 @@
 /**
- * DrawingLayer tests (lane CF): placement via synthetic pointer events over a
+ * DrawingLayer tests: placement via synthetic pointer events over a
  * FIXED chart map (grid col/row ⇄ px), select-mode drag interception on the
  * container, scoped keyboard (Esc / Delete / Ctrl+Z), and the inline text
  * editor. jsdom has no canvas — the 2D context is a recording stub and the
@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetDrawingsForTest, setDrawingsStorage, useDrawingsStore } from '../drawings/store';
 import { useFlowMapStore } from '../state/store';
 import type { EpochParams } from '../proto/types';
+import { setLocale, t } from '../i18n';
 import { DrawingLayer } from './DrawingLayer';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -96,10 +97,10 @@ async function renderLayer(): Promise<void> {
   expect(wrapper).not.toBeNull();
 }
 
-/** Drain the rAF stub so the paint loop builds the projection. */
+/** Drain the rAF stub so the paint loop builds the projection (fake clock). */
 async function frame(): Promise<void> {
   await act(async () => {
-    await new Promise((r) => setTimeout(r, 30));
+    await vi.advanceTimersByTimeAsync(30);
   });
 }
 
@@ -123,6 +124,7 @@ function fireKey(key: string, init: KeyboardEventInit = {}): void {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   resetDrawingsForTest();
   storageMap = new Map<string, string>();
   setDrawingsStorage({
@@ -145,6 +147,7 @@ afterEach(async () => {
   }
   resetDrawingsForTest();
   useFlowMapStore.setState({ gridEpoch: null, epochs: new Map() });
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -292,6 +295,80 @@ describe('select mode: hit + drag on the CONTAINER (layer stays pointer-transpar
   });
 });
 
+describe('keyboard placement and the mode region', () => {
+  it('the layer is a tab stop only while a tool is armed or a drawing is selected', async () => {
+    await renderLayer();
+    await frame();
+    expect(wrapper.tabIndex).toBe(-1);
+    act(() => useDrawingsStore.getState().armTool('hline'));
+    expect(wrapper.tabIndex).toBe(0);
+    act(() => useDrawingsStore.getState().armTool(null));
+    expect(wrapper.tabIndex).toBe(-1);
+  });
+
+  it('with the layer focused, arrow keys move the cursor and Enter places the point', async () => {
+    await renderLayer();
+    await frame();
+    act(() => useDrawingsStore.getState().armTool('hline'));
+    act(() => {
+      wrapper.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    // jsdom has no layout: the cursor starts at the layer origin, 8 px per arrow.
+    act(() => {
+      wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    act(() => {
+      wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    const s = useDrawingsStore.getState();
+    expect(s.items.length).toBe(1);
+    expect(s.items[0].tool).toBe('hline');
+    // Layer x = 8 px maps to col 0.8 under MAP, i.e. 9.2 s before the anchor at 100 s.
+    expect(s.items[0].points[0]).toEqual({ tNs: 90_800_000_000n, price: priceAt(0) });
+    expect(s.tool).toBeNull();
+  });
+
+  it('keys are ignored unless the layer itself has focus, and never without an armed tool', async () => {
+    await renderLayer();
+    await frame();
+    act(() => useDrawingsStore.getState().armTool('hline'));
+    // Not focused: a bubbled key from a child is not the layer's to act on.
+    const child = document.createElement('span');
+    wrapper.appendChild(child);
+    act(() => {
+      child.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(useDrawingsStore.getState().items.length).toBe(0);
+    // Focused but disarmed: Enter does nothing.
+    act(() => useDrawingsStore.getState().armTool(null));
+    act(() => {
+      wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(useDrawingsStore.getState().items.length).toBe(0);
+  });
+
+  it('the mode region stays mounted and its text follows the armed tool and locale', async () => {
+    await renderLayer();
+    await frame();
+    const region = wrapper.querySelector('[data-testid="drawing-mode"]') as HTMLElement;
+    expect(region).not.toBeNull();
+    expect(region.getAttribute('role')).toBe('status');
+    expect(region.textContent).toBe('');
+    try {
+      act(() => useDrawingsStore.getState().armTool('hline'));
+      expect(wrapper.querySelector('[data-testid="drawing-mode"]')).toBe(region); // same live node
+      expect(region.textContent).toContain('H-LINE');
+      expect(region.textContent).toContain('Esc cancels');
+      expect(region.textContent).toContain('arrow keys move');
+      act(() => setLocale('tr'));
+      expect(region.textContent).toContain('YATAY ÇİZGİ');
+      expect(region.textContent).toContain('Esc iptal eder');
+    } finally {
+      act(() => setLocale('en'));
+    }
+  });
+});
+
 describe('text labels', () => {
   it('placing text opens the inline editor; Enter commits the label', async () => {
     await renderLayer();
@@ -327,9 +404,20 @@ describe('text labels', () => {
     });
     expect(useDrawingsStore.getState().items.length).toBe(0);
   });
+
+  it('the inline editor is a named text field (WCAG 4.1.2)', async () => {
+    await renderLayer();
+    await frame();
+    act(() => useDrawingsStore.getState().armTool('text'));
+    fire(wrapper, 'pointerdown', 120, 80);
+    fire(wrapper, 'pointerup', 120, 80);
+    const input = wrapper.querySelector('[data-testid="drawing-text-input"]') as HTMLInputElement;
+    expect(input.getAttribute('aria-label')).toBe(t('drawings.textLabelAria'));
+    expect(input.getAttribute('aria-label')).not.toBe('drawings.textLabelAria'); // resolved, not the bare key
+  });
 });
 
-describe('repaint on camera move (R2 regression)', () => {
+describe('repaint on camera move (regression)', () => {
   it('repaints when the chartMap output changes (zoom/pan) with NO store mutation', async () => {
     // A zoom/pan changes neither the time base, nor the epoch params, nor the
     // size/DPR — the paint-loop signature must therefore probe the LIVE camera

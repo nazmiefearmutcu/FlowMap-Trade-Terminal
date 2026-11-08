@@ -1,7 +1,5 @@
 /**
- * DrawToolbar (campaign 3, lane CF) — the vertical drawing-tools panel,
- * ported from the old branch's ui/DrawingToolbar + ColorSwatches + undo/redo
- * keys, re-grounded on the current store architecture.
+ * DrawToolbar — the vertical drawing-tools panel.
  *
  * Contents: the 6 tools (select + trendline / h-line / h-ray / rect / fib /
  * text) as icon buttons (inline SVG — zero icon deps), color swatches (the
@@ -10,49 +8,55 @@
  * and clear-all (window.confirm-guarded). A swatch sets the style of NEW
  * drawings, and recolors the SELECTED drawing immediately when one exists.
  *
+ * KEYBOARD: the toolbar is a WAI-ARIA toolbar with roving focus. Tab reaches
+ * ONE button (the last one focused, or Select); the arrow keys move between the
+ * enabled buttons, and Home / End jump to the first and last.
+ *
  * VISIBILITY: the panel mounts hidden; `D` toggles it via the module-level
  * {@link toggleDrawToolbar} export (drawings/store.ts). The `D` listener is
  * SELF-CONTAINED here (bare key, editable/dialog guarded via the shared
- * input/keys classifier) — INT must NOT also bind `D` in keys.ts or the
- * toggle would fire twice. If INT later prefers central routing, delete this
- * component's effect and register the key with `toggleDrawToolbar()` as the
+ * input/keys classifier, and off when the user has switched single-key
+ * shortcuts off in input/shortcutPrefs) — App must NOT also bind `D` in keys.ts
+ * or the toggle would fire twice. If App later prefers central routing, delete
+ * this component's effect and register the key with `toggleDrawToolbar()` as the
  * action.
  *
- * Placement: render inside the chart's position:relative stage viewport (see
- * lane-CF.md MOUNT-SNIPPET-CF); the panel pins itself to the left edge.
+ * Placement: render inside the chart's position:relative stage viewport; the
+ * panel pins itself to the left edge (drawings.css `.draw-toolbar`).
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 
 import { classifyTarget } from '../input/keys';
+import { isSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import { toggleDrawToolbar, useDrawingsStore } from '../drawings/store';
 import type { DrawingTool } from '../drawings/types';
+import { useT } from '../i18n/useT';
+import { DRAWING_INK_DEFAULT, DRAWING_INK_SWATCHES } from '../theme/drawInks';
 import '../drawings/drawings.css';
-
-/**
- * The swatch palette. Fixed hexes are the deliberate exception to the
- * theme-var rule: a drawing must keep ITS color across theme switches (it is
- * user-authored content on the canvas, not chrome), and these six hues are
- * CVD-checked against every theme's near-black surface.
- */
-const SWATCHES: readonly string[] = [
-  '#33d6c4', // teal (theme accent-bright)
-  '#f2f6fa', // paper white
-  '#fbbf24', // amber (warn)
-  '#e8635f', // red (sell-bright)
-  '#60a5fa', // blue
-  '#c084fc', // violet
-];
 
 /** Stroke-width choices (CSS px) the stepper cycles through. */
 const WIDTHS: readonly number[] = [1, 2, 4];
 
-/** Order the buttons render in; `select` is the null tool (select mode). */
-const TOOLS: readonly { tool: DrawingTool | 'select'; label: string; icon: JSX.Element }[] = [
-  { tool: 'select', label: 'Select / move drawings', icon: <path d="M4 2l8 7-4 .5L6.5 14z" /> },
+/**
+ * The i18n name of each swatch ink, so a screen reader says "Blue", not a hex code.
+ * An ink missing here falls back to its hex text.
+ */
+const INK_NAME_KEYS: Readonly<Record<string, string>> = {
+  [DRAWING_INK_DEFAULT]: 'drawToolbar.ink.teal',
+  '#3F7FD1': 'drawToolbar.ink.blue',
+  '#8A5CD6': 'drawToolbar.ink.violet',
+  '#4A8F3A': 'drawToolbar.ink.green',
+  '#B5651D': 'drawToolbar.ink.amber',
+  '#6B7280': 'drawToolbar.ink.grey',
+};
+
+/** Order the buttons render in; `select` is the null tool (select mode). Labels are i18n keys. */
+const TOOLS: readonly { tool: DrawingTool | 'select'; labelKey: string; icon: JSX.Element }[] = [
+  { tool: 'select', labelKey: 'drawToolbar.select', icon: <path d="M4 2l8 7-4 .5L6.5 14z" /> },
   {
     tool: 'trendline',
-    label: 'Trend line',
+    labelKey: 'drawToolbar.trendline',
     icon: (
       <>
         <path d="M3 13L13 3" />
@@ -61,12 +65,12 @@ const TOOLS: readonly { tool: DrawingTool | 'select'; label: string; icon: JSX.E
       </>
     ),
   },
-  { tool: 'hline', label: 'Horizontal line', icon: <path d="M2 8h12M8 5.5v5" /> },
-  { tool: 'hray', label: 'Horizontal ray (extends right)', icon: <path d="M4 8h10M4 5.5v5" /> },
-  { tool: 'rect', label: 'Rectangle', icon: <rect x="3" y="4" width="10" height="8" /> },
+  { tool: 'hline', labelKey: 'drawToolbar.hline', icon: <path d="M2 8h12M8 5.5v5" /> },
+  { tool: 'hray', labelKey: 'drawToolbar.hray', icon: <path d="M4 8h10M4 5.5v5" /> },
+  { tool: 'rect', labelKey: 'drawToolbar.rect', icon: <rect x="3" y="4" width="10" height="8" /> },
   {
     tool: 'fib',
-    label: 'Fib retracement',
+    labelKey: 'drawToolbar.fib',
     icon: (
       <>
         <path d="M2 3.5h12" />
@@ -78,10 +82,13 @@ const TOOLS: readonly { tool: DrawingTool | 'select'; label: string; icon: JSX.E
   },
   {
     tool: 'text',
-    label: 'Text label',
+    labelKey: 'drawToolbar.text',
     icon: <path d="M3 4h10M8 4v9M6 13h4" />,
   },
 ];
+
+/** Keys that move the roving focus (vertical toolbar: Up/Down; Left/Right also accepted). */
+const NAV_KEYS: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End']);
 
 interface DrawToolbarProps {
   /**
@@ -92,6 +99,7 @@ interface DrawToolbarProps {
 }
 
 export function DrawToolbar({ symbol }: DrawToolbarProps): JSX.Element | null {
+  const t = useT();
   const visible = useDrawingsStore((s) => s.toolbarVisible);
   const tool = useDrawingsStore((s) => s.tool);
   const defaultStyle = useDrawingsStore((s) => s.defaultStyle);
@@ -99,14 +107,24 @@ export function DrawToolbar({ symbol }: DrawToolbarProps): JSX.Element | null {
   const canUndo = useDrawingsStore((s) => s.undoStack.length > 0);
   const canRedo = useDrawingsStore((s) => s.redoStack.length > 0);
 
-  // `D` toggles the panel. Bare key only, and never while typing / in a
-  // dialog — the same guards the app's global router applies.
+  // Roving tabindex: `stopKey` names the one button in the Tab order. It follows
+  // focus, and falls back to Select when the remembered button is disabled.
+  const [focusKey, setFocusKey] = useState<string>('select');
+  const rootRef = useRef<HTMLDivElement>(null);
+  const isDisabled = (key: string): boolean =>
+    (key === 'undo' && !canUndo) || (key === 'redo' && !canRedo) || (key === 'clear' && itemCount === 0);
+  const stopKey = isDisabled(focusKey) ? 'select' : focusKey;
+
+  // `D` toggles the panel. Bare key only, never while typing / in a dialog, and
+  // not at all when the user has switched single-key shortcuts off — the same
+  // guards the app's global router applies.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
+    const onKey = (e: globalThis.KeyboardEvent): void => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key !== 'd' && e.key !== 'D') return;
-      const t = classifyTarget(e.target);
-      if (t.editable || t.dialog) return;
+      if (!isSingleKeyShortcutsEnabled()) return;
+      const target = classifyTarget(e.target);
+      if (target.editable || target.dialog) return;
       e.preventDefault();
       toggleDrawToolbar();
     };
@@ -117,48 +135,89 @@ export function DrawToolbar({ symbol }: DrawToolbarProps): JSX.Element | null {
   if (!visible) return null;
 
   const st = useDrawingsStore.getState();
-  const scope = symbol ?? (st.symbol !== null ? st.symbol : 'this chart');
+  const scope = symbol ?? (st.symbol !== null ? st.symbol : t('drawToolbar.thisChart'));
+
+  /** Roving focus: arrows step through the enabled buttons, Home/End jump to the ends. */
+  const onToolbarKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    if (!NAV_KEYS.has(e.key)) return;
+    const items = Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []);
+    if (items.length === 0) return;
+    const at = items.indexOf(e.target as HTMLButtonElement);
+    const last = items.length - 1;
+    let next: number;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = last;
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') next = at < 0 || at >= last ? 0 : at + 1;
+    else next = at <= 0 ? last : at - 1;
+    e.preventDefault();
+    items[next].focus();
+  };
+
+  /** The props every button shares: the roving stop and the focus bookkeeping. */
+  const rove = (key: string) => ({
+    tabIndex: stopKey === key ? 0 : -1,
+    onFocus: () => setFocusKey(key),
+  });
 
   return (
-    <div className="draw-toolbar" role="toolbar" aria-label="Drawing tools" data-testid="draw-toolbar">
-      {TOOLS.map(({ tool: t, label, icon }) => (
-        <button
-          key={t}
-          type="button"
-          className={`draw-toolbar__btn${(t === 'select' ? tool === null : tool === t) ? ' is-active' : ''}`}
-          title={label}
-          aria-label={label}
-          aria-pressed={t === 'select' ? tool === null : tool === t}
-          onClick={() => st.armTool(t === 'select' ? null : t)}
-        >
-          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-            {icon}
-          </svg>
-        </button>
-      ))}
+    <div
+      ref={rootRef}
+      className="draw-toolbar"
+      role="toolbar"
+      aria-orientation="vertical"
+      aria-label={t('drawToolbar.aria')}
+      data-testid="draw-toolbar"
+      onKeyDown={onToolbarKeyDown}
+    >
+      {TOOLS.map(({ tool: id, labelKey, icon }) => {
+        const label = t(labelKey);
+        const pressed = id === 'select' ? tool === null : tool === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            className={`draw-toolbar__btn${pressed ? ' is-active' : ''}`}
+            title={label}
+            aria-label={label}
+            aria-pressed={pressed}
+            {...rove(id)}
+            onClick={() => st.armTool(id === 'select' ? null : id)}
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              {icon}
+            </svg>
+          </button>
+        );
+      })}
 
       <div className="draw-toolbar__sep" />
 
-      {SWATCHES.map((color) => (
-        <button
-          key={color}
-          type="button"
-          className={`draw-toolbar__swatch${defaultStyle.color === color ? ' is-active' : ''}`}
-          style={{ background: color }}
-          title={`Color ${color}`}
-          aria-label={`Drawing color ${color}`}
-          aria-pressed={defaultStyle.color === color}
-          onClick={() => st.setDefaultStyle({ color })}
-        />
-      ))}
+      {DRAWING_INK_SWATCHES.map((color) => {
+        const nameKey = INK_NAME_KEYS[color];
+        const name = nameKey === undefined ? color : t(nameKey);
+        return (
+          <button
+            key={color}
+            type="button"
+            className={`draw-toolbar__swatch${defaultStyle.color === color ? ' is-active' : ''}`}
+            style={{ background: color }}
+            title={t('drawToolbar.color', { color: name })}
+            aria-label={t('drawToolbar.colorAria', { color: name })}
+            aria-pressed={defaultStyle.color === color}
+            {...rove(color)}
+            onClick={() => st.setDefaultStyle({ color })}
+          />
+        );
+      })}
 
       <div className="draw-toolbar__sep" />
 
       <button
         type="button"
         className="draw-toolbar__btn draw-toolbar__btn--wide"
-        title={`Stroke width (${defaultStyle.width}px) — click to change`}
-        aria-label="Stroke width"
+        title={t('drawToolbar.width', { width: defaultStyle.width })}
+        aria-label={t('drawToolbar.widthAria')}
+        {...rove('width')}
         onClick={() => {
           const i = WIDTHS.indexOf(defaultStyle.width);
           st.setDefaultStyle({ width: WIDTHS[(i + 1) % WIDTHS.length] });
@@ -174,9 +233,10 @@ export function DrawToolbar({ symbol }: DrawToolbarProps): JSX.Element | null {
       <button
         type="button"
         className="draw-toolbar__btn"
-        title="Undo (Ctrl+Z)"
-        aria-label="Undo drawing change"
+        title={t('drawToolbar.undo')}
+        aria-label={t('drawToolbar.undoAria')}
         disabled={!canUndo}
+        {...rove('undo')}
         onClick={() => st.undo()}
       >
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
@@ -186,9 +246,10 @@ export function DrawToolbar({ symbol }: DrawToolbarProps): JSX.Element | null {
       <button
         type="button"
         className="draw-toolbar__btn"
-        title="Redo (Ctrl+Shift+Z)"
-        aria-label="Redo drawing change"
+        title={t('drawToolbar.redo')}
+        aria-label={t('drawToolbar.redoAria')}
         disabled={!canRedo}
+        {...rove('redo')}
         onClick={() => st.redo()}
       >
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
@@ -199,12 +260,16 @@ export function DrawToolbar({ symbol }: DrawToolbarProps): JSX.Element | null {
       <button
         type="button"
         className="draw-toolbar__btn draw-toolbar__btn--danger"
-        title={`Clear all drawings on ${scope}`}
-        aria-label="Clear all drawings"
+        title={t('drawToolbar.clear', { scope })}
+        aria-label={t('drawToolbar.clearAria')}
         disabled={itemCount === 0}
+        {...rove('clear')}
         onClick={() => {
           const n = useDrawingsStore.getState().items.length;
-          if (n > 0 && window.confirm(`Clear all ${n} drawing${n === 1 ? '' : 's'} on ${scope}?`)) {
+          const question = n === 1
+            ? t('drawToolbar.clearConfirmOne', { scope })
+            : t('drawToolbar.clearConfirmMany', { count: n, scope });
+          if (n > 0 && window.confirm(question)) {
             useDrawingsStore.getState().clearAll();
           }
         }}

@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { Markers } from './markers';
 import { GridMap, type TimeSlots } from './coords';
 import type { OverlayFrame } from './frame';
-import type { Marker } from '../../proto/types';
+import { MsgType, type Marker } from '../../proto/types';
+import { setLocale, t } from '../../i18n';
 
 /**
  * Minimal frame stub for driving `Markers.draw`. The GridMap methods used are
@@ -17,7 +18,10 @@ import type { Marker } from '../../proto/types';
 const CSS_H = 600;
 const CSS_W = 800;
 
-function makeFrame() {
+/** Default label metrics: the 5.6 px per-glyph advance the chips used before the glyph metrics changed. */
+const ESTIMATE_W = (s: string) => s.length * 5.6;
+
+function makeFrame(measure: (s: string) => number = ESTIMATE_W) {
   const textCalls: Array<{ x: number; y: number; label: string }> = [];
   const hatchXs: number[] = [];
   const gm = {
@@ -51,6 +55,7 @@ function makeFrame() {
       text(x: number, y: number, label: string) {
         textCalls.push({ x, y, label });
       },
+      measure,
     },
     resident: null,
     capability: null,
@@ -109,7 +114,7 @@ describe('Markers label placement', () => {
   });
 });
 
-describe('Markers declutter policy (QA14 gapstack)', () => {
+describe('Markers declutter policy', () => {
   it('collapses a near-identical kind run into one counted badge, keeping every hatch', () => {
     const m = new Markers();
     // Six gaps ~9 px apart (the real BTC pile-up geometry): one chip, six hatches.
@@ -120,6 +125,24 @@ describe('Markers declutter policy (QA14 gapstack)', () => {
     expect(hatchXs).toHaveLength(6); // honour: every gap still draws its hatch
     expect(textCalls).toHaveLength(1);
     expect(textCalls[0].label).toBe('GAP ×6');
+  });
+
+  it('gap and session-break chips follow the active locale, not the English codes', () => {
+    const m = new Markers();
+    m.add(marker('gap', null, 100));
+    m.add(marker('session_break', null, 400));
+    try {
+      setLocale('en');
+      const en = makeFrame();
+      m.draw(en.frame);
+      expect(en.textCalls.map((c) => c.label).sort()).toEqual(['BRK', 'GAP']);
+      setLocale('tr');
+      const tr = makeFrame();
+      m.draw(tr.frame);
+      expect(tr.textCalls.map((c) => c.label).sort()).toEqual(['BOŞLUK', 'KES']);
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('does not merge kinds that are far apart', () => {
@@ -143,13 +166,31 @@ describe('Markers declutter policy (QA14 gapstack)', () => {
     m.draw(frame);
 
     const labels = textCalls.map((t) => t.label).sort();
-    expect(labels).toEqual(['GAP', 'SEAM ×2']);
+    expect(labels).toEqual(['GAP', `${t('gl.markerSeam')} ×2`]);
+  });
+
+  it('boxes a chip with its measured width, so a wide label cannot overprint its neighbour', () => {
+    const m = new Markers();
+    m.add(marker('gap', null, 100)); // label box starts at x 103
+    m.add(marker('large_lot', null, 110)); // label starts at x 119, inside a 40 px GAP box
+    const widths: string[] = [];
+    const { frame, textCalls } = makeFrame((s) => {
+      widths.push(s);
+      return 40;
+    });
+    m.draw(frame);
+
+    expect(widths).toContain('GAP');
+    const gap = textCalls.find((c) => c.label === 'GAP');
+    const lot = textCalls.find((c) => c.label === 'LOT');
+    expect(gap!.y).toBe(12);
+    expect(lot!.y).toBe(24); // a per-glyph estimate (16.8 px) would have left it at y 12
   });
 
   it('offsets overlapping labels away from each other vertically', () => {
     const m = new Markers();
-    m.add(marker('large_lot', null, 100)); // rank 2, top lane at y 12
-    m.add(marker('gap', null, 100)); // rank 0, same top lane
+    m.add(marker('large_lot', null, 100)); // rank 2, top band at y 12
+    m.add(marker('gap', null, 100)); // rank 0, same top band
     const { frame, textCalls } = makeFrame();
     m.draw(frame);
 
@@ -169,7 +210,7 @@ describe('Markers declutter policy (QA14 gapstack)', () => {
     const { frame, textCalls, hatchXs } = makeFrame();
     m.draw(frame);
 
-    expect(textCalls.map((t) => t.label)).toEqual(['GAP', 'SEAM']);
+    expect(textCalls.map((c) => c.label)).toEqual(['GAP', t('gl.markerSeam')]);
     // The dropped INFO chip must not cost its glyph, and both verticals keep hatches.
     expect(hatchXs).toHaveLength(2);
   });
@@ -186,7 +227,7 @@ describe('Markers declutter policy (QA14 gapstack)', () => {
 });
 
 /**
- * Seam knot anchoring (F22, F9-L1). Geometry mirrors the measured reattach
+ * Seam knot anchoring. Geometry mirrors the measured reattach
  * seam: live columns at 1 s cadence, then a reconstructed block whose t0 runs
  * BACKWARD of the column it lands after (the head jump), then the live
  * resumption at the trailing knot. The piecewise table is therefore
@@ -244,6 +285,7 @@ function makeSeamFrame(g: ReturnType<typeof seamGrid>, colScale = 80) {
       text(x: number, y: number, label: string) {
         textCalls.push({ x, y, label });
       },
+      measure: ESTIMATE_W,
     },
     resident: null,
     capability: null,
@@ -252,7 +294,24 @@ function makeSeamFrame(g: ReturnType<typeof seamGrid>, colScale = 80) {
   return { frame, textCalls, hatchXs, gm };
 }
 
-describe('Markers seam knot anchoring (F22, F9-L1)', () => {
+describe('Markers knot columns follow an explicit cols table', () => {
+  it('places a gap hatch at the sparse knot column, not at its table index', () => {
+    // Knots at columns 100, 103, 110, 111: the 110 knot sits at table index 2,
+    // so an index-as-column lookup would draw it at column 102.
+    const t0 = Float64Array.from([1000, 1003, 1010, 1011]);
+    const cols = Float64Array.from([100, 103, 110, 111]);
+    const slots: TimeSlots = { t0, startSeq: 100, cols };
+    const g = { slots, headCol: 100, headTs: 1000, tailCol: 111, tailTs: 1011, lastT0: 1011 };
+    const m = new Markers();
+    m.add(marker('gap', null, 1010));
+    const { frame, hatchXs, gm } = makeSeamFrame(g);
+    m.draw(frame);
+    expect(hatchXs).toHaveLength(1);
+    expect(hatchXs[0]).toBeCloseTo(gm.clipX(110), 10);
+  });
+});
+
+describe('Markers seam knot anchoring', () => {
   it('anchors the trailing seam badge on the block-end knot, not N columns inside the block', () => {
     const g = seamGrid(12);
     const m = new Markers();
@@ -268,7 +327,7 @@ describe('Markers seam knot anchoring (F22, F9-L1)', () => {
     expect(hatchXs).toHaveLength(1);
     expect(hatchXs[0]).toBeCloseTo(gm.clipX(g.tailCol), 10); // the block end, exactly
     expect(textCalls).toHaveLength(1);
-    expect(textCalls[0].label).toBe('SEAM');
+    expect(textCalls[0].label).toBe(t('gl.markerSeam'));
     expect(textCalls[0].x).toBeCloseTo(gm.cssX(g.tailCol) + 3, 10);
   });
 
@@ -306,7 +365,7 @@ describe('Markers seam knot anchoring (F22, F9-L1)', () => {
     expect(textCalls[0].x).toBeCloseTo(gm.cssX(naive + 0.5) + 3, 10);
   });
 
-  it('reads SEAM ×2 for two co-located seam knots once collapsed (F16 policy)', () => {
+  it('reads SEAM ×2 for two co-located seam knots once collapsed', () => {
     const g = seamGrid(12);
     const m = new Markers();
     // Head + tail knots collapse once the block is only ~30 px wide.
@@ -317,13 +376,13 @@ describe('Markers seam knot anchoring (F22, F9-L1)', () => {
     m.draw(frame);
     expect(hatchXs).toHaveLength(2); // honesty: both hatches stay
     expect(textCalls).toHaveLength(1);
-    expect(textCalls[0].label).toBe('SEAM ×2');
+    expect(textCalls[0].label).toBe(`${t('gl.markerSeam')} ×2`);
   });
 
   it('renders intelligence markers (capitol, defense_contract, clinical)', () => {
     const m = new Markers();
     m.add({
-      type: 7 as any,
+      type: MsgType.MARKER,
       ts_ns: 100n,
       kind: 'capitol',
       price: 150,
@@ -331,7 +390,7 @@ describe('Markers seam knot anchoring (F22, F9-L1)', () => {
       size: null,
     });
     m.add({
-      type: 7 as any,
+      type: MsgType.MARKER,
       ts_ns: 200n,
       kind: 'defense_contract',
       price: 155,
@@ -339,7 +398,7 @@ describe('Markers seam knot anchoring (F22, F9-L1)', () => {
       size: null,
     });
     m.add({
-      type: 7 as any,
+      type: MsgType.MARKER,
       ts_ns: 300n,
       kind: 'clinical',
       price: 160,
@@ -350,8 +409,10 @@ describe('Markers seam knot anchoring (F22, F9-L1)', () => {
     const { frame, textCalls } = makeFrame();
     m.draw(frame);
 
-    expect(textCalls.some((c) => c.label.includes('🏛️ CAPITOL'))).toBe(true);
-    expect(textCalls.some((c) => c.label.includes('🛡️ DOD'))).toBe(true);
-    expect(textCalls.some((c) => c.label.includes('🧪 FDA'))).toBe(true);
+    // Plain codes in the flat chip style; colour emoji are not used.
+    expect(textCalls.some((c) => c.label.includes('CAPITOL'))).toBe(true);
+    expect(textCalls.some((c) => c.label.includes('DOD'))).toBe(true);
+    expect(textCalls.some((c) => c.label.includes('FDA'))).toBe(true);
+    expect(textCalls.every((c) => /^[\x20-\x7e]*$/.test(c.label))).toBe(true);
   });
 });

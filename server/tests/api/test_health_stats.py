@@ -1,14 +1,14 @@
-"""Health v3 `stats` key (campaign SB item 1, contract C1).
+"""Health v3 `stats` key.
 
-The core lane (SA) ships a `SessionStats` producer; contract C1 freezes the
-snapshot field names and SB must render `snapshot()` VERBATIM under
+The core stats producer (`SessionStats`) freezes the snapshot field names,
+and the health route must render `snapshot()` VERBATIM under
 `/api/health`'s `stats` key without reshaping. Until/unless the producer is
 mounted on the manager, health degrades to `stats: null` +
 `stats_available: false` and MUST NOT 500.
 
 These tests run against a FAKE hub exposing a `stats` object with a
-`snapshot()` returning the C1 dict shape, so they pass independently of when
-SA's producer lands. If SA later changes the shape, only the verbatim-
+`snapshot()` returning the frozen dict shape, so they pass independently of the real
+producer. If the producer later changes the shape, only the verbatim-
 equality assertion follows it (that is the contract working as intended).
 """
 
@@ -22,8 +22,8 @@ from flowmap_server.api.app import create_app
 from flowmap_server.config import Config
 from flowmap_server.proto import wire
 
-# Contract C1 field names, verbatim (minimum shape).
-C1_SNAPSHOT: dict = {
+# Frozen snapshot field names, verbatim (minimum shape).
+FROZEN_SNAPSHOT: dict = {
     "drops": {"feed": 1, "tx_lag": 2, "snapshot": 3},
     "restarts": 0,
     "sessions": {"active": 1, "rejected": 0},
@@ -42,9 +42,9 @@ C1_SNAPSHOT: dict = {
 
 
 class _FakeStats:
-    """Stand-in for SA's SessionStats producer."""
+    """Stand-in for the SessionStats producer."""
 
-    def __init__(self, payload: dict | None = C1_SNAPSHOT, raises: bool = False):
+    def __init__(self, payload: dict | None = FROZEN_SNAPSHOT, raises: bool = False):
         self._payload = payload
         self._raises = raises
 
@@ -94,14 +94,14 @@ async def test_health_without_stats_producer_degrades_to_null(app, client):
 
 async def test_health_renders_c1_snapshot_verbatim(app, client):
     """The stats dict must reach the wire UNRESHAPED: same keys, same values,
-    same nesting (C1 freezes the names; this surface is a pass-through)."""
+    same nesting."""
     _set_stats(app, _FakeStats())
     try:
         r = await client.get("/api/health")
         assert r.status_code == 200
         body = r.json()
         assert body["stats_available"] is True
-        assert body["stats"] == C1_SNAPSHOT
+        assert body["stats"] == FROZEN_SNAPSHOT
         # Verbatim means keys survive exactly — spot-check the nested ones.
         assert body["stats"]["drops"] == {"feed": 1, "tx_lag": 2, "snapshot": 3}
         assert body["stats"]["recording"]["flush_failures"] == 0
@@ -111,8 +111,8 @@ async def test_health_renders_c1_snapshot_verbatim(app, client):
 
 
 async def test_health_extra_snapshot_keys_pass_through(app, client):
-    """C1 is a minimum shape: producer additions surface untouched."""
-    payload = dict(C1_SNAPSHOT)
+    """The frozen shape is a minimum: producer additions surface untouched."""
+    payload = dict(FROZEN_SNAPSHOT)
     payload["events_in"] = 4242
     _set_stats(app, _FakeStats(payload))
     try:

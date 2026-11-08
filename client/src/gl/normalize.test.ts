@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import { createManualClock } from './clock';
 import {
   DEFAULT_NORM_FLOOR,
   DEFAULT_PERCENTILE,
   DEFAULT_WHITE_PERCENTILE,
   mipSumFactor,
   normMipScale,
-  t7ShaderRescale,
+  shaderRescale,
   ViewportNormalizer,
   type ColRange,
   type RowRange,
@@ -34,16 +35,16 @@ function tilesRange(tileLo: number, tileHi: number): ColRange {
   return { oldest: tileLo * COLS_PER_TILE, newest: tileHi * COLS_PER_TILE + (COLS_PER_TILE - 1) };
 }
 
-describe('mip sum-factor coordination with T7', () => {
+describe('mip sum-factor coordination with the in-shader rescale', () => {
   it('mipSumFactor is 4^L', () => {
     expect(mipSumFactor(0)).toBe(1);
     expect(mipSumFactor(1)).toBe(4);
     expect(mipSumFactor(2)).toBe(16);
   });
 
-  it("T7's in-shader rescale is the exact inverse (1/4^L)", () => {
+  it("the in-shader rescale is the exact inverse (1/4^L)", () => {
     for (const L of [0, 1, 2]) {
-      expect(mipSumFactor(L) * t7ShaderRescale(L)).toBeCloseTo(1, 12);
+      expect(mipSumFactor(L) * shaderRescale(L)).toBeCloseTo(1, 12);
     }
   });
 
@@ -234,6 +235,19 @@ describe('EMA smoothing', () => {
     expect(second).toBeLessThan(80);
   });
 
+  it('setSnap(true) adopts each raw value at once (reduced motion, WCAG 2.3.3)', () => {
+    const n = new ViewportNormalizer({ colsPerTile: COLS_PER_TILE, emaAlpha: 0.2, floor: 0 });
+    n.setSnap(true);
+    addConst(n, 0, 10, 1000);
+    n.updateNorm(tilesRange(0, 0), ALL_ROWS, 0);
+    addConst(n, 5 * COLS_PER_TILE, 200, 1000);
+    const second = n.updateNorm(tilesRange(5, 5), ALL_ROWS, 0);
+    // Without the snap this is ~48 after one 0.2 step; with it the EMA lands on the raw value.
+    expect(second).toBeGreaterThan(150);
+    n.setSnap(false);
+    addConst(n, 0, 10, 1000);
+  });
+
   it('seed sets the starting point and later data glides from it', () => {
     const n = new ViewportNormalizer({ colsPerTile: COLS_PER_TILE, emaAlpha: 0.1, floor: 0 });
     n.seed(50);
@@ -354,7 +368,7 @@ describe('histogram bin edges — garbage densities must stay finite', () => {
   });
 });
 
-describe('foldColumnFinal — final columns fold exactly once (B-1)', () => {
+describe('foldColumnFinal — final columns fold exactly once', () => {
   /** One column with a single bid + single ask sample at `value`. */
   function fold(n: ViewportNormalizer, colSeq: number, value = 5): void {
     n.foldColumnFinal(colSeq, new Float32Array([value]), new Float32Array([value]));
@@ -406,7 +420,7 @@ describe('foldColumnFinal — final columns fold exactly once (B-1)', () => {
   });
 });
 
-describe('viewport percentile memo (survey #6a — no per-dirty-frame re-merge)', () => {
+describe('viewport percentile memo', () => {
   it('repeated calls with an unchanged window return the cached value WITHOUT re-merging', () => {
     const n = new ViewportNormalizer({ colsPerTile: COLS_PER_TILE });
     addConst(n, 0, 10, 500);
@@ -483,7 +497,7 @@ describe('viewport percentile memo (survey #6a — no per-dirty-frame re-merge)'
   });
 });
 
-describe('freezeForTest — pinned norm for deterministic e2e grabs (R2-M2)', () => {
+describe('freezeForTest — pinned norm for deterministic e2e grabs', () => {
   it('returns the pinned floored norm across windows/levels without EMA stepping', () => {
     const n = new ViewportNormalizer({ colsPerTile: COLS_PER_TILE, emaAlpha: 0.5 });
     addConst(n, 0, 10, 500);
@@ -522,7 +536,7 @@ describe('freezeForTest — pinned norm for deterministic e2e grabs (R2-M2)', ()
   });
 });
 
-describe('two-read percentiles â€” knee + white from ONE merged CDF (lane F)', () => {
+describe('two-read percentiles — knee + white from ONE merged CDF', () => {
   it('defaults the white point to 99.7 while p97 stays the knee', () => {
     expect(DEFAULT_WHITE_PERCENTILE).toBe(99.7);
     const n = new ViewportNormalizer({ colsPerTile: COLS_PER_TILE });
@@ -584,5 +598,45 @@ describe('two-read percentiles â€” knee + white from ONE merged CDF (lane F
     n.seed(42);
     const pair = n.viewportPercentiles(tilesRange(100, 100), ALL_ROWS, 0);
     expect(pair).toEqual({ knee: 42, white: 42 });
+  });
+});
+
+describe('worker merge timing on an injected clock', () => {
+  /** Let the synchronous-engine merge (no Worker in jsdom) run its completion callbacks. */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  }
+
+  it('holds the norm for the settle period when the window moves, then merges', async () => {
+    const clock = createManualClock(1000);
+    const scale = { kind: 'linear' as const, rows: 2, p0: 100, step: 1 };
+    let ready = 0;
+    const n = new ViewportNormalizer({ maxSpatialBytes: 0, useWorker: true, clock, floor: 0, emaAlpha: 1,
+      onAsyncReady: () => { ready++; },
+      sourceColumn: () => ({ bid: Float32Array.from([1, 1e9]), ask: null, scale }) });
+    n.foldColumnFinal(0, Float32Array.from([1, 1e9]), null, scale);
+    const col = { oldest: 0, newest: 0 };
+    n.viewportPercentiles(col, { lo: 0, hi: 0, priceLo: 99.5, priceHi: 100.5 }, 0);
+    await settle();
+    expect(n.calculationState).toBe('ready');
+    expect(ready).toBe(1);
+
+    // The window moves: the held norm stays, and a wake timer is armed for the settle period.
+    n.viewportPercentiles(col, { lo: 0, hi: 0, priceLo: 99.4, priceHi: 100.6 }, 0);
+    expect(n.calculationState).toBe('ready');
+    expect(clock.pending()).toBe(1);
+    clock.advance(149);
+    expect(ready).toBe(1);
+    clock.advance(1);
+    expect(ready).toBe(2);
+    expect(clock.pending()).toBe(0);
+
+    // Once the settle period has passed, the next read starts the moved window's merge.
+    n.viewportPercentiles(col, { lo: 0, hi: 0, priceLo: 99.4, priceHi: 100.6 }, 0);
+    expect(n.calculationState).toBe('pending');
+    await settle();
+    expect(n.calculationState).toBe('ready');
+    n.dispose();
+    expect(clock.pending()).toBe(0);
   });
 });

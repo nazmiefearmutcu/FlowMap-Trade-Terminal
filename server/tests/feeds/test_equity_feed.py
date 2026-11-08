@@ -1,4 +1,4 @@
-"""EquityFeed tests (M3 plan Task 1) — fixture-driven, NO live network.
+"""EquityFeed tests: fixture-driven, NO live network.
 
 All bars/prices/clocks are hand-built and injected (``bars_fn`` / ``price_fn``
 / ``now_ns_fn`` / ``sleep_fn``), so pytest never touches Yahoo or
@@ -20,10 +20,12 @@ google_finance. The frozen contract:
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 
 import msgspec
 import numpy as np
+import pytest
 
 from crocodile.core.schema.enums import AssetClass, Side
 from crocodile.core.schema.records import OHLCV as StkBar
@@ -116,7 +118,8 @@ class _StepClock:
 
 
 async def _nosleep(_s: float) -> None:
-    return None
+    # Yield to the loop as a real sleep would, so the price-poll task can complete.
+    await asyncio.sleep(0)
 
 
 async def _collect(feed: EquityFeed, n: int, cap: int = 10_000) -> list[FeedEvent]:
@@ -276,7 +279,7 @@ async def test_warmup_profile_drives_two_sided_l1band_density():
 
 
 async def test_liquid_name_synth_grid_density_stays_finite_f16():
-    # M3 regression: a liquid name's raw cumulative shares (hundreds of millions)
+    # Regression: a liquid name's raw cumulative shares (hundreds of millions)
     # cast to the grid's float16 ring overflow to inf — the heatmap blows out to
     # a saturated white band and the ladder shows ∞. With the normalized profile,
     # every finalized f16 density must stay finite and bounded, peaked at price.
@@ -555,9 +558,39 @@ async def test_keyless_live_column_cadence_splits_from_poll():
     assert len(books) == 25
     ts = [b.ts_ns for b in books]
     assert all(b - a == 10**9 for a, b in zip(ts, ts[1:])), "column cadence != 1 s"
-    assert trades[0].ts_ns == ts[0]
-    assert trades[1].ts_ns == ts[10]
-    assert trades[2].ts_ns == ts[20]
+    # The scrape runs as its own task, so each price is recorded on the column after
+    # the poll that requested it: the grid cadence is never blocked by the scrape.
+    assert trades[0].ts_ns == ts[1]
+    assert trades[1].ts_ns == ts[11]
+    assert trades[2].ts_ns == ts[21]
+
+
+async def test_slow_price_scrape_does_not_stall_the_column_cadence():
+    """A scrape that takes longer than a grid tick must not freeze the heatmap's
+    right edge: columns keep advancing while the poll is still pending."""
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow_price() -> float:
+        started.set()
+        await release.wait()
+        return 100.0
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), 10**9),
+        bars_fn=_make_bars_fn([]),
+        price_fn=slow_price,
+        sleep_fn=_nosleep,
+        bar_refresh_ns=10**18,
+    )
+    events = await _collect(feed, 8)
+    assert started.is_set() and not release.is_set()
+    assert len([e for e in events if isinstance(e, BookState)]) == 8
+    assert not [e for e in events if isinstance(e, Trade)]
+    release.set()
+    await asyncio.sleep(0)
 
 
 # --- 6a. tier auto-select + capability -----------------------------------------
@@ -570,7 +603,7 @@ def test_tier_keyless_when_no_keys():
         "depth": "SYNTH",
         "tape": "poll",
         "trade_side": "na",
-        "cvd": "na",  # GOAL 3: SIDE_UNKNOWN is never counted -> cvd is meaningless
+        "cvd": "na",  # SIDE_UNKNOWN is never counted -> cvd is meaningless
         "vwap": "approx",
         "markers": ["gap", "session_break"],
     }
@@ -584,7 +617,7 @@ def test_tier_alpaca_when_both_keys():
     assert feed.capability["depth"] == "L1"
     assert feed.capability["trade_side"] == "inferred"
     assert feed.capability["tape"] == "tick"
-    assert feed.capability["cvd"] == "inferred"  # GOAL 3: inferred side -> inferred cvd
+    assert feed.capability["cvd"] == "inferred"  # inferred side -> inferred cvd
 
 
 def test_tier_finnhub_when_finnhub_key_only():
@@ -672,7 +705,8 @@ async def test_keyed_sink_alpaca_skips_zero_price_quote_for_depth():
     """Alpaca sends a 0 price to mean "no quote on this side" (at the open, on
     illiquid names, during a halt). Such a quote must NOT become a depth level:
     a 0-priced bid/ask would snap the grid's reanchor midpoint to ~half the real
-    price. The BBO still surfaces (that path already existed), but no BookState."""
+    price. The same frame must not surface as a BBO either: the Market Strip would
+    otherwise show a zero bid, a full-ask spread and a fresh quote clock."""
     out: list[FeedEvent] = []
     sink = _EquitySink(out.append, use_quote_rule=True)
     await sink.put(
@@ -689,7 +723,9 @@ async def test_keyed_sink_alpaca_skips_zero_price_quote_for_depth():
             ask_sz=7.0,
         )
     )
+    assert not [e for e in out if isinstance(e, BBO)], "0-priced quote must not become a BBO"
     assert not [e for e in out if isinstance(e, BookState)], "0-priced quote must not become depth"
+    assert sink.dropped_quotes == 1
     # a healthy two-sided quote afterwards DOES produce a depth column.
     await sink.put(
         StkQuote(
@@ -700,6 +736,31 @@ async def test_keyed_sink_alpaca_skips_zero_price_quote_for_depth():
         )
     )
     assert len([e for e in out if isinstance(e, BookState)]) == 1
+
+
+async def test_keyed_sink_zero_price_quote_keeps_the_last_usable_midpoint():
+    out: list[FeedEvent] = []
+    sink = _EquitySink(out.append, use_quote_rule=True)
+    await sink.put(
+        StkQuote(
+            source="alpaca", symbol="AAPL", symbol_raw="AAPL",
+            asset_class=AssetClass.EQUITY,
+            local_ts=_EQ_VENUE_NS, source_ts=_EQ_VENUE_NS,
+            bid_px=100.0, bid_sz=5.0, ask_px=101.0, ask_sz=7.0,
+        )
+    )
+    await sink.put(
+        StkQuote(
+            source="alpaca", symbol="AAPL", symbol_raw="AAPL",
+            asset_class=AssetClass.EQUITY,
+            local_ts=_EQ_VENUE_NS + 1, source_ts=_EQ_VENUE_NS + 1,
+            bid_px=0.0, bid_sz=0.0, ask_px=101.0, ask_sz=7.0,
+        )
+    )
+    await sink.put(_stk_trade(2, 100.9))  # above the surviving 100.5 midpoint -> BUY
+    trades = [e for e in out if isinstance(e, Trade)]
+    assert [t.side for t in trades] == [SIDE_BUY]
+    assert len([e for e in out if isinstance(e, BBO)]) == 1
 
 
 # --- 6c. re-callable events() + protocol ---------------------------------------
@@ -737,6 +798,159 @@ def _make_bars_fn(bars: list[StkBar]):
     return bars_fn
 
 
+async def test_stale_profile_in_rth_withholds_depth_and_names_its_session():
+    """A failed Yahoo refresh during RTH leaves yesterday's bars in the cache. They
+    must not be re-stamped with today's clock as a live book; the client gets a gap
+    marker naming the stale session instead."""
+    now = _et_ns(2026, 7, 15, 11, 0)  # Wednesday RTH
+    prior = _et_ns(2026, 7, 14, 10, 0)  # Tuesday session
+    bars = [_flat_bar(prior + i * 60 * 10**9, 100.0 + i, 100.0) for i in range(5)]
+    last_bar_ts = _bar_ts(bars[-1])
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(now, DT_KEYLESS_NS),
+        bars_fn=_make_bars_fn(bars),
+        price_fn=_const_price(150.25),
+        sleep_fn=_nosleep,
+        bar_refresh_ns=10**18,  # the refresh never succeeds in this test
+    )
+    events = await _collect(feed, 14)
+    books = [e for e in events if isinstance(e, BookState)]
+    gaps = [e for e in events if isinstance(e, Marker) and e.kind == "gap"]
+    assert books and all(b.ts_ns <= last_bar_ts for b in books), "no live book stamped with now"
+    assert len(gaps) == 1 and "2026-07-14" in gaps[0].text
+    assert feed.feed_state == "degraded"
+
+
+async def test_keyed_provider_error_is_forwarded_to_the_session():
+    from flowmap_server.feeds.base import BoundedFeedQueue
+    from flowmap_server.feeds.equity import _FeedEnd
+
+    class Rejected:
+        name = "alpaca"
+
+        async def run(self, *, max_reconnects: int) -> None:
+            raise ConnectionError("invalid API key")
+
+    queue = BoundedFeedQueue()
+    await EquityFeed._drive_keyed(Rejected(), _EquitySink(queue.put_nowait, use_quote_rule=True), queue)
+    end = await queue.get()
+    assert isinstance(end, _FeedEnd) and isinstance(end.exc, ConnectionError)
+
+
+async def test_keyed_provider_clean_return_is_not_a_clean_end():
+    from flowmap_server.feeds.base import BoundedFeedQueue
+    from flowmap_server.feeds.equity import _FeedEnd
+
+    class Returned:
+        name = "finnhub"
+
+        async def run(self, *, max_reconnects: int) -> None:
+            return None
+
+    queue = BoundedFeedQueue()
+    await EquityFeed._drive_keyed(Returned(), _EquitySink(queue.put_nowait, use_quote_rule=False), queue)
+    end = await queue.get()
+    assert isinstance(end, _FeedEnd) and isinstance(end.exc, RuntimeError)
+
+
+async def test_silent_keyed_provider_fails_the_feed_for_restart(monkeypatch):
+    from flowmap_server.feeds import equity as equity_module
+
+    monkeypatch.setattr(equity_module, "_KEYED_CHECK_S", 0.01)
+    monkeypatch.setattr(equity_module, "_KEYED_EVENT_TIMEOUT_S", 0.05)
+
+    class Silent:
+        name = "alpaca"
+
+        async def run(self, *, max_reconnects: int) -> None:
+            await asyncio.Event().wait()
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(alpaca_key="k", alpaca_secret="s"),
+        now_ns_fn=lambda: _et_ns(2026, 7, 15, 11, 0),
+        provider_factory=lambda sink: Silent(),
+    )
+    with pytest.raises(RuntimeError, match="no alpaca equity events"):
+        await _collect(feed, 10)
+
+
+async def test_keyed_feed_closes_at_rth_end_even_while_trades_keep_flowing(monkeypatch):
+    """Liquid names keep printing after the close. The keyed loop must see the closed
+    calendar on its own cadence, not only when the stream goes quiet."""
+    from flowmap_server.feeds import equity as equity_module
+
+    monkeypatch.setattr(equity_module, "_KEYED_CHECK_S", 0.001)
+    reads = {"n": 0}
+
+    def clock() -> int:
+        reads["n"] += 1
+        # RTH for the first few clock reads, then after the close. Kept small so the
+        # close is reached long before the event cap even where loop.time() ticks
+        # coarsely (about 15.6 ms on some Windows builds).
+        return _et_ns(2026, 7, 15, 11, 0) if reads["n"] <= 20 else _et_ns(2026, 7, 15, 17, 0)
+
+    class Chatty:
+        name = "alpaca"
+
+        def __init__(self, sink) -> None:
+            self.sink = sink
+
+        async def run(self, *, max_reconnects: int) -> None:
+            i = 0
+            while True:
+                i += 1
+                await self.sink.put(_stk_trade(i, 100.0 + (i % 5) * 0.01))
+                await asyncio.sleep(0)
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(alpaca_key="k", alpaca_secret="s"),
+        now_ns_fn=clock,
+        provider_factory=lambda sink: Chatty(sink),
+    )
+    events = await asyncio.wait_for(_collect(feed, 50_000), timeout=20)
+    markers = [e for e in events if isinstance(e, Marker)]
+    assert markers and markers[-1].kind == "session_break"
+    assert feed.feed_state == "closed" and feed.next_open_ts is not None
+
+
+async def test_keyed_tier_outside_rth_marks_closed_without_connecting():
+    def refuse(sink):
+        raise AssertionError("a closed market must not open a keyed stream")
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(alpaca_key="k", alpaca_secret="s"),
+        now_ns_fn=lambda: _et_ns(2026, 7, 18, 12, 0),  # Saturday
+        provider_factory=refuse,
+    )
+    events = await _collect(feed, 10)
+    assert [e.kind for e in events if isinstance(e, Marker)] == ["session_break"]
+    assert feed.feed_state == "closed" and feed.next_open_ts is not None
+
+
+async def test_repeated_price_poll_failures_surface_a_gap_marker():
+    async def no_price() -> None:
+        return None
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), DT_KEYLESS_NS),
+        bars_fn=_make_bars_fn([]),
+        price_fn=no_price,
+        sleep_fn=_nosleep,
+        bar_refresh_ns=10**18,
+    )
+    events = await _collect(feed, 12)
+    gaps = [e for e in events if isinstance(e, Marker) and e.kind == "gap"]
+    assert len(gaps) == 1 and "live price unavailable" in gaps[0].text
+    assert not [e for e in events if isinstance(e, Trade)]
+
+
 def _const_price(px: float):
     async def price_fn() -> float:
         return px
@@ -744,12 +958,11 @@ def _const_price(px: float):
     return price_fn
 
 
-# --- the merged header's clock + field renames, pinned --------------------------
-# A referee proved these were unpinned: replacing `record.source_ts` with
-# `record.local_ts` in `_rec_ts`/`_bar_ts` left the ENTIRE 389-test suite green,
-# because every equity fixture above sets `local_ts == source_ts`. The equity
-# half of the Crocodile migration renamed `provider`->`source`, `size`->`amount`
-# and `Bar`->`OHLCV`; those renames get assertions that can actually fail.
+# --- the record header's clock + field names, pinned --------------------------
+# Replacing `record.source_ts` with `record.local_ts` in `_rec_ts`/`_bar_ts` must
+# fail a test. Every equity fixture above sets `local_ts == source_ts`, so the
+# venue clock and the field names (`source`, `amount`, `OHLCV`) get assertions
+# that can actually fail.
 
 _EQ_VENUE_NS = 1_700_000_000_000_000_000
 _EQ_LOCAL_NS = _EQ_VENUE_NS + 555_000_000  # receive clock, 555 ms later
@@ -770,7 +983,7 @@ def _skewed_trade() -> StkTrade:
     )
 
 
-async def test_keyed_trade_carries_the_provider_clock_and_the_merged_fields() -> None:
+async def test_keyed_trade_carries_the_provider_clock_and_the_field_names() -> None:
     out: list[FeedEvent] = []
     sink = _EquitySink(out.append, use_quote_rule=False)
     await sink.put(_skewed_trade())
@@ -778,8 +991,8 @@ async def test_keyed_trade_carries_the_provider_clock_and_the_merged_fields() ->
     assert isinstance(trade, Trade)
     assert trade.ts_ns == _EQ_VENUE_NS  # source_ts, NOT local_ts
     assert trade.ts_ns != _EQ_LOCAL_NS
-    assert trade.size == 42.0  # merged `amount`, not the old `size`
-    assert trade.venue == "finnhub"  # merged `source`, not the old `provider`
+    assert trade.size == 42.0  # record `amount` surfaces as the event `size`
+    assert trade.venue == "finnhub"  # record `source` surfaces as the event `venue`
     # No US equity provider publishes the aggressor, so the side is inferred and
     # says so — never laundered into an exchange-true claim.
     assert trade.side_src == SIDE_SRC_INFERRED

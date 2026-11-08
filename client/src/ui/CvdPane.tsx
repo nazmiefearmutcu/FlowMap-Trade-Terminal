@@ -1,5 +1,5 @@
 /**
- * CVD lower pane (§ indicators).
+ * CVD lower pane.
  *
  * A thin strip beneath the heatmap that plots cumulative volume delta on its own
  * signed value axis. It is deliberately a SEPARATE canvas (CVD is not a price, so
@@ -13,12 +13,13 @@
  * at full frame rate, while an idle pane backs off to a slow poll instead of
  * spinning rAF at 60 fps with nothing to paint.
  *
- * Honesty (§7): CVD needs a real aggressor side. When the feed reports
+ * Honesty: CVD needs a real aggressor side. When the feed reports
  * `capability.cvd === 'na'` (keyless equity), the value would be a meaningless
  * flat zero, so the pane says so instead of drawing a line.
  */
 
-import { useEffect, useRef, type RefObject } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useT } from '../i18n/useT';
 
 import type { Renderer } from '../gl/renderer';
 import { OVERLAY } from '../gl/overlays/palette';
@@ -32,7 +33,7 @@ interface CvdPaneProps {
 const AXIS = 'rgba(163, 176, 194, 0.75)';
 const AXIS_FAINT = 'rgba(120, 132, 150, 0.28)';
 const BG_FALLBACK = 'rgba(9, 12, 16, 1)';
-/** Shipped amber fade of the CVD area fill (midnight/dark grounds). */
+/** Amber fade of the CVD area fill (midnight/dark grounds). */
 const AMBER_FILL_TOP = 'rgba(232, 176, 74, 0.26)';
 const AMBER_FILL_MID = 'rgba(232, 176, 74, 0.10)';
 const AMBER_FILL_BOTTOM = 'rgba(232, 176, 74, 0.02)';
@@ -82,7 +83,7 @@ function relLuma(raw: string): number {
   return 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
 }
 
-/** Pane ink resolved from the chart tokens (R1-H3). */
+/** Pane ink resolved from the chart tokens. */
 export interface CvdInk {
   ground: string;
   axis: string;
@@ -104,9 +105,9 @@ export interface CvdInk {
  * Resolve the pane's ground/ink from the `--chart-*` tokens at paint time so a
  * themed (light) chart ground is not painted with midnight literals. On a LIGHT
  * ground (`--chart-bg` relative luminance ≥ 0.5) the series + fill follow
- * `--chart-price`; on dark grounds the shipped amber series is kept
+ * `--chart-price`; on dark grounds the amber series is kept
  * byte-identical. Labels follow `--chart-axis`, the zero baseline follows
- * `--chart-grid` at the shipped 0.28 alpha. Every token falls back to the
+ * `--chart-grid` at 0.28 alpha. Every token falls back to the
  * literal it replaced when unresolvable.
  */
 export function resolveCvdInk(getVar: (name: string) => string): CvdInk {
@@ -134,6 +135,8 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
   // Reused projection buffer: one allocation that grows to the widest repaint,
   // then zero garbage per repaint (see cvd.ts cvdProject).
   const xyBufRef = useRef<ProjectedPoint[]>([]);
+  const t = useT();
+  const [notice, setNotice] = useState<'na' | 'wait' | null>(null);
   // Read the honesty flag reactively; everything else is polled off the renderer.
   const cvdCap = useFlowMapStore((s) => (s.capability?.cvd as string | undefined) ?? null);
   const cvdCapRef = useRef<string | null>(cvdCap);
@@ -198,14 +201,16 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, cssW, cssH);
-      // R1-H3: resolve ground + ink from the live chart tokens each paint, so a
+      // Resolve ground + ink from the live chart tokens each paint, so a
       // themed light ground gets ink that is actually visible on it.
       const ink = resolveCvdInk((name) => getComputedStyle(canvas).getPropertyValue(name));
       ctx.fillStyle = ink.ground;
       ctx.fillRect(0, 0, cssW, cssH);
 
       // Top-left tag on a small ground plate so it stays legible over the fill.
-      ctx.font = '10px ui-monospace, monospace';
+      // The bundled mono token, so the tag matches the rest of the window's type.
+      const mono = getComputedStyle(canvas).getPropertyValue('--font-mono').trim();
+      ctx.font = `10px ${mono || 'ui-monospace, monospace'}`;
       ctx.textBaseline = 'top';
       ctx.textAlign = 'left';
       ctx.fillStyle = ink.tagPlate;
@@ -213,12 +218,10 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       ctx.fillStyle = ink.series;
       ctx.fillText('CVD', 7, 4);
 
-      // Honesty: no usable aggressor side → don't draw a fake flat zero.
+      // Honesty: no usable aggressor side → don't draw a fake flat zero. The
+      // reason is a DOM status line, so screen readers hear it (the canvas is aria-hidden).
       if (cap === 'na') {
-        ctx.fillStyle = ink.axis;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('not measurable for this feed (no trade side)', cssW / 2, cssH / 2);
+        setNotice('na');
         return;
       }
 
@@ -226,6 +229,7 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       const lo = Math.floor(tl.viewStartCol);
       const hi = Math.ceil(tl.viewEndCol);
       const pts = r.cvdSeries(lo, hi);
+      setNotice(pts.length === 0 ? 'wait' : null);
       if (pts.length === 0) return;
 
       // Single-pass, zero-allocation projection (bounds + x + y in place over a
@@ -363,8 +367,13 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
   }, [rendererRef]);
 
   return (
-    <section className="cvd-pane" data-testid="cvd-pane" aria-label="Cumulative volume delta">
+    <section className="cvd-pane" data-testid="cvd-pane" aria-label={t('cvd.title')}>
       <canvas ref={canvasRef} className="cvd-pane__canvas" aria-hidden="true" />
+      {notice !== null && (
+        <p className="cvd-pane__status" role="status" data-testid="cvd-pane-status">
+          {notice === 'na' ? t('cvd.notMeasurable') : t('cvd.waiting')}
+        </p>
+      )}
     </section>
   );
 }

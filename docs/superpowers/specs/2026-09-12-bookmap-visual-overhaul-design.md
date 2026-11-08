@@ -1,7 +1,6 @@
 # 2026-09-12 — Bookmap-Class Visual Overhaul (chart + heatmap + depth)
 
 Status: APPROVED (owner, in-chat design review 2026-09-12)
-Campaign kit: `C:\Users\Kullanıcı\flowmap-review\bookmap-2026-09-12\`
 
 ## Goal
 
@@ -18,7 +17,7 @@ readability — is in scope.
 
 1. **Walls blow out to flat saturated bands.** Fixed p97 white point + mild
    gamma maps everything at/above p97 to the same LUT entry. Evidence:
-   `cap1-live.png`, `cap1-zoomed.png` (campaign kit), night captures
+   `cap1-live.png`, `cap1-zoomed.png`, night captures
    `rp10-live.png` / `rp10-owner-scrollback-mid.png`.
 2. **Bricks / mosaic.** Level-0 "crisp cell" sampler paints hard per-column
    rectangles at deep zoom; the fixed 3-tap column blur is too narrow once a
@@ -35,7 +34,7 @@ Keep the tile / SUM-mip architecture. Redesign the presentation layers:
 transfer curve, per-theme ramps, level-0 sampler smoothing, server
 reconstruction distribution, overlay & axis styling.
 
-### Lanes
+### Workstreams
 
 - **L1 — Transfer curve & normalization.** Replace the fixed p97 clip with a
   two-segment curve (gamma lift below the knee, log compression above the knee;
@@ -59,9 +58,9 @@ reconstruction distribution, overlay & axis styling.
 - **L6 — Overlay polish (secondary).** Price line glow + right-edge tag + last
   price level; trade bubbles (sqrt-volume size, theme-tokenized sides);
   DOM/depth panel typography and depth bars.
-- **V — Verification.** 4 read-only surveys → frozen CONTRACT → parallel lanes
-  → INT → 2 independent FIX-FIRST reviews → coordinator fixes → live Playwright
-  pixel evidence (7 themes × zoom levels) → all gates → exe rebuild + Desktop
+- **V — Verification.** 4 read-only surveys → frozen interface contract → parallel workstreams
+  → integration → 2 independent reviews → fixes → live Playwright
+  pixel evidence (7 themes × zoom levels) → all gates → exe rebuild and local
   install.
 
 ### Measurable acceptance criteria
@@ -77,14 +76,14 @@ reconstruction distribution, overlay & axis styling.
 7. Honesty invariants preserved: SYNTH amber tiers, reconstructed labels,
    normalization honesty (no fake data).
 
-### Mid-campaign checkpoint
+### Mid-point checkpoint
 
-When L1 + L2 + L3 land on midnight, the coordinator presents a live
-before/after screenshot to the owner before the full sweep continues.
+When L1 + L2 + L3 land on midnight, a live before/after screenshot goes to the
+owner for review before the full sweep continues.
 
 ### Non-goals
 
 - No wire/protocol changes; no feed tier changes beyond reconstruction display
   shaping.
-- No layout restructure (layout was polished in prior campaigns).
+- No layout restructure (layout was polished in earlier passes).
 - No push: commits stay local (owner-gated).

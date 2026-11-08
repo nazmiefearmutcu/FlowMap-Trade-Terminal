@@ -14,18 +14,30 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
 cd "$ROOT"
 
+# Job control: each background job leads its own process group, so cleanup can
+# stop the uv/python or npm/vite trees below it, not only the wrapper PID.
+set -m
+
 SERVER_PID=""
 CLIENT_PID=""
 
 cleanup() {
+  trap - EXIT INT TERM
   echo
   echo "stopping flowmap dev…"
-  [ -n "$CLIENT_PID" ] && kill "$CLIENT_PID" 2>/dev/null
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+  for pid in "$CLIENT_PID" "$SERVER_PID"; do
+    if [ -n "$pid" ]; then kill -TERM -- "-$pid" 2>/dev/null; fi
+  done
   wait 2>/dev/null
   echo "flowmap dev stopped."
 }
 trap cleanup EXIT INT TERM
+
+# A server this script did not start must not be mistaken for a healthy one.
+if curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+  echo "port $PORT already answers /api/health; stop that server first (this script did not start it)." >&2
+  exit 1
+fi
 
 export FLOWMAP_PORT="$PORT"
 export FLOWMAP_RECORDING_ENABLED="$REC"
@@ -63,7 +75,7 @@ echo "server up on :$PORT"
 
 # --- client (vite; proxies /api + /ws to the server) -------------------------
 cd "$ROOT/client" || exit 1
-[ -d node_modules ] || npm install
+if [ ! -d node_modules ]; then npm install; fi
 npm run dev &
 CLIENT_PID=$!
 cd "$ROOT"
@@ -72,5 +84,10 @@ echo
 echo "FlowMap dev: open http://localhost:5173  (Ctrl-C stops both)"
 echo
 
-# Exit when either child dies; the trap tears the other one down.
-wait -n "$SERVER_PID" "$CLIENT_PID" 2>/dev/null || wait "$CLIENT_PID"
+# Exit when either child dies; the trap tears the other one down. This polls
+# rather than `wait -n`, which macOS's bash 3.2 does not have: there a server
+# crash went unnoticed while only the client was waited on.
+while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$CLIENT_PID" 2>/dev/null; do
+  sleep 1
+done
+echo "a dev process exited; stopping the other one."

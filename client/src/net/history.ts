@@ -1,5 +1,6 @@
 /**
- * Deep scroll-back history backfill (§8.3 residency, M2 T8).
+ * Deep scroll-back history backfill. The full-res ring keeps a bounded window; the loader
+ * pages older columns in on demand, within that same residency budget.
  *
  * The full-res tile ring holds a bounded recent window (the residency budget,
  * see gl/tileRing). When the user pans LEFT past the oldest resident column and
@@ -21,14 +22,14 @@
  *   column it requests `before_t = t0_ns(oldestResident)` — the server's
  *   `history(before_t, n)` is EXCLUSIVE, returning the n most-recent columns with
  *   `t0 < before_t`, i.e. exactly the ones just older than what we hold. When the
- *   exact t0 is unavailable it falls back to `oldestT0 − k·dt_ns` (the spec's
- *   fallback). No dependence on col_seq==interval-index (the sim skips seqs on
- *   capped gaps), so the mapping is robust.
+ *   exact t0 is unavailable it falls back to `oldestT0 − k·dt_ns`. No dependence
+ *   on col_seq==interval-index (the sim skips seqs on capped gaps), so the mapping
+ *   is robust.
  *
  * - **Coalescing / debounce.** At most ONE request is in flight; `ensureVisible`
  *   is a cheap O(1) guard (compares the visible left edge to the resident oldest)
- *   so it can run every frame without history-proportional work — the §10 perf
- *   gate requires the per-frame path stay O(visible), not O(history).
+ *   so it can run every frame without history-proportional work. The per-frame
+ *   path must stay O(visible), not O(history).
  *
  * - **Start of history.** The server reports `oldest_available_t_ns`; when a
  *   response is empty or we have reached that bound (or col_seq 0), the loader
@@ -91,6 +92,10 @@ const BAND_REFETCH_SLACK = 8;
 /** Max pages one band refetch may consume (band ≤ GAP_ZERO_MAX_COLS = 512 →
  *  2 pages of 256 + one guard page; bounds a hostile/huge request). */
 const BAND_REFETCH_MAX_PAGES = 3;
+/** First retry delay after a failed scroll-back request; doubles per failure. */
+export const HISTORY_RETRY_BASE_MS = 1_000;
+/** Ceiling for the scroll-back retry delay. */
+export const HISTORY_RETRY_CAP_MS = 8_000;
 
 export interface HistoryLoaderDeps {
   /** Request a page of history (the store's `requestHistory`). */
@@ -130,6 +135,8 @@ export interface HistoryLoaderDeps {
   yieldToFrame?: () => Promise<void>;
   /** A detached renderer/ring must never receive a delayed history page. */
   isActive?: () => boolean;
+  /** Wall-clock ms for the scroll-back retry backoff. Optional — defaults to Date.now. */
+  now?: () => number;
 }
 
 /** The view facts the per-frame guard needs (all O(1), no history scan). */
@@ -171,9 +178,33 @@ export class HistoryLoader {
    *  adjacent bands sharing the later anchor are harmless: already-resident
    *  columns splice idempotently). */
   private pendingBand: { lo: number; hi: number; anchorT0: bigint } | null = null;
+  /** Consecutive scroll-back failures; drives the retry backoff (0 = healthy). */
+  private failureStreak = 0;
+  /** Earliest ms at which {@link ensureVisible} may issue another scroll-back request. */
+  private retryAtMs = 0;
 
   constructor(deps: HistoryLoaderDeps) {
     this.deps = deps;
+  }
+
+  private clock(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /** A failed page: back off exponentially so a pan frame cannot re-issue it. */
+  private noteFailure(): void {
+    this.failureStreak += 1;
+    const delay = Math.min(
+      HISTORY_RETRY_CAP_MS,
+      HISTORY_RETRY_BASE_MS * 2 ** Math.min(this.failureStreak - 1, 16),
+    );
+    this.retryAtMs = this.clock() + delay;
+  }
+
+  /** A page arrived: the failure streak and the retry gate are over. */
+  private noteSuccess(): void {
+    this.failureStreak = 0;
+    this.retryAtMs = 0;
   }
 
   /** Current per-request page size (frame-budget + transport-ceiling aware). */
@@ -191,7 +222,7 @@ export class HistoryLoader {
   /**
    * Record a column's (col_seq, t0_ns) as it enters the ring (live or backfill).
    *
-   * Self-heals a re-anchored seq→time map (QA3 C-1): a session replacement under
+   * Self-heals a re-anchored seq→time map: a session replacement under
    * the SAME subscription does not run `resetForSession()`, so this loader (and
    * its ring) survive into the new session — whose grid restarts col_seq on a
    * fresh t0 base. A `col_seq` that is already cached with a DIFFERENT t0 is the
@@ -240,6 +271,9 @@ export class HistoryLoader {
   ensureVisible(v: VisibleState): void {
     if (this.deps.requestSequence) this.visibleView = { ...v };
     if (this.inFlightBeforeT !== null) return; // one request at a time
+    // A recent failure holds the range until its backoff passes (pan frames
+    // would otherwise re-issue the same failing request every frame).
+    if (this.clock() < this.retryAtMs) return;
     const budget = this.deps.budgetCols();
     if (v.span > budget) return; // the whole requested view must fit one ring
 
@@ -344,7 +378,7 @@ export class HistoryLoader {
     const exact = this.colT0.get(oldestResidentSeq);
     if (exact !== undefined) return exact;
     if (this.oldestKnownSeq < 0) return null;
-    // Fallback (spec): oldest known t0 minus the seq gap × dt.
+    // Fallback: oldest known t0 minus the seq gap × dt.
     const dt = BigInt(Math.max(1, Math.round(this.deps.dtNs())));
     const gap = BigInt(this.oldestKnownSeq - oldestResidentSeq);
     return this.oldestKnownT0 - gap * dt;
@@ -370,6 +404,7 @@ export class HistoryLoader {
       }
       this.oldestAvailableT0 = resp.oldest_available_t_ns;
       this.lastError = null; // the previous failure no longer describes the tail
+      this.noteSuccess();
       // Sort for seam detection; splicePage then descends from the resident
       // anchor. Each upload extends validity by one adjacent column, including
       // during a yielded page, instead of claiming not-yet-uploaded slots.
@@ -384,7 +419,7 @@ export class HistoryLoader {
         } else if (direction === 'older') this.startOfHistoryFlag = true;
       } else {
         this.emptySequenceRange = null;
-        // Honesty (QA3 C-1): a page can belong to a different grid than the
+        // Honesty: a page can belong to a different grid than the
         // resident window (reconstructed/backfilled pages, a session
         // replacement) and splice in with a seq→time break. Surface it as a
         // gap Marker — the renderer forwards `resp.markers` to the overlay
@@ -409,8 +444,9 @@ export class HistoryLoader {
     } catch (err) {
       if (!this.active(generation)) return;
       this.lastError = err instanceof Error ? err.message : String(err);
+      this.noteFailure();
       // Transient (timeout / disconnect): do NOT latch exhaustion; a later pan
-      // retries. Just clear in-flight so the next frame can re-issue.
+      // retries once the backoff has passed. Clear in-flight so it can.
     } finally {
       if (generation === this.generation) this.inFlightBeforeT = null;
       // A view change consumed the renderer's moved flag while this page was
@@ -448,7 +484,7 @@ export class HistoryLoader {
     return this.active(generation);
   }
 
-  // --- repaired-skip band refetch (F24) ---------------------------------------
+  // --- repaired-skip band refetch ---------------------------------------
 
   /**
    * Refetch a REPAIRED forward-skip band `[lo, hi]` and splice the REAL columns
@@ -529,7 +565,7 @@ export class HistoryLoader {
 
   /**
    * Append synthetic `gap` Markers to a page about to be spliced when the page
-   * cannot be one continuous timeline with the resident window (QA3 C-1).
+   * cannot be one continuous timeline with the resident window.
    *
    * Two boundaries are checked:
    *  1. inside the page — consecutive columns must march forward at the epoch
@@ -659,6 +695,7 @@ export class HistoryLoader {
         const start = end - n + 1;
         if (this.emptySequenceRange?.start === start && this.emptySequenceRange.end === end) return;
         await this.fetch(0n, n, 'older', { start, end });
+        if (this.lastError !== null) return;
         continue;
       }
       const beforeT = this.beforeTFor(oldest);
@@ -669,6 +706,9 @@ export class HistoryLoader {
       }
       const n = Math.max(1, Math.min(this.pageCols(), Math.ceil(effTarget - count)));
       await this.fetch(beforeT, n);
+      // A failed page ends the prefetch: the next pan (or prefetch) retries with
+      // backoff instead of re-issuing the same range up to 64 times.
+      if (this.lastError !== null) return;
     }
   }
 
@@ -700,6 +740,7 @@ export class HistoryLoader {
     this.emptySequenceRange = null;
     this.visibleView = null;
     this.lastError = null;
+    this.noteSuccess(); // a new session earns a fresh retry budget
   }
 
   // --- diagnostics (dev hook / e2e) --------------------------------------------

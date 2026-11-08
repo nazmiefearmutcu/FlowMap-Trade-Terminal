@@ -13,19 +13,23 @@ Silicon and the Intel disk image: baking "APPLE SILICON" into the artwork made
 the Intel DMG claim the wrong CPU, and baking the version made every release
 ship a stale number.
 
-Typography was measured off the original design so the output is
-pixel-compatible with it: Menlo, 24 px at @2x for the instruction lines and
-20 px for the subtitle, baselines at y=768.5 / 822.5 / 155.5 (@2x), instruction
-lines centred on the canvas, subtitle left-aligned at x=69 (@2x) with ~2.8 px of
-tracking.
+Typography follows the original design: a monospace face, 24 px at @2x for the
+instruction lines and 20 px for the subtitle, baselines at y=768.5 / 822.5 / 155.5
+(@2x), instruction lines centred on the canvas, subtitle left-aligned at x=69
+(@2x) with ~2.8 px of tracking. The face is JetBrains Mono (SIL Open Font
+Licence), the same files the app ships in client/src/assets/fonts, so the art
+renders identically on Windows, macOS and Linux and needs no system font. Its
+Latin subset has no U+2192 arrow, so the arrows in LINE2 are drawn as strokes
+one monospace cell wide.
 
 Usage:
     python3 make-bg.py 1.3.0                 # → bg-aarch64.png (+@2x)
     python3 make-bg.py 1.3.0 --arch x86_64   # → bg-x86_64.png  (+@2x)
     python3 make-bg.py 1.3.0 --all           # both
 
-Requires Pillow. Run it when the version changes and commit the result — the
-build script consumes the committed PNGs so `build-dmg.sh` needs no Python.
+Requires Pillow with WOFF2 support in its FreeType (the PyPI wheels have it). Run
+it when the version changes and commit the result — the build script consumes
+the committed PNGs so `build-dmg.sh` needs no Python.
 """
 
 from __future__ import annotations
@@ -41,8 +45,10 @@ except ImportError:  # pragma: no cover - dev-time dependency only
 
 HERE = Path(__file__).resolve().parent
 
-MENLO = "/System/Library/Fonts/Menlo.ttc"
-MENLO_REGULAR, MENLO_BOLD = 0, 1
+FONT_DIR = HERE.parents[2] / "client" / "src" / "assets" / "fonts"
+FONT_REGULAR = FONT_DIR / "jetbrains-mono-latin-400-normal.woff2"
+FONT_BOLD = FONT_DIR / "jetbrains-mono-latin-700-normal.woff2"
+ARROW = "→"
 
 # Colours sampled from the delivered design.
 DIM = (95, 138, 108)        # subtitle + secondary instruction line
@@ -58,11 +64,39 @@ ARCH_LABEL = {"aarch64": "APPLE SILICON", "x86_64": "INTEL"}
 
 # The instruction copy. English only — this is a public, English-language app.
 LINE1_PREFIX, LINE1_EMPH, LINE1_SUFFIX = "Drag FlowMap to the ", "Applications", " folder"
-LINE2 = "Unsigned build — on first launch: right-click → Open"
+LINE2 = "Unsigned build: System Settings → Privacy & Security → Open Anyway"
 
 
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(MENLO, size, index=MENLO_BOLD if bold else MENLO_REGULAR)
+    return ImageFont.truetype(str(FONT_BOLD if bold else FONT_REGULAR), size)
+
+
+def arrow_text_width(fnt: ImageFont.FreeTypeFont, text: str) -> float:
+    """Width of `text` when each ARROW takes one monospace cell."""
+    parts = text.split(ARROW)
+    return sum(fnt.getlength(p) for p in parts) + (len(parts) - 1) * fnt.getlength("M")
+
+
+def draw_arrow(draw: ImageDraw.ImageDraw, x: float, baseline: float, fnt, fill) -> None:
+    """A right arrow drawn as strokes in one monospace cell, at mid x-height."""
+    cell = fnt.getlength("M")
+    size = fnt.size
+    y = baseline - size * 0.30
+    width = max(1, round(size / 12))
+    x0, x1 = x + cell * 0.10, x + cell * 0.90
+    head = cell * 0.30
+    draw.line([(x0, y), (x1, y)], fill=fill, width=width)
+    draw.line([(x1 - head, y - head), (x1, y), (x1 - head, y + head)], fill=fill, width=width, joint="curve")
+
+
+def draw_arrow_text(draw: ImageDraw.ImageDraw, x: float, baseline: float, text: str, fnt, fill) -> None:
+    """Draw `text` left-aligned at `x`, with each ARROW drawn by draw_arrow."""
+    for i, part in enumerate(text.split(ARROW)):
+        if i:
+            draw_arrow(draw, x, baseline, fnt, fill)
+            x += fnt.getlength("M")
+        draw.text((x, baseline), part, font=fnt, fill=fill, anchor="ls")
+        x += fnt.getlength(part)
 
 
 def draw_tracked(draw: ImageDraw.ImageDraw, xy, text, fnt, fill, tracking: float) -> None:
@@ -96,7 +130,8 @@ def render(version: str, arch: str, scale: int) -> Image.Image:
         d.text((x, LINE1_BASELINE * k), text, font=fnt, fill=fill, anchor="ls")
         x += w
 
-    d.text((im.width / 2, LINE2_BASELINE * k), LINE2, font=reg, fill=DIM, anchor="ms")
+    x = im.width / 2 - arrow_text_width(reg, LINE2) / 2
+    draw_arrow_text(d, x, LINE2_BASELINE * k, LINE2, reg, DIM)
     return im
 
 

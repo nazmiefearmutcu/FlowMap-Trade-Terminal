@@ -2,18 +2,19 @@
 #
 # Starts:
 #   1. the FlowMap server on 127.0.0.1:8720 (FLOWMAP_PORT, recording disabled)
-#   2. the vite dev server in client/ on :5173 (proxies /api and /ws to :8720)
+#   2. the vite dev server in client/ on :5173 (the page connects to :8720 directly;
+#      the vite proxy for /api and /ws is a fallback)
 #
 # Ctrl-C tears both down (process trees, not just the top PID).
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-windows.ps1
-#   ... -Port 8800              # different server port (vite proxy still targets 8720!
-#                               # see note below)
 #   ... -EnableRecording        # opt INTO recording writes (default: off, like e2e)
+#   $env:FLOWMAP_RECORDING_ENABLED = "1"   # the same opt-in, set before the run
 #
-# Port note: client/vite.config.ts hardcodes the proxy target http://127.0.0.1:8720.
-# Use -Port only if you also adjust the vite proxy, or pass -Port 8720 (default).
+# Port note: client/vite.config.ts hardcodes the proxy target http://127.0.0.1:8720,
+# so the server port is fixed at 8720. Any other -Port is refused up front rather
+# than booting a server that the dev client cannot reach.
 #
 # Requires: Node/npm. The server prefers uv (repo standard); without it, any
 # Python 3.13 with the server dependencies installed is used via PYTHONPATH.
@@ -24,7 +25,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# UTF-8 console output (vite + Python logs can carry non-ASCII venue/symbol names).
+if ($Port -ne 8720) {
+    throw "-Port $Port is not supported: client/vite.config.ts proxies /api and /ws to 127.0.0.1:8720. Run without -Port."
+}
+
+# Remember the console code page so it can be restored on exit; the launcher
+# switches to UTF-8 for vite and Python output with non-ASCII venue/symbol names.
+$previousCodePage = [regex]::Match((chcp | Out-String), '\d+').Value
 chcp 65001 | Out-Null
 
 # Resolve the repo's REAL path: vite's dev server can fail when the working
@@ -35,7 +42,9 @@ Set-Location -LiteralPath $root
 
 # --- environment shared by both children -----------------------------------
 $env:FLOWMAP_PORT = "$Port"
-$env:FLOWMAP_RECORDING_ENABLED = if ($EnableRecording) { "1" } else { "0" }
+# -EnableRecording or an already-set FLOWMAP_RECORDING_ENABLED=1 turns recording on;
+# otherwise it is off (as in e2e). The env var is honoured, not overwritten.
+$env:FLOWMAP_RECORDING_ENABLED = if ($EnableRecording -or $env:FLOWMAP_RECORDING_ENABLED -eq "1") { "1" } else { "0" }
 $env:FLOWMAP_LOG_LEVEL = "info"
 $hadPythonPath = Test-Path Env:\PYTHONPATH
 $oldPythonPath = if ($hadPythonPath) { $env:PYTHONPATH } else { $null }
@@ -51,6 +60,18 @@ function Stop-Tree([System.Diagnostics.Process]$proc) {
 }
 
 try {
+    # Refuse to start over a server this script does not own: the health wait
+    # below would otherwise succeed against a process from an earlier run (the
+    # same guard as dev.sh and dev-unix.sh).
+    $alreadyUp = $false
+    try {
+        $probe = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/health" -UseBasicParsing -TimeoutSec 2
+        $alreadyUp = ($probe.StatusCode -eq 200)
+    } catch { $alreadyUp = $false }
+    if ($alreadyUp) {
+        throw "port $Port already answers /api/health; stop that server first (this script did not start it)."
+    }
+
     # --- server -------------------------------------------------------------
     $serverDir = Join-Path $root "server"
     $uv = Get-Command uv -ErrorAction SilentlyContinue
@@ -115,5 +136,6 @@ finally {
     Stop-Tree $serverProc
     if (-not $hadPythonPath) { Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue }
     elseif ($oldPythonPath -ne $null) { $env:PYTHONPATH = $oldPythonPath }
+    if ($previousCodePage) { chcp $previousCodePage | Out-Null }
     Write-Host "flowmap dev stopped."
 }

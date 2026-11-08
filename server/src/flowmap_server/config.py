@@ -1,6 +1,6 @@
 """FlowMap server configuration.
 
-Single env-first config source (spec §11). The server binds loopback only;
+Single env-first config source. The server binds loopback only;
 any ``FLOWMAP_HOST`` outside ``("127.0.0.1", "localhost")`` is rejected with
 ``ValueError`` rather than silently accepted.
 
@@ -30,9 +30,20 @@ _PORT_RANGE = (1, 65_535)
 _RING_COLUMNS_RANGE = (256, 65_536)
 _MAX_SESSIONS_RANGE = (1, 16)
 _BOOK_TOP_N_RANGE = (1, 200_000)
-# Column cadences: positive, at most one hour per column (anything larger is
-# a unit mixup — seconds/ms pasted into an ns field — not a cadence).
-_DT_NS_RANGE = (1, 3_600 * 1_000_000_000)
+# Column cadences: at least 1 ms (a 1 ns typo pins a core: the realtime sim
+# paces one interval per dt_ns on the event loop that serves uvicorn and /ws),
+# at most one hour per column (anything larger is a unit mixup — seconds/ms
+# pasted into an ns field — not a cadence).
+_DT_NS_RANGE = (1_000_000, 3_600 * 1_000_000_000)
+# Crypto grid tick override (FLOWMAP_CRYPTO_TICK): 0 = auto; anything absurd
+# above this is a unit mixup, not a tick.
+_CRYPTO_TICK_RANGE = (0.0, 1e12)
+# Boolean switches accept these spellings, case-insensitively. Anything else is
+# an error: a silently ignored "FALSE" or "off" used to leave recording ON.
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+# Fields that must never appear in a repr, traceback or log line.
+_SECRET_FIELDS = frozenset({"alpaca_key", "alpaca_secret", "finnhub_key"})
 _RECORDING_GB_CAP_RANGE = (0.0, 1_000_000.0)
 _BACKFILL_MAX_COLS_RANGE = (0, 65_536)
 # Recording flush cadence (time-based, FLOWMAP_FLUSH_INTERVAL_S): a Windows
@@ -70,14 +81,32 @@ def _int_in_range(env: Mapping[str, str], name: str, default: str, lo: int, hi: 
 
 def _float_in_range(env: Mapping[str, str], name: str, default: str, lo: float, hi: float) -> float:
     raw = env.get(name, default)
+    # A Turkish-locale operator types "20,0": one decimal comma with no point
+    # reads as the decimal separator. Both "20,0" and "20.0" are accepted.
+    text = str(raw).strip()
+    if "," in text and "." not in text:
+        text = text.replace(",", ".")
     try:
-        value = float(raw)
+        value = float(text)
     except ValueError:
         raise ValueError(f"{name} must be a number in [{lo}, {hi}]; got {raw!r}") from None
     # NaN fails both comparisons; +inf fails the upper bound. Name the var.
     if not (lo <= value <= hi):
         raise ValueError(f"{name} must be in [{lo}, {hi}]; got {raw!r}")
     return value
+
+
+def _bool_env(env: Mapping[str, str], name: str, default: str) -> bool:
+    """A boolean switch. Unknown spellings are refused, naming the variable."""
+    raw = env.get(name, default)
+    word = str(raw).strip().lower()
+    if word in _TRUE_WORDS:
+        return True
+    if word in _FALSE_WORDS:
+        return False
+    raise ValueError(
+        f"{name} must be one of 0/1, false/true, no/yes or off/on; got {raw!r}"
+    )
 
 
 class Config(msgspec.Struct, frozen=True):
@@ -89,7 +118,7 @@ class Config(msgspec.Struct, frozen=True):
     max_sessions: int = 4
     recording_gb_cap: float = 20.0
     recording_enabled: bool = True
-    # Recording root (spec §7 self-recording). from_env expands "~"; direct
+    # Recording root. from_env expands "~"; direct
     # construction may carry an unexpanded default — consumers should
     # ``Path(cfg.data_dir).expanduser()`` defensively.
     data_dir: str = _DEFAULT_DATA_DIR
@@ -105,7 +134,7 @@ class Config(msgspec.Struct, frozen=True):
     dt_equity_keyless_ns: int = 10 * 10**9
     dt_equity_keyless_grid_ns: int = 10**9
     max_rows: int = 4096
-    # First-launch history backfill (spec: reconstructed candle history so the
+    # First-launch history backfill (reconstructed candle history so the
     # client's eager requestHistory returns real data instead of a cold ring).
     # ``backfill_max_cols`` bounds the span: at most this many candle-columns are
     # fetched and seeded before the first snapshot. Kept modest (not
@@ -155,6 +184,21 @@ class Config(msgspec.Struct, frozen=True):
     # is an explicit depth. The client's [start_t, end_t) window is never
     # affected by this knob (see _REPLAY_MAX_COLS_RANGE).
     replay_max_cols: int = 0
+    # Shut the sidecar down when its stdin reaches EOF (FLOWMAP_EXIT_ON_STDIN_EOF).
+    # The desktop shell holds the write end of that pipe, so EOF
+    # means the shell has exited; the lifespan flush then runs before exit.
+    exit_on_stdin_eof: bool = False
+
+    def __repr__(self) -> str:
+        """Every field, with exchange/provider keys masked (never printed)."""
+        parts = []
+        for name in self.__struct_fields__:
+            value = getattr(self, name)
+            if name in _SECRET_FIELDS and value is not None:
+                parts.append(f"{name}=***")
+                continue
+            parts.append(f"{name}={value!r}")
+        return f"Config({', '.join(parts)})"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -162,7 +206,7 @@ class Config(msgspec.Struct, frozen=True):
         if host not in _ALLOWED_HOSTS:
             raise ValueError(
                 f"FLOWMAP_HOST must be one of {_ALLOWED_HOSTS} (loopback only, "
-                f"spec §11); got {host!r}"
+                f"spec); got {host!r}"
             )
 
         # Alpaca credentials are only usable as a pair.
@@ -173,19 +217,14 @@ class Config(msgspec.Struct, frozen=True):
             alpaca_secret = None
 
         # 0 = auto (feed-declared preferred_tick, else the sim-shaped fallback).
-        crypto_tick = float(env.get("FLOWMAP_CRYPTO_TICK", "0.0"))
-        if not (crypto_tick >= 0.0) or crypto_tick == float("inf"):
-            raise ValueError(
-                f"FLOWMAP_CRYPTO_TICK must be a finite tick size >= 0 "
-                f"(0 = auto); got {env.get('FLOWMAP_CRYPTO_TICK')!r}"
-            )
+        crypto_tick = _float_in_range(env, "FLOWMAP_CRYPTO_TICK", "0.0", *_CRYPTO_TICK_RANGE)
 
         ring_columns = _int_in_range(env, "FLOWMAP_RING_COLUMNS", "32768", *_RING_COLUMNS_RANGE)
         return cls(
             host=host,
             port=_int_in_range(env, "FLOWMAP_PORT", "8720", *_PORT_RANGE),
             ring_columns=ring_columns,
-            # Column cadence for the sim + crypto grid. Overridable so the T8
+            # Column cadence for the sim + crypto grid. Overridable so the
             # scroll-back e2e can drive the sim fast enough to overrun the
             # client's full-res budget in seconds. Default 250 ms (4 cols/s).
             dt_crypto_ns=_int_in_range(
@@ -203,18 +242,20 @@ class Config(msgspec.Struct, frozen=True):
             recording_gb_cap=_float_in_range(
                 env, "FLOWMAP_RECORDING_GB_CAP", "20.0", *_RECORDING_GB_CAP_RANGE
             ),
-            recording_enabled=env.get("FLOWMAP_RECORDING_ENABLED", "1")
-            not in ("0", "false", "False"),
+            recording_enabled=_bool_env(env, "FLOWMAP_RECORDING_ENABLED", "1"),
+            # An empty value means "unset": Path("") would be the CWD, the very
+            # launch-directory dependence (the warehouse agrees).
             data_dir=str(
-                Path(env.get("FLOWMAP_DATA_DIR", _DEFAULT_DATA_DIR)).expanduser()
+                Path(env.get("FLOWMAP_DATA_DIR") or _DEFAULT_DATA_DIR).expanduser()
             ),
             alpaca_key=alpaca_key,
             alpaca_secret=alpaca_secret,
             book_top_n=_int_in_range(env, "FLOWMAP_BOOK_TOP_N", "20000", *_BOOK_TOP_N_RANGE),
             crypto_tick=crypto_tick,
-            finnhub_key=env.get("FINNHUB_API_KEY"),
-            backfill_enabled=env.get("FLOWMAP_BACKFILL_ENABLED", "1")
-            not in ("0", "false", "False"),
+            # An empty key is "no key", like an absent Alpaca pair (normalized
+            # to None) — the equity tier test is a truthiness check.
+            finnhub_key=env.get("FINNHUB_API_KEY") or None,
+            backfill_enabled=_bool_env(env, "FLOWMAP_BACKFILL_ENABLED", "1"),
             backfill_max_cols=_int_in_range(
                 env, "FLOWMAP_BACKFILL_MAX_COLS", "512", *_BACKFILL_MAX_COLS_RANGE
             ),
@@ -233,4 +274,5 @@ class Config(msgspec.Struct, frozen=True):
             replay_max_cols=_int_in_range(
                 env, "FLOWMAP_REPLAY_MAX_COLS", "0", *_REPLAY_MAX_COLS_RANGE
             ),
+            exit_on_stdin_eof=_bool_env(env, "FLOWMAP_EXIT_ON_STDIN_EOF", "0"),
         )

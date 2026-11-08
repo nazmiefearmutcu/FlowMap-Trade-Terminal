@@ -1,17 +1,17 @@
 /**
- * WebGL2 context bring-up (§8.3).
+ * WebGL2 context bring-up.
  *
  * Creates the one context the whole renderer shares, probes the capability
  * limits the tile-ring residency math depends on, and requires the extensions
  * the mip/FBO passes (a later task) will need. `EXT_color_buffer_float` is a
- * hard requirement per §8.3 — it makes RG16F color-renderable so the SUM
+ * hard requirement per — it makes RG32F color-renderable so the SUM
  * downsample passes can render into float FBOs. The array texture + texelFetch
  * sampling this task delivers works without it, so `requireColorBufferFloat`
  * can be relaxed to a warning in environments (e.g. some CI GL backends) that
  * lack it; production keeps it hard.
  */
 
-export interface GLCaps {
+interface GLCaps {
   /** MAX_TEXTURE_IMAGE_UNITS — the 16-unit bind limit texelFetch sidesteps. */
   maxTextureImageUnits: number;
   /** MAX_ARRAY_TEXTURE_LAYERS — caps how many tile layers a ring can hold. */
@@ -27,16 +27,16 @@ export interface GLContext {
   caps: GLCaps;
 }
 
-export interface InitGLOptions {
+interface InitGLOptions {
   /**
-   * Throw if EXT_color_buffer_float is absent (default true, per §8.3). Set
+   * Throw if EXT_color_buffer_float is absent (default true, per). Set
    * false to downgrade to a console warning when only the array-texture path
    * is needed and the backend lacks the extension.
    */
   requireColorBufferFloat?: boolean;
   /**
    * Keep the drawing buffer contents after compositing (default false). The
-   * live renderer (T5) draws only on dirty frames; without this the compositor
+   * live renderer draws only on dirty frames; without this the compositor
    * clears the buffer between draws and idle frames would flash blank. Costs
    * some driver-side optimization, so only the display path sets it.
    */
@@ -92,7 +92,7 @@ export function initGL(canvas: HTMLCanvasElement, opts: InitGLOptions = {}): GLC
   const colorBufferFloat = gl.getExtension('EXT_color_buffer_float') !== null;
   if (!colorBufferFloat) {
     const msg =
-      'flowmap/gl: EXT_color_buffer_float is required (§8.3: RG16F must be ' +
+      'flowmap/gl: EXT_color_buffer_float is required (RG32F must be ' +
       'color-renderable for the SUM mip passes)';
     if (requireColorBufferFloat) {
       throw new Error(msg);

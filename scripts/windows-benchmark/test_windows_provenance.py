@@ -47,12 +47,18 @@ class WindowsIdentityTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'Windows isolated startup')
     def test_actual_guard_isolated_unicode_profile(self):
-        source=HERE.parents[1]/'server/src/flowmap_server/__main__.py'
-        module=ast.parse(source.read_text(encoding='utf-8'))
-        guard=ast.unparse(next(n for n in module.body if isinstance(n,ast.FunctionDef) and n.name=='_benchmark_provenance'))
+        server=HERE.parents[1]/'server/src/flowmap_server'
+        # The entry point only imports the benchmark module when the env var is set
+        # so a normal run never loads it.
+        entry=(server/'__main__.py').read_text(encoding='utf-8')
+        self.assertIn('from flowmap_server.benchmark_provenance import write_provenance',entry)
+        module=ast.parse((server/'benchmark_provenance.py').read_text(encoding='utf-8'))
+        guard=ast.unparse(next(n for n in module.body if isinstance(n,ast.FunctionDef) and n.name=='write_provenance'))
         with tempfile.TemporaryDirectory(prefix='Kullanıcı-') as d:
             profile=Path(d); (profile/'.flowmap-benchmark-owner').write_text('token',encoding='utf-8')
-            code="import os,sys,types\nsys.modules['flowmap_server']=types.SimpleNamespace(__file__=sys.executable)\n"+guard+'\n_benchmark_provenance()'
+            code=("import os,sys,json,types\nfrom pathlib import Path\n"
+                  "sys.modules['flowmap_server']=types.SimpleNamespace(__file__=sys.executable)\n"
+                  "import flowmap_server\n"+guard+'\nwrite_provenance()')
             env=os.environ.copy();env.pop('PYTHONUTF8',None)
             env.update(FLOWMAP_BENCHMARK_OWNER='token',FLOWMAP_BENCHMARK_PROFILE=str(profile),FLOWMAP_BENCHMARK_PROVENANCE='\\\\?\\'+str(profile/'sidecar-provenance.json'))
             result=subprocess.run([sys.executable,'-I','-B','-c',code],env=env,capture_output=True)

@@ -48,7 +48,7 @@
 .ladder__browse { margin-left: auto; font-family: var(--font-ui); }
 .watchlist__identity { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 52px; }
 .watchlist__identity .watchlist__sym { min-width: 0; flex: 0 0 auto; line-height: 14px; }
-.watchlist__source { color: var(--text-3); font-size: var(--fs-2xs); line-height: 10px; letter-spacing: .04em; }
+.watchlist__source { color: var(--text-3); font-size: var(--fs-2xs); line-height: 14px; letter-spacing: .04em; }
 .watchlist__row { height: 30px; }
 .watchlist__row[data-source="live-mid"] .watchlist__source,
 .watchlist__row[data-source="live-last"] .watchlist__source { color: var(--accent-bright); }

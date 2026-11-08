@@ -1,12 +1,12 @@
 /**
- * Event markers overlay (§2 G2, §7, §8.3, M2 T10).
+ * Event markers overlay.
  *
  * Event glyphs on the time axis / at their price, colored per kind:
  *   - liquidation           → filled triangle at its price (hot orange)
  *   - gap / session_break    → full-height vertical hatch at its column (grey)
  *   - large_lot / iceberg / halt / luld / info → small diamond at price/top (amber)
  *
- * DECLUTTER POLICY (F16, QA14 gapstack): labels used to overprint when several
+ * DECLUTTER POLICY: labels used to overprint when several
  * markers landed in one viewport (six "GAP" chips in the same 40 px). The label
  * pass now:
  *   1. collapses same-kind labels within a pixel radius into ONE badge with a
@@ -17,20 +17,20 @@
  *      history-seam markers carry a "seam" note in their text) > other kinds —
  *      so the most load-bearing labels survive a busy frame.
  *
- * Honesty (§7): every marker still draws its GLYPH / full-height hatch — the
+ * Honesty: every marker still draws its GLYPH / full-height hatch — the
  * declutter only affects the text chips. Collapsed counts say how many markers
  * the single chip stands for, so no real gap is ever hidden, and the overlay
  * only ever draws markers the FEED actually sent (kinds present = exactly the
  * ones the capability advertises, e.g. equity keyless emits only `gap`).
  *
- * SEAM ANCHORING (F22, F9-L1): a time-instant marker (gap/session_break) whose
+ * SEAM ANCHORING: a time-instant marker (gap/session_break) whose
  * `ts_ns` is one of the ring's per-column t0 KNOTS is drawn ON that knot's left
  * edge — the column boundary the instant denotes. This matters at a reattach
  * seam, where the piecewise table is locally NON-monotonic (a reconstructed
  * block's t0 runs backward of the columns it lands after) and the coords.ts
  * ascending binary search otherwise interpolates a seam marker's knot several
  * block columns INTO the block (or, centered at +0.5, half a block column in).
- * Measured F9-L1: the trailing seam badge sat ~4 block columns inside the
+ * Measured: the trailing seam badge sat ~4 block columns inside the
  * block; the leading one half a block column in. With a knot match the leading
  * badge sits exactly at the first column of the discontinuity and the trailing
  * one at the block end (their shared boundary is the knot column's left edge);
@@ -40,10 +40,12 @@
  * are drawn → O(visible).
  */
 
-import { toBigNs, type TimeSlots } from './coords';
+import { toBigNs } from '../../candles/bigNs';
+import type { TimeSlots } from './coords';
 import type { OverlayFrame } from './frame';
 import { OVERLAY } from './palette';
 import type { Marker, MarkerKind } from '../../proto/types';
+import { t } from '../../i18n';
 
 const KIND_CODE: Record<MarkerKind, number> = {
   liquidation: 0,
@@ -59,26 +61,56 @@ const KIND_CODE: Record<MarkerKind, number> = {
   clinical: 10,
   history_metadata_page: 7,
 };
-const CODE_LABEL = ['LIQ', 'HALT', 'LULD', 'GAP', 'BRK', 'LOT', 'ICE', 'INFO', '🏛️ CAPITOL', '🛡️ DOD', '🧪 FDA'];
+// Chip text that stays an acronym in every locale (regulatory and market codes).
+// The word codes (LIQ, HALT, ICE, INFO, SEAM, GAP, BRK) are localised in labelOf.
+// Plain monochrome text: colour emoji advance differently from the text metrics
+// and clash with the flat chip style.
+const ACRONYM_LABEL: Partial<Record<number, string>> = {
+  [KIND_CODE.luld]: 'LULD',
+  [KIND_CODE.large_lot]: 'LOT',
+  [KIND_CODE.capitol]: 'CAPITOL',
+  [KIND_CODE.defense_contract]: 'DOD',
+  [KIND_CODE.clinical]: 'FDA',
+};
+/**
+ * Absolute column of table entry `i`: the explicit `cols`
+ * when the table carries them, else `startSeq + i * stride`. Using the bare
+ * index as a column placed sparse knots at the wrong x.
+ */
+function colOfIndex(slots: TimeSlots, i: number): number {
+  return slots.cols !== undefined ? slots.cols[i] : slots.startSeq + i * (slots.stride ?? 1);
+}
+
+/** Largest index whose column is at or below `x` in an ascending `cols` table. */
+function lastIndexAtOrBelow(cols: Float64Array, x: number): number {
+  if (cols.length === 0 || x <= cols[0]) return 0;
+  let lo = 0;
+  let hi = cols.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (cols[mid] <= x) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
 /** Kinds rendered as a full-height vertical line rather than a price glyph. */
 const VERTICAL = new Set([KIND_CODE.gap, KIND_CODE.session_break]);
 
 /** Label font size (CSS px) — matches the draw call. */
 const LABEL_SIZE = 9;
-/** Conservative per-char advance of the label font at {@link LABEL_SIZE}. */
-const LABEL_CHAR_W = 5.6;
 /** Vertical pitch of stacked labels (CSS px); also the box height. */
 const LABEL_PITCH = 12;
 /** Same-kind labels closer than this collapse into one counted badge. */
 const COLLAPSE_PX = 44;
-/** Same-lane tolerance for collapsing (top lane vs price-row labels). */
+/** Same-band tolerance for collapsing (top band vs price-row labels). */
 const COLLAPSE_DY = 14;
 /** Bounded vertical displacement attempts before a label is drawn in place. */
 const STACK_MAX = 6;
 /**
  * Search radius (columns) for the exact t0 knot of a time-instant marker. The
  * knot is at most a seam-jump/cadence away from the naive interpolation (the
- * measured F9-L1 burial is ~3-4 block columns), so this is generous while
+ * measured burial is ~3-4 block columns), so this is generous while
  * keeping the scan bounded and allocation-free.
  */
 const KNOT_SCAN_COLS = 512;
@@ -117,7 +149,7 @@ export class Markers {
   private readonly ts: BigInt64Array;
   private readonly price: Float64Array;
   private readonly kind: Uint8Array;
-  /** 1 when the marker text identifies a transport history seam (F9). */
+  /** 1 when the marker text identifies a transport history seam. */
   private readonly seam: Uint8Array;
   private head = 0;
   private count = 0;
@@ -162,7 +194,25 @@ export class Markers {
   }
 
   private labelOf(code: number, seam: boolean): string {
-    return seam ? 'SEAM' : CODE_LABEL[code];
+    if (seam) return t('gl.markerSeam');
+    // Chips follow the active locale by kind: the English server text
+    // is never shown, and the word codes follow the active locale too.
+    switch (code) {
+      case KIND_CODE.gap:
+        return t('gl.markerGap');
+      case KIND_CODE.session_break:
+        return t('gl.markerBreak');
+      case KIND_CODE.liquidation:
+        return t('gl.markerLiq');
+      case KIND_CODE.halt:
+        return t('gl.markerHalt');
+      case KIND_CODE.iceberg:
+        return t('gl.markerIce');
+      case KIND_CODE.info:
+        return t('gl.markerInfo');
+      default:
+        return ACRONYM_LABEL[code] ?? t('gl.markerInfo');
+    }
   }
 
   draw(frame: OverlayFrame): void {
@@ -187,7 +237,7 @@ export class Markers {
       let colf = gm.tsToCol(ts);
       if (VERTICAL.has(code)) {
         // Time-instant markers anchor on their exact column knot when the
-        // piecewise table has one (F22/F9-L1): the hatch and chip land on the
+        // piecewise table has one: the hatch and chip land on the
         // discontinuity edge, not half a block column inside it. A seam's knot
         // can sit far from the naive mapping (coords.ts's range guard hands the
         // block region to the live affine → off-view), so seam markers get a
@@ -250,7 +300,7 @@ export class Markers {
    * table is the ring's own per-column truth, but a reattach seam makes it
    * locally non-monotonic, and coords.ts's ascending binary search can then
    * interpolate a seam marker's ts — which IS one of the knots — several block
-   * columns into the block (measured F9-L1: the trailing seam ~4 block columns
+   * columns into the block (measured: the trailing seam ~4 block columns
    * early), or reject it outright (ts below the table's first knot → the live
    * affine → the leading badge maps off-view). A knot is a column boundary, so
    * matching it places the badge exactly on the discontinuity (leading) / the
@@ -272,16 +322,21 @@ export class Markers {
     if (n === 0 || !Number.isFinite(naive)) return null;
     const tsf = Number(ts);
     if (!Number.isFinite(tsf)) return null;
-    let at = Math.round(naive) - slots.startSeq;
+    // Index of the table entry nearest the naive column. With explicit `cols`
+    // the entries are not dense, so the index comes from a search, not arithmetic.
+    let at =
+      slots.cols !== undefined
+        ? lastIndexAtOrBelow(slots.cols, naive)
+        : Math.round((naive - slots.startSeq) / (slots.stride ?? 1));
     if (at < 0) at = 0;
     else if (at >= n) at = n - 1;
-    if (t0[at] === tsf) return slots.startSeq + at;
+    if (t0[at] === tsf) return colOfIndex(slots, at);
     const max = full ? n : KNOT_SCAN_COLS;
     for (let d = 1; d <= max; d++) {
       const a = at - d;
-      if (a >= 0 && t0[a] === tsf) return slots.startSeq + a;
+      if (a >= 0 && t0[a] === tsf) return colOfIndex(slots, a);
       const b = at + d;
-      if (b < n && t0[b] === tsf) return slots.startSeq + b;
+      if (b < n && t0[b] === tsf) return colOfIndex(slots, b);
       if (a < 0 && b >= n) return null;
     }
     return null;
@@ -323,7 +378,8 @@ export class Markers {
     for (let g = 0; g < limit; g++) {
       const gr = groups[g];
       const label = this.labelOf(gr.code, gr.seam) + (gr.count > 1 ? ` ×${gr.count}` : '');
-      const w = label.length * LABEL_CHAR_W;
+      // Measured, not estimated: the box matches the glyphs the text layer draws.
+      const w = text.measure(label, { size: LABEL_SIZE, weight: 600 });
       // Bounded vertical displacement so overlapping label boxes never print
       // over each other (hatches stay put — only the chip moves).
       let y = gr.y;

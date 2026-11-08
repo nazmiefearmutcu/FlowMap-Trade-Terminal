@@ -1,0 +1,6 @@
+# Packages that declare no licence in their metadata, reviewed by the release owner.
+# The merge (scripts/third_party_notices.py --merge) refuses a release whose notices
+# list an UNKNOWN package that is not named here.
+#
+# One exact name@version per line, followed by the reason for accepting it, after a
+# "#". Remove an entry when the package is upgraded or the licence is confirmed.

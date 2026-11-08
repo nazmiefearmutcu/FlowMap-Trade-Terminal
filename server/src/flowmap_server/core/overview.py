@@ -26,7 +26,13 @@ import polars as pl
 
 from flowmap_server.core.grid import FinalizedColumn
 from flowmap_server.core.price_scale import row_to_price, scale_of
-from flowmap_server.core.record import Recorder, _by_name, _epoch_from_row, _read_parquet_safe
+from flowmap_server.core.record import (
+    Recorder,
+    _by_name,
+    _epoch_from_row,
+    _read_epoch_part,
+    _read_parquet_safe,
+)
 from flowmap_server.proto.events import BarColumn, EpochParams, Marker
 
 logger = logging.getLogger(__name__)
@@ -35,7 +41,6 @@ CACHE_BYTES = 32 * 1024 * 1024
 MAX_GAP_MARKERS = 1024
 GAP_MARKER_PREFIX = "history-gap:v1 "
 RESOLUTION_MARKER_PREFIX = "flowmap.depth-resolution.v1 "
-MAX_COARSE_RANGES = 8
 # Only scalar identity/bounds, a few MiB even with years of small part files.
 # The production BTC folder already exceeds 12k parts across unrelated runs.
 _INDEX_PARTS = 65_536
@@ -280,6 +285,7 @@ class OverviewBuilder:
         self._source_coverage = _Coverage()
         self._source_endpoints: dict[int, tuple[int, int]] = {}
         self._gaps: dict[tuple[int, int], _Gap] = {}
+        self._gap_alarm_logged = False
         first_group = start // stride * stride
         for group in range(first_group, end + 1, stride):
             # Boundary bins are partial requests and cannot reuse full bins.
@@ -370,7 +376,20 @@ class OverviewBuilder:
 
         ns fields are strings to preserve integer precision in JavaScript.
         The client turns this into a human label and exact raw time knots.
+
+        Every seam is emitted, deliberately. Dropping one would present a real
+        discontinuity as continuous history. ``MAX_GAP_MARKERS`` is therefore an
+        alarm threshold, not a cap: above it the builder logs once so an
+        operator can see a fragmented recording.
         """
+        gaps = sorted(self._gaps.values(), key=lambda entry: entry.right_t0_ns)
+        if len(gaps) > MAX_GAP_MARKERS and not self._gap_alarm_logged:
+            self._gap_alarm_logged = True
+            logger.warning(
+                "overview: %d gap seams in range (alarm threshold %d); all are emitted",
+                len(gaps),
+                MAX_GAP_MARKERS,
+            )
         return [
             Marker(
                 ts_ns=gap.right_t0_ns,
@@ -389,7 +408,7 @@ class OverviewBuilder:
                     separators=(",", ":"),
                 ),
             )
-            for gap in sorted(self._gaps.values(), key=lambda entry: entry.right_t0_ns)
+            for gap in gaps
         ]
 
     def resolution_markers(self) -> list[Marker]:
@@ -514,6 +533,23 @@ class OverviewBuilder:
         return plan
 
     def add(self, columns: list[FinalizedColumn], epochs: dict[int, EpochParams]) -> None:
+        # Coarse ranges are collected per group and merged once per batch in the
+        # ``finally`` below, not once per column. The merge is pointwise
+        # max over all ranges, so one merge of the batch equals the chain of merges.
+        pending_coarse: dict[int, list] = {}
+        try:
+            self._add_columns(columns, epochs, pending_coarse)
+        finally:
+            for group, ranges in pending_coarse.items():
+                item = self.bins[group]
+                item.coarse_ranges = _bounded_coarse_ranges([*item.coarse_ranges, *ranges])
+
+    def _add_columns(
+        self,
+        columns: list[FinalizedColumn],
+        epochs: dict[int, EpochParams],
+        pending_coarse: dict[int, list],
+    ) -> None:
         for col in columns:
             if not self.start <= col.col_seq <= self.end or col.t0_ns >= self.before_t:
                 continue
@@ -555,9 +591,7 @@ class OverviewBuilder:
                 )
                 active = (col.bid[coarse_rows] > 0) | (col.ask[coarse_rows] > 0)
                 if np.any(active):
-                    item.coarse_ranges = _bounded_coarse_ranges(
-                        [*item.coarse_ranges, *coarse_ranges[active]]
-                    )
+                    pending_coarse.setdefault(group, []).extend(coarse_ranges[active])
             item.weight += weight
             if item.first is None or col.col_seq < item.first.col_seq:
                 item.first = col.bar
@@ -693,7 +727,7 @@ def _recording_epochs(
     epoch_maps: dict[str, dict[int, EpochParams]] = {}
     conflicts: set[tuple[str, int]] = set()
     for path in sorted(directory.glob("*-epochs-*.parquet"), key=_by_name):
-        table = _read_parquet_safe(path)
+        table = _read_epoch_part(path)
         if table is None:
             continue
         for row in table.iter_rows(named=True):
@@ -800,59 +834,66 @@ def native_group_epochs(
             if legacy_segments and "" not in allowed:
                 allowed.append("")
             for path, bounds in parts:
-                if (
-                    bounds is None
-                    or not any(lo <= bounds[1] and hi >= bounds[0] for lo, hi in missing)
-                    or not any(identity in allowed for identity in bounds[2])
-                ):
-                    continue
-                prepared = pyramid._valid(
-                    path, native_maps, getattr(parts, "stamps", {}).get(path), summary_doc
-                )
-                if (
-                    prepared is not None
-                    and prepared.get("prepared_range", [bounds[0], bounds[1]])[0]
-                    <= max(start, bounds[0])
-                    and prepared.get("prepared_range", [bounds[0], bounds[1]])[1]
-                    >= min(end, bounds[1])
-                    and all(f["max_t"] < before_t for f in prepared["fragments"])
-                ):
-                    for low, high, timestamp, params in pyramid.representatives(
-                        [(path, bounds)], native_maps, start, end, before_t, prepared
-                    ):
-                        for group in range(low // stride * stride, high + 1, stride):
-                            center = (max(start, group) + min(end, group + stride - 1)) // 2
-                            consider(max(low, min(high, center)), timestamp, params)
-                    continue
-                schema = pl.read_parquet_schema(path)
-                if "recording_id" not in schema and recording_id and not legacy_segments:
-                    continue
-                names = ["epoch", "col_seq", "t0_ns"]
-                if "recording_id" in schema:
-                    names.append("recording_id")
-                wanted = pl.lit(False)
-                for low, high in missing:
-                    wanted |= pl.col("col_seq").is_between(low, high)
-                scalars = (
-                    pl.scan_parquet(path)
-                    .select(names)
-                    .filter(wanted & (pl.col("t0_ns") < before_t))
-                )
-                if "recording_id" in schema:
-                    scalars = scalars.filter(pl.col("recording_id").fill_null("").is_in(allowed))
-                for row in scalars.collect(engine="streaming").iter_rows(named=True):
-                    identity = row.get("recording_id", "") or ""
-                    params = mappings.get(identity, {}).get(row["epoch"])
-                    if not identity and (
-                        params is None
-                        or not any(
-                            low <= row["col_seq"] <= high
-                            and row["t0_ns"] == origin + row["col_seq"] * params.dt_ns
-                            for origin, low, high in legacy_segments
-                        )
+                try:
+                    if (
+                        bounds is None
+                        or not any(lo <= bounds[1] and hi >= bounds[0] for lo, hi in missing)
+                        or not any(identity in allowed for identity in bounds[2])
                     ):
                         continue
-                    consider(row["col_seq"], row["t0_ns"], params)
+                    prepared = pyramid._valid(
+                        path, native_maps, getattr(parts, "stamps", {}).get(path), summary_doc
+                    )
+                    if (
+                        prepared is not None
+                        and prepared.get("prepared_range", [bounds[0], bounds[1]])[0]
+                        <= max(start, bounds[0])
+                        and prepared.get("prepared_range", [bounds[0], bounds[1]])[1]
+                        >= min(end, bounds[1])
+                        and all(f["max_t"] < before_t for f in prepared["fragments"])
+                    ):
+                        for low, high, timestamp, params in pyramid.representatives(
+                            [(path, bounds)], native_maps, start, end, before_t, prepared
+                        ):
+                            for group in range(low // stride * stride, high + 1, stride):
+                                center = (max(start, group) + min(end, group + stride - 1)) // 2
+                                consider(max(low, min(high, center)), timestamp, params)
+                        continue
+                    schema = pl.read_parquet_schema(path)
+                    if "recording_id" not in schema and recording_id and not legacy_segments:
+                        continue
+                    names = ["epoch", "col_seq", "t0_ns"]
+                    if "recording_id" in schema:
+                        names.append("recording_id")
+                    wanted = pl.lit(False)
+                    for low, high in missing:
+                        wanted |= pl.col("col_seq").is_between(low, high)
+                    scalars = (
+                        pl.scan_parquet(path)
+                        .select(names)
+                        .filter(wanted & (pl.col("t0_ns") < before_t))
+                    )
+                    if "recording_id" in schema:
+                        scalars = scalars.filter(pl.col("recording_id").fill_null("").is_in(allowed))
+                    for row in scalars.collect(engine="streaming").iter_rows(named=True):
+                        identity = row.get("recording_id", "") or ""
+                        params = mappings.get(identity, {}).get(row["epoch"])
+                        if not identity and (
+                            params is None
+                            or not any(
+                                low <= row["col_seq"] <= high
+                                and row["t0_ns"] == origin + row["col_seq"] * params.dt_ns
+                                for origin, low, high in legacy_segments
+                            )
+                        ):
+                            continue
+                        consider(row["col_seq"], row["t0_ns"], params)
+                except (OSError, pl.exceptions.PolarsError) as exc:
+                    # A listed part can vanish between the listing and the read
+                    # (retention runs concurrently) or be corrupt. That part is
+                    # missing coverage, not a failed request: same contract as
+                    # recorded_batches. Logged, never silent.
+                    logger.warning("overview skips unreadable recording part %s: %s", path, exc)
     targets.update({group: value[1] for group, value in candidates.items()})
     return targets
 
@@ -1066,7 +1107,9 @@ def warm_part_index(
                         for i, (path, stamp) in enumerate(batch)
                         if path not in cache or cache[path][:2] != stamp
                     ]
-                refreshed = executor.map(lambda i: _part_bounds(root, *batch[i]), misses)
+                refreshed = executor.map(
+                    lambda i, batch=batch: _part_bounds(root, *batch[i]), misses
+                )
                 for i, value in zip(misses, refreshed):
                     bounds[i] = value
                     path, stamp = batch[i]

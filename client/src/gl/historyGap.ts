@@ -1,6 +1,8 @@
 import type { Marker } from '../proto/types';
+import { t } from '../i18n';
+import { formatFixed } from '../i18n/format';
 
-export interface HistoryGap {
+interface HistoryGap {
   leftCol: number; rightCol: number;
   leftStart: bigint; leftEnd: bigint; rightStart: bigint;
 }
@@ -16,7 +18,10 @@ export function historyGap(marker: Marker): HistoryGap | null {
     return { leftCol: value.left_col, rightCol: value.right_col, leftStart, leftEnd, rightStart };
   } catch { return null; }
 }
+/** The gap marker with its display text in the UI locale: the word, the gap length in seconds. */
 export function displayHistoryGap(marker: Marker): Marker {
   const gap = historyGap(marker);
-  return gap ? { ...marker, text: `GAP ${(Number(gap.rightStart - gap.leftEnd) / 1e9).toFixed(1)} s` } : marker;
+  if (gap === null) return marker;
+  const seconds = Number(gap.rightStart - gap.leftEnd) / 1e9;
+  return { ...marker, text: `${t('gl.markerGap')} ${formatFixed(seconds, 1)} ${t('unit.s')}` };
 }

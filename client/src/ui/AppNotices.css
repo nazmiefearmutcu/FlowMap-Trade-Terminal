@@ -1,0 +1,69 @@
+/*
+ * Shell notices drawn over the chart stage (App.tsx): the desktop engine
+ * failure, a protocol-version mismatch, a refused subscription, the SIM/DEMO
+ * badge, and the graphics fallback actions. Colours come from the theme tokens.
+ */
+
+.app-notices {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.app-notice {
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line, rgba(148, 163, 184, 0.45));
+  background: var(--bg, #081B37);
+  color: var(--chart-ink, #e2e8f0);
+  font-size: var(--fs-md, 12px);
+  line-height: 1.4;
+}
+
+.app-notice--fatal {
+  border-color: var(--sell-line, #f87171);
+}
+
+.app-notice--sim {
+  border-color: var(--warn-line, #fbbf24);
+  color: var(--warn, #fbbf24);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.app-notice code {
+  font-family: inherit;
+  overflow-wrap: anywhere;
+  opacity: 0.85;
+}
+
+.app-notice button,
+.gl-fallback__btn {
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--accent-line, currentColor);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.gl-fallback__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}

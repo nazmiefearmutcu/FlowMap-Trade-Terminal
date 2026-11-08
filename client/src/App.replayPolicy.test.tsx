@@ -35,11 +35,13 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.stubGlobal('requestAnimationFrame', () => 1);
   vi.stubGlobal('cancelAnimationFrame', () => {});
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () =>
-    url.includes('availability')
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    // Both body readers: the replay picker reads text(), the palette reads json().
+    const body = url.includes('availability')
       ? { hours: [T.toString()], latest_column_ns: (T + 60_000_000_000n).toString(), max_columns: 32768 }
-      : { start_ns: T.toString(), end_ns: (T + 60_000_000_000n).toString(), columns: 240 },
-  })));
+      : { start_ns: T.toString(), end_ns: (T + 60_000_000_000n).toString(), columns: 240 };
+    return { ok: true, json: async () => body, text: async () => JSON.stringify(body) };
+  }));
   window.localStorage.clear(); markOnboarded(); setLocale('en');
   setFlowMapTransport({ url: 'wss://test.invalid/ws', wsFactory: () => ({ binaryType: 'arraybuffer', onopen: null,
     onclose: null, onerror: null, onmessage: null, send() {}, close() {} }) });

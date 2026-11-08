@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { GexOverlay } from './gexLevels';
+import { BADGE_PITCH_PX, GexOverlay, stackBadgeY } from './gexLevels';
+import { t } from '../../i18n';
 import type { OverlayFrame } from './frame';
 import { MsgType, type GexLevelUpdate } from '../../proto/types';
 
@@ -37,6 +38,25 @@ function makeFrame() {
   return { frame, lineCalls, textCalls };
 }
 
+describe('stackBadgeY', () => {
+  it('keeps anchors that already clear the pitch where they are', () => {
+    expect(stackBadgeY([100, 130, 200], 12, 0, 400)).toEqual([100, 130, 200]);
+  });
+
+  it('pushes a crowded anchor down to the pitch, preserving order', () => {
+    expect(stackBadgeY([100, 101, 102], 12, 0, 400)).toEqual([100, 112, 124]);
+  });
+
+  it('anchors to the bottom edge and pushes up when the stack would overflow', () => {
+    const out = stackBadgeY([395, 396, 397], 12, 0, 400);
+    expect(out).toEqual([376, 388, 400]);
+  });
+
+  it('returns an empty list for no anchors', () => {
+    expect(stackBadgeY([], 12, 0, 400)).toEqual([]);
+  });
+});
+
 describe('GexOverlay (FLOW <GO>)', () => {
   it('initializes empty and draws nothing when unset', () => {
     const overlay = new GexOverlay();
@@ -64,18 +84,46 @@ describe('GexOverlay (FLOW <GO>)', () => {
     const { frame, lineCalls, textCalls } = makeFrame();
     overlay.draw(frame);
 
-    expect(lineCalls.length).toBe(3);
+    // A contrast halo and a core line per level.
+    expect(lineCalls.length).toBe(6);
     expect(textCalls.length).toBe(3);
-    expect(textCalls.some((t) => t.text.includes('CALL WALL'))).toBe(true);
-    expect(textCalls.some((t) => t.text.includes('PUT WALL'))).toBe(true);
-    expect(textCalls.some((t) => t.text.includes('GAMMA FLIP'))).toBe(true);
+    expect(textCalls.some((c) => c.text.includes(t('gl.gexCallWall')))).toBe(true);
+    expect(textCalls.some((c) => c.text.includes(t('gl.gexPutWall')))).toBe(true);
+    expect(textCalls.some((c) => c.text.includes(t('gl.gexGammaFlip')))).toBe(true);
     // Badge and GL line must use the same projected row, not the affine row.
     const callRow = Math.log2(sample.call_wall / 100) * 100;
     expect(lineCalls[0].y).toBeCloseTo(callRow / 800);
     expect(textCalls[0].y).toBeCloseTo(800 - callRow);
   });
 
-  it('honors setEnabled(false)', () => {
+  it('spreads badges that would overprint, but keeps every line on its true row', () => {
+    const overlay = new GexOverlay();
+    // 510 / 490 / 498 on this grid land within 6 css px of each other.
+    overlay.set({
+      type: MsgType.GEX_UPDATE,
+      symbol: 'SPY',
+      spot_price: 500,
+      net_gex: 1250000000,
+      call_wall: 510,
+      put_wall: 490,
+      gamma_flip: 498,
+    });
+    const { frame, lineCalls, textCalls } = makeFrame();
+    overlay.draw(frame);
+
+    // Lines: one per level, at the projected row (clipY = row / 800 in this fixture).
+    const trueYs = [510, 490, 498].map((p) => Math.log2(p / 100) * 100 / 800);
+    // A halo and a core line per level, all on the projected row; the cores are the odd entries.
+    expect(lineCalls.length).toBe(6);
+    lineCalls.forEach((c, i) => expect(c.y).toBeCloseTo(trueYs[Math.floor(i / 2)]));
+    // Badges: strictly at least the pitch apart, in order of their rows.
+    const badgeYs = textCalls.map((c) => c.y).sort((a, b) => a - b);
+    for (let i = 1; i < badgeYs.length; i++) {
+      expect(badgeYs[i] - badgeYs[i - 1]).toBeGreaterThanOrEqual(BADGE_PITCH_PX - 1e-9);
+    }
+  });
+
+  it('leaves a single badge exactly on its row', () => {
     const overlay = new GexOverlay();
     overlay.set({
       type: MsgType.GEX_UPDATE,
@@ -83,15 +131,13 @@ describe('GexOverlay (FLOW <GO>)', () => {
       spot_price: 220,
       net_gex: 5000000,
       call_wall: 225,
-      put_wall: 215,
-      gamma_flip: 218,
+      put_wall: 0,
+      gamma_flip: 0,
     });
-    overlay.setEnabled(false);
-    expect(overlay.isEnabled()).toBe(false);
-
-    const { frame, lineCalls } = makeFrame();
+    const { frame, textCalls } = makeFrame();
     overlay.draw(frame);
-    expect(lineCalls.length).toBe(0);
+    expect(textCalls.length).toBe(1);
+    expect(textCalls[0].y).toBeCloseTo(800 - Math.log2(2.25) * 100);
   });
 
   it('clears state on reset()', () => {
@@ -107,5 +153,25 @@ describe('GexOverlay (FLOW <GO>)', () => {
     });
     overlay.reset();
     expect(overlay.get()).toBeNull();
+  });
+
+  it('prints a quarter-tick wall at two decimals, never step-rounded', () => {
+    const overlay = new GexOverlay();
+    overlay.set({
+      type: MsgType.GEX_UPDATE,
+      symbol: 'ES',
+      spot_price: 5234,
+      net_gex: 1,
+      call_wall: 5234.25,
+      put_wall: 5230.75,
+      gamma_flip: 5232,
+    });
+    const { frame, textCalls } = makeFrame();
+    // Grid step 0.25 with the venue tick 0.25: the old step-derived precision printed '5234.3'.
+    (frame.gm as unknown as { price: { p0: number; step: number; tick: number } }).price = { p0: 100, step: 0.25, tick: 0.25 };
+    overlay.draw(frame);
+    expect(textCalls.some((t) => t.text.endsWith('5234.25'))).toBe(true);
+    expect(textCalls.some((t) => t.text.endsWith('5230.75'))).toBe(true);
+    expect(textCalls.some((t) => t.text.endsWith('5234.3'))).toBe(false);
   });
 });

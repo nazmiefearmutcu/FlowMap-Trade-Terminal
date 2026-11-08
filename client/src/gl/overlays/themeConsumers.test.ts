@@ -11,8 +11,9 @@ import type { OverlayFrame } from './frame';
 import { GexOverlay } from './gexLevels';
 import { OverlayManager, type OverlayDrawContext } from './manager';
 import { Markers } from './markers';
-import { applyChartInk, applyOverlayPalette, parseCssColor } from './palette';
+import { applyChartInk, applyOverlayPalette, OVERLAY, parseCssColor } from './palette';
 import { Profile } from './profile';
+import { t } from '../../i18n';
 import type { RGBA } from './primitives';
 import { VOLBAR_ALPHA } from './volbars';
 
@@ -111,7 +112,7 @@ describe('actual chart consumer paints', () => {
       theme(id); paints.length = 0;
       bbo.draw(f); profile.draw(f); pending.draw(f);
       const labels = paints.filter(p => p.label !== undefined);
-      expect(labels.map(p => p.label)).toEqual(['A 102.0 ×3.00', 'B 101.0 ×2.00', 'POC 101.5', 'Profil hesaplanıyor…']);
+      expect(labels.map(p => p.label)).toEqual(['A 102.0 ×3.00', 'B 101.0 ×2.00', 'POC 101.5', t('gl.profilePending')]);
       expect(labels.slice(0, 2).map(p => rgb(p.color))).toEqual([rgb(THEMES[id].canvas.ask), rgb(THEMES[id].canvas.bid)]);
       expect(labels.slice(2).map(p => rgb(p.color))).toEqual([
         rgb(THEMES[id].mode === 'light' ? '#865509' : '#F0CD7A'),
@@ -160,18 +161,21 @@ describe('actual chart consumer paints', () => {
       const expected = THEMES[id].mode === 'light' ? LIGHT_GEX : DARK_GEX;
       const labels = paints.filter(p => p.label);
       expect(labels.map(p => rgb(p.color))).toEqual(expected.map(rgb));
-      expect(labels.map(p => p.label)).toEqual(['CALL WALL 102.0', 'PUT WALL 100.5', 'GAMMA FLIP 101.0']);
-      expect(lines).toEqual(expected.map((c, i) => [...rgb(c).map(v => v / 255), i === 2 ? .75 : .85]));
+      expect(labels.map(p => p.label)).toEqual([`${t('gl.gexCallWall')} 102.0`, `${t('gl.gexPutWall')} 100.5`, `${t('gl.gexGammaFlip')} 101.0`]);
+      // Each level is a halo segment (the theme's contrast colour) then its core.
+      const halo = [...OVERLAY.priceHalo.gl];
+      expect(lines).toEqual(expected.flatMap((c, i) => [halo, [...rgb(c).map(v => v / 255), i === 2 ? .75 : .85]]));
       for (let i = 0; i < paints.length; i += 2) {
         expect(parseCssColor(paints[i].color)).toEqual([...rgb(THEMES[id].chart.chipBg), 1]);
         expect(contrast(rgb(paints[i + 1].color), rgb(paints[i].color))).toBeGreaterThanOrEqual(4.5);
       }
-      for (const g of lines) expect(contrast(g.slice(0, 3).map(v => v * 255), rgb(THEMES[id].chart.bg), g[3])).toBeGreaterThanOrEqual(3);
+      for (let i = 1; i < lines.length; i += 2) expect(contrast(lines[i].slice(0, 3).map(v => v * 255), rgb(THEMES[id].chart.bg), lines[i][3])).toBeGreaterThanOrEqual(3);
     }
     applyChartInk(null); paints.length = 0; lines.length = 0;
     gex.draw(f);
     expect(paints.filter(p => p.label).map(p => p.color)).toEqual(['#00ff73', '#ff4040', '#33d6ff']);
-    expect(lines).toEqual([[0, 1, .45, .85], [1, .25, .25, .85], [.2, .85, 1, .75]]);
+    const black = [0, 0, 0, 1];
+    expect(lines).toEqual([black, [0, 1, .45, .85], black, [1, .25, .25, .85], black, [.2, .85, 1, .75]]);
   });
 
   it('paints the manager volume canvas with the exact opaque chart ground and preserves bar geometry/data', () => {

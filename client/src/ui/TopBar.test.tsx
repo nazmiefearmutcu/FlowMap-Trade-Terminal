@@ -3,7 +3,8 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setLocale } from '../i18n';
+import { setLocale, tFor } from '../i18n';
+import { isSingleKeyShortcutsEnabled, setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import { useFlowMapStore } from '../state/store';
 import { useIntelligenceStore } from '../state/intelligenceStore';
 import { MsgType } from '../proto/types';
@@ -60,7 +61,13 @@ function topbar(
 
 beforeEach(() => {
   useIntelligenceStore.setState(useIntelligenceStore.getInitialState(), true);
-  useFlowMapStore.setState({ capability: null, subscription: undefined, feedState: undefined, replayUnavailable: false });
+  useFlowMapStore.setState({
+    capability: null,
+    subscription: undefined,
+    feedState: undefined,
+    replayUnavailable: false,
+    recordingDegraded: false,
+  });
 });
 
 afterEach(() => {
@@ -96,6 +103,32 @@ describe('TopBar replay-unavailable badge', () => {
     );
     const { container } = render(topbar());
     expect(container.querySelector('[data-testid="replay-unavailable"]')).toBeNull();
+  });
+});
+
+describe('TopBar recording-degraded notice', () => {
+  it('shows a stalled-recording chip whose hover explains the replay gap', () => {
+    act(() => useFlowMapStore.setState({ recordingDegraded: true }));
+    const { container } = render(topbar());
+    const chip = container.querySelector('[data-testid="recording-stalled-chip"]');
+    expect(chip?.textContent).toBe('recording stalled');
+    expect(chip?.getAttribute('title')).toBe(tFor('en', 'banner.recordingDegraded'));
+    // The app notice stack is the one live region for this state.
+    expect(chip?.getAttribute('role')).toBeNull();
+  });
+
+  it('renders no chip while the recording is healthy', () => {
+    const { container } = render(topbar());
+    expect(container.querySelector('[data-testid="recording-stalled-chip"]')).toBeNull();
+  });
+
+  it('translates the stalled-recording chip in Turkish', () => {
+    setLocale('tr');
+    act(() => useFlowMapStore.setState({ recordingDegraded: true }));
+    const { container } = render(topbar());
+    expect(container.querySelector('[data-testid="recording-stalled-chip"]')?.textContent).toBe(
+      tFor('tr', 'topbar.recordingStalled'),
+    );
   });
 });
 
@@ -149,7 +182,7 @@ describe('TopBar capability badges', () => {
   });
 
   // The top bar and the symbol palette must make the SAME fidelity claim for the
-  // same string — one exported classifier, two surfaces (§7). Rendering (not just
+  // same string — one exported classifier, two surfaces. Rendering (not just
   // calling the helper) is what pins it: a re-introduced local copy fails here.
   it.each([
     ['L2', 'tick', 'exchange'],
@@ -179,7 +212,8 @@ describe('TopBar venue chip (~106 venues — the asset class is no longer an add
     expect(venue.textContent).toContain('BTCUSDT');
     // Still colour-coded by asset class.
     expect(venue.classList.contains('venue--crypto')).toBe(true);
-    expect(venue.getAttribute('title')).toContain('crypto');
+    expect(venue.getAttribute('title')).toContain('Crypto');
+    expect(venue.getAttribute('title')).not.toContain('crypto');
   });
 
   it('keeps the group word for equity and sim, where the group IS the venue', () => {
@@ -188,6 +222,17 @@ describe('TopBar venue chip (~106 venues — the asset class is no longer an add
     const venue = container.querySelector('[data-testid="venue"]')!;
     expect(venue.textContent).toContain('Equity');
     expect(venue.classList.contains('venue--equity')).toBe(true);
+  });
+
+  it('translates the group word in the venue tooltip (no raw internal group id in Turkish)', () => {
+    act(() => setLocale('tr'));
+    act(() =>
+      useFlowMapStore.setState({ subscription: { market: 'binance-usdm', symbol: 'BTCUSDT', mode: 'live', band: 'native' } }),
+    );
+    const { container } = render(topbar());
+    const title = container.querySelector('[data-testid="venue"]')!.getAttribute('title') ?? '';
+    expect(title).toContain('Kripto');
+    expect(title).not.toMatch(/\bcrypto\b/);
   });
 
   it('hides the Replay toggle unless the server advertises capability.replay', () => {
@@ -211,6 +256,37 @@ describe('TopBar venue chip (~106 venues — the asset class is no longer an add
     const venue = container.querySelector('[data-testid="venue"]')!;
     expect(venue.textContent).toContain('Sim');
     expect(venue.textContent).toContain('SIM-DEMO');
+  });
+
+  it('shows a persistent SIM · DEMO badge only while the simulated feed is the source', () => {
+    const { container } = render(topbar());
+    const badge = container.querySelector('[data-testid="sim-badge"]');
+    expect(badge?.textContent).toBe('SIM · DEMO');
+    expect(badge?.getAttribute('title')).toContain('Simulated fixtures');
+    act(() => useFlowMapStore.setState({ subscription: { market: 'binance-spot', symbol: 'BTCUSDT', mode: 'live', band: 'native' } }));
+    expect(container.querySelector('[data-testid="sim-badge"]')).toBeNull();
+  });
+
+  it('marks any feed that reports itself synthetic, with the SIM chip and the badge', () => {
+    act(() => useFlowMapStore.setState({
+      subscription: { market: 'binance-spot', symbol: 'BTCUSDT', mode: 'live', band: 'native' },
+      capability: { depth: 'L2', tape: 'tick', synthetic: true },
+    }));
+    const { container } = render(topbar());
+    expect(container.querySelector('[data-testid="sim-badge"]')).not.toBeNull();
+    const chips = [...container.querySelectorAll('[data-testid="capability-badges"] .cap')].map((c) => c.textContent);
+    expect(chips).toEqual(['L2', 'SIM', 'TAPE TICK']);
+  });
+
+  it('shows no SIM chip for a real feed', () => {
+    act(() => useFlowMapStore.setState({
+      subscription: { market: 'binance-spot', symbol: 'BTCUSDT', mode: 'live', band: 'native' },
+      capability: { depth: 'L2', tape: 'tick' },
+    }));
+    const { container } = render(topbar());
+    expect(container.querySelector('[data-testid="sim-badge"]')).toBeNull();
+    const chips = [...container.querySelectorAll('[data-testid="capability-badges"] .cap')].map((c) => c.textContent);
+    expect(chips).toEqual(['L2', 'TAPE TICK']);
   });
 });
 
@@ -248,7 +324,7 @@ describe('TopBar clock + status a11y', () => {
     const status = container.querySelector('[data-testid="conn-status"]')!;
     expect(status.getAttribute('role')).toBe('status');
     expect(status.getAttribute('aria-live')).toBe('polite');
-    expect(status.getAttribute('aria-label')).toContain('degraded');
+    expect(status.getAttribute('aria-label')).toContain('Degraded feed');
   });
 });
 
@@ -272,11 +348,29 @@ describe('TopBar PNG export', () => {
     // Honest naming for AT + a hover tooltip that names the shortcut.
     expect(btn.getAttribute('aria-label')).toBe('Export PNG');
     expect(btn.getAttribute('title')).toContain('PNG');
-    expect(btn.getAttribute('title')).toContain('E');
     act(() => {
       btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(onExportPng).toHaveBeenCalledOnce();
+  });
+
+  it('names the bare E key only while single-key shortcuts are on', () => {
+    const before = isSingleKeyShortcutsEnabled();
+    try {
+      setSingleKeyShortcutsEnabled(true);
+      const on = render(topbar());
+      expect(on.container.querySelector('[data-testid="export-png"]')?.getAttribute('title'))
+        .toBe(tFor('en', 'topbar.exportPngHint'));
+      expect(tFor('en', 'topbar.exportPngHint')).toContain('(E)');
+
+      setSingleKeyShortcutsEnabled(false);
+      const off = render(topbar());
+      const title = off.container.querySelector('[data-testid="export-png"]')?.getAttribute('title') ?? '';
+      expect(title).toBe(tFor('en', 'topbar.exportPng'));
+      expect(title).not.toContain('(E)');
+    } finally {
+      setSingleKeyShortcutsEnabled(before);
+    }
   });
 
   it('renders the refused-export notice and dismisses it (never a fake success)', () => {
@@ -298,7 +392,7 @@ describe('TopBar PNG export', () => {
   });
 });
 
-describe('TopBar i18n shell (C7)', () => {
+describe('TopBar i18n shell', () => {
   it('switches the live/replay labels when the locale is TR, and back in EN', () => {
     const { container } = render(topbar());
     expect(container.querySelector('[data-testid="mode-live"]')!.textContent).toBe('Live');
@@ -313,7 +407,7 @@ describe('TopBar i18n shell (C7)', () => {
     expect(container.querySelector('[data-testid="mode-live"]')!.textContent).toBe('Live');
   });
 
-  it('translates the visible PNG / Rail / Settings / replay-unavailable strings in TR (lane D)', () => {
+  it('translates the visible PNG / Rail / Settings / replay-unavailable strings in TR', () => {
     act(() =>
       useFlowMapStore.setState({
         subscription: { market: 'binance-spot', symbol: 'BTCUSDT', mode: 'live', band: 'deep' },

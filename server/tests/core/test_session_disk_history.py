@@ -322,8 +322,22 @@ async def test_known_old_epoch_cannot_shift_current_heatmap_geometry(tmp_path):
     # The server knows epoch zero exactly, but the client's resident heatmap
     # has one current row transform. Old p0 must not silently shift its data.
     assert grid.maybe_reanchor(160.0) is not None
-    assert grid.epoch_params_for(0).p0 != grid.current_epoch_params().p0
-    resp = _response(await sess.handle_history_async(
+    old_params = grid.epoch_params_for(0)
+    assert old_params.p0 != grid.current_epoch_params().p0
+    frame = await sess.handle_history_async(
         events.HistoryRequest(req_id=16, before_t=START + 8 * DT, n_cols=4)
-    ))
-    assert resp.depth_cols == resp.bar_cols == []
+    )
+    resp = _response(frame)
+    # The page is served (its params are the grid's own table entry for its
+    # epoch), but it never re-labels itself with the current transform:
+    # the response keeps the live epoch, the columns keep epoch zero, and an
+    # EpochStart announces epoch zero's own p0 ahead of them.
+    assert resp.epoch == grid.current_epoch_params().epoch
+    assert resp.depth_cols and {d.epoch for d in resp.depth_cols} == {0}
+    announced = {}
+    offset = 0
+    while offset < len(frame):
+        message, offset = wire.decode(frame, offset)
+        if isinstance(message, events.EpochStart):
+            announced[message.epoch] = message.epoch_params
+    assert announced[0].p0 == old_params.p0

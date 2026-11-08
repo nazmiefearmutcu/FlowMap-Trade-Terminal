@@ -58,6 +58,7 @@ beforeEach(() => {
     gridEpoch: null,
     epochs: new Map(),
     sessionId: null,
+    status: 'idle',
   });
 });
 
@@ -79,6 +80,21 @@ describe('candle store — stream wiring', () => {
     expect(seen).toEqual([1]);
     expect(getSnapshot().candles[0]).toMatchObject({ o: 100, h: 102, l: 100, c: 102, v: 3 });
     unsub();
+  });
+
+  it('merges two distinct same-millisecond fills and drops only a repeated connection sequence', () => {
+    connectSession();
+    subscribe(() => {});
+    ingestForTest(trade(0n, 100, 0.001));
+    ingestForTest(trade(0n, 100, 0.001)); // a second fill, same ms, same value
+    expect(getSnapshot().candles[0].trades).toBe(2);
+    expect(getSnapshot().candles[0].v).toBeCloseTo(0.002, 12);
+    expect(getSnapshot().stats.dupSkipped).toBe(0);
+
+    const sequenced = Object.assign(trade(1_000_000_000n, 101, 1), { seq: 9 });
+    ingestForTest(sequenced);
+    ingestForTest(sequenced); // re-delivery of seq 9
+    expect(getSnapshot().stats.dupSkipped).toBe(1);
   });
 
   it('tracks the column⇄time affine from DEPTH_COL anchors (epoch-major)', () => {
@@ -126,6 +142,83 @@ describe('candle store — stream wiring', () => {
     useFlowMapStore.setState({ sessionId: 'sess-1' });
     ingestForTest(trade(0n, 100));
     expect(getSnapshot().candles.length).toBe(1);
+  });
+
+  it('a reconnect into the same session re-sends the tape, and the reset counts it once', () => {
+    connectSession();
+    subscribe(() => {});
+    useFlowMapStore.setState({ sessionId: 'sess-1', status: 'live' });
+    // 100 sequenced prints over 100 buckets: more than the 64-entry sequence window,
+    // so the window alone cannot stop a re-sent tail from merging again.
+    const tape = Array.from({ length: 100 }, (_, i) =>
+      Object.assign(trade(BigInt(i) * 60_000_000_000n, 100 + (i % 7), 1 + (i % 3)), { seq: i + 1 }),
+    );
+    for (const tr of tape) ingestForTest(tr);
+    const first = getSnapshot();
+    expect(first.candles.reduce((n, c) => n + c.trades, 0)).toBe(100);
+
+    // The socket drops, and the same session's Hello returns with the attach snapshot.
+    useFlowMapStore.setState({ status: 'reconnecting' });
+    useFlowMapStore.setState({ status: 'live' });
+    for (const tr of tape) ingestForTest(tr);
+
+    const again = getSnapshot();
+    expect(again.candles).toEqual(first.candles);
+    expect(again.sessionEpoch).toBe(first.sessionEpoch + 1);
+  });
+
+  it('a return to live after an explicit close resets the ring too', () => {
+    connectSession();
+    subscribe(() => {});
+    useFlowMapStore.setState({ sessionId: 'sess-1', status: 'live' });
+    ingestForTest(trade(0n, 100));
+    expect(getSnapshot().candles.length).toBe(1);
+    // Closed, then re-opened by connect(): the same session's attach snapshot follows.
+    useFlowMapStore.setState({ status: 'closed' });
+    useFlowMapStore.setState({ status: 'live' });
+    expect(getSnapshot().candles.length).toBe(0);
+  });
+
+  it('every Hello resets the ring, a same-session reconnect included (attachEpoch)', () => {
+    connectSession();
+    subscribe(() => {});
+    useFlowMapStore.setState({ sessionId: 'sess-1', status: 'live' });
+    ingestForTest(trade(0n, 100));
+    const epoch = getSnapshot().sessionEpoch;
+    // A Hello for the same session: no status edge and no session id change.
+    useFlowMapStore.setState({ attachEpoch: useFlowMapStore.getState().attachEpoch + 1 });
+    expect(getSnapshot().candles.length).toBe(0);
+    expect(getSnapshot().sessionEpoch).toBe(epoch + 1);
+  });
+
+  it('a reconnect re-sends the 500-trade attach tail, and every trade counts once', () => {
+    connectSession();
+    subscribe(() => {});
+    useFlowMapStore.setState({ sessionId: 'sess-1', status: 'live' });
+    const tail = Array.from({ length: 500 }, (_, i) =>
+      Object.assign(trade(BigInt(i) * 1_000_000_000n, 100 + (i % 5), 1), { seq: i + 1 }),
+    );
+    for (const tr of tail) ingestForTest(tr);
+    const tradesOf = (): number => getSnapshot().candles.reduce((n, c) => n + c.trades, 0);
+    const volumeOf = (): number => getSnapshot().candles.reduce((n, c) => n + c.v, 0);
+    expect(tradesOf()).toBe(500);
+
+    useFlowMapStore.setState({ status: 'reconnecting' });
+    useFlowMapStore.setState({ status: 'live', attachEpoch: useFlowMapStore.getState().attachEpoch + 1 });
+    for (const tr of tail) ingestForTest(tr);
+    expect(tradesOf()).toBe(500);
+    expect(volumeOf()).toBe(500);
+  });
+
+  it('the first live status after connecting is not a reconnect and keeps the ring', () => {
+    connectSession();
+    subscribe(() => {});
+    useFlowMapStore.setState({ sessionId: 'sess-1', status: 'connecting' });
+    ingestForTest(trade(0n, 100));
+    const epoch = getSnapshot().sessionEpoch;
+    useFlowMapStore.setState({ status: 'live' });
+    expect(getSnapshot().candles.length).toBe(1);
+    expect(getSnapshot().sessionEpoch).toBe(epoch);
   });
 });
 

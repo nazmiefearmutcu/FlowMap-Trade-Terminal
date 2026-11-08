@@ -1,5 +1,5 @@
 /**
- * Time axis (§9: time axis bottom), M2 T10.
+ * Time axis along the bottom edge.
  *
  * A thin bottom gutter whose `<canvas>` the {@link Renderer} draws wall-clock time
  * ticks into every dirty frame (see gl/overlays/axes.ts `drawTimeAxis`), derived

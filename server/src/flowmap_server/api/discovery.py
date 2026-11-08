@@ -9,6 +9,8 @@
   is behind the TTL-debounced :class:`~flowmap_server.api.market_cache.MarketDataCache`
   on ``app.state.market_cache`` (injectable; canned in tests). A closed/stale
   equity value is surfaced as ``stale`` — never presented as a live NBBO print.
+  A cache miss makes the request await one provider fetch; a usable cached value
+  is returned at once and refreshed in the background when it is stale.
 - ``/api/previews`` reads the bounded cache and startup-warmup progress only;
   it never starts provider work.
 
@@ -18,8 +20,11 @@ real app), movers/quote degrade to empty/unreachable rather than 500.
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Request
 
+from flowmap_server.api.errors import ApiError
 from flowmap_server.api.market_cache import (
     MarketDataCache,
     QuoteData,
@@ -43,10 +48,37 @@ _MOVERS_DEFAULT = 20
 _MOVERS_MAX = 100
 _UNIVERSE_DEFAULT = 100
 _UNIVERSE_MAX = 1000
+# Movers ranks one of exactly two pools (see market_cache.default_movers_fn).
+# Any other string used to fall through to Binance and come back labelled
+# as Binance with a 200, so it is refused here instead.
+_MOVERS_MARKETS = frozenset({"crypto", "equity"})
+# Quote markets: the two pools, the sim feed (answers honestly unreachable),
+# or a venue the build can serve.
+_QUOTE_SIMPLE_MARKETS = frozenset({"crypto", "equity", "sim"})
+# A symbol is a short ticker or pair: letters, digits and the separators venues
+# use (BRK.B, BTC/USDT, BTC-PERP, ^GSPC, ETH:USDC). Anything else is refused
+# before it can reach an upstream request or a cache key.
+_SYMBOL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:+=^-]{0,63}")
 
 
 def _cache(request: Request) -> MarketDataCache | None:
     return getattr(request.app.state, "market_cache", None)
+
+
+def _invalid(detail: str, code: str = "invalid_params") -> ApiError:
+    return ApiError(422, code, detail)
+
+
+def _check_symbol(symbol: str) -> None:
+    if not _SYMBOL_PATTERN.fullmatch(symbol):
+        raise _invalid(f"invalid symbol {symbol[:80]!r}: 1-64 letters, digits or . _ / : + = ^ -",
+                       code="invalid_symbol")
+
+
+def _check_quote_market(market: str) -> None:
+    if market in _QUOTE_SIMPLE_MARKETS or is_crypto_market(market):
+        return
+    raise _invalid(f"unknown market {market[:80]!r}", code="unknown_market")
 
 
 @router.get("/venues")
@@ -62,7 +94,7 @@ async def venues() -> dict[str, list[dict[str, object]]]:
 
 @router.get("/universe")
 async def universe(
-    market: str = "all", q: str = "", limit: int = _UNIVERSE_DEFAULT
+    request: Request, market: str = "all", q: str = "", limit: int = _UNIVERSE_DEFAULT
 ) -> dict[str, list[dict[str, object]]]:
     """Symbol universe: ``market`` = all|crypto|equity|sim, or a venue string.
 
@@ -74,15 +106,21 @@ async def universe(
     """
     n = max(1, min(limit, _UNIVERSE_MAX))
     if market not in ("", "all", "crypto", "equity", "sim") and is_crypto_market(market):
-        entries = await _venue_entries(market, q=q, limit=n)
+        entries = await _venue_entries(market, q=q, limit=n, cfg=_app_config(request))
         if entries is not None:
             return {"symbols": entries}
     entries = filter_directory(current_directory(), q=q, market=market, limit=n)
     return {"symbols": entries}
 
 
+def _app_config(request: Request) -> Config:
+    """The config the running app was built with (the one its subscribes use)."""
+    cfg = getattr(request.app.state, "cfg", None)
+    return cfg if isinstance(cfg, Config) else Config()
+
+
 async def _venue_entries(
-    market: str, *, q: str, limit: int
+    market: str, *, q: str, limit: int, cfg: Config | None = None
 ) -> list[dict[str, object]] | None:
     """Live-enumerated rows for one venue, or ``None`` when it served nothing."""
     symbols = await venue_symbols(market)
@@ -92,10 +130,12 @@ async def _venue_entries(
     # once already (it omitted the liquidation marker that a binance-usdm
     # subscribe really delivers), and the directory promising less — or more —
     # than a subscribe returns is exactly the dishonesty the capability block
-    # exists to prevent. Same trick as rest._equity_capability.
+    # exists to prevent. Same trick as rest._equity_capability. The feed gets the
+    # app's OWN config: a default Config() ignored operator overrides (such as
+    # FLOWMAP_BOOK_TOP_N), so the directory could not match the live subscribe.
     exchange, segment = split_market(market)
     capability = CryptoFeed(
-        exchange=exchange, symbol="", market=segment, cfg=Config()
+        exchange=exchange, symbol="", market=segment, cfg=cfg or Config()
     ).capability
     needle = q.lower()
     out: list[dict[str, object]] = []
@@ -113,6 +153,9 @@ async def movers(
     request: Request, market: str = "crypto", limit: int = _MOVERS_DEFAULT
 ) -> dict[str, list[dict[str, object]]]:
     """Top movers for a market, ranked by |24 h %change| (display-only)."""
+    if market not in _MOVERS_MARKETS:
+        raise _invalid(f"market must be one of {sorted(_MOVERS_MARKETS)}; got {market[:80]!r}",
+                       code="unknown_market")
     n = max(1, min(limit, _MOVERS_MAX))
     cache = _cache(request)
     if cache is None:
@@ -123,7 +166,12 @@ async def movers(
 
 @router.get("/quote")
 async def quote(request: Request, market: str, symbol: str) -> dict[str, object]:
-    """Single-symbol display-only quote (price + 24 h change + spark)."""
+    """Single-symbol display-only quote (price + 24 h change + spark).
+
+    Awaits one provider fetch on a cache miss (see ``MarketDataCache.quote``).
+    """
+    _check_quote_market(market)
+    _check_symbol(symbol)
     cache = _cache(request)
     if cache is None:
         q = QuoteData(market=market, symbol=symbol.upper(), reachable=False, stale=True)

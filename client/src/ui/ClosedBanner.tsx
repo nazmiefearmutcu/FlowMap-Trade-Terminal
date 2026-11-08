@@ -1,13 +1,13 @@
 /**
- * Closed-market banner (§7.1 equity session model).
+ * Closed-market banner (equity session model).
  *
  * When the server reports a terminal `Status{feed_state='closed', next_open_ts}`
  * (an equity RTH window that is closed — nights, weekends, holidays) the store
  * surfaces `feedState==='closed'` + `nextOpenTs`. This small, unobtrusive banner
  * (near-black, amber accent) then overlays the stage with "MARKET CLOSED" and a
  * live countdown to the next open. It is HONEST: it never implies a live feed —
- * the last session's SYNTH warmup profile stays visible behind it (spec §7.1
- * "no empty-column accumulation"), and the banner just states the closed state.
+ * the last session's SYNTH warmup profile stays visible behind it (no
+ * empty-column accumulation), and the banner just states the closed state.
  *
  * Only mounts its 1 Hz ticker while closed; renders nothing otherwise (the vast
  * majority of the time — crypto is 24/7, equities are open during RTH), so there
@@ -22,11 +22,12 @@ import { useFlowMapStore } from '../state/store';
 
 /**
  * Format a positive remaining-millisecond span as `HH:MM:SS`, prefixed with
- * `Nd ` when it exceeds a day (a weekend gap to Monday's open is ~2 days).
- * Non-finite / non-positive spans read `00:00:00` (opening imminently). Pure —
- * unit-tested without React or a clock.
+ * `N<dayUnit> ` when it exceeds a day (a weekend gap to Monday's open is ~2 days).
+ * `dayUnit` is the UI's own day suffix (`d` in English, `g` in Turkish); the
+ * component passes it through t(). Non-finite / non-positive spans read
+ * `00:00:00` (opening imminently). Pure — unit-tested without React or a clock.
  */
-export function formatCountdown(remainingMs: number): string {
+export function formatCountdown(remainingMs: number, dayUnit = 'd'): string {
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) return '00:00:00';
   const totalSec = Math.floor(remainingMs / 1000);
   const days = Math.floor(totalSec / 86_400);
@@ -35,7 +36,7 @@ export function formatCountdown(remainingMs: number): string {
   const s = totalSec % 60;
   const pad = (n: number): string => String(n).padStart(2, '0');
   const hms = `${pad(h)}:${pad(m)}:${pad(s)}`;
-  return days > 0 ? `${days}d ${hms}` : hms;
+  return days > 0 ? `${days}${dayUnit} ${hms}` : hms;
 }
 
 export function ClosedBanner(): JSX.Element | null {
@@ -56,7 +57,7 @@ export function ClosedBanner(): JSX.Element | null {
     return () => window.clearInterval(id);
   }, [closed]);
 
-  // Terminal refusal (server contract: pre-close Status feed_state='closed' +
+  // Terminal refusal (pre-close Status feed_state='closed' +
   // close 1003): NO feed exists for this market — not an RTH-closed market that
   // still has a feed. There is no countdown and no reconnection to wait for;
   // state the truth and stop.
@@ -97,7 +98,7 @@ export function ClosedBanner(): JSX.Element | null {
           aria-live="off"
           data-testid="closed-countdown"
         >
-          {t('banner.opensIn', { time: formatCountdown(remainingMs) })}
+          {t('banner.opensIn', { time: formatCountdown(remainingMs, t('unit.d')) })}
         </span>
       )}
     </div>

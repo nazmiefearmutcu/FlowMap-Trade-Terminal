@@ -48,6 +48,23 @@ export class WireError extends Error {
   }
 }
 
+/**
+ * The envelope carries a protocol version this build does not speak. Unlike other
+ * wire errors this is not a transient glitch: every later frame of that server
+ * fails the same way, so the transport treats it as fatal instead of retrying.
+ */
+export class ProtocolVersionError extends WireError {
+  readonly got: number;
+  readonly expected: number;
+
+  constructor(got: number, expected: number = PROTO_VER) {
+    super(`protocol version mismatch: got ${got}, expected ${expected}`);
+    this.name = 'ProtocolVersionError';
+    this.got = got;
+    this.expected = expected;
+  }
+}
+
 export interface DecodeResult {
   msg: Msg | null;
   next: number;
@@ -56,7 +73,7 @@ export interface DecodeResult {
 const ENVELOPE_SIZE = 8;
 const DEPTH_HDR = 24; // <IIqBBHI>
 const BAR_SIZE = 88; // <IIqddddddddd>
-const TRADE_HDR = 28; // <qddBBBB>
+const TRADE_HDR = 28; // <qddBBH>
 const BBO_SIZE = 40; // <qdddd>
 const PING_SIZE = 8; // <q>
 const PONG_SIZE = 16; // <qq>
@@ -216,14 +233,16 @@ function decTrade(view: DataView, off: number, plen: number): Trade {
   const size = view.getFloat64(off + 16, true);
   const side = view.getUint8(off + 24);
   const side_src = view.getUint8(off + 25);
-  // off + 26, off + 27: two u8 pads (ignored)
+  const seq = view.getUint16(off + 26, true); // per-session ingest sequence; 0 = unknown
   const vlenOff = off + TRADE_HDR;
   const vlen = view.getUint8(vlenOff);
   if (TRADE_HDR + 1 + vlen > plen) {
     throw new WireError(`TRADE venue overruns payload_len: ${TRADE_HDR + 1}+${vlen} > ${plen}`);
   }
   const venue = decodeUtf8(view, vlenOff + 1, vlen);
-  return { type: MsgType.TRADE, ts_ns, price, size, side, side_src, venue };
+  const trade: Trade = { type: MsgType.TRADE, ts_ns, price, size, side, side_src, venue };
+  if (seq !== 0) trade.seq = seq;
+  return trade;
 }
 
 function decBbo(view: DataView, off: number, plen: number): BBO {
@@ -342,26 +361,6 @@ function decGex(view: DataView, off: number, plen: number): GexLevelUpdate {
   };
 }
 
-export interface GexLevelEvent {
-  symbol: string;
-  spotPrice: number;
-  gammaFlip: number;
-  callWall: number;
-  putWall: number;
-  netGex: number;
-}
-
-export function decodeGexEvent(view: DataView, offset: number): GexLevelEvent {
-  return {
-    symbol: "AAPL",
-    spotPrice: view.getFloat64(offset, true),
-    gammaFlip: view.getFloat64(offset + 8, true),
-    callWall: view.getFloat64(offset + 16, true),
-    putWall: view.getFloat64(offset + 24, true),
-    netGex: view.getFloat64(offset + 32, true),
-  };
-}
-
 type HotDecoder = (view: DataView, off: number, plen: number) => Msg;
 
 const HOT_DECODERS: Partial<Record<number, HotDecoder>> = {
@@ -392,6 +391,75 @@ const COLD_IDS = new Set<number>([
   MsgType.MACRO_STRESS,
 ]);
 
+/** A parsed JSON value that is an object (not null, not an array). */
+function isJsonObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** The epoch geometry carried by Hello and EpochStart (see EpochParams). */
+function isEpochParamsShape(v: unknown): boolean {
+  if (!isJsonObject(v)) return false;
+  return ['epoch', 'tick', 'tick_multiple', 'dt_ns', 'p0', 'rows'].every((k) => typeof v[k] === 'number');
+}
+
+/** A JSON number, or an optional field the server leaves null or absent. */
+function isOptionalNumber(v: unknown): boolean {
+  return v === undefined || v === null || typeof v === 'number';
+}
+
+/**
+ * Field-level check for the cold messages the client routes by field, so a
+ * malformed payload fails here instead of deep in the store. The lossless parse
+ * turns every integer `_ns` field into a bigint, so timestamps are checked as
+ * bigint. Other cold types are checked only for being a JSON object (see
+ * {@link decode}).
+ */
+function hasColdPayloadShape(msgType: number, o: Record<string, unknown>): boolean {
+  switch (msgType) {
+    case MsgType.HELLO:
+      return (
+        typeof o.protocol_version === 'number' &&
+        typeof o.session_id === 'string' &&
+        typeof o.grid_epoch === 'number' &&
+        typeof o.norm_seed === 'number' &&
+        isJsonObject(o.capability) &&
+        isEpochParamsShape(o.epoch_params)
+      );
+    case MsgType.EPOCH_START:
+      return typeof o.epoch === 'number' && isEpochParamsShape(o.epoch_params);
+    case MsgType.STATUS:
+      return (
+        typeof o.feed_state === 'string' &&
+        isJsonObject(o.capability) &&
+        typeof o.latency_ms === 'number' &&
+        typeof o.clock_skew_ms === 'number' &&
+        (o.next_open_ts === undefined || o.next_open_ts === null || typeof o.next_open_ts === 'bigint')
+      );
+    case MsgType.MARKER:
+      return (
+        typeof o.ts_ns === 'bigint' &&
+        typeof o.kind === 'string' &&
+        typeof o.text === 'string' &&
+        isOptionalNumber(o.price) &&
+        isOptionalNumber(o.size)
+      );
+    case MsgType.MARKET_INTELLIGENCE:
+      return (
+        typeof o.ts_ns === 'bigint' &&
+        ['kind', 'symbol', 'headline', 'detail', 'source'].every((k) => typeof o[k] === 'string') &&
+        isOptionalNumber(o.amount_usd)
+      );
+    case MsgType.MACRO_STRESS:
+      return (
+        typeof o.ts_ns === 'bigint' &&
+        ['sofr', 'hy_spread', 'yield_10y2y', 'stress_score'].every((k) => typeof o[k] === 'number') &&
+        typeof o.status === 'string'
+      );
+    default:
+      return true;
+  }
+}
+
 // --- public API ----------------------------------------------------------------
 
 /**
@@ -407,7 +475,7 @@ export function decode(view: DataView, offset = 0): DecodeResult {
   const flags = view.getUint16(offset + 2, true);
   const plen = view.getUint32(offset + 4, true);
   if (ver !== PROTO_VER) {
-    throw new WireError(`protocol version mismatch: got ${ver}, expected ${PROTO_VER}`);
+    throw new ProtocolVersionError(ver, PROTO_VER);
   }
   const payloadOff = offset + ENVELOPE_SIZE;
   if (payloadOff + plen > view.byteLength) {
@@ -426,10 +494,15 @@ export function decode(view: DataView, offset = 0): DecodeResult {
     } catch (e) {
       throw new WireError(`malformed 0x${msgType.toString(16)} JSON payload: ${(e as Error).message}`);
     }
-    if (parsed === null || typeof parsed !== 'object') {
+    if (!isJsonObject(parsed)) {
       throw new WireError(`malformed 0x${msgType.toString(16)} JSON payload: not an object`);
     }
-    const msg = { type: msgType, ...(parsed as Record<string, unknown>) } as unknown as Msg;
+    if (!hasColdPayloadShape(msgType, parsed)) {
+      throw new WireError(`malformed 0x${msgType.toString(16)} JSON payload: field shape`);
+    }
+    // The JSON keys are the wire fields; the shape was checked above for the
+    // types the client routes by field, and the rest are trusted by type only.
+    const msg = { type: msgType, ...parsed } as unknown as Msg;
     return { msg, next };
   }
 
@@ -440,29 +513,55 @@ export function decode(view: DataView, offset = 0): DecodeResult {
   return { msg: dec(view, payloadOff, plen), next };
 }
 
+/** A frame decoded as far as it could go: the valid prefix plus the first error (if any). */
+export interface PartialFrame {
+  msgs: Msg[];
+  /** The error that stopped the decode, or null when the whole frame decoded. */
+  error: WireError | null;
+}
+
 /**
- * Decode a whole frame (one or more concatenated messages) into a list.
- * Unknown message types are skipped (not appended). Iteration stops when the
- * cursor reaches — or, under the stripped-pad leniency, passes — the buffer end.
+ * Decode a frame, keeping every message decoded BEFORE a malformed one. A bad
+ * trailing message must not discard the valid messages in front of it (they are
+ * real finalized columns, trades and BBO prints); the caller routes `msgs` and
+ * decides what the error means. Unknown message types are skipped (not
+ * appended). Iteration stops when the cursor reaches — or, under the
+ * stripped-pad leniency, passes — the buffer end.
  */
-export function decodeFrame(buf: ArrayBuffer | Uint8Array): Msg[] {
+export function decodeFramePartial(buf: ArrayBuffer | Uint8Array): PartialFrame {
   const view =
     buf instanceof Uint8Array
       ? new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
       : new DataView(buf);
-  const out: Msg[] = [];
+  const msgs: Msg[] = [];
   let off = 0;
-  while (off < view.byteLength) {
-    const { msg, next } = decode(view, off);
-    if (msg !== null) {
-      out.push(msg);
+  try {
+    while (off < view.byteLength) {
+      const { msg, next } = decode(view, off);
+      if (msg !== null) {
+        msgs.push(msg);
+      }
+      // decode always advances by at least the 8-byte envelope, so this strictly
+      // increases; the guard is defensive against a future zero-length regression.
+      if (next <= off) {
+        throw new WireError('decode did not advance');
+      }
+      off = next;
     }
-    // decode always advances by at least the 8-byte envelope, so this strictly
-    // increases; the guard is defensive against a future zero-length regression.
-    if (next <= off) {
-      throw new WireError('decode did not advance');
-    }
-    off = next;
+  } catch (err) {
+    const error = err instanceof WireError ? err : new WireError(String(err));
+    return { msgs, error };
   }
-  return out;
+  return { msgs, error: null };
+}
+
+/**
+ * Decode a whole frame (one or more concatenated messages) into a list. Throws
+ * on the first malformed message; use {@link decodeFramePartial} to keep the
+ * valid prefix.
+ */
+export function decodeFrame(buf: ArrayBuffer | Uint8Array): Msg[] {
+  const { msgs, error } = decodeFramePartial(buf);
+  if (error !== null) throw error;
+  return msgs;
 }

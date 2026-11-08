@@ -2,11 +2,13 @@ import { COLORMAP_CATALOG, resolveAppearance } from '../theme/appearance';
 import { setThemeStops } from './lut';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Renderer } from './renderer';
-import type { CameraController } from '../input/gestures';
+import { CONTEXT_LOST_MESSAGE, Renderer } from './renderer';
+import { releaseHeatmapProgram } from './heatmapProgram';
+import { setTimeZonePref } from '../i18n/format';
 import { makeFake2D, makeFakeGL, type FakeGL } from './mockGL';
-import { clearColorForRamp } from './lut';
-import { MsgType, MODE_L2, type DepthColumn, type HistoryOverviewRequest, type HistoryResponse } from '../proto/types';
+import { clearColorForRamp, RAMP_FLOW, RAMP_SYNTH } from './lut';
+import { MsgType, MODE_L2, type BarColumn, type DepthColumn, type HistoryOverviewRequest, type HistoryResponse } from '../proto/types';
+import { OverlayManager } from './overlays/manager';
 import type { StreamMsg } from '../net/connection';
 import { makeHybrid, priceToRow, rowToPrice, type PriceScale } from './priceScale';
 import { accumulateProfile } from './overlays/profile';
@@ -16,7 +18,7 @@ import { THEMES, THEME_IDS } from '../theme';
  * Renderer unit tests over a RECORDING fake GL (see mockGL.ts). Pixels are the
  * browser e2e's job (testHook.ts); these pin the CPU behavior around the GL
  * calls: which columns fold into the normalizer, whether one GL error kills the
- * rAF loop, what the clear color is, and the snapshot() contract.
+ * rAF loop, what the clear color is, and the snapshot contract.
  */
 
 const ROWS = 8;
@@ -185,7 +187,7 @@ describe('Renderer (fake GL harness)', () => {
     r.dispose();
   });
 
-  // --- B-1: the normalizer folds FINAL columns exactly once --------------------
+  // --- the normalizer folds FINAL columns exactly once --------------------
 
   it('releases startup presentation only after a real draw of the current session', () => {
     const { r, store } = makeRenderer();
@@ -314,6 +316,146 @@ describe('Renderer (fake GL harness)', () => {
     r.dispose();
   });
 
+  it('timeline() reports the resident oldest column, not the session origin', () => {
+    const { r, store } = makeRenderer();
+    for (let s = 40; s <= 44; s++) store.emit(makeCol(s, true));
+    expect(r.residentRange()?.oldest).toBe(40);
+    expect(r.timeline()?.oldestSeq).toBe(40);
+    expect(r.timeline()?.newestSeq).toBe(44);
+    r.dispose();
+  });
+
+  it('a devicePixelRatio change with no CSS resize re-sizes the backing store and re-arms the watch', () => {
+    // jsdom has no matchMedia: model a `(resolution)` query that fires on change.
+    type Q = { media: string; listeners: Array<() => void>; addEventListener: (t: string, fn: () => void) => void; removeEventListener: (t: string, fn: () => void) => void };
+    const queries: Q[] = [];
+    const matchMedia = vi.fn((media: string): Q => {
+      const q: Q = {
+        media,
+        listeners: [],
+        addEventListener: (_t, fn) => { q.listeners.push(fn); },
+        removeEventListener: (_t, fn) => { q.listeners = q.listeners.filter((l) => l !== fn); },
+      };
+      queries.push(q);
+      return q;
+    });
+    const dpr0 = window.devicePixelRatio;
+    const mm0 = (window as unknown as { matchMedia?: unknown }).matchMedia;
+    Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: matchMedia });
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: 2 });
+    try {
+      const { r, canvas } = makeRenderer();
+      expect(matchMedia).toHaveBeenLastCalledWith('(resolution: 2dppx)');
+      expect(canvas.width).toBe(2); // 1 CSS px × DPR 2 (jsdom has no layout)
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: 3 });
+      for (const fn of [...queries[queries.length - 1].listeners]) fn(); // the monitor moved
+      expect(canvas.width).toBe(3);
+      expect(matchMedia).toHaveBeenLastCalledWith('(resolution: 3dppx)');
+      // The stale query was detached when the watch was re-armed.
+      expect(queries[0].listeners).toHaveLength(0);
+      r.dispose();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: dpr0 });
+      Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: mm0 });
+    }
+  });
+
+  it('retryRender clears a recorded render failure so the fallback can stand down', () => {
+    const { r } = makeRenderer();
+    (r as unknown as { frameLoop: { renderFailure: string | null } }).frameLoop.renderFailure = 'Program object expected';
+    expect(r.getRenderFailure()).toBe('Program object expected');
+    r.retryRender();
+    expect(r.getRenderFailure()).toBeNull();
+    r.dispose();
+  });
+
+  it('a shader that never links is reported with its log, held after one retry, and recovers on retryRender', () => {
+    const { r } = makeRenderer();
+    // Drop the compiled heatmap program, then make every new link fail.
+    releaseHeatmapProgram(gl);
+    const linkFail = vi.spyOn(gl, 'getProgramParameter').mockImplementation((_p, key) => key !== gl.LINK_STATUS);
+    vi.spyOn(gl, 'getProgramInfoLog').mockReturnValue('0:1: syntax error');
+    pump(16); // the first automatic attempt fails
+    expect(r.getRenderFailure()).toContain('syntax error');
+    pump(32); // the second consecutive failure holds the loop
+    const links = gl.callsOf('linkProgram').length;
+    pump(48);
+    pump(64);
+    expect(gl.callsOf('linkProgram')).toHaveLength(links); // no per-frame recompile while held
+    expect(r.getRenderFailure()).toContain('syntax error');
+
+    linkFail.mockRestore();
+    r.retryRender();
+    expect(r.getRenderFailure()).toBeNull();
+    pump(80);
+    expect(r.getRenderFailure()).toBeNull();
+    expect(gl.callsOf('linkProgram').length).toBeGreaterThan(links);
+    r.dispose();
+  });
+
+  it('a lost GL context is a render failure until the context is restored', () => {
+    const { r, canvas } = makeRenderer();
+    expect(r.getRenderFailure()).toBeNull();
+    canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+    expect(r.getRenderFailure()).toBe(CONTEXT_LOST_MESSAGE);
+    // Retry cannot draw through a lost context: the failure stays reported.
+    r.retryRender();
+    expect(r.getRenderFailure()).toBe(CONTEXT_LOST_MESSAGE);
+    canvas.dispatchEvent(new Event('webglcontextrestored'));
+    expect(r.getRenderFailure()).toBeNull();
+    r.dispose();
+  });
+
+  it('a rebuild that throws on restore is the render failure and never escapes the listener', () => {
+    vi.useFakeTimers();
+    try {
+      const { r, canvas } = makeRenderer();
+      vi.spyOn(r as unknown as { recreateGL(): void }, 'recreateGL').mockImplementation(() => {
+        throw new Error('restore rebuild failed');
+      });
+      canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+      expect(() => canvas.dispatchEvent(new Event('webglcontextrestored'))).not.toThrow();
+      expect(r.getRenderFailure()).toBe('restore rebuild failed');
+      // The async re-throw is the devtools surface; drop it so this test stays quiet.
+      vi.clearAllTimers();
+      r.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports reduced density when EXT_color_buffer_float is absent', () => {
+    const { r } = makeRenderer(); // default fake GL has no float colour buffers
+    expect(r.isReducedDensity()).toBe(true);
+    r.dispose();
+  });
+
+  it('exposes the one cached device-pixel ratio the backing store was sized for', () => {
+    const dpr0 = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: 2 });
+    try {
+      const { r, canvas } = makeRenderer();
+      expect(r.devicePixelRatio).toBe(2);
+      expect(canvas.width).toBe(2);
+      r.dispose();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: dpr0 });
+    }
+  });
+
+  it('a poisoned devicePixelRatio degrades to 1 in the renderer cache', () => {
+    const dpr0 = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: Number.NaN });
+    try {
+      const { r, canvas } = makeRenderer();
+      expect(r.devicePixelRatio).toBe(1);
+      expect(canvas.width).toBe(1);
+      r.dispose();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: dpr0 });
+    }
+  });
+
   it('manual price zoom is free while explicit fit frames the actual historical market', () => {
     const { r, store } = makeRenderer();
     const scale = makeHybrid({ mid: 85505, rows: 4096, coreRows: 2048, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;
@@ -370,7 +512,7 @@ describe('Renderer (fake GL harness)', () => {
     r.setPriceFollow('off');
     r.zoomPriceForTest(5);
     const price = r.viewSnapshot;
-    const ctrl = (r as unknown as { makeController(): CameraController }).makeController();
+    const ctrl = r.makeController();
     for (let step = 0; step < 3; step++) {
       if (input === 'wheel') ctrl.zoomTimeAtFraction(1e6, 0.75);
       else if (input === 'keyboard') ctrl.zoomTimeCentered(1e6);
@@ -394,6 +536,27 @@ describe('Renderer (fake GL harness)', () => {
     r.dispose();
   });
 
+  it('forwards the overview page AbortSignal to the request (state-08)', () => {
+    const { r, store } = makeRenderer();
+    const scale = makeHybrid({ mid: 100, rows: 256, coreRows: 128, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;
+    store.state.epochs = new Map([[0, { epoch: 0, tick: 0.01, tick_multiple: 1, dt_ns: DT_NS, p0: scale.coreP0, rows: scale.rows,
+      scale_kind: 1, dn_rows: scale.dnRows, core_rows: scale.coreRows, core_p0: scale.coreP0, core_step: scale.coreStep,
+      lo_price: scale.loPrice, hi_price: scale.hiPrice }]]);
+    const signals: unknown[] = [];
+    store.state.requestHistory = (...args: unknown[]) => {
+      if (args[2]) signals.push(args[3]);
+      return new Promise(() => undefined);
+    };
+    for (let seq = 0; seq < 1024; seq++) store.emit(makeCol(seq, true, scale.rows));
+    r.setPriceFollow('off');
+    r.setTimeWindowMs(null);
+    pump(16);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect((signals[0] as AbortSignal).aborted).toBe(false);
+    r.dispose();
+  });
+
   it.each(['wheel', 'keyboard', 'pan'] as const)('late overview completion preserves the frame after manual time %s', async input => {
     const { r, store } = makeRenderer();
     const scale = makeHybrid({ mid: 100, rows: 256, coreRows: 128, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;
@@ -408,7 +571,7 @@ describe('Renderer (fake GL harness)', () => {
     r.setTimeWindowMs(null);
     pump(16);
     expect(r.overviewStats()?.inFlight).toBe(true);
-    const ctrl = (r as unknown as { makeController(): CameraController }).makeController();
+    const ctrl = r.makeController();
     if (input === 'wheel') ctrl.zoomTimeAtFraction(1.05, 0.5);
     else if (input === 'keyboard') ctrl.zoomTimeCentered(1.05);
     else ctrl.panTimeSteps(-1);
@@ -581,7 +744,7 @@ describe('Renderer (fake GL harness)', () => {
     const { r, store } = makeRenderer();
     for (let s = 0; s < 4; s++) store.emit(makeCol(s, true));
     const oldRing = (r as unknown as { ring: unknown }).ring;
-    (r as unknown as { overlayPriceMap(): unknown }).overlayPriceMap();
+    r.overlayPriceMap();
     store.state.sessionId = 'sess-2';
     (store.state.epochs as Map<number, Record<string, unknown>>).set(0,
       { epoch: 0, tick: .5, tick_multiple: 1, dt_ns: DT_NS, p0: 300, rows: ROWS });
@@ -730,7 +893,7 @@ describe('Renderer (fake GL harness)', () => {
     column.bid.fill(0); column.ask!.fill(0); column.bid[0] = .01; column.bid[1] = 1e6;
     store.emit(column);
     r.setViewForTest(0, 1, 0, 1);
-    (r as unknown as { updateNormalization(): void }).updateNormalization();
+    r.updateNormalization();
     expect(r.currentNorm).toBeGreaterThan(.009);
     expect(r.currentNorm).toBeLessThan(.012);
     r.dispose();
@@ -803,7 +966,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.normalizerForTest.totalSamples).toBe(4);
   });
 
-  // --- B-6: the clear color IS the ramp's LUT entry 0 ---------------------------
+  // --- the clear color IS the ramp's LUT entry 0 ---------------------------
 
   it('clears with the active ramp background (single source of truth, no reset flash)', () => {
     makeRenderer();
@@ -818,7 +981,7 @@ describe('Renderer (fake GL harness)', () => {
     }
   });
 
-  // --- B-3: one GL error must not kill the render loop --------------------------
+  // --- one GL error must not kill the render loop --------------------------
 
   it('reschedules the rAF loop after a throwing draw and surfaces the error once', () => {
     const { r, store } = makeRenderer();
@@ -903,7 +1066,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.validFromSeq).toBe(1000);
   });
 
-  // --- F24: a repaired skip band is refetched from the session grid ring ------
+  // --- a repaired skip band is refetched from the session grid ring ------
 
   /** Await the loader's async band refetch (requestHistory → splice loop). */
   const flushMicrotasks = async (): Promise<void> => {
@@ -1045,7 +1208,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.columnCacheForTest.has(15)).toBe(false);
   });
 
-  // --- B-7(d): the CPU column cache covers the ring (profile window honesty) ----
+  // --- the CPU column cache covers the ring (profile window honesty) ----
 
   it('keeps every resident column cached so the profile window matches residency', () => {
     const { r, store } = makeRenderer(4096); // ring 4096 > the old 2048 cache default
@@ -1062,7 +1225,7 @@ describe('Renderer (fake GL harness)', () => {
     }
   });
 
-  // --- B-9: snapshot() -----------------------------------------------------------
+  // --- snapshot() -----------------------------------------------------------
 
   it('snapshot() forces a synchronous frame then returns the PNG data URL', () => {
     const { r, canvas, store } = makeRenderer();
@@ -1091,7 +1254,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(toDataURL).not.toHaveBeenCalled();
   });
 
-  // --- C2: depth channel modes ---------------------------------------------------
+  // --- depth channel modes ---------------------------------------------------
 
   /** The u_channel value of every heatmap draw since `before`. */
   function channelValues(before: number): number[] {
@@ -1102,7 +1265,7 @@ describe('Renderer (fake GL harness)', () => {
       .map((c) => c.args[1] as number);
   }
 
-  it('C2: the default channel is sum (u_channel 0) on every draw', () => {
+  it('the default channel is sum (u_channel 0) on every draw', () => {
     const { r, store } = makeRenderer();
     store.emit(makeCol(0, true));
     const before = gl.callsOf('uniform1i').length;
@@ -1112,7 +1275,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(channelValues(before)).toEqual([0]);
   });
 
-  it('C2: setDepthChannel cycles u_channel; invalid values fall back to sum', () => {
+  it('setDepthChannel cycles u_channel; invalid values fall back to sum', () => {
     const { r, store } = makeRenderer();
     store.emit(makeCol(0, true));
     let before = gl.callsOf('uniform1i').length;
@@ -1137,9 +1300,9 @@ describe('Renderer (fake GL harness)', () => {
     expect(channelValues(before)).toEqual([0]);
   });
 
-  it('C2 honesty: a SYNTH session forces u_channel 0 whatever the user picked', () => {
+  it('a SYNTH session forces u_channel 0 whatever the user picked', () => {
     const { r, store } = makeRenderer();
-    store.state.capability = { depth: 'SYNTH' }; // §7 honesty tier
+    store.state.capability = { depth: 'SYNTH' }; // honesty tier
     store.emit(makeCol(0, true)); // MODE_L2 column, but capability says SYNTH
     r.setDepthChannel('imbalance');
     const before = gl.callsOf('uniform1i').length;
@@ -1162,6 +1325,59 @@ describe('Renderer (fake GL harness)', () => {
       expect(r.currentRamp).toBe(5);expect(internal.ring).toBe(before.ring);expect(internal.columnCache).toBe(before.cache);expect(internal.lut).toBe(before.lut);expect(internal.normalizer).toBe(before.normalizer);expect(internal.camera).toBe(before.camera);expect(r.viewSnapshot).toEqual(before.view);expect(r.residentRange()).toEqual(before.range);expect(r.following).toBe(before.follow);expect(r.priceFollow).toBe(before.price);
     }
     r.dispose();
+  });
+
+  it('pixel chart style survives every theme and colormap change, and normal restores', () => {
+    const { r, store } = makeRenderer();
+    store.emit(makeCol(0, true));
+    const lastPixelMode = (): unknown => {
+      const modes = gl
+        .callsOf('uniform1i')
+        .filter((c) => (c.args[0] as { uniform?: string } | null)?.uniform === 'u_pixelMode')
+        .map((c) => c.args[1]);
+      return modes[modes.length - 1];
+    };
+    r.setChartStyle('pixel');
+    for (const theme of THEME_IDS) {
+      for (const { id: family } of COLORMAP_CATALOG) {
+        r.setColormap(family);
+        r.setChartTheme(resolveAppearance(theme, family));
+        expect(r.getChartStyle(), `${theme}/${family}`).toBe('pixel');
+      }
+    }
+    pump(16);
+    expect(lastPixelMode()).toBe(1);
+    r.setChartStyle('normal');
+    pump(32);
+    expect(lastPixelMode()).toBe(0);
+    expect(r.getChartStyle()).toBe('normal');
+    r.dispose();
+  });
+
+  it('the time axis reads the Time zone choice, keeps sim on T+, and redraws on a change', () => {
+    const { r, store } = makeRenderer();
+    const internal = r as unknown as {
+      timeAxisClockFor(): { pref: string; exchangeZone: string } | null;
+      frameState: { dirty: boolean };
+    };
+    const sub = (market: string): unknown => ({ market, symbol: 'BTC-USD', mode: 'live', band: null });
+    try {
+      store.state.subscription = sub('binance-spot');
+      setTimeZonePref('utc');
+      expect(internal.timeAxisClockFor()).toEqual({ pref: 'utc', exchangeZone: 'UTC' });
+      setTimeZonePref('exchange');
+      store.state.subscription = sub('equity');
+      expect(internal.timeAxisClockFor()).toEqual({ pref: 'exchange', exchangeZone: 'America/New_York' });
+      store.state.subscription = sub('sim');
+      expect(internal.timeAxisClockFor()).toBeNull();
+      // A preference change re-arms the frame so the axis labels are redrawn.
+      internal.frameState.dirty = false;
+      setTimeZonePref('local');
+      expect(internal.frameState.dirty).toBe(true);
+    } finally {
+      setTimeZonePref('local');
+      r.dispose();
+    }
   });
 
   it('keeps synthetic depth in Sum for every themed synthetic ramp', () => {
@@ -1197,9 +1413,9 @@ describe('Renderer (fake GL harness)', () => {
     expect(n.whitePercentile).toBe(80);
   });
 
-  // --- C3: renderer.stats() ------------------------------------------------------
+  // --- renderer.stats ------------------------------------------------------
 
-  it('C3: stats() EMA-converges fps, counts uploads/draws, and reports cache bytes', () => {
+  it('stats() EMA-converges fps, counts uploads/draws, and reports cache bytes', () => {
     const { r, store } = makeRenderer();
     const s0 = r.stats();
     expect(s0.fps).toBe(0); // no frame yet
@@ -1233,8 +1449,8 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.stats().draws).toBeGreaterThanOrEqual(draws1);
   });
 
-  it('C3: cacheBytes grows only PAGE-WISE and is fixed once the touched pages stop growing', () => {
-    // Paged pool (fix 2026-09-10 F1-1): pages of 256 slots allocate once on
+  it('cacheBytes grows only page-wise and is fixed once the touched pages stop growing', () => {
+    // Paged pool: pages of 256 slots allocate once on
     // first touch; re-puts / ring wraps inside resident pages never allocate.
     const { r, store } = makeRenderer(512);
     for (let s = 0; s < 100; s++) store.emit(makeCol(s, true)); // page 0 only
@@ -1248,7 +1464,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.stats().cacheBytes).toBe(capped);
   });
 
-  // --- survey #6a: the normalization memo -----------------------------------------
+  // --- the normalization memo -----------------------------------------
 
   it('repeated dirty frames with an unchanged window do NOT re-merge tile histograms', () => {
     const { r, store } = makeRenderer();
@@ -1268,7 +1484,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(norm.mergeCount).toBeGreaterThan(mergesAfterFold);
   });
 
-  // --- campaign 4: tick grouping, prune guard, restore, frame ms, view seam -----
+  // --- tick grouping, prune guard, restore, frame ms, view seam -----
 
   /** The value of the LAST uniform1i call for a named uniform (GL transcript). */
   function lastUniform(name: string): unknown {
@@ -1290,7 +1506,7 @@ describe('Renderer (fake GL harness)', () => {
     });
   }
 
-  it('P1: tickGrouping floors the mip level; n=1 restores the natural selection', () => {
+  it('tickGrouping floors the mip level; n=1 restores the natural selection', () => {
     gl = makeFakeGL({ colorBufferFloat: true }); // mips exist → levels 0/1/2
     const { r, store, canvas } = makeRenderer();
     Object.defineProperty(canvas, 'clientWidth', { value: gl.drawingBufferWidth });
@@ -1329,20 +1545,20 @@ describe('Renderer (fake GL harness)', () => {
     expect(lastUniform('u_level')).toBe(1);
     expect(lastUniform('u_blk')).toBe(4);
 
-    // Clamp + n=1 identity: the coarsest representable block wins (R1-L2).
+    // Clamp + n=1 identity: the coarsest representable block wins.
     r.setTickGrouping(999);
     expect(r.getTickGrouping()).toBe(16);
     r.setTickGrouping(1);
     store.emit(makeCol(4, true, 512));
     pump(80);
-    // F10 (2026-09-14) moved ROW_MIP_EDGE 2.5 → 1.5 for the sampler coverage
+    // ROW_MIP_EDGE moved 2.5 → 1.5 for the sampler coverage
     // fix; at this view (rowScale 512 over the harness buffer) the natural
     // selection is now the ROW-MIP path itself: level 0, blk 4, rowFade > 0.
     expect(lastUniform('u_level')).toBe(0);
     expect(lastUniform('u_blk')).toBe(4);
   });
 
-  it('P1: the tick-grouping floor does NOT suppress history backfill', () => {
+  it('the tick-grouping floor does NOT suppress history backfill', () => {
     gl = makeFakeGL({ colorBufferFloat: true });
     const { r, store } = makeRenderer();
     setEpochRows(store, 512);
@@ -1369,7 +1585,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.currentMipLevel).toBe(2);
   });
 
-  it('B-2: overlay prune is skipped until the window edge moves beyond the pad', () => {
+  it('overlay prune is skipped until the window edge moves beyond the pad', () => {
     const { r, store } = makeRenderer();
     const overlays = (r as unknown as { overlays: { prune: (...a: number[]) => void } }).overlays;
     const spy = vi.spyOn(overlays, 'prune');
@@ -1387,7 +1603,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(spy.mock.calls[1][2]).toBe(64); // the pad is passed explicitly
   });
 
-  it('B-4: context restore keeps the user follow intent instead of re-arming it', () => {
+  it('context restore keeps the user follow intent instead of re-arming it', () => {
     const { r, store } = makeRenderer();
     store.emit(makeCol(0, true));
     pump(16);
@@ -1398,7 +1614,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.priceFollow).toBe('track'); // time release promotes fit → track
 
     // The webglcontextrestored handler (private; e2e drives it via loseContextForTest).
-    (r as unknown as { onContextRestored(): void }).onContextRestored();
+    r.onContextRestored();
     expect(r.contextRestoredCount).toBe(1);
     // Before the fix this was silently true again while the UI showed OFF.
     expect(r.following).toBe(false);
@@ -1413,14 +1629,14 @@ describe('Renderer (fake GL harness)', () => {
     r.setPriceFollow('off');
     r.setTolerance(50);
     const view = r.viewSnapshot;
-    (r as unknown as { onContextRestored(): void }).onContextRestored();
+    r.onContextRestored();
     expect(r.viewSnapshot).toEqual(view);
     expect(r.priceFollow).toBe('off');
     expect((r as unknown as { heatmap: { toleranceValue: number } }).heatmap.toleranceValue).toBe(50);
     r.dispose();
   });
 
-  it('B-5: stats().frameMs measures the FULL frame — the overlay pass included', () => {
+  it('stats().frameMs measures the FULL frame — the overlay pass included', () => {
     const { r, store } = makeRenderer();
     store.emit(makeCol(0, true));
     const overlays = (r as unknown as { overlays: { draw: (ctx: unknown) => void } }).overlays;
@@ -1473,14 +1689,66 @@ describe('Renderer (fake GL harness)', () => {
     warn.mockRestore();
   });
 
-  // --- chart bug-fix campaign (2026-09-11): B2 renderer + follow ---------------
+  it('an identical forming-bar repeat schedules no redraw and no price refit', () => {
+    const { r } = makeRenderer();
+    const frame = r.frameStateForTest;
+    const follow = r.followForTest;
+    const bar = (c: number): BarColumn => ({ type: MsgType.BAR_COL, epoch: 0, col_seq: 0, t0_ns: 0n, o: 100, h: c + 1, l: c - 1, c,
+      vol_buy: 1, vol_sell: 1, cvd_cum: 0, vwap_num_cum: 0, vwap_den_cum: 0 });
+    r.ingestForTest(bar(100));
+    frame.dirty = false;
+    follow.barPriceFitPending = false;
+    r.ingestForTest(bar(100)); // the server re-sends the forming bar on every flush tick
+    expect(frame.dirty).toBe(false);
+    expect(follow.barPriceFitPending).toBe(false);
+    r.ingestForTest(bar(101)); // a moved bar still redraws and refits the price
+    expect(frame.dirty).toBe(true);
+    expect(follow.barPriceFitPending).toBe(true);
+    r.dispose();
+  });
+
+  it('the crosshair readout flags a sim feed as session-clock time, and wall time otherwise', () => {
+    gl = makeFakeGL({ colorBufferFloat: true });
+    const { r, canvas, store } = makeRenderer();
+    Object.defineProperty(canvas, 'clientWidth', { value: 1000 });
+    Object.defineProperty(canvas, 'clientHeight', { value: 600 });
+    const sub = (market: string): unknown => ({ market, symbol: 'BTC-USD', mode: 'live', band: null });
+    store.emit(makeCol(0, true));
+    r.setViewForTest(0, 1, 0, ROWS);
+    store.state.subscription = sub('sim');
+    expect(r.probeAt(0, 300)?.sessionClock).toBe(true);
+    store.state.subscription = sub('binance-spot');
+    expect(r.probeAt(0, 300)?.sessionClock).toBe(false);
+    r.dispose();
+  });
+
+  it('zoomPriceCentered narrows the price span about the grid centre', () => {
+    const { r, store } = makeRenderer();
+    store.state.epochs = new Map([[0, { epoch: 0, tick: 0.5, tick_multiple: 1, dt_ns: DT_NS, p0: 100, rows: 64 }]]);
+    store.emit(makeCol(0, true, 64));
+    r.setPriceFollow('off');
+    r.setViewForTest(0, 1, 0, 64);
+    const before = r.viewSnapshot;
+    const centre = (v: { rowOffset: number; rowScale: number }): number => v.rowOffset + v.rowScale / 2;
+    r.zoomPriceCentered(0.5);
+    const zoomedIn = r.viewSnapshot;
+    expect(zoomedIn.rowScale).toBeLessThan(before.rowScale);
+    expect(centre(zoomedIn)).toBeCloseTo(centre(before), 6);
+    r.zoomPriceCentered(2);
+    expect(r.viewSnapshot.rowScale).toBeGreaterThan(zoomedIn.rowScale);
+    r.dispose();
+  });
+
+  // --- renderer and follow regressions ---------------
 
   interface PrivRenderer {
-    trackedRowN: number | null;
-    trackedEpoch: number | null;
-    priceEpoch: number | null;
-    forcedRemapFrom: unknown;
-    lastPriceMapCache: unknown;
+    follow: {
+      trackedRowN: number | null;
+      trackedEpoch: number | null;
+      priceEpoch: number | null;
+      forcedRemapFrom: unknown;
+    };
+    axis: { lastPriceMapCache: unknown };
     overlayPriceMap(): unknown;
     camera: { remapPrice(rowCenter: number, rowSpan: number): void };
   }
@@ -1517,7 +1785,7 @@ describe('Renderer (fake GL harness)', () => {
     };
   }
 
-  it('B2-CP1: liveEdgeVisible follows the newest column, not the follow mode', () => {
+  it('liveEdgeVisible follows the newest column, not the follow mode', () => {
     const { r, store } = makeRenderer();
     expect(r.liveEdgeVisible).toBe(false); // no column yet
     store.emit(makeCol(0, true));
@@ -1530,7 +1798,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.liveEdgeVisible).toBe(true);
   });
 
-  it('GO LIVE preserves the user TIME zoom exactly (owner contract 2026-09-14)', () => {
+  it('GO LIVE preserves the user TIME zoom exactly', () => {
     const { r, store } = makeRenderer();
     // Enough resident data that the preserved span is not clamped by the
     // available-column count (real sessions carry thousands).
@@ -1565,7 +1833,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.liveEdgeVisible).toBe(true);
   });
 
-  it('B2-CP1: resetOverlaysForNewSession rewinds cursors + clears ink but KEEPS the ring', () => {
+  it('resetOverlaysForNewSession rewinds cursors + clears ink but KEEPS the ring', () => {
     const { r, store } = makeRenderer();
     for (let s = 0; s < 5; s++) store.emit(makeCol(s, true));
     const overlays = overlaysOf(r);
@@ -1580,13 +1848,13 @@ describe('Renderer (fake GL harness)', () => {
     expect(resetSpy).toHaveBeenCalledTimes(1);
     expect(inkSpy).toHaveBeenCalledTimes(1);
     expect(r.newestColSeq).toBe(-1);
-    expect(priv(r).trackedRowN).toBeNull();
+    expect(priv(r).follow.trackedRowN).toBeNull();
     // Cursor-only: the resident ring (scrolled-back history) survives.
     expect(r.residentRange()).toEqual(range);
     expect(r.isResidentFullRes(0)).toBe(true);
   });
 
-  it('B2-H1/C3: resetForSession clears overlay ink + data even while the GL context is lost', () => {
+  it('resetForSession clears overlay ink + data even while the GL context is lost', () => {
     const { r, store } = makeRenderer();
     store.emit(makeCol(0, true));
     const overlays = overlaysOf(r);
@@ -1602,15 +1870,15 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.newestColSeq).toBe(-1); // cursors rewound even while lost
   });
 
-  it('B2-H2: recreateRingForRows clears the stale GL image when it rebuilds the ring', () => {
+  it('recreateRingForRows clears the stale GL image when it rebuilds the ring', () => {
     const { r, store } = makeRenderer();
     store.emit(makeCol(0, true));
     const clears = gl.callsOf('clear').length;
-    (r as unknown as { recreateRingForRows(rows: number): void }).recreateRingForRows(64);
+    r.recreateRingForRows(64);
     expect(gl.callsOf('clear').length).toBeGreaterThan(clears);
   });
 
-  it('B2-C2: drawOverlays clears leftover 2D ink when every overlay is off', () => {
+  it('drawOverlays clears leftover 2D ink when every overlay is off', () => {
     const { r, store } = makeRenderer();
     store.emit(makeCol(0, true));
     const overlays = overlaysOf(r);
@@ -1624,37 +1892,37 @@ describe('Renderer (fake GL harness)', () => {
       markers: false,
       axes: false,
       price: false,
-      volume: false, // F26 lane's strip: an explicit off, or anyVisible stays true
+      volume: false, // the volume strip: an explicit off, or anyVisible stays true
       gex: false,
     });
-    (r as unknown as { drawOverlays(): void }).drawOverlays();
+    r.drawOverlays();
     expect(inkSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('B2-C2: drawOverlays clears ink when neither the price nor the time map exists', () => {
+  it('drawOverlays clears ink when neither the price nor the time map exists', () => {
     const { r, store } = makeRenderer();
     const overlays = overlaysOf(r);
     const inkSpy = vi.fn();
     overlays.clearInk = inkSpy;
     (store.state as unknown as { gridEpoch: number | null }).gridEpoch = null; // no price affine
-    (r as unknown as { drawOverlays(): void }).drawOverlays();
+    r.drawOverlays();
     expect(inkSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('B2-D3: tracked row is epoch-scoped — no wing corruption across an epoch change', () => {
+  it('tracked row is epoch-scoped — no wing corruption across an epoch change', () => {
     const { r, store } = makeRenderer();
     setEpochRows(store, 64);
     store.emit(makeColAt(0, 0, 3, 4, 64)); // epoch-0 book, inside quote rows 3/4
-    expect(priv(r).trackedRowN).toBe(4);
-    expect(priv(r).trackedEpoch).toBe(0);
+    expect(priv(r).follow.trackedRowN).toBe(4);
+    expect(priv(r).follow.trackedEpoch).toBe(0);
 
     // The new epoch's first column arrives BEFORE its params are in the store:
     // remapPriceEpoch refuses to advance, and the tracked row must NOT be
-    // recorded from a book whose affine is still unknown (the D3 incident).
+    // recorded from a book whose affine is still unknown (the incident).
     store.emit(makeColAt(1, 1, 30, 31, 64));
-    expect(priv(r).priceEpoch).toBe(0); // no params → epoch not advanced
-    expect(priv(r).trackedRowN).toBe(4); // still the old epoch's row
-    expect(priv(r).trackedEpoch).toBe(0);
+    expect(priv(r).follow.priceEpoch).toBe(0); // no params → epoch not advanced
+    expect(priv(r).follow.trackedRowN).toBe(4); // still the old epoch's row
+    expect(priv(r).follow.trackedEpoch).toBe(0);
 
     // Params land. The stale row read through the new affine (p0 = −924) would
     // land at row 2052 of a 64-row grid — the exact wing-park. The fix drops
@@ -1668,17 +1936,17 @@ describe('Renderer (fake GL harness)', () => {
       rows: 64,
     });
     store.emit(makeColAt(2, 1, 40, 40, 64)); // same-row two-sided → 40.5
-    expect(priv(r).priceEpoch).toBe(1);
-    expect(priv(r).trackedRowN).toBe(40.5);
-    expect(priv(r).trackedEpoch).toBe(1);
+    expect(priv(r).follow.priceEpoch).toBe(1);
+    expect(priv(r).follow.trackedRowN).toBe(40.5);
+    expect(priv(r).follow.trackedEpoch).toBe(1);
   });
 
-  it('B2-D3: a remap with an unknown/mismatched trackedEpoch drops the row', () => {
+  it('a remap with an unknown/mismatched trackedEpoch drops the row', () => {
     const { r, store } = makeRenderer();
     setEpochRows(store, 64);
     store.emit(makeColAt(0, 0, 3, 4, 64));
-    expect(priv(r).trackedRowN).toBe(4);
-    priv(r).trackedEpoch = null; // legacy state with no epoch provenance
+    expect(priv(r).follow.trackedRowN).toBe(4);
+    priv(r).follow.trackedEpoch = null; // legacy state with no epoch provenance
     (store.state as unknown as { epochs: Map<number, Record<string, unknown>> }).epochs.set(1, {
       epoch: 1,
       tick: 0.5,
@@ -1687,12 +1955,12 @@ describe('Renderer (fake GL harness)', () => {
       p0: 100,
       rows: 64,
     });
-    (r as unknown as { remapPriceEpoch(epoch: number): void }).remapPriceEpoch(1);
-    expect(priv(r).trackedRowN).toBeNull();
-    expect(priv(r).trackedEpoch).toBeNull();
+    r.remapPriceEpoch(1);
+    expect(priv(r).follow.trackedRowN).toBeNull();
+    expect(priv(r).follow.trackedEpoch).toBeNull();
   });
 
-  it('B2-D3: a remap that would clamp an interior row into a wing drops it instead', () => {
+  it('a remap that would clamp an interior row into a wing drops it instead', () => {
     const { r, store } = makeRenderer();
     setEpochRows(store, 64);
     store.emit(makeColAt(0, 0, 3, 4, 64));
@@ -1704,12 +1972,12 @@ describe('Renderer (fake GL harness)', () => {
       p0: -924,
       rows: 64,
     });
-    (r as unknown as { remapPriceEpoch(epoch: number): void }).remapPriceEpoch(1);
+    r.remapPriceEpoch(1);
     // The old code clamped row 2052 → 64 (an off-grid wing); the fix drops it.
-    expect(priv(r).trackedRowN).toBeNull();
+    expect(priv(r).follow.trackedRowN).toBeNull();
   });
 
-  it('B2-D5: a col_seq regression rewinds the overlay cursors (same-subscription restart)', () => {
+  it('a col_seq regression rewinds the overlay cursors (same-subscription restart)', () => {
     const { r, store } = makeRenderer(512); // ring capacity 512
     for (let s = 0; s < 600; s++) store.emit(makeCol(s, true));
     expect(r.newestColSeq).toBe(599);
@@ -1724,7 +1992,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.newestColSeq).toBe(0); // accepted as the new newest
   });
 
-  it('B2-D5: a store sessionId change rewinds once, on the first column of the new session', () => {
+  it('a store sessionId change rewinds once, on the first column of the new session', () => {
     const { r, store } = makeRenderer();
     for (let s = 0; s < 5; s++) store.emit(makeCol(s, true));
     const overlays = overlaysOf(r);
@@ -1737,13 +2005,13 @@ describe('Renderer (fake GL harness)', () => {
     expect(resetSpy).toHaveBeenCalledTimes(1); // stable session → no further resets
   });
 
-  it('B2-CP2: the piecewise t0 table reports real candle times for reconstructed history', () => {
+  it('the piecewise t0 table reports real candle times for reconstructed history', () => {
     const { r, store } = makeRenderer();
     const candleNs = 60_000_000_000n;
     for (let s = 0; s < 4; s++) {
       store.emit(makeColAt(s, 0, 3, 4, ROWS, BigInt(s) * candleNs));
     }
-    // The epoch says 25 ms/col; the table says 60 s/col (the S2/D1 time warp).
+    // The epoch says 25 ms/col; the table says 60 s/col (the S2/time warp).
     expect(r.colToTsForTest(1)).toBe(candleNs);
     expect(r.colToTsForTest(3)).toBe(3n * candleNs);
     expect(r.colForTsForTest(2n * candleNs)).toBeCloseTo(2, 6);
@@ -1779,7 +2047,7 @@ describe('Renderer (fake GL harness)', () => {
     expect(p.overlaySlotsFor()).not.toBe(table);
   });
 
-  it('R1-M1: a warm attach (first column mid-sequence) still serves the piecewise table', () => {
+  it('a warm attach (first column mid-sequence) still serves the piecewise table', () => {
     const { r, store } = makeRenderer(1024);
     const candleNs = 60_000_000_000n;
     // The client attaches to an already-running grid: the first accepted column
@@ -1797,11 +2065,11 @@ describe('Renderer (fake GL harness)', () => {
     expect(tm!.slots!.startSeq).toBe(502);
   });
 
-  it('R1-M2: same-numbered session replacement forces a price-preserving remap', () => {
+  it('same-numbered session replacement forces a price-preserving remap', () => {
     const { r, store } = makeRenderer();
     for (let s = 0; s < 4; s++) store.emit(makeCol(s, true));
     priv(r).overlayPriceMap(); // populate lastPriceMapCache (as a draw would)
-    expect(priv(r).lastPriceMapCache).not.toBeNull();
+    expect(priv(r).axis.lastPriceMapCache).not.toBeNull();
 
     const cam = priv(r).camera;
     const spy = vi.spyOn(cam, 'remapPrice');
@@ -1819,7 +2087,7 @@ describe('Renderer (fake GL harness)', () => {
     store.emit(makeCol(0, true));
 
     expect(spy, 'the replacement must remap, not silently reinterpret').toHaveBeenCalledTimes(1);
-    expect(priv(r).forcedRemapFrom).toBeNull();
+    expect(priv(r).follow.forcedRemapFrom).toBeNull();
     spy.mockRestore();
   });
 
@@ -1836,23 +2104,25 @@ describe('Renderer (fake GL harness)', () => {
     r.setFollowTime(true);
     const internal = r as unknown as {
       camera: { setPriceFrame(bottom: number, span: number): void };
-      trackedRowN: number | null;
-      liveLag: number;
-      glideWasFollowing: boolean;
-      glideLastTs: number;
-      priceStepTs: number;
+      follow: {
+        trackedRowN: number | null;
+        liveLag: number;
+        glideWasFollowing: boolean;
+        glideLastTs: number;
+        priceStepTs: number;
+      };
     };
     internal.camera.setPriceFrame(30, 20);
-    internal.trackedRowN = 80;
-    internal.liveLag = 1;
-    internal.glideWasFollowing = true;
-    internal.glideLastTs = 100;
-    internal.priceStepTs = 100;
+    internal.follow.trackedRowN = 80;
+    internal.follow.liveLag = 1;
+    internal.follow.glideWasFollowing = true;
+    internal.follow.glideLastTs = 100;
+    internal.follow.priceStepTs = 100;
     // Establish the eased view without starting the vertical glide.
-    internal.trackedRowN = 40;
+    internal.follow.trackedRowN = 40;
     pump(116);
     const before = r.viewSnapshot;
-    internal.trackedRowN = 80;
+    internal.follow.trackedRowN = 80;
     const views: typeof before[] = [];
     const off = r.onViewChanged(() => views.push(r.viewSnapshot));
     pump(132);
@@ -1872,15 +2142,14 @@ describe('Renderer (fake GL harness)', () => {
     r.setPriceFollow('track');
     const internal = r as unknown as {
       camera: { setPriceFrame(bottom: number, span: number): void };
-      trackedRowN: number | null;
-      priceStepTs: number;
+      follow: { trackedRowN: number | null; priceStepTs: number };
     };
     internal.camera.setPriceFrame(30, 20);
-    internal.trackedRowN = 80;
-    internal.priceStepTs = 100;
+    internal.follow.trackedRowN = 80;
+    internal.follow.priceStepTs = 100;
     pump(116);
     const high = r.viewSnapshot.rowOffset;
-    internal.trackedRowN = 20;
+    internal.follow.trackedRowN = 20;
     pump(132);
     expect(r.viewSnapshot.rowOffset).toBeLessThan(high);
   });
@@ -1894,12 +2163,11 @@ describe('Renderer (fake GL harness)', () => {
     r.setPriceFollow('track');
     const internal = r as unknown as {
       camera: { setPriceFrame(bottom: number, span: number): void };
-      trackedRowN: number | null;
-      priceStepTs: number;
+      follow: { trackedRowN: number | null; priceStepTs: number };
     };
     internal.camera.setPriceFrame(30, 20);
-    internal.trackedRowN = 80;
-    internal.priceStepTs = 100;
+    internal.follow.trackedRowN = 80;
+    internal.follow.priceStepTs = 100;
     const bar = (price: number): void => store.emit({
       type: MsgType.BAR_COL, epoch: 0, col_seq: 399,
       t0_ns: 399n * BigInt(DT_NS), o: price, h: price, l: price, c: price,
@@ -1910,7 +2178,7 @@ describe('Renderer (fake GL harness)', () => {
     pump(116);
     expect(r.viewSnapshot.rowOffset).toBe(30);
     // The book midpoint is now inside, but the actual price exits above.
-    internal.trackedRowN = 40;
+    internal.follow.trackedRowN = 40;
     bar(140);
     pump(132);
     expect(r.viewSnapshot.rowOffset).toBeGreaterThan(30);
@@ -1926,12 +2194,12 @@ describe('Renderer (fake GL harness)', () => {
     r.setViewForTest(0, 100, 30, 20);
     r.setFollowTime(false);
     r.setPriceFollow('track');
-    const internal = r as unknown as { trackedRowN: number | null };
-    internal.trackedRowN = 80;
+    const internal = r as unknown as { follow: { trackedRowN: number | null } };
+    internal.follow.trackedRowN = 80;
     pump(100);
     const before = r.viewSnapshot;
     store.emit(makeCol(400, true, 128));
-    internal.trackedRowN = 90;
+    internal.follow.trackedRowN = 90;
     pump(116);
     expect(r.viewSnapshot).toEqual(before);
     expect(r.priceFollow).toBe('track');
@@ -2003,6 +2271,129 @@ describe('Renderer (fake GL harness)', () => {
     expect(maxJump).toBeLessThan(1);
     // And over the window it still advanced at the arrival rate (not stalled).
     expect(advanced).toBeGreaterThan(10);
+  });
+
+  it('paints the synthetic ramp for a replay that does not prove recorded density', () => {
+    const { r, store } = makeRenderer();
+    store.emit(makeCol(0, true));
+    const playback = { speed: 1 };
+    store.state.capability = { depth: 'L2', replay: true, playback };
+    r.setColormap('flow');
+    expect(r.currentRamp).toBe(RAMP_SYNTH);
+    store.state.capability = { depth: 'L2', depth_provenance: 'recorded-density', replay: true, playback };
+    r.setColormap('flow');
+    expect(r.currentRamp).toBe(RAMP_FLOW);
+    // A live session passes its own tier through, even though it also says replay: true.
+    store.state.capability = { depth: 'L2', replay: true };
+    r.setColormap('flow');
+    expect(r.currentRamp).toBe(RAMP_FLOW);
+  });
+
+  it('forwards an identical forming bar to the overlays once, and again after a session reset', () => {
+    const onBar = vi.spyOn(OverlayManager.prototype, 'onBar');
+    const { r, store } = makeRenderer();
+    const forming: BarColumn = {
+      type: MsgType.BAR_COL, epoch: 0, col_seq: 3, t0_ns: 3n * BigInt(DT_NS),
+      o: 100, h: 101, l: 99, c: 100.5, vol_buy: 1, vol_sell: 2, cvd_cum: 1, vwap_num_cum: 300, vwap_den_cum: 3,
+    };
+    store.emit(forming);
+    store.emit({ ...forming }); // the server re-sends the forming bar on a quiet tape
+    expect(onBar).toHaveBeenCalledTimes(1);
+    store.emit({ ...forming, c: 100.75 });
+    expect(onBar).toHaveBeenCalledTimes(2);
+    r.resetForSession();
+    store.emit({ ...forming, c: 100.75 });
+    expect(onBar).toHaveBeenCalledTimes(3);
+  });
+
+  // --- test hooks: the e2e preload scenarios, pinned without a browser -----------
+
+  it('pins the overlay and normalize preload scenarios and their coordinate maps', () => {
+    const { r, canvas, store } = makeRenderer();
+    Object.defineProperty(canvas, 'clientWidth', { value: 1000 });
+    Object.defineProperty(canvas, 'clientHeight', { value: 600 });
+    const tsOf = (col: number): bigint => BigInt(col) * BigInt(DT_NS);
+
+    // Overlay scenario: the spec publishes the returned epoch params before probing.
+    const sc = r.preloadOverlayScenario();
+    expect(sc).toEqual({
+      rows: 256,
+      epoch: 0,
+      params: { epoch: 0, tick: 0.5, tick_multiple: 1, dt_ns: DT_NS, p0: 50, rows: 256 },
+      dtNs: DT_NS,
+      p0: 50,
+      step: 0.5,
+      anchorSeq: 399,
+      anchorT0NsNum: 9_975_000_000,
+      oldest: 0,
+      newest: 399,
+      centerRow: 100,
+      view: { colOffset: 200, colScale: 200, rowOffset: 40, rowScale: 120 },
+      capacityCols: 512,
+    });
+    store.state.epochs = new Map([[0, sc.params]]);
+    expect(r.timestampAtColumn(100)).toBe(2_500_000_000n);
+    expect(r.timestampAtColumn(399.5)).toBe(9_987_500_000n);
+    expect(r.columnAtTimestamp(tsOf(200))).toBe(200);
+    const pt = r.overlayPointCss(tsOf(300), 100)!;
+    expect(pt.x).toBeCloseTo(502.5, 6);
+    expect(pt.y).toBeCloseTo(297.5, 6);
+    expect(r.overlayPointCss(tsOf(300), 60)!.y).toBeCloseTo(697.5, 6);
+    expect(r.overlayPointCss(tsOf(5000), 100)!.x).toBeCloseTo(24_002.5, 6);
+    const cell = r.cellToCanvasCss(300, 100);
+    const probe = r.probeAt(cell.x, cell.y)!;
+    expect(probe.colSeq).toBe(300);
+    expect(probe.price).toBe(100);
+    expect(probe.timeNs).toBe(7_500_000_000n);
+    expect(probe.inRange).toBe(true);
+    const cell2 = r.cellToCanvasCss(250, 120);
+    expect(r.probeAt(cell2.x, cell2.y)!.price).toBe(110);
+    r.dispose();
+
+    // Normalize scenario: a dim and a bright region, one known wall cell.
+    const again = makeRenderer();
+    const r2 = again.r;
+    Object.defineProperty(again.canvas, 'clientWidth', { value: 1000 });
+    Object.defineProperty(again.canvas, 'clientHeight', { value: 600 });
+    const ns = r2.preloadNormalizeScenario();
+    expect(ns).toEqual({
+      rows: 512,
+      epoch: 0,
+      params: { epoch: 0, tick: 0.5, tick_multiple: 1, dt_ns: DT_NS, p0: 100, rows: 512 },
+      dim: { colLo: 0, colHi: 511 },
+      bright: { colLo: 512, colHi: 1023 },
+      dimWindow: { colLo: 20, colHi: 491 },
+      brightWindow: { colLo: 532, colHi: 1003 },
+      centerRow: 256,
+      band: { lo: 216, hi: 296 },
+      wall: { col: 768, row: 256, bid: 277, price: 228 },
+      capacityCols: 1024,
+    });
+    again.store.state.epochs = new Map([[0, ns.params]]);
+    expect(r2.timestampAtColumn(768)).toBe(19_200_000_000n);
+    expect(r2.columnAtTimestamp(tsOf(768))).toBe(768);
+    const wallCell = r2.cellToCanvasCss(768, 256);
+    const wall = r2.probeAt(wallCell.x, wallCell.y)!;
+    expect(wall.colSeq).toBe(768);
+    expect(wall.price).toBe(228);
+    expect(wall.bid).toBe(277);
+    expect(wall.timeNs).toBe(19_200_000_000n);
+    const ptN = r2.overlayPointCss(tsOf(700), 228)!;
+    expect(ptN.x).toBeCloseTo(368.1640625, 6);
+    expect(ptN.y).toBeCloseTo(296.25, 6);
+    r2.dispose();
+  });
+
+  it('pins the synthetic perf preload geometry and the frame it leaves behind', () => {
+    const { r, canvas } = makeRenderer();
+    Object.defineProperty(canvas, 'clientWidth', { value: 1000 });
+    Object.defineProperty(canvas, 'clientHeight', { value: 600 });
+    const pre = r.preloadSynthetic(40, 64);
+    expect(pre).toEqual({ rows: 64, layers: 2, capacityCols: 512, ringBytes: 262_144, resident: 40 });
+    expect(r.newestColSeq).toBe(39);
+    expect(r.residentRange()).toEqual({ oldest: 0, newest: 39, count: 40 });
+    expect(() => r.preloadSynthetic(10, 1 << 20)).toThrow(/MAX_TEXTURE_SIZE/);
+    r.dispose();
   });
 
 });

@@ -1,17 +1,21 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resetDrawingsForTest } from '../drawings/store';
-import { resetIndicatorStoreForTest } from '../indicators/store';
-import { setLocale } from '../i18n';
+import { resetIndicatorStoreForTest, toggleIndicatorPicker } from '../indicators/store';
+import { setLocale, t } from '../i18n';
+import { getTimeZonePref, setTimeZonePref } from '../i18n/format';
+import { isSingleKeyShortcutsEnabled, setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import { setTheme, THEME_IDS } from '../theme';
 import { useFlowMapStore } from '../state/store';
 import { closeOnboarding, isOnboardingOpen } from './OnboardingCard';
+import { KEYSHEET } from './keysheet';
 import { pushOverlay } from './overlayStack';
 import { SettingsDrawer } from './SettingsDrawer';
 import { DEFAULT_SETTINGS, type FlowMapSettings } from './settings';
+import { isBareKeyRow } from './SettingsDrawerKeys';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,9 +25,9 @@ function settings(over: Partial<FlowMapSettings> = {}): FlowMapSettings {
   return { ...DEFAULT_SETTINGS, overlays: { ...DEFAULT_SETTINGS.overlays }, ...over };
 }
 
-/** P3: `alertSound` lands in settings.ts via lane C1 — shape-tolerate both states. */
+/** Settings with the alert-sound flag set to the given value. */
 function withAlertSound(alertSound: boolean): FlowMapSettings {
-  return { ...settings(), alertSound } as FlowMapSettings;
+  return { ...settings(), alertSound };
 }
 
 function render(node: JSX.Element): { container: HTMLElement; root: Root } {
@@ -119,14 +123,53 @@ describe('SettingsDrawer range accessibility', () => {
     const norm = container.querySelector('[data-testid="setting-normPercentile"]')!;
     const tick = container.querySelector('[data-testid="setting-tickGrouping"]')!;
     const bubble = container.querySelector('[data-testid="setting-bubble"]')!;
+    const tickNotches = container.querySelectorAll('[data-testid^="tickGrouping-"]');
+    expect(tickNotches.length).toBe(3);
     // i18n pass (MIGRATION.md): the aria label moved onto the shared
     // settings.normalization key (EN text 'Normalization').
     expect(norm.getAttribute('aria-label')).toBe('Normalization');
     expect(norm.getAttribute('aria-valuetext')).toBe('p95');
     expect(tick.getAttribute('aria-label')).toBe('Tick grouping');
-    expect(tick.getAttribute('aria-valuetext')).toBe('at least 4 rows / cell');
+    expect(tick.getAttribute('aria-valuetext')).toBeNull();
+    expect(tick.parentElement!.textContent).toContain('at least 4 rows / cell');
+    // 3 rounds to the 4-row level, so that notch is the selected one.
+    expect(container.querySelector('[data-testid="tickGrouping-4"]')!.getAttribute('aria-pressed')).toBe('true');
     expect(bubble.getAttribute('aria-label')).toBe('Bubble size threshold');
     expect(bubble.getAttribute('aria-valuetext')).toBe('all trades');
+  });
+});
+
+describe('SettingsDrawer chart style', () => {
+  it('renders Normal and Pixel as a two-option radio group, normal checked by default', () => {
+    setLocale('en');
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+    const group = container.querySelector('[data-testid="setting-chartStyle"]');
+    expect(group?.getAttribute('role')).toBe('radiogroup');
+    const normal = container.querySelector('[data-testid="chartStyle-normal"]') as HTMLButtonElement;
+    const pixel = container.querySelector('[data-testid="chartStyle-pixel"]') as HTMLButtonElement;
+    expect(normal.textContent).toBe('Normal');
+    expect(pixel.textContent).toBe('Pixel');
+    expect(normal.getAttribute('aria-checked')).toBe('true');
+    expect(pixel.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('emits a chartStyle patch when the user picks Pixel', () => {
+    setLocale('en');
+    const onChange = vi.fn();
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={onChange} onClose={() => {}} />);
+    click(container.querySelector('[data-testid="chartStyle-pixel"]')!);
+    expect(onChange).toHaveBeenCalledWith({ chartStyle: 'pixel' });
+  });
+
+  it('shows the Turkish labels under the Turkish locale', () => {
+    setLocale('tr');
+    try {
+      const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+      expect(container.querySelector('[data-testid="chartStyle-pixel"]')?.textContent).toBe('Piksel');
+      expect(container.querySelector('[data-testid="chartStyle-normal"]')?.textContent).toBe('Normal');
+    } finally {
+      setLocale('en');
+    }
   });
 });
 
@@ -155,7 +198,7 @@ describe('SettingsDrawer effective depth display controls', () => {
 });
 
 describe('SettingsDrawer restore defaults', () => {
-  it('emits a fresh deep copy of DEFAULT_SETTINGS', () => {
+  it('emits a fresh deep copy of DEFAULT_SETTINGS only after a second, confirming click', () => {
     const patches: Array<Partial<FlowMapSettings>> = [];
     const { container } = render(
       <SettingsDrawer
@@ -164,11 +207,32 @@ describe('SettingsDrawer restore defaults', () => {
         onClose={() => {}}
       />,
     );
-    click(container.querySelector('[data-testid="settings-restore"]')!);
+    const restore = () => container.querySelector('[data-testid="settings-restore"]') as HTMLButtonElement;
+    click(restore());
+    // One stray click discards nothing; it arms the action and says so.
+    expect(patches).toHaveLength(0);
+    expect(restore().textContent).toBe('Click again to reset every setting');
+    click(restore());
     expect(patches).toHaveLength(1);
     expect(patches[0]).toEqual(DEFAULT_SETTINGS);
     // deep copy — overlays object is not the module singleton
     expect((patches[0] as FlowMapSettings).overlays).not.toBe(DEFAULT_SETTINGS.overlays);
+  });
+
+  it('offers an undo that puts back the settings the reset discarded', () => {
+    const patches: Array<Partial<FlowMapSettings>> = [];
+    const previous = settings({ colormap: 'classic', follow: false });
+    const { container } = render(
+      <SettingsDrawer settings={previous} onChange={(p) => patches.push(p)} onClose={() => {}} />,
+    );
+    click(container.querySelector('[data-testid="settings-restore"]')!);
+    click(container.querySelector('[data-testid="settings-restore"]')!);
+    const undo = container.querySelector('[data-testid="settings-restore-undo"]') as HTMLButtonElement;
+    expect(undo).not.toBeNull();
+    click(undo);
+    expect(patches).toHaveLength(2);
+    expect(patches[1]).toMatchObject({ colormap: 'classic', follow: false });
+    expect(container.querySelector('[data-testid="settings-restore-undo"]')).toBeNull();
   });
 });
 
@@ -208,9 +272,9 @@ describe('SettingsDrawer big-trade threshold', () => {
     typeNumber(num, '25000');
     expect(patches).toEqual([{ bigTradeUsd: 25000 }]);
 
-    // Junk / empty clears to 0 — the documented OFF value, never NaN.
+    // An empty field is still being typed: it must not write 0 under the cursor.
     typeNumber(num, '');
-    expect(patches[1]).toEqual({ bigTradeUsd: 0 });
+    expect(patches).toHaveLength(1);
   });
 
   it('labels the value "off" at 0 and shows the notional once set (with the hint)', () => {
@@ -236,7 +300,7 @@ describe('SettingsDrawer sections', () => {
   });
 });
 
-describe('SettingsDrawer depth channel (contract C2)', () => {
+describe('SettingsDrawer depth channel', () => {
   it('renders a segmented control with the four channel modes, marking the active one', () => {
     const { container } = render(
       <SettingsDrawer settings={settings({ depthChannel: 'bid' })} onChange={() => {}} onClose={() => {}} />,
@@ -278,7 +342,7 @@ describe('SettingsDrawer depth channel (contract C2)', () => {
   });
 });
 
-describe('SettingsDrawer colormap (F6 theme ramp)', () => {
+describe('SettingsDrawer colormap theme ramp', () => {
   it('offers Theme first, marks the active family, and emits it on click', () => {
     const patches: Array<Partial<FlowMapSettings>> = [];
     const { container } = render(
@@ -308,7 +372,7 @@ describe('SettingsDrawer colormap (F6 theme ramp)', () => {
   });
 });
 
-describe('SettingsDrawer appearance section (INT mount)', () => {
+describe('SettingsDrawer appearance section', () => {
   afterEach(() => {
     setLocale('en');
     setTheme('midnight');
@@ -321,7 +385,7 @@ describe('SettingsDrawer appearance section (INT mount)', () => {
     const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
     const row = container.querySelector('[data-testid="setting-theme"]')!;
     for (const id of THEME_IDS) expect(row.querySelector(`[data-testid="theme-${id}"]`)).not.toBeNull();
-    // campaign-4 a11y themes are pickable too
+    // the accessibility themes are pickable too
     expect(row.querySelector('[data-testid="theme-paper-deut"]')).not.toBeNull();
     expect(row.querySelector('[data-testid="theme-contrast"]')).not.toBeNull();
     expect(row.querySelector('[data-testid="theme-midnight"]')!.getAttribute('aria-pressed')).toBe('true');
@@ -339,7 +403,7 @@ describe('SettingsDrawer appearance section (INT mount)', () => {
     expect(container.querySelector('[data-testid="locale-tr"]')!.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('translates the lane-D drawer strings in TR (sections, toggle labels, hints)', () => {
+  it('translates the drawer strings in TR (sections, toggle labels, hints)', () => {
     const { container } = render(
       <SettingsDrawer settings={settings({ hudVisible: false })} onChange={() => {}} onClose={() => {}} />,
     );
@@ -404,9 +468,38 @@ describe('SettingsDrawer appearance section (INT mount)', () => {
     click(container.querySelector('[data-testid="show-onboarding"]')!);
     expect(isOnboardingOpen()).toBe(true);
   });
+
+  it('opens the About and legal dialog from the drawer when a handler is supplied', () => {
+    const onOpenAbout = vi.fn();
+    const { container } = render(
+      <SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} onOpenAbout={onOpenAbout} />,
+    );
+    click(container.querySelector('[data-testid="open-about"]')!);
+    expect(onOpenAbout).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the About entry when no handler is supplied', () => {
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+    expect(container.querySelector('[data-testid="open-about"]')).toBeNull();
+  });
+
+  it('names its groups in the active locale (no English-only aria labels)', () => {
+    setLocale('tr');
+    try {
+      const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+      expect(container.querySelector('[data-testid="setting-theme"]')?.getAttribute('aria-label'))
+        .toBe(t('settings.theme'));
+      expect(container.querySelector('[data-testid="setting-priceBand"]')?.getAttribute('aria-label'))
+        .toBe(t('settings.priceRange'));
+      expect(container.querySelector('[data-testid="settings-drawer"]')?.getAttribute('aria-label'))
+        .toBe(t('drawer.title'));
+    } finally {
+      setLocale('en');
+    }
+  });
 });
 
-describe('SettingsDrawer alert sound (P3)', () => {
+describe('SettingsDrawer alert sound', () => {
   it('renders a role=switch row that defaults ON when the field is absent', () => {
     const { container } = render(
       <SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />,
@@ -436,7 +529,7 @@ describe('SettingsDrawer alert sound (P3)', () => {
   });
 });
 
-describe('SettingsDrawer escape ordering (QA12 M-1)', () => {
+describe('SettingsDrawer escape ordering', () => {
   const esc = (): KeyboardEvent =>
     new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
 
@@ -478,5 +571,120 @@ describe('SettingsDrawer escape ordering (QA12 M-1)', () => {
       window.dispatchEvent(esc());
     });
     expect(closes).toBe(1);
+  });
+});
+
+describe('SettingsDrawer time zone', () => {
+  afterEach(() => {
+    act(() => setTimeZonePref('local'));
+  });
+
+  it('renders Local, UTC and Exchange as a radio group bound to the zone preference', () => {
+    setLocale('en');
+    setTimeZonePref('utc');
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+    const group = container.querySelector('[data-testid="setting-timeZone"]');
+    expect(group?.getAttribute('role')).toBe('radiogroup');
+    const labels = ['local', 'utc', 'exchange'].map((p) => container.querySelector(`[data-testid="timeZone-${p}"]`) as HTMLButtonElement);
+    expect(labels.map((b) => b.textContent)).toEqual(['Local', 'UTC', 'Exchange']);
+    expect(labels.map((b) => b.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false']);
+  });
+
+  it('applies the picked zone to the shared preference store', () => {
+    setLocale('en');
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+    click(container.querySelector('[data-testid="timeZone-exchange"]')!);
+    expect(getTimeZonePref()).toBe('exchange');
+  });
+});
+
+describe('SettingsDrawer single-key shortcuts', () => {
+  afterEach(() => {
+    setSingleKeyShortcutsEnabled(true);
+  });
+
+  it('switches bare-key shortcuts off and on through a role=switch, shared with the key router', () => {
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+    const toggle = container.querySelector('[data-testid="toggle-single-keys"]')!;
+    expect(toggle.getAttribute('role')).toBe('switch');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(container.textContent).toContain(t('shortcuts.singleKeysHint'));
+    click(toggle);
+    expect(isSingleKeyShortcutsEnabled()).toBe(false);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    click(toggle);
+    expect(isSingleKeyShortcutsEnabled()).toBe(true);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+});
+
+describe('SettingsDrawer colormap names', () => {
+  it('names each colormap in the active locale instead of the English catalog label', () => {
+    setLocale('tr');
+    try {
+      const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+      expect(container.querySelector('[data-testid="colormap-flow"] .appearance-choice__name')?.textContent).toContain('Akış');
+      expect(container.querySelector('[data-testid="colormap-mono"] .appearance-choice__name')?.textContent).toContain('Tek renk');
+    } finally {
+      setLocale('en');
+    }
+  });
+});
+
+describe('SettingsDrawer single-key switch-off wording', () => {
+  afterEach(() => {
+    setSingleKeyShortcutsEnabled(true);
+    resetIndicatorStoreForTest();
+  });
+
+  it('names no bare key on a label, and marks the bare reference rows off, while the switch is off', () => {
+    setSingleKeyShortcutsEnabled(false);
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+    expect(container.querySelector('[data-testid="toggle-hud"]')!.textContent).toBe(t('settings.hudNoKey'));
+    expect(container.querySelector('[data-testid="toggle-draw-toolbar"]')!.textContent).toBe(t('settings.drawToolbarNoKey'));
+    expect(container.querySelector('[data-testid="toggle-indicator-picker"]')!.textContent).toBe(t('settings.indicatorPickerNoKey'));
+    expect(container.textContent).toContain(t('shortcuts.singleKeysOffHint'));
+    const off = [...container.querySelectorAll('[data-testid="keysheet-row-off"]')].map((row) => row.querySelector('kbd')!.textContent);
+    expect(off).toEqual(KEYSHEET.filter((entry) => isBareKeyRow(entry.keys)).map((entry) => entry.keys));
+    const escRow = [...container.querySelectorAll('.keysheet__row')].find((row) => row.querySelector('kbd')!.textContent === 'Esc');
+    expect(escRow?.hasAttribute('data-testid')).toBe(false);
+  });
+
+  it('keeps the key names and marks no row while the switch is on', () => {
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+    expect(container.querySelector('[data-testid="toggle-hud"]')!.textContent).toBe(t('settings.hud'));
+    expect(container.querySelector('[data-testid="toggle-indicator-picker"]')!.textContent).toBe(t('settings.indicatorPicker'));
+    expect(container.textContent).toContain(t('shortcuts.singleKeysHint'));
+    expect(container.querySelectorAll('[data-testid="keysheet-row-off"]')).toHaveLength(0);
+  });
+});
+
+describe('SettingsDrawer while the indicator picker is open', () => {
+  afterEach(() => {
+    resetIndicatorStoreForTest();
+  });
+
+  it('is not modal and lets Tab leave it, so the picker stays reachable', () => {
+    const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
+    const aside = container.querySelector('[data-testid="settings-drawer"]')!;
+    const buttons = aside.querySelectorAll<HTMLElement>('button');
+    const last = buttons[buttons.length - 1];
+    act(() => last.focus());
+    const tab = (): KeyboardEvent => {
+      const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      act(() => {
+        aside.dispatchEvent(event);
+      });
+      return event;
+    };
+    expect(tab().defaultPrevented).toBe(true);
+
+    act(() => toggleIndicatorPicker());
+    expect(aside.getAttribute('aria-modal')).toBe('false');
+    act(() => last.focus());
+    expect(tab().defaultPrevented).toBe(false);
+
+    act(() => toggleIndicatorPicker());
+    expect(aside.getAttribute('aria-modal')).toBe('true');
   });
 });

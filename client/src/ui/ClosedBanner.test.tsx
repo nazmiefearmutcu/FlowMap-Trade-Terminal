@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { setLocale } from '../i18n';
 import { useFlowMapStore } from '../state/store';
 import { ClosedBanner, formatCountdown } from './ClosedBanner';
 
@@ -32,7 +33,7 @@ afterEach(() => {
   });
 });
 
-describe('formatCountdown (§7.1 closed-market countdown)', () => {
+describe('formatCountdown (closed-market countdown)', () => {
   it('formats sub-day spans as HH:MM:SS with zero padding', () => {
     expect(formatCountdown(0)).toBe('00:00:00');
     expect(formatCountdown(1_000)).toBe('00:00:01');
@@ -108,7 +109,7 @@ describe('ClosedBanner accessibility (single announcement of closed state)', () 
 
 describe('ClosedBanner — terminal no-feed refusal', () => {
   it('states the truthful NO FEED case instead of "market closed"', () => {
-    // Server contract: pre-close Status feed_state='closed' + 1003 = NO feed
+    // Pre-close Status feed_state='closed' + 1003 = NO feed
     // exists for this market. Not an RTH closure — no countdown, no waiting.
     act(() => {
       useFlowMapStore.setState({ noFeed: true, feedState: 'closed', nextOpenTs: null });
@@ -132,5 +133,35 @@ describe('ClosedBanner — terminal no-feed refusal', () => {
     const { container } = render(<ClosedBanner />);
     expect(container.querySelector('[data-testid="no-feed-banner"]')).toBeNull();
     expect(container.querySelector('[data-testid="closed-banner"]')).toBeNull();
+  });
+});
+
+describe('formatCountdown day unit (i18n)', () => {
+  it('uses the supplied day suffix (Turkish reads g, not the English d)', () => {
+    const ms = (2 * 86_400 + 17 * 3600 + 30 * 60 + 5) * 1000;
+    expect(formatCountdown(ms, 'g')).toBe('2g 17:30:05');
+    expect(formatCountdown(ms)).toBe('2d 17:30:05');
+  });
+});
+
+describe('ClosedBanner countdown in Turkish', () => {
+  afterEach(() => {
+    act(() => {
+      setLocale('en');
+      useFlowMapStore.setState({ feedState: null, nextOpenTs: null, noFeed: false });
+    });
+  });
+
+  it('says the multi-day countdown with the Turkish day unit', () => {
+    act(() => setLocale('tr'));
+    // Two days and 17:30:05 out; +500 ms keeps the floored seconds on 05 at mount time.
+    const openMs = Date.now() + (2 * 86_400 + 17 * 3600 + 30 * 60 + 5) * 1000 + 500;
+    act(() => {
+      useFlowMapStore.setState({ feedState: 'closed', nextOpenTs: BigInt(openMs) * 1_000_000n });
+    });
+    const { container } = render(<ClosedBanner />);
+    const text = container.querySelector('[data-testid="closed-countdown"]')?.textContent ?? '';
+    expect(text).toBe('2g 17:30:05 sonra açılır');
+    expect(text).not.toMatch(/\dd /);
   });
 });

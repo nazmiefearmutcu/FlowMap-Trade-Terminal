@@ -1,9 +1,9 @@
 /**
- * The per-frame draw context handed to every overlay (M2 T10).
+ * The per-frame draw context handed to every overlay.
  *
  * The renderer builds ONE of these each dirty frame — the camera snapshot
  * ({@link GridMap}), the two shared GL batches, the text layer, the resident
- * column clamp, and the capability descriptor (for §7 honesty gating) — then
+ * column clamp, and the capability descriptor (for honesty gating) — then
  * calls each enabled overlay's `draw(frame)` in the effective z-order
  * (profile → vwap → bbo → price → bubbles → markers). Overlays never own GL
  * state; they emit clip-space geometry into the shared batches and flush in call
@@ -43,6 +43,11 @@ export interface OverlayFrame {
    * native rows; a projected heatmap chooses its footprint locally per pixel.
    */
   mipLevel?: number;
+  /**
+   * Pixel chart style: the price line steps and the trade bubbles draw
+   * as squares. Absent or false is the smooth normal style.
+   */
+  pixelStyle?: boolean;
 }
 
 /** The overlays a user can toggle; default all on except the profile. */
@@ -63,7 +68,7 @@ export interface OverlayVisibility {
   price: boolean;
   /** CVD (cumulative volume delta) lower pane. */
   cvd: boolean;
-  /** Traded-volume bars along the chart's bottom edge (Bookmap H7; F26). */
+  /** Traded-volume bars along the chart's bottom edge (Bookmap reference). */
   volume: boolean;
   /** Option Gamma Exposure (GEX) boundary levels (Call Wall, Put Wall, Gamma Flip). */
   gex?: boolean;
@@ -79,7 +84,7 @@ export const DEFAULT_OVERLAY_VISIBILITY: OverlayVisibility = {
   price: true,
   cvd: true,
   // Bookmap shows the volume strip by default; ours is a low, subtle band that
-  // does not fight the heatmap (see F26 report) — and it is one click to hide.
+  // does not fight the heatmap (see report) — and it is one click to hide.
   volume: true,
   gex: true,
 };

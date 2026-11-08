@@ -3,8 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0B111B" />
+    <!-- No static color-scheme / theme-color: the active theme sets color-scheme
+         (theme/themes.css) and no code writes theme-color, so a static value was stale. -->
+    <!-- First paint uses the midnight --bg (the default theme) before the theme loads. -->
+    <style>html,body{background:#081B37}</style>
     <meta
       name="description"
       content="FlowMap — dual-market order-flow visualizer: real-time WebGL2 liquidity heatmap, DOM ladder, and time & sales for crypto and US equities."

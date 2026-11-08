@@ -153,7 +153,7 @@ describe('subscribeQuotes', () => {
     off();
   });
 
-  it('stays silent on a failed request and retries on the next cycle', async () => {
+  it('reports a failed request as unreachable and retries on the next cycle', async () => {
     let mode: 'down' | 'up' = 'down';
     const fetchMock = vi.fn(async () => {
       if (mode === 'down') throw new Error('network down');
@@ -163,22 +163,89 @@ describe('subscribeQuotes', () => {
     const cb = vi.fn();
     const off = subscribeQuotes(['sim:A'], cb, { visibility: fakeVisibility(), intervalMs: 1_000 });
     await vi.advanceTimersByTimeAsync(0);
-    expect(cb).not.toHaveBeenCalled(); // no fabricated quote on failure
+    // Never a fabricated price: an empty, explicitly unreachable quote.
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(cb.mock.calls[0][1]).toMatchObject({ symbol: 'A', price: null, reachable: false, stale: true });
 
     mode = 'up';
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(cb).toHaveBeenCalledTimes(1);
+    expect(cb).toHaveBeenCalledTimes(2);
+    expect(cb.mock.calls[1][1]).toMatchObject({ price: 100, reachable: true });
     off();
   });
 
-  it('stays silent on a non-OK HTTP response', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: false, json: async () => ({}) }));
+  it('reports a non-OK HTTP response (503) as unreachable', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }));
     vi.stubGlobal('fetch', fetchMock);
     const cb = vi.fn();
     const off = subscribeQuotes(['sim:A'], cb, { visibility: fakeVisibility() });
     await vi.advanceTimersByTimeAsync(0);
-    expect(cb).not.toHaveBeenCalled();
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(cb.mock.calls[0][1]).toMatchObject({ price: null, reachable: false });
     off();
+  });
+
+  it('keeps the last good value, labelled stale and unreachable, when a later request fails', async () => {
+    let mode: 'up' | 'down' = 'up';
+    const fetchMock = vi.fn(async () => {
+      if (mode === 'down') return { ok: false, status: 503, json: async () => ({}) };
+      return okResponse(quote({ price: 42, changePct: 2 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const cb = vi.fn();
+    const off = subscribeQuotes(['sim:A'], cb, { visibility: fakeVisibility(), intervalMs: 1_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    mode = 'down';
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(cb).toHaveBeenCalledTimes(2);
+    expect(cb.mock.calls[1][1]).toMatchObject({ price: 42, changePct: 2, stale: true, reachable: false });
+    off();
+  });
+
+  it('aborts a hung request after the timeout and retries on the next cycle', async () => {
+    const signals: AbortSignal[] = [];
+    let hang = true;
+    // The fetch ignores its signal entirely: only the feed's own timeout can end it.
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      signals.push(init!.signal as AbortSignal);
+      if (hang) return new Promise(() => {});
+      return Promise.resolve(okResponse(quote()));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const cb = vi.fn();
+    const off = subscribeQuotes(['sim:A'], cb, { visibility: fakeVisibility(), intervalMs: 10_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(signals[0].aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(cb.mock.calls[0][1]).toMatchObject({ price: null, reachable: false });
+
+    // The key is free again: the next cycle issues a fresh request instead of
+    // waiting on the hung one forever.
+    hang = false;
+    await vi.advanceTimersByTimeAsync(10_000 - 8_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(cb).toHaveBeenCalledTimes(2);
+    expect(cb.mock.calls[1][1]).toMatchObject({ price: 100, reachable: true });
+    off();
+  });
+
+  it('adds the session token header to quote requests when one is injected', async () => {
+    (window as { __FLOWMAP_SESSION_TOKEN__?: string }).__FLOWMAP_SESSION_TOKEN__ = 'feedtoken';
+    try {
+      const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse(quote()));
+      vi.stubGlobal('fetch', fetchMock);
+      const off = subscribeQuotes(['sim:A'], vi.fn(), { visibility: fakeVisibility() });
+      await vi.advanceTimersByTimeAsync(0);
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(new Headers(init.headers).get('X-FlowMap-Token')).toBe('feedtoken');
+      off();
+    } finally {
+      delete (window as { __FLOWMAP_SESSION_TOKEN__?: string }).__FLOWMAP_SESSION_TOKEN__;
+    }
   });
 
   it('aborts the in-flight request when the last subscriber unsubscribes', async () => {
@@ -207,6 +274,24 @@ describe('subscribeQuotes', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1); // B's immediate poll saw A's in-flight request
     expect(a).toHaveBeenCalledTimes(1);
     expect(b).toHaveBeenCalledTimes(1);
+    offA();
+    offB();
+  });
+
+  it('isolates a throwing consumer: the others still get the quote and the failure is logged', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => okResponse(quote())));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const bad = vi.fn(() => {
+      throw new Error('consumer boom');
+    });
+    const good = vi.fn();
+    const offA = subscribeQuotes(['sim:A'], bad, { visibility: fakeVisibility(), intervalMs: 60_000 });
+    const offB = subscribeQuotes(['sim:A'], good, { visibility: fakeVisibility(), intervalMs: 60_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bad).toHaveBeenCalledTimes(1);
+    expect(good).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith('[flowmap] quote consumer failed', expect.any(Error));
+    errSpy.mockRestore();
     offA();
     offB();
   });

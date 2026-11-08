@@ -1,18 +1,18 @@
 /**
- * App follow/persistence integration (campaign 2026-09-11, D1/D4 + CP1).
+ * App follow/persistence integration.
  *
  * jsdom has no WebGL2, so the real App test mounts the honest gl-fallback with
- * NO renderer. These tests need the renderer surface (follow state + the CP1
- * methods), so the `./gl/renderer` module is replaced with a controllable fake
+ * NO renderer. These tests need the renderer surface (follow state + the
+ * session-reset methods), so the `./gl/renderer` module is replaced with a controllable fake
  * whose state this file drives:
  *
- *   - chip LOCK persists `followPrice=false` (D4: the drawer + reload must agree
+ *   - chip LOCK persists `followPrice=false` (the drawer + reload must agree
  *     with the camera);
  *   - the TRACK PRICE composite re-pins TIME when the live edge is off-screen
- *     (D1) and persists BOTH follow policies;
+ *     and persists BOTH follow policies;
  *   - a renderer-originated lock (canvas P / price pan) is reconciled into
  *     settings by the ≤4 Hz poll;
- *   - a `sessionId` change calls `resetOverlaysForNewSession()` (CP1/D5);
+ *   - a `sessionId` change calls `resetOverlaysForNewSession()`;
  *   - the global F / P / R keys route through the same App writers.
  */
 
@@ -49,7 +49,7 @@ vi.mock('./gl/renderer', () => {
     constructor() {
       // Unknown members become inert no-ops so the full App tree (crosshair,
       // CvdPane, PriceAlerts …) can mount without a GL context. Follow state and
-      // the CP1 methods are explicitly controllable.
+      // the session-reset methods are explicitly controllable.
       return new Proxy(this, {
         get(target, prop, receiver) {
           if (prop in target) return Reflect.get(target, prop, receiver) as unknown;
@@ -265,7 +265,7 @@ describe('App startup gate with offline DEV harnesses', () => {
   });
 });
 
-describe('App follow wiring (D1/D4/CP1)', () => {
+describe('App follow wiring', () => {
   it('chip LOCK writes through to persisted settings (drawer + reload agree)', () => {
     const container = mountApp();
     settle();
@@ -287,7 +287,7 @@ describe('App follow wiring (D1/D4/CP1)', () => {
     expect(chip).not.toBeNull();
     click(chip!);
     expect(H.state.priceFollow).toBe('track');
-    expect(H.state.goLiveCalls).toBe(1); // the dead-control fix (S1 D1)
+    expect(H.state.goLiveCalls).toBe(1); // the dead-control fix
     expect(saved().followPrice).toBe(true);
     expect(saved().follow).toBe(true);
   });
@@ -316,7 +316,7 @@ describe('App follow wiring (D1/D4/CP1)', () => {
     expect(saved().followPrice).toBe(true);
   });
 
-  it('calls resetOverlaysForNewSession on every sessionId change (CP1/D5)', () => {
+  it('calls resetOverlaysForNewSession on every sessionId change', () => {
     mountApp();
     act(() => {
       useFlowMapStore.setState({ sessionId: 'session-1' });
@@ -345,7 +345,7 @@ describe('App follow wiring (D1/D4/CP1)', () => {
     fireKey('P', { shiftKey: true });
     expect(H.state.priceFollow).toBe('fit'); // Shift+P = auto-fit
     expect(saved().followPrice).toBe(true);
-    // R re-arms TIME and PRESERVES a deliberate price LOCK (R2-M1): the lock
+    // R re-arms TIME and PRESERVES a deliberate price LOCK: the lock
     // set below is not overwritten by GO LIVE.
     H.state.priceFollow = 'off';
     H.state.following = false;

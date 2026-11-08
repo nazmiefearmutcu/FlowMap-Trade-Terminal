@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { CSS_COLOR_RE, enforceOrder, orderConflict } from './store';
+
 import {
   MAX_ACTIVE_INDICATORS,
   resetIndicatorStoreForTest,
@@ -56,6 +58,43 @@ describe('indicator store — active list', () => {
     expect(useIndicatorStore.getState().active[0].params).toEqual({ period: 3 });
   });
 
+  it('keeps MACD fast below slow: an edit that crosses the pair moves the other field', () => {
+    const a = useIndicatorStore.getState().add('macd')!;
+    // Defaults fast 12, slow 26. Raising fast past slow pulls the slow field up.
+    useIndicatorStore.getState().setParam(a.uid, 'fast', 30);
+    const p = useIndicatorStore.getState().active[0].params;
+    expect(p.fast).toBe(30);
+    expect(p.slow).toBe(31);
+    expect(p.fast).toBeLessThan(p.slow);
+    // Lowering slow below fast pushes fast down instead.
+    useIndicatorStore.getState().setParam(a.uid, 'slow', 10);
+    const q = useIndicatorStore.getState().active[0].params;
+    expect(q.slow).toBe(10);
+    expect(q.fast).toBe(9);
+  });
+
+  it('a persisted MACD pair with fast >= slow loads as a valid pair', () => {
+    const a = enforceOrder('macd', { fast: 40, slow: 26, signal: 9 }, undefined);
+    expect(a.fast).toBeLessThan(a.slow);
+    expect(a.slow).toBe(26);
+  });
+
+  it('flags a MACD edit that would move the paired field', () => {
+    const params = { fast: 12, slow: 26, signal: 9 };
+    expect(orderConflict('macd', params, 'fast', 20)).toBe(false);
+    expect(orderConflict('macd', params, 'fast', 30)).toBe(true);
+    expect(orderConflict('macd', params, 'slow', 10)).toBe(true);
+    expect(orderConflict('macd', params, 'signal', 30)).toBe(false);
+    expect(orderConflict('sma', { period: 20 }, 'period', 5)).toBe(false);
+  });
+
+  it('keeps only real CSS colours from a persisted payload', () => {
+    expect(CSS_COLOR_RE.test('#33d6c4')).toBe(true);
+    expect(CSS_COLOR_RE.test('rgba(10, 20, 30, 0.5)')).toBe(true);
+    expect(CSS_COLOR_RE.test('not a colour')).toBe(false);
+    expect(CSS_COLOR_RE.test('red; background:url(x)')).toBe(false);
+  });
+
   it('setColor stores overrides and null restores the theme default', () => {
     const a = useIndicatorStore.getState().add('macd')!;
     useIndicatorStore.getState().setColor(a.uid, 'macd', '#ff0000');
@@ -63,6 +102,15 @@ describe('indicator store — active list', () => {
     expect(useIndicatorStore.getState().active[0].colors).toEqual({ macd: '#ff0000' });
     useIndicatorStore.getState().setColor(a.uid, 'macd', null);
     expect(useIndicatorStore.getState().active[0].colors).toEqual({ macd: null });
+  });
+
+  it('setColor rejects a value that is not a CSS colour', () => {
+    const a = useIndicatorStore.getState().add('macd')!;
+    useIndicatorStore.getState().setColor(a.uid, 'macd', '#ff0000');
+    for (const bad of ['red; background:url(x)', 'javascript:alert(1)', '#ggg', '', 'var(--x)']) {
+      useIndicatorStore.getState().setColor(a.uid, 'macd', bad);
+    }
+    expect(useIndicatorStore.getState().active[0].colors).toEqual({ macd: '#ff0000' });
   });
 });
 

@@ -24,7 +24,7 @@ async def no_movers(market, limit):
 
 async def assert_unavailable_quote_route(cache, symbol):
     app = create_app(Config(), manager=SimpleNamespace(), market_cache=cache)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8720") as client:
         response = await asyncio.wait_for(client.get("/api/quote", params={"market": "equity", "symbol": symbol}), .1)
         data = response.json()
         assert response.status_code == 200
@@ -162,7 +162,7 @@ async def test_preview_route_returns_cached_delta_without_provider_or_missing_ca
     cache = MarketDataCache(quote_fn=provider, movers_fn=no_movers)
     await cache.quote("equity", "AAPL")
     app = create_app(Config(), manager=SimpleNamespace(), market_cache=cache)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8720") as client:
         first = (await client.get("/api/previews", params={"after": 0})).json()
         assert first["quotes"][0]["spark"] == [99., 100.]
         delta = (await client.get("/api/previews", params={"after": first["revision"], "generation": first["generation"]})).json()

@@ -4,7 +4,7 @@ Status labels are honest: **shipped** means it is in the current build,
 **planned** means designed/surveyed with intent to build, **exploring** means
 the shape is not settled. Nothing here is a promise of a date.
 
-## Shipped since this list was written (2026-09-11 campaign)
+## Shipped since this list was written (2026-09-11)
 
 These were the deferrals from the 2026-09-10 roadmap that closed next; all are
 in the current build:
@@ -18,8 +18,8 @@ in the current build:
   returns past `level ∓ ~0.1%`, replacing the blind 60-second refire.
 - **More CVD-safe themes** — *shipped.* `paper-deut` (light deuteranopia) and
   `contrast` (true-black high contrast); the registry now cycles 7 palettes.
-- **Divergent legend + channel polish** — *shipped* in the campaign-3 follow-up
-  wave: the heat legend mirrors the imbalance channel (ask-heavy/bid-heavy
+- **Divergent legend + channel polish** — *shipped* in a follow-up
+  pass: the heat legend mirrors the imbalance channel (ask-heavy/bid-heavy
   caps) and stays honest on synthetic feeds.
 - **E2E coverage for the new features** — *shipped.* Two new spec files (11
   tests) cover drawings persistence, alert firing, theme/locale flips, watchlist
@@ -28,21 +28,20 @@ in the current build:
 - **Lint gate in CI** — *shipped.* Client eslint (`npm run lint`) and server
   ruff (`uv run ruff check .`) run as CI steps.
 
-## Near-term (still open from the 2026-09-10 campaign)
+## Near-term (still open from 2026-09-10)
 
 Rough priority order:
 
-- **Windowed replay (interactive)** — *plumbing shipped, UI planned.* The
+- **Windowed replay (interactive)** — *shipped in 1.5.1 as the replay picker.* The
   server honors a `[start_t, end_t)` subscribe window (and refuses a mismatched
-  re-attach); the client carries `end_t` on the wire and re-subscribes on a
-  window change. What remains is the UI: picking a window on the timeline
-  instead of opening the newest bounded window.
+  re-attach); the client carries `end_t` on the wire, and the picker chooses the
+  window to load. Still planned: selecting the window directly on the timeline.
 - **Multi-chart layouts (1 / 2 / 4) with crosshair sync** — *planned.* Grid
   slots, each with its own market:symbol + camera, synced crosshair for
   basis/spread comparison. Design must respect WebGL context limits and the
   current session/band re-subscribe semantics.
 - **i18n for feature panes** — *planned.* The remaining shell holes closed in
-  the 2026-09-11 campaign (82 keys); the drawing, indicator and alert surfaces
+  the 2026-09-11 work (82 keys); the drawing, indicator and alert surfaces
   are next, after their string sets settle.
 - **Coverage gates in CI** — *planned.* Lint and e2e are gated now; coverage
   reporting and non-decreasing thresholds are the remaining gap.
@@ -54,9 +53,9 @@ Rough priority order:
 - **Server-synced alerts** — alerts are client-local (`localStorage`) today;
   server-side alert endpoints with re-derivation would let them survive a
   reload and eventually notify while detached.
-- **Wider indicator set** — the kernel layer is registry-driven and pure;
-  wiring the further pre-validated kernels (ATR, supertrend, ichimoku, …) and
-  sub-pane rendering is incremental once candles/overlays have soaked.
+- **Wider indicator set** — ATR and OBV ship alongside EMA, SMA, VWAP, Bollinger, RSI and MACD. The
+  kernel layer is registry-driven and pure, so further pre-validated kernels (supertrend, ichimoku, …) can be
+  added incrementally.
 - **Shell surface** — deeper Tauri bridge (window/fullscreen controls) and a
   documented release runbook; an auto-updater remains an owner decision, not a
   default.
@@ -72,10 +71,10 @@ Rough priority order:
 - **Hosted / multi-user service.** The server is a loopback-only single-user
   sidecar by design; it will not grow a public deployment mode or remote
   auth-as-a-service.
-- **Silent security-posture changes.** The loopback API is unauthenticated by
-  deliberate trade (see [SECURITY.md](SECURITY.md)); any hardening (token,
-  origin pinning) will be designed openly and announced, never shipped as a
-  quiet tightening.
+- **Silent security-posture changes.** The loopback API has no user authentication, by
+  deliberate trade. The installed app adds a per-launch session token and a Host check (see
+  [SECURITY.md](SECURITY.md)). Any further hardening, such as origin pinning, will be designed
+  openly and announced, never shipped as a quiet tightening.
 - **Auto-updater by default.** Updates are downloads the user initiates and
   can verify via build provenance.
 - **Wholesale merges of the old prototype branch.** Feature ports are

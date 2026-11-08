@@ -1,10 +1,11 @@
+import type { LooseProbe } from './probe';
 import { expect, test } from '@playwright/test';
 
 test('large venue quantities retain the same wall contrast at every zoom level', async ({ page }) => {
   await page.goto('/?test=heatmap');
   await page.waitForFunction(() => '__flowmapTest' in window);
   const comparisons = await page.evaluate(() => {
-    const api = (window as unknown as { __flowmapTest: any }).__flowmapTest;
+    const api = (window as unknown as { __flowmapTest: LooseProbe }).__flowmapTest;
     api.init(1024, 2, 256, 64, true);
     const draw = (size: number) => {
       const bid = new Array(1024).fill(0);

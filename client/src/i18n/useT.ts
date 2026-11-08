@@ -1,5 +1,5 @@
 /**
- * React binding for the i18n lookup (lane CE, C7).
+ * React binding for the i18n lookup.
  *
  * `useT()` subscribes the component to locale changes and returns the
  * {@link t} function. Because `t` reads the module-level locale at CALL

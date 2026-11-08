@@ -19,7 +19,17 @@ export function overviewPlan(view: Pick<HeatmapView, 'colOffset' | 'colScale'>, 
 }
 
 export interface OverviewHistoryDeps {
-  request: (before: bigint, count: number, overview: HistoryOverviewRequest) => Promise<HistoryResponse>;
+  /**
+   * Fetch one overview page. `signal` aborts when a zoom/session change
+   * supersedes the page; a transport that ignores it just delivers a response
+   * the loader discards (every write is generation-gated).
+   */
+  request: (
+    before: bigint,
+    count: number,
+    overview: HistoryOverviewRequest,
+    signal?: AbortSignal,
+  ) => Promise<HistoryResponse>;
   pageCols: () => number;
   before: () => bigint;
   reset: (stride: number) => void;
@@ -42,7 +52,14 @@ export class OverviewHistory {
   private generation = 0;
   private loaded = new Set<number>();
   private present = new Set<number>();
+  /** True while ANY pump is awaiting a request (a superseded pump included). */
   private loading = false;
+  /** Token of the newest pump; only that pump may clear {@link loading}. */
+  private pumpToken = 0;
+  /** The generation the newest pump serves — a mismatch means a zoom superseded it. */
+  private pumpGeneration = -1;
+  /** Aborts the requests of the generation that was superseded. */
+  private abort: AbortController | null = null;
   private disposed = false;
   private retryAt = 0;
   private refreshAt = 0;
@@ -70,6 +87,8 @@ export class OverviewHistory {
     if (next === null) return;
     if (this.plan === null || next.stride !== this.plan.stride) {
       this.generation++;
+      this.abort?.abort(); // the superseded page is no longer wanted
+      this.abort = null;
       this.loaded.clear();
       this.present.clear();
       this.error = null;
@@ -85,12 +104,20 @@ export class OverviewHistory {
       this.loaded.delete(next.hi); // genuine forming bucket, at most once/sec
       this.refreshAt = now + 1000;
     }
-    if (!this.loading && now >= this.retryAt) void this.pump();
+    // A superseded pump (older generation) must not hold up the new one: a zoom
+    // that changes the stride starts its pump at once instead of waiting for the
+    // stale request to resolve or time out (up to 60 s).
+    const superseded = this.pumpGeneration !== this.generation;
+    if ((!this.loading || superseded) && now >= this.retryAt) void this.pump();
   }
 
   private async pump(): Promise<void> {
+    const token = ++this.pumpToken;
     this.loading = true;
     const generation = this.generation;
+    this.pumpGeneration = generation;
+    if (this.abort === null) this.abort = new AbortController();
+    const signal = this.abort.signal;
     try {
       while (this.current(generation)) {
         const plan = this.plan!;
@@ -106,7 +133,7 @@ export class OverviewHistory {
           stride: plan.stride,
         };
         const before = this.deps.before();
-        const initial = await this.deps.request(before, count, request);
+        const initial = await this.deps.request(before, count, request, signal);
         if (!this.current(generation)) return;
         const response = { ...initial, markers: [...initial.markers] };
         let metadata = initial;
@@ -135,7 +162,7 @@ export class OverviewHistory {
           await this.deps.yieldToFrame();
           if (!this.current(generation)) return;
           this.requests++;
-          metadata = await this.deps.request(before, count, { ...request, metadata_cursor: page.next_cursor });
+          metadata = await this.deps.request(before, count, { ...request, metadata_cursor: page.next_cursor }, signal);
           if (!this.current(generation)) return;
           response.markers.push(...metadata.markers);
         }
@@ -177,10 +204,10 @@ export class OverviewHistory {
         this.deps.changed();
       }
     } finally {
-      this.loading = false;
+      // Only the newest pump owns the flag: a superseded pump finishing late must
+      // not report "idle" while the replacement is still on the wire.
+      if (token === this.pumpToken) this.loading = false;
       this.deps.changed();
-      // A zoom may have superseded this request while it was on the wire.
-      if (generation !== this.generation && !this.disposed && this.deps.active()) void this.pump();
     }
   }
 
@@ -188,5 +215,11 @@ export class OverviewHistory {
     return !this.disposed && generation === this.generation && this.plan !== null && this.deps.active();
   }
 
-  dispose(): void { this.disposed = true; this.generation++; this.loaded.clear(); }
+  dispose(): void {
+    this.disposed = true;
+    this.generation++;
+    this.abort?.abort();
+    this.abort = null;
+    this.loaded.clear();
+  }
 }

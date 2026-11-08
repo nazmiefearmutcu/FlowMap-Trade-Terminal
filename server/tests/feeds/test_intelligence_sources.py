@@ -13,11 +13,25 @@ from flowmap_server.feeds.headcount import HeadcountVelocityTracker
 from flowmap_server.feeds.macro import MacroStressPoller
 
 
+class Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def iter_chunked(self, size):
+        for start in range(0, len(self._data), size):
+            yield self._data[start:start + size]
+
+
 class Response:
-    def __init__(self, payload=None, *, status=200, error=None):
+    def __init__(self, payload=None, *, status=200, error=None, headers=None):
         self.payload = payload
         self.status = status
         self.error = error
+        self.headers = headers or {}
+
+    @property
+    def content(self):
+        return Body(json.dumps(self.payload).encode())
 
     async def __aenter__(self):
         if self.error:
@@ -230,7 +244,8 @@ async def test_macro_empty_failed_or_nonfinite_http_observation_is_missing(monke
 async def test_macro_real_zero_observations_compute_and_persist(monkeypatch, value):
     warehouse = Mock(spec=DuckWarehouse)
     provider = MacroStressPoller(api_key="test-key", warehouse=warehouse)
-    session = use_response(monkeypatch, provider, Response({"observations": [{"value": value}]}))
+    session = use_response(monkeypatch, provider, Response({"observations": [
+        {"date": "2000-01-03", "value": value}]}))
     result = await provider.compute_current_stress()
     assert result["available"] is True
     assert result["missing_series"] == []
@@ -244,3 +259,215 @@ async def test_macro_real_zero_observations_compute_and_persist(monkeypatch, val
     assert all(call[2]["params"]["api_key"] == "test-key" for call in session.calls)
     warehouse.insert_macro_stress.assert_called_once()
     assert warehouse.insert_macro_stress.call_args.args[1:5] == (0.0, 0.0, 0.0, 0.0)
+
+
+class DatedResponses:
+    """Serves a different observation per FRED series id, with its own date."""
+
+    def __init__(self, by_series):
+        self.by_series = by_series
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        series = kwargs["params"]["series_id"]
+        self.calls.append(series)
+        return Response(self.by_series[series])
+
+
+async def test_macro_reading_keeps_observation_dates_and_the_oldest_as_of(monkeypatch):
+    warehouse = Mock(spec=DuckWarehouse)
+    provider = MacroStressPoller(api_key="test-key", warehouse=warehouse)
+    recent = "2000-01-10"
+    monkeypatch.setattr(provider, "_get_session", AsyncMock(return_value=DatedResponses({
+        "SOFR": {"observations": [{"date": recent, "value": "5.3"}]},
+        "BAMLH0A0HYM2": {"observations": [{"date": "2000-01-05", "value": "4.1"}]},
+        "T10Y2Y": {"observations": [{"date": recent, "value": "0.2"}]},
+    })))
+    result = await provider.compute_current_stress()
+    assert result["as_of"] == "2000-01-05"
+    assert result["series_dates"]["T10Y2Y"] == recent
+    assert result["stale"] is True  # January 2000 is far outside the freshness window
+    assert result["method"]["model"].startswith("uncalibrated heuristic")
+    assert warehouse.insert_macro_stress.call_args.args[0] == "2000-01-05"
+
+
+async def test_macro_failure_names_its_reason_and_persists_nothing(monkeypatch):
+    warehouse = Mock(spec=DuckWarehouse)
+    provider = MacroStressPoller(api_key="test-key", warehouse=warehouse)
+    monkeypatch.setattr(provider, "_get_session", AsyncMock(return_value=DatedResponses({
+        "SOFR": {"observations": []},
+        "BAMLH0A0HYM2": {"observations": [{"date": "2000-01-05", "value": "4.1"}]},
+        "T10Y2Y": {"observations": [{"date": "2000-01-05", "value": "0.2"}]},
+    })))
+    result = await provider.compute_current_stress()
+    assert result["available"] is False
+    assert result["missing_series"] == ["SOFR"]
+    assert result["unavailable_reason"] == "fred_no_observation"
+    warehouse.insert_macro_stress.assert_not_called()
+
+
+@pytest.mark.parametrize(("status", "reason"), [(403, "fred_rejected"), (429, "fred_rate_limited")])
+async def test_macro_rejected_or_limited_key_is_not_reported_as_missing(monkeypatch, status, reason):
+    provider = MacroStressPoller(api_key="test-key", warehouse=Mock(spec=DuckWarehouse))
+    use_response(monkeypatch, provider, Response(status=status))
+    result = await provider.compute_current_stress()
+    assert result["unavailable_reason"] == reason
+
+
+async def test_macro_without_a_key_reports_the_missing_key(monkeypatch):
+    provider = MacroStressPoller(api_key=None, warehouse=Mock(spec=DuckWarehouse))
+    result = await provider.compute_current_stress()
+    assert result["unavailable_reason"] == "fred_api_key_missing"
+
+
+async def test_capitol_event_is_stamped_with_transaction_date_and_stored_once(monkeypatch):
+    warehouse = Mock(spec=DuckWarehouse)
+    provider = CapitolTradesWatcher(warehouse)
+    today = datetime.now(UTC).date()
+    record = {"ticker": "NVDA", "representative": "Source Representative", "type": "purchase",
+              "transaction_date": today.isoformat(), "amount": "$1,001 - $15,000"}
+    use_response(monkeypatch, provider, Response([record]))
+    first = await provider.fetch_recent_trades(lookback_days=30)
+    second = await provider.fetch_recent_trades(lookback_days=30)  # the same window, polled again
+    midnight = int(datetime(today.year, today.month, today.day, tzinfo=UTC).timestamp()) * 10**9
+    assert first[0]["ts_ns"] == midnight and second[0]["ts_ns"] == midnight
+    assert json.loads(first[0]["detail"])["ingested_ns"] > midnight
+    assert warehouse.insert_intelligence.call_count == 1
+    assert warehouse.insert_intelligence.call_args.args[0] == midnight
+    assert provider.last_status["source_ok"] is True
+    assert provider.last_status["latest_transaction_date"] == today.isoformat()
+
+
+async def test_capitol_unchanged_dataset_is_revalidated_not_redownloaded(monkeypatch):
+    today = datetime.now(UTC).date()
+    record = {"ticker": "NVDA", "representative": "Source Representative", "type": "purchase",
+              "transaction_date": today.isoformat(), "amount": "$1,001 - $15,000"}
+    provider = CapitolTradesWatcher(Mock(spec=DuckWarehouse))
+    session = use_response(monkeypatch, provider, Response([record], headers={"ETag": '"v1"'}))
+    first = await provider.fetch_recent_trades()
+    session.response = Response(status=304)
+    second = await provider.fetch_recent_trades()
+    assert session.calls[-1][2]["headers"] == {"If-None-Match": '"v1"'}
+    assert [row["symbol"] for row in first] == ["NVDA"] and [row["symbol"] for row in second] == ["NVDA"]
+    assert provider.last_status["source_ok"] is True
+
+
+async def test_capitol_oversized_download_is_refused_while_streaming(monkeypatch):
+    from flowmap_server.feeds import capitol
+
+    monkeypatch.setattr(capitol, "_MAX_RESPONSE_BYTES", 64)
+    provider = CapitolTradesWatcher(Mock(spec=DuckWarehouse))
+    rows = [{"ticker": "NVDA", "representative": "X", "type": "purchase",
+             "transaction_date": "2026-01-01", "amount": "$1"} for _ in range(20)]
+    use_response(monkeypatch, provider, Response(rows))  # no Content-Length: the stream is capped
+    assert await provider.fetch_recent_trades() == []
+    assert provider.last_status["error"] == "response_too_large"
+
+
+async def test_capitol_outage_is_reported_in_status_not_as_an_empty_window(monkeypatch):
+    provider = CapitolTradesWatcher(Mock(spec=DuckWarehouse))
+    use_response(monkeypatch, provider, Response(status=503))
+    assert await provider.fetch_recent_trades() == []
+    assert provider.last_status["source_ok"] is False
+    assert provider.last_status["error"] == "http_503"
+
+
+async def test_darkpool_steps_back_over_unpublished_days_and_reports_the_date_read(monkeypatch):
+    from flowmap_server.feeds.darkpool import DarkPoolCollector
+
+    warehouse = Mock(spec=DuckWarehouse)
+    collector = DarkPoolCollector(warehouse)
+    requested = []
+
+    class ByDate:
+        def get(self, url, **kwargs):
+            requested.append(url)
+            if url.endswith("20260710.txt"):  # the Friday is published; Monday's file is not yet
+                return TextResponse("Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume\n"
+                                    "20260710|ABC|60|0|100\n")
+            return Response(status=404)
+
+    monkeypatch.setattr(collector, "_get_session", AsyncMock(return_value=ByDate()))
+    from datetime import date as _date
+
+    rows = await collector.fetch_regsho_daily(target_date=_date(2026, 7, 13))  # a Monday
+    assert len(requested) == 2
+    assert rows and rows[0]["high_short_share"] is True
+    assert "is_institutional_divergence" not in rows[0]
+    assert collector.last_status["date_used"] == "2026-07-10"
+    assert collector.last_status["requested_date"] == "2026-07-13"
+
+
+async def test_darkpool_outage_is_not_an_empty_day(monkeypatch):
+    from datetime import date as _date
+
+    from flowmap_server.feeds.darkpool import DarkPoolCollector
+
+    collector = DarkPoolCollector(Mock(spec=DuckWarehouse))
+    monkeypatch.setattr(collector, "_get_session", AsyncMock(return_value=Session(Response(status=500))))
+    assert await collector.fetch_regsho_daily(target_date=_date(2026, 7, 10)) == []
+    assert collector.last_status["source_ok"] is False and collector.last_status["error"] == "http_500"
+
+
+async def test_headcount_never_guesses_a_board_for_an_unmapped_ticker(monkeypatch):
+    provider = HeadcountVelocityTracker()
+    session = AsyncMock(side_effect=AssertionError("unmapped ticker must not query a board"))
+    monkeypatch.setattr(provider, "_get_session", session)
+    result = await provider.fetch_company_headcount("ACME")
+    assert result["available"] is False and result["reason"] == "no_board_mapped"
+    session.assert_not_called()
+
+
+async def test_headcount_accounting_roles_are_not_sales(monkeypatch):
+    provider = HeadcountVelocityTracker()
+    use_response(monkeypatch, provider, Response({"jobs": [
+        {"title": "Accountant"}, {"title": "Accounts Payable Clerk"}, {"title": "Accounting Manager"},
+    ]}))
+    result = await provider.fetch_company_headcount("PLTR")
+    assert result["sales_openings"] == 0 and result["ga_openings"] == 3
+
+
+async def test_contracts_query_is_filtered_to_mapped_recipients_at_the_source(monkeypatch):
+    from flowmap_server.feeds.contracts import RECIPIENT_TICKER_MAP
+
+    warehouse = Mock(spec=DuckWarehouse)
+    provider = DefenseContractsListener(warehouse)
+    session = use_response(monkeypatch, provider, Response({"results": []}))
+    assert await provider.fetch_recent_contracts() == []
+    filters = session.calls[0][2]["json"]["filters"]
+    assert set(filters["recipient_search_text"]) == set(RECIPIENT_TICKER_MAP)
+    assert provider.last_status["source_ok"] is True
+
+
+async def test_contract_is_stamped_with_its_action_date(monkeypatch):
+    warehouse = Mock(spec=DuckWarehouse)
+    provider = DefenseContractsListener(warehouse)
+    use_response(monkeypatch, provider, Response({"results": [{
+        "Recipient Name": "Lockheed Martin Corporation", "Award Amount": 10.0,
+        "Action Date": "2026-07-01", "Award ID": "A1",
+    }]}))
+    result = await provider.fetch_recent_contracts()
+    expected = int(datetime(2026, 7, 1, tzinfo=UTC).timestamp()) * 10**9
+    assert result[0]["ts_ns"] == expected
+    assert warehouse.insert_intelligence.call_args.args[0] == expected
+
+
+class TextResponse(Response):
+    def __init__(self, text):
+        super().__init__(status=200)
+        self._text = text
+
+    async def text(self, **_):
+        return self._text
+
+
+async def test_darkpool_user_agent_carries_the_package_version():
+    from flowmap_server import __version__
+    from flowmap_server.feeds.darkpool import DarkPoolCollector
+
+    collector = DarkPoolCollector(Mock(spec=DuckWarehouse))
+    try:
+        session = await collector._get_session()
+        assert session.headers["User-Agent"] == f"FlowMap/{__version__} (research)"
+    finally:
+        await collector.close()

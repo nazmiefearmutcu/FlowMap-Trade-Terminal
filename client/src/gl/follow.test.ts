@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { follow, KILL_BOTH, KILL_NONE, KILL_PRICE, KILL_TIME, toView } from './camera';
 import {
+  advanceLiveEdgeLag,
   approach,
   colsBehind,
+  glideTauMs,
   isColVisible,
+  reducedMotionQuery,
+  REDUCED_MOTION_QUERY,
   PAN_KILL_MIN_PX,
   PRICE_DEADBAND_FRACTION,
   PRICE_GLIDE_TAU_MS,
@@ -55,14 +59,14 @@ describe('trackedRow — "where is the price" from one column', () => {
     expect(trackedRow(100, 104, 40, 160)).toBe(102.5);
   });
 
-  it('D2: accepts the same-row two-sided case (the real BTC book) at the cell centre', () => {
+  it('accepts the same-row two-sided case (the real BTC book) at the cell centre', () => {
     // Live BTC columns quantize best bid and best ask onto the SAME row
-    // (survey S1/D2: bidTop === askBot === 2311). The inside quote is then
+    //. The inside quote is then
     // that cell's centre — NOT the whole-book extent midpoint.
     expect(trackedRow(2311, 2311, 1161, 3411)).toBe(2311.5);
     // Counterexample pinned: the old strict `>` fell through to
     // (lo + hi + 1)/2 = 2286.5, which a far-wing wall could drag by dozens
-    // of rows (the tracked-camera lurch in the survey).
+    // of rows (the tracked-camera lurch seen on a live book).
     expect(trackedRow(2311, 2311, 1161, 3411)).not.toBe(2286.5);
   });
 
@@ -248,5 +252,46 @@ describe('stepLiveEdgeLag — the constant-velocity live-edge scroll', () => {
     let at120 = 0;
     for (let i = 0; i < 60; i++) at120 = stepLiveEdgeLag(at120, i === 0 || i === 30 ? 1 : 0, 8.35, INTERVAL);
     expect(Math.abs(at30 - at120)).toBeLessThan(0.15);
+  });
+});
+
+describe('reduced motion (WCAG 2.3.3)', () => {
+  it('reads the reduce query from matchMedia and tolerates its absence', () => {
+    const asked: string[] = [];
+    const win = { matchMedia: (q: string) => { asked.push(q); return { matches: true } as MediaQueryList; } };
+    expect(reducedMotionQuery(win)?.matches).toBe(true);
+    expect(asked).toEqual([REDUCED_MOTION_QUERY]);
+    expect(reducedMotionQuery({})).toBeNull();
+    expect(reducedMotionQuery(null)).toBeNull();
+    expect(reducedMotionQuery({ matchMedia: () => { throw new Error('no'); } })).toBeNull();
+  });
+
+  it('a zero time constant snaps the glide to its target on the first step', () => {
+    expect(glideTauMs(true)).toBe(0);
+    expect(glideTauMs(false)).toBe(PRICE_GLIDE_TAU_MS);
+    expect(approach(10, 42, 16, glideTauMs(true))).toBe(42);
+    expect(approach(10, 42, 16, glideTauMs(false))).toBeGreaterThan(10);
+    expect(approach(10, 42, 16, glideTauMs(false))).toBeLessThan(42);
+  });
+});
+
+describe('advanceLiveEdgeLag (per-frame live-edge lag)', () => {
+  const base = { following: false, arrivals: 0, dtMs: 16, intervalMs: 250, reduced: false };
+
+  it('released views drain the lag at one column per 250 ms and never go negative', () => {
+    expect(advanceLiveEdgeLag(1, { ...base, dtMs: 125 })).toBeCloseTo(0.5, 12);
+    expect(advanceLiveEdgeLag(0.1, { ...base, dtMs: 1000 })).toBe(0);
+    expect(advanceLiveEdgeLag(0, base)).toBe(0);
+  });
+
+  it('a following view delegates to stepLiveEdgeLag', () => {
+    const lag = 2;
+    const frame = { ...base, following: true, arrivals: 1, dtMs: 100, intervalMs: 250 };
+    expect(advanceLiveEdgeLag(lag, frame)).toBe(stepLiveEdgeLag(lag, 1, 100, 250));
+  });
+
+  it('reduced motion snaps the lag to zero whatever the follow state', () => {
+    expect(advanceLiveEdgeLag(5, { ...base, reduced: true })).toBe(0);
+    expect(advanceLiveEdgeLag(5, { ...base, following: true, reduced: true })).toBe(0);
   });
 });

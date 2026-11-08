@@ -1,5 +1,5 @@
 /**
- * OnboardingCard tests (lane CE): first-run auto-open, 3-step wizard,
+ * OnboardingCard tests: first-run auto-open, 3-step wizard,
  * Skip/Done persistence, Esc/scrim defer-without-persist, focus trap +
  * focus restore, reopen via openOnboarding, i18n'd copy.
  */
@@ -60,6 +60,16 @@ afterEach(() => {
 });
 
 describe('first run', () => {
+  it('says the first chart is simulated and that recording writes to disk, before any market is chosen', () => {
+    const container = render();
+    const notes = container.querySelector('[data-testid="onboarding-notes"]');
+    expect(notes).not.toBeNull();
+    expect(notes!.textContent).toContain('SIM-DEMO');
+    expect(notes!.textContent).toContain('synthetic');
+    expect(notes!.textContent).toContain('20 GB');
+    expect(notes!.textContent).toContain('app-data folder');
+  });
+
   it('opens automatically when the tour was never acknowledged', () => {
     const container = render();
     expect(dialog(container)).not.toBeNull();
@@ -201,7 +211,7 @@ describe('focus management', () => {
   });
 });
 
-describe('i18n (C7)', () => {
+describe('i18n', () => {
   it('renders Turkish copy when the locale is tr', () => {
     setLocale('tr');
     const container = render();

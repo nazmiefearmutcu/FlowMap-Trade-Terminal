@@ -12,8 +12,11 @@ bind it — and also on modules that already hold the old binding.
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 import time
+
+logger = logging.getLogger(__name__)
 
 
 def apply_crocodile_now_ns() -> bool:
@@ -23,15 +26,18 @@ def apply_crocodile_now_ns() -> bool:
         return False
     try:
         ctime = importlib.import_module("crocodile.core.util.time")
-    except ImportError:
+    except ImportError as exc:
+        # Without the rebind every BookState stamp raises AttributeError and
+        # the crypto column silently never appears: say so at startup.
+        logger.warning("crocodile not importable; now_ns shim not applied: %s", exc)
         return False
     original = getattr(ctime, "now_ns", None)
     if original is None or original is time.time_ns:
         return False
-    ctime.now_ns = time.time_ns
+    vars(ctime)["now_ns"] = time.time_ns
     for name, mod in list(sys.modules.items()):
         if name.startswith("crocodile") and getattr(mod, "now_ns", None) is original:
-            mod.now_ns = time.time_ns
+            vars(mod)["now_ns"] = time.time_ns
     return True
 
 

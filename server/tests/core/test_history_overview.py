@@ -14,7 +14,6 @@ import pytest
 from flowmap_server.core.grid import FinalizedColumn, Grid, GridCfg
 from flowmap_server.core.overview import (
     GAP_MARKER_PREFIX,
-    MAX_COARSE_RANGES,
     MAX_GAP_MARKERS,
     RESOLUTION_MARKER_PREFIX,
     OverviewBuilder,
@@ -176,7 +175,7 @@ async def test_cached_immutable_bins_do_not_repeat_disk_and_partial_tail_refresh
     def forbidden(*args, **kwargs):
         raise AssertionError("immutable overview must reuse its cached real bins")
 
-    monkeypatch.setattr("flowmap_server.core.session.add_recording", forbidden)
+    monkeypatch.setattr("flowmap_server.core.session_history.add_recording", forbidden)
     second = response(await session.handle_history_async(request(0, 7, 4)))
     np.testing.assert_array_equal(first.depth_cols[0].bid, second.depth_cols[0].bid)
     tail = response(await session.handle_history_async(request(12, 15, 4)))
@@ -253,7 +252,7 @@ async def test_overview_disk_and_aggregation_do_not_block_live_feed(tmp_path, mo
         assert release.wait(timeout=5)
         return real(*args)
 
-    monkeypatch.setattr("flowmap_server.core.session.add_recording", blocked)
+    monkeypatch.setattr("flowmap_server.core.session_history.add_recording", blocked)
     task = asyncio.create_task(session.handle_history_async(request(0, 19, 5)))
     try:
         assert await asyncio.to_thread(started.wait, 5)
@@ -455,7 +454,7 @@ async def test_inside_bin_disk_page_seams_preserve_exact_timestamps_and_survive_
     def forbidden(*args, **kwargs):
         raise AssertionError("seam metadata must survive cached output without disk reads")
 
-    monkeypatch.setattr("flowmap_server.core.session.add_recording", forbidden)
+    monkeypatch.setattr("flowmap_server.core.session_history.add_recording", forbidden)
     cached = response(await session.handle_history_async(request(0, 139, 128)))
     assert [m for m in cached.markers if m.text.startswith(GAP_MARKER_PREFIX)] == internal
 
@@ -564,7 +563,7 @@ async def test_old_hybrid_groups_keep_native_fine_levels_and_publish_all_epoch_m
     def forbidden(*args, **kwargs):
         raise AssertionError("completed native groups must not repeat scalar or density disk reads")
 
-    monkeypatch.setattr("flowmap_server.core.session.add_recording", forbidden)
+    monkeypatch.setattr("flowmap_server.core.session_history.add_recording", forbidden)
     monkeypatch.setattr(pl, "scan_parquet", forbidden)
     cached = response(await session.handle_history_async(request(0, 7, 4)))
     assert [c.epoch for c in cached.depth_cols] == [old.epoch, current.epoch]
@@ -720,7 +719,9 @@ def test_resolution_marker_preserves_coarse_source_interval_and_prefix_cache():
 def test_coarse_resolution_ranges_preserve_disjoint_gaps_and_exact_width_segments():
     original = [(float(index * 10), float(index * 10 + 1), float(index + 2)) for index in range(20)]
     result = _bounded_coarse_ranges(original)
-    assert len(result) == len(original) > MAX_COARSE_RANGES
+    # The old eight-range cap is gone (see _bounded_coarse_ranges): every disjoint
+    # segment survives, so the result is longer than the retired bound of eight.
+    assert len(result) == len(original) > 8
     assert all(
         any(left <= low and right >= high and maximum >= width for left, right, maximum in result)
         for low, high, width in original
@@ -771,7 +772,7 @@ async def test_mixed_native_group_sends_physical_resolution_metadata_and_reuses_
     def forbidden(*args, **kwargs):
         raise AssertionError("completed provenance must survive with no source rereads")
 
-    monkeypatch.setattr("flowmap_server.core.session.add_recording", forbidden)
+    monkeypatch.setattr("flowmap_server.core.session_history.add_recording", forbidden)
     monkeypatch.setattr(pl, "scan_parquet", forbidden)
     grid.maybe_reanchor(88000)
     cached = response(await session.handle_history_async(request(0, 15, 16)))

@@ -1,6 +1,6 @@
 /**
- * Shared SMA-seeded EMA state machine — the streaming twin of the old branch's
- * `ema()` (indicators/ema.ts), which documents WHY the seed matters: seeding
+ * Shared SMA-seeded EMA state machine — the streaming twin of the reference implementation's
+ * `ema()` (kernels/ema.ts), which documents WHY the seed matters: seeding
  * with the plain SMA of the first `period` finite closes makes the series
  * reproducible from any slice containing the seed window and puts the first
  * plotted point exactly on the SMA.

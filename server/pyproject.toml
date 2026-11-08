@@ -1,7 +1,11 @@
 [project]
 name = "flowmap-server"
-version = "1.5.1"
+version = "1.6.0"
 requires-python = ">=3.13"
+# Supported installer: uv, using the committed uv.lock (it pins the crocodile
+# engine by sha256). The floors below are minimums, not ceilings: a plain pip
+# install resolves the latest majors and is not the configuration this tree is
+# tested against.
 dependencies = [
   # One engine for both markets. The `market` extra pulls ccxt, which is what
   # turns the crypto side from a hand-written venue list into the whole market:
@@ -27,12 +31,51 @@ dev = [
   "pytest-timeout>=2",
   "httpx>=0.27",
   "websockets>=12",
-  # Lint gate (Campaign 4, lane E3): hygiene rules only, see [tool.ruff.lint].
+  # Lint gate: hygiene rules only, see [tool.ruff.lint].
   "ruff>=0.6",
+  # Static type gate, see [tool.mypy].
+  # Exact pin: the newest release at least 14 days old when the lock was resolved
+  # (2026-11-08). 2.4.1 was published on 2026-10-28, after that cutoff.
+  "mypy==2.4.0",
+  # Coverage on demand, not gated: pytest --cov=flowmap_server --cov-report=term-missing
+  "pytest-cov>=5",
 ]
 
 [tool.uv.sources]
 crocodile = { path = "vendor/crocodile-0.3.2-py3-none-any.whl" }
+
+# Dev-only transitive pins: the newest releases published at least 14 days before
+# the lock was resolved (2026-11-08), i.e. on or before 2026-10-25. mypy-extensions
+# 1.2.0 and coverage 7.17.1 and later were published after that. Neither is shipped.
+[tool.uv]
+constraint-dependencies = ["mypy-extensions<=1.1.0", "coverage<=7.17.0"]
+
+# Static type gate. Scoped to the packages whose typing this gate owns: the
+# feed, data and NLP packages, the protocol codec, and the WebSocket transport
+# module. follow_imports=silent keeps errors in the modules they import (core/)
+# out of this gate, so each package's gate stays its own. The vendored engine
+# ships no stubs for ccxt, so its import is untyped on purpose.
+[tool.mypy]
+python_version = "3.13"
+files = [
+  "src/flowmap_server/feeds",
+  "src/flowmap_server/data",
+  "src/flowmap_server/nlp",
+  "src/flowmap_server/proto",
+  "src/flowmap_server/api",
+  "src/flowmap_server/logging_setup.py",
+  "src/flowmap_server/benchmark_provenance.py",
+  "src/flowmap_server/_compat.py",
+  "src/flowmap_server/config.py",
+]
+follow_imports = "silent"
+warn_unused_ignores = true
+warn_redundant_casts = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["ccxt", "ccxt.*"]
+ignore_missing_imports = true
 
 [build-system]
 requires = ["hatchling"]
@@ -41,7 +84,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/flowmap_server"]
 
-# Lint gate (Campaign 4, E3): pragmatic, zero-churn selection — pycodestyle
+# Lint gate: pragmatic, zero-churn selection — pycodestyle
 # errors (E4/E7/E9) + Pyflakes (F). Import sorting (I) and style (E501 line
 # length is kept as a soft authoring guide via line-length below) are
 # deliberately NOT selected so the existing tree passes without a reformat.
@@ -50,13 +93,24 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+# Bugbear (B) and asyncio dangling-task (RUF006) catch the defects an asyncio
+# server actually ships: unawaited or unreferenced tasks, mutable defaults,
+# loop-variable closures.
+select = ["E4", "E7", "E9", "F", "B", "RUF006"]
 # E741: `l` is the standard OHLC "low" field name used verbatim across the
 # wire codec (BarColumn) and its unpack sites; renaming it would churn the
 # protocol path for zero value.
-ignore = ["E741"]
+# B905: zip(strict=...) would churn every zip call in the tree for no defect.
+ignore = ["E741", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test fixtures build their config objects in default arguments on purpose.
+"tests/**" = ["B008"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 timeout = 60
 testpaths = ["tests"]
+# Un-awaited coroutines and similar asyncio slips fail the run instead of
+# printing a warning nobody reads.
+filterwarnings = ["error::RuntimeWarning", "error::pytest.PytestUnraisableExceptionWarning"]

@@ -40,8 +40,8 @@ def _decode_frame(buf: bytes) -> list:
 async def probe(
     host: str, port: int, market: str, symbol: str, duration: float, tls: bool = False
 ) -> int:
-    # Loopback-only diagnostic against a 127.0.0.1 dev server (§11 binds
-    # loopback-only); TLS is not applicable on the local socket, so the
+    # Loopback-only diagnostic against a 127.0.0.1 dev server (the server binds
+    # loopback only); TLS is not applicable on the local socket, so the
     # scheme is assembled rather than hardcoded as a cleartext literal.
     scheme = "wss" if tls else "ws"
     url = f"{scheme}://{host}:{port}/ws"

@@ -1,5 +1,5 @@
 /**
- * OverlayManager tests (CP3 clear APIs + S2 D4 z-order + S1 D5 cursors).
+ * OverlayManager tests (clear APIs + z-order + cursors).
  *
  * jsdom has no canvas: every `<canvas>` gets a per-canvas recording 2D context
  * (the mockGL pattern) and the GL side uses the shared fake from mockGL.ts —
@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OverlayManager, type OverlayDrawContext } from './manager';
 import { makeFakeGL } from '../mockGL';
+import { t } from '../../i18n';
 import { PriceLine } from './priceLine';
 import { Profile } from './profile';
 import { ViewWorker } from '../viewWorker';
@@ -161,7 +162,7 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     expect(effective()).toBeNull();
   });
 
-  it('clearInk wipes the text layer and BOTH gutters synchronously (CP3)', () => {
+  it('clearInk wipes the text layer and BOTH gutters synchronously', () => {
     manager.clearInk();
     expect(harness.rec(textCanvas).clears).toHaveLength(1);
     expect(harness.rec(priceCanvas).clears).toHaveLength(1);
@@ -180,7 +181,22 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     expect(textCanvas.isConnected).toBe(false);
   });
 
-  it('draw() clears text + gutters with axes OFF (S3 C-4 ghost labels/pill)', () => {
+  it('fills every device row of the volume strip at fractional strip heights', () => {
+    const volume = (manager as unknown as { volumeText: { canvas: HTMLCanvasElement; rect: (...a: number[]) => void } }).volumeText;
+    const rect = vi.spyOn(volume, 'rect');
+    for (const dpr of [1, 1.25, 1.5, 2, 2.25]) {
+      for (const cssH of [480, 517, 663, 700]) {
+        rect.mockClear();
+        const ctx = drawCtx();
+        manager.draw({ ...ctx, dpr, dims: { cssW: 640, cssH, drawW: 640 * dpr, drawH: cssH * dpr } });
+        const fill = rect.mock.calls[0];
+        expect(fill).toBeDefined();
+        expect(fill[3] * dpr).toBeGreaterThanOrEqual(volume.canvas.height);
+      }
+    }
+  });
+
+  it('draw() clears text + gutters with axes OFF', () => {
     const ctx = drawCtx();
     manager.setVisibility({
       bubbles: false,
@@ -221,7 +237,7 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     expect(g.clears).toHaveLength(1);
   });
 
-  it('draws BBO before the price line so the price core keeps z-order (S2 D4)', () => {
+  it('draws BBO before the price line so the price core keeps z-order', () => {
     const order: string[] = [];
     const holder = manager as unknown as Record<string, { draw: (f: unknown) => void }>;
     for (const name of ['profile', 'vwap', 'priceLine', 'bbo', 'bubbles', 'markers']) {
@@ -325,7 +341,7 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     await vi.waitFor(() => { manager.draw(ctx); expect(profile.last?.max).toBe(0); });
   });
 
-  it('prune()/reset() bound the volume-strip columns (F26)', () => {
+  it('prune()/reset() bound the volume-strip columns', () => {
     manager.onBar({ ...bar(0, 1), col_seq: 0, vol_buy: 1, vol_sell: 0 });
     manager.onBar({ ...bar(500, 1), col_seq: 500, vol_buy: 1, vol_sell: 0 });
     expect(manager.debug().volumeBars).toBe(2);
@@ -335,7 +351,7 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     expect(manager.debug().volumeBars).toBe(0);
   });
 
-  it('badges a reconstructed-history VWAP (S2 D1 honesty), not when vwap is approx', () => {
+  it('badges a reconstructed-history VWAP, not when vwap is approx', () => {
     const badges: string[] = [];
     const text = internals().text as unknown as {
       badge: (x: number, y: number, s: string) => void;
@@ -347,17 +363,17 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     const reconciled = drawCtx();
     reconciled.capability = { history: 'reconstructed' };
     manager.draw(reconciled);
-    expect(badges).toContain('VWAP ≈ reconstructed');
+    expect(badges).toContain(t('gl.badgeVwapReconstructed'));
 
     badges.length = 0;
     const keyless = drawCtx();
     keyless.capability = { vwap: 'approx', history: 'reconstructed' };
     manager.draw(keyless);
-    expect(badges).toContain('VWAP approx');
-    expect(badges).not.toContain('VWAP ≈ reconstructed');
+    expect(badges).toContain(t('gl.badgeVwapApprox'));
+    expect(badges).not.toContain(t('gl.badgeVwapReconstructed'));
   });
 
-  // --- QA9-1: born-blank gutters must re-match without a window resize -------
+  // --- Born-blank gutters must re-match without a window resize -------
 
   /** Give a jsdom canvas a real layout box (clientWidth/Height are 0 there). */
   function box(el: HTMLCanvasElement, w: number, h: number): void {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { setLocale, t } from '../i18n';
 import {
   LOG_CAP,
   MAX_ALERTS_PER_SYMBOL,
@@ -10,7 +11,6 @@ import {
   alertToastMessage,
   allAlertKeys,
   alertsFor,
-  clearAlerts,
   clearPersistedForTest,
   evaluateAlerts,
   getAlertsSnapshot,
@@ -76,7 +76,7 @@ describe('addAlert / alertsFor', () => {
 
   it('bounds alerts per symbol at MAX_ALERTS_PER_SYMBOL by evicting the oldest', () => {
     for (let i = 0; i < MAX_ALERTS_PER_SYMBOL + 5; i += 1) {
-      addAlert(KEY, 100 + i, 100, 1_000 + i);
+      addAlert(KEY, 100 + i, 50, 1_000 + i);
     }
     const list = alertsFor(KEY);
     expect(list).toHaveLength(MAX_ALERTS_PER_SYMBOL);
@@ -146,6 +146,72 @@ describe('persistence', () => {
   });
 });
 
+describe('reload of armed alerts (rearmPx null round-trip)', () => {
+  it('keeps an armed ABOVE alert firing after a reload (rearmPx null is not a band at 0)', () => {
+    const s = memStorage();
+    setAlertsStorage(s);
+    addAlert(KEY, 60_000, 59_000); // armed above, rearmPx null
+    resetAlertsForTest(); // reload from the same storage
+    expect(alertsFor(KEY)[0].rearmPx).toBeNull();
+    expect(evaluateAlerts(KEY, 59_500)).toHaveLength(0); // below: nothing yet
+    expect(evaluateAlerts(KEY, 60_010)).toHaveLength(1); // crossing fires
+    expect(alertsFor(KEY)[0].triggered).toBe(true);
+  });
+
+  it('keeps an armed BELOW alert firing after a reload', () => {
+    const s = memStorage();
+    setAlertsStorage(s);
+    addAlert(KEY, 58_000, 59_000); // armed below
+    resetAlertsForTest();
+    expect(alertsFor(KEY)[0].rearmPx).toBeNull();
+    expect(evaluateAlerts(KEY, 58_500)).toHaveLength(0);
+    expect(evaluateAlerts(KEY, 57_990)).toHaveLength(1);
+  });
+
+  it('still derives the band for a latched alert whose stored rearmPx is null', () => {
+    const s = memStorage({
+      [STORAGE_PREFIX + KEY]: JSON.stringify({
+        v: 1,
+        alerts: [{ id: 'latched', price: 100, above: true, triggered: true, rearmPx: null }],
+      }),
+    });
+    setAlertsStorage(s);
+    expect(alertsFor(KEY)[0].rearmPx).toBeCloseTo(99.9, 10);
+  });
+});
+
+describe('zero and corrupt levels', () => {
+  it('refuses a level that sits exactly on the reference price (it would fire at once)', () => {
+    expect(addAlert(KEY, 100, 100)).toBeNull();
+    expect(alertsFor(KEY)).toHaveLength(0);
+    expect(evaluateAlerts(KEY, 100)).toHaveLength(0);
+  });
+
+  it('refuses zero and negative levels', () => {
+    expect(addAlert(KEY, 0)).toBeNull();
+    expect(addAlert(KEY, -5, 100)).toBeNull();
+    expect(alertsFor(KEY)).toHaveLength(0);
+  });
+
+  it('skips stored entries whose price is null, empty, zero or negative', () => {
+    const s = memStorage({
+      [STORAGE_PREFIX + KEY]: JSON.stringify({
+        v: 1,
+        alerts: [
+          { id: 'nullpx', price: null, above: true },
+          { id: 'emptypx', price: '', above: true },
+          { id: 'zeropx', price: 0, above: true },
+          { id: 'negpx', price: -3, above: true },
+          { id: 'good', price: 42, above: true },
+        ],
+      }),
+    });
+    setAlertsStorage(s);
+    expect(alertsFor(KEY).map((a) => a.id)).toEqual(['good']);
+    expect(evaluateAlerts(KEY, 1)).toHaveLength(0); // no phantom alert at 0 fires
+  });
+});
+
 describe('evaluateAlerts', () => {
   it('fires above and below crossings edge-triggered (no re-fire while beyond)', () => {
     addAlert(KEY, 60_000, 59_000); // above
@@ -172,8 +238,8 @@ describe('evaluateAlerts', () => {
   });
 
   it('persists the triggered latch so a reload does not re-fire', () => {
-    // Regression (R2): the fired latch was never written back to storage, so
-    // after a reload every still-beyond alert re-fired (toast + log + pulse).
+    // Regression: the fired latch was never written back to storage, so after a
+    // reload every still-beyond alert re-fired (toast + log + pulse).
     const s = memStorage();
     setAlertsStorage(s);
     addAlert(KEY, 60_000, 59_000);
@@ -329,7 +395,7 @@ describe('evaluateAlerts', () => {
     addAlert(KEY, 60_000, 59_000);
     evaluateAlerts(KEY, 60_001);
     expect(toasts).toHaveLength(1);
-    expect(toasts[0]).toContain('60,000');
+    expect(toasts[0]).toContain('60000.00');
 
     (window as { __flowmapToast?: unknown }).__flowmapToast = () => {
       throw new Error('hook exploded');
@@ -347,12 +413,21 @@ describe('remove / clear', () => {
     expect(alertsFor(KEY)).toHaveLength(0);
   });
 
-  it('clearAlerts empties one symbol only', () => {
+  it('tells the user once per session when storage refuses the write', () => {
+    const toasts: string[] = [];
+    (window as { __flowmapToast?: unknown }).__flowmapToast = (msg: string) => toasts.push(msg);
+    setAlertsStorage({
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('QuotaExceededError');
+      },
+      removeItem: () => {},
+    });
     addAlert(KEY, 100);
-    addAlert('sim:OTHER', 200);
-    clearAlerts(KEY);
-    expect(alertsFor(KEY)).toHaveLength(0);
-    expect(alertsFor('sim:OTHER')).toHaveLength(1);
+    addAlert(KEY, 110);
+    // The alerts still work in memory; only the reload survival is lost.
+    expect(alertsFor(KEY)).toHaveLength(2);
+    expect(toasts).toEqual([t('alerts.saveFailed')]);
   });
 });
 
@@ -366,10 +441,12 @@ describe('alertToastMessage', () => {
       crossedAt: 60_012.5,
       at: 0,
     });
-    expect(msg).toContain('SIM-DEMO'); // survey 3 #1: the toast must name the symbol
+    expect(msg).toContain('SIM-DEMO'); // the toast must name the symbol
     expect(msg).toContain('above');
-    expect(msg).toContain('60,000');
-    expect(msg).toContain('60,012.5');
+    // Levels use the shared level format: never digit-grouped (alertPrice.ts).
+    expect(msg).toContain('60000.00');
+    expect(msg).toContain('60012.50');
+    expect(msg).not.toContain('60,000');
     const below = alertToastMessage({
       id: 'x',
       key: 'binance:BTCUSDT',
@@ -380,6 +457,25 @@ describe('alertToastMessage', () => {
     });
     expect(below).toContain('BTCUSDT');
     expect(below).toContain('below');
+  });
+
+  it('prints the same level text in Turkish (levels are never digit-grouped)', () => {
+    setLocale('tr');
+    try {
+      const msg = alertToastMessage({
+        id: 'x',
+        key: KEY,
+        alertId: 'a',
+        price: 60_000.5,
+        crossedAt: 60_012.25,
+        at: 0,
+      });
+      expect(msg).toContain('60000.50');
+      expect(msg).toContain('60012.25');
+      expect(msg).not.toMatch(/60\.000/);
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('falls back to the whole key when it carries no market separator', () => {

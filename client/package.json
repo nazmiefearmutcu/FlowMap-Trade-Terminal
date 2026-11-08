@@ -1,14 +1,16 @@
 {
   "name": "flowmap-client",
   "private": true,
-  "version": "1.5.1",
+  "version": "1.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck:tests": "tsc -p tests/tsconfig.json",
+    "verify": "tsc -b && npm run typecheck:tests && npm run lint && vitest run",
     "e2e": "playwright test",
     "preview": "vite preview"
   },

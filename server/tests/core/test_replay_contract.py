@@ -237,7 +237,7 @@ async def test_targeted_cached_availability_and_exact_window_errors(tmp_path, mo
         calls.append((path, threading.get_ident()))
         return original(path)
     monkeypatch.setattr(root, "_column_time_bounds", probe)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8720") as client:
         for _ in range(2):
             response = await client.get("/api/recordings/availability", params={"market": "binance", "symbol": "BTCUSDT"})
             assert response.json()["latest_column_ns"] == str(T0+11*DT)

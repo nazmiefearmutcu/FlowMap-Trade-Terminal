@@ -1,5 +1,5 @@
 /**
- * Overlay coordinate mapping (§8.3 overlays, M2 T10).
+ * Overlay coordinate mapping.
  *
  * Every overlay (bubbles, BBO, VWAP, profile, markers) and both axes must be
  * pinned to the SAME camera transform as the heatmap, so they pan/zoom locked to
@@ -53,7 +53,7 @@ export interface SurfaceDims {
  * cadence is NOT uniform in time: a reconstructed (1 m-candle) history block is
  * 60 s-spaced while the live epoch is `dtNs` apart, so the single affine
  * `anchorT0Ns + (col − anchorSeq)·dtNs` lies about every reconstructed column
- * (survey S2 D1) and scatters trades/markers onto wrong lanes. When the table is
+ * And scatters trades/markers onto wrong lanes. When the table is
  * present and in range, ts⇄col go through it (binary search + linear
  * interpolation); everywhere else the affine is used and the result is
  * bit-identical to the pre-slot implementation.
@@ -358,16 +358,10 @@ export class GridMap {
 }
 
 /**
- * Coerce a canonical nanosecond field to bigint. The cold-JSON decoder only
- * promotes integer literals ABOVE 2^53 to bigint (lossless path); smaller ones —
- * e.g. a session-relative `Marker.ts_ns` (~1e12) — stay a plain `number` despite
- * the `bigint` type. Storing into a BigInt64Array (bubbles/markers rings) needs a
- * real bigint, so normalize here. Safe for both: bigint passes through; an integer
- * number converts exactly.
+ * The bigint coercion for nanosecond fields is the shared helper in
+ * candles/bigNs.ts. Re-exported for the modules that already import it from here.
  */
-export function toBigNs(x: bigint | number): bigint {
-  return typeof x === 'bigint' ? x : BigInt(Math.round(x));
-}
+export { toBigNs } from '../../candles/bigNs';
 
 /** The visible absolute-column span of a view, clamped to a resident window. */
 export function visibleColRange(

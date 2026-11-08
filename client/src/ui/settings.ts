@@ -1,6 +1,6 @@
 import { isColormap } from '../theme/appearance';
 /**
- * Persisted workspace settings (§9 settings drawer, T12) — pure load/save over a
+ * Persisted workspace settings for the settings drawer — pure load/save over a
  * Storage-shaped backend, so persistence + defaults + corruption tolerance are
  * unit-tested without a real browser.
  *
@@ -16,7 +16,7 @@ import { isColormap } from '../theme/appearance';
  * predates any field adopts that field's default with no migration code and no
  * `SETTINGS_KEY` bump. The one deliberate exception is `colormap`, which carries
  * a ONE-TIME schema migration: `settingsVersion` was introduced with the
- * chart-harmony fix (F6, visual campaign 2026-09-11). Any blob WITHOUT
+ * chart-harmony fix (2026-09-11). Any blob WITHOUT
  * `settingsVersion >= 2` has its colormap FORCED to `'theme'` on first load —
  * pre-v2 the chart ignored the shell theme entirely (a pinned dark island), so
  * a stored family choice was never the chart the user actually saw. The default
@@ -26,7 +26,13 @@ import { isColormap } from '../theme/appearance';
  * on every mount but never applied to the renderer, so they carry no intent.
  */
 
-import { DEFAULT_CONTRAST, DEFAULT_TOLERANCE } from '../gl/heatmap';
+import {
+  DEFAULT_CHART_STYLE,
+  DEFAULT_CONTRAST,
+  DEFAULT_TOLERANCE,
+  chartStyleOf,
+  type ChartStyle,
+} from '../gl/heatmap';
 import { DEFAULT_COLORMAP, type Colormap } from '../gl/lut';
 import { DEFAULT_WHITE_PERCENTILE } from '../gl/normalize';
 import {
@@ -37,7 +43,7 @@ import {
 export type { Colormap };
 
 /**
- * Server price-grid coverage around the reference price (§8.1). The grid is a
+ * Server price-grid coverage around the reference price. The grid is a
  * LINEAR affine over a fixed row count, so range and resolution are the same
  * knob — widening the band coarsens every row. See the drawer hint.
  *   - `native` — today's grid: finest rows, narrowest coverage.
@@ -57,9 +63,9 @@ export const PRICE_BANDS: readonly PriceBand[] = ['native', 'wide', 'full', 'dee
 
 /**
  * Which channel of the two-channel (bid/ask) depth data the heatmap renders
- * (campaign-3 contract C2). Applied to the renderer via
- * `renderer.setDepthChannel(mode)` — the setter is contract-owned by the gl
- * lane, so the UI codes against it defensively (feature-detected; a renderer
+ * Applied to the renderer via
+ * `renderer.setDepthChannel(mode)` — the setter is owned by the renderer,
+ * so the UI codes against it defensively (feature-detected; a renderer
  * build without it simply keeps the default 'sum' view).
  *   - `sum`       — today's display, bid+ask collapsed into one intensity
  *                   (the bit-identical default).
@@ -89,6 +95,43 @@ export type HistoryDepth = 'off' | '1h' | '4h' | '1d' | 'max';
 
 export const HISTORY_DEPTHS: readonly HistoryDepth[] = ['off', '1h', '4h', '1d', 'max'] as const;
 
+/** i18n key for each price band's label, and for its trade-off hint. */
+export const PRICE_BAND_LABEL_KEY: Record<PriceBand, string> = {
+  native: 'settings.band.native',
+  wide: 'settings.band.wide',
+  full: 'settings.band.full',
+  deep: 'settings.band.deep',
+};
+export const PRICE_BAND_HINT_KEY: Record<PriceBand, string> = {
+  native: 'settings.bandHint.native',
+  wide: 'settings.bandHint.wide',
+  full: 'settings.bandHint.full',
+  deep: 'settings.bandHint.deep',
+};
+
+/** i18n keys for each depth display channel's label and hint. */
+export const DEPTH_CHANNEL_LABEL_KEY: Record<DepthChannelMode, string> = {
+  sum: 'settings.channel.sum',
+  bid: 'settings.channel.bid',
+  ask: 'settings.channel.ask',
+  imbalance: 'settings.channel.imbalance',
+};
+export const DEPTH_CHANNEL_HINT_KEY: Record<DepthChannelMode, string> = {
+  sum: 'settings.channelHint.sum',
+  bid: 'settings.channelHint.bid',
+  ask: 'settings.channelHint.ask',
+  imbalance: 'settings.channelHint.imbalance',
+};
+
+/** i18n key for each first-launch history-depth choice. */
+export const HISTORY_DEPTH_LABEL_KEY: Record<HistoryDepth, string> = {
+  off: 'settings.history.off',
+  '1h': 'settings.history.1h',
+  '4h': 'settings.history.4h',
+  '1d': 'settings.history.1d',
+  max: 'settings.history.max',
+};
+
 const HISTORY_DEPTH_NS: Record<Exclude<HistoryDepth, 'off' | 'max'>, number> = {
   '1h': 3_600e9,
   '4h': 14_400e9,
@@ -109,18 +152,18 @@ export function historyDepthCols(depth: HistoryDepth, dtNs: number): number {
 
 export interface FlowMapSettings {
   /**
-   * Persisted schema version. `2` since the chart-harmony fix (F6): a stored
+   * Persisted schema version. `2` since the chart-harmony fix: a stored
    * blob without `settingsVersion >= 2` gets its `colormap` migrated to
    * `'theme'` ONCE on load. See the migration note in the module docblock.
    */
   settingsVersion: number;
-  /** Heatmap display contrast 0–100 (drives the perceptual gamma, §8.3). */
+  /** Heatmap display contrast 0–100 (drives the perceptual gamma). */
   contrast: number;
   /** Heatmap black point 0–100 — how much density a cell needs to paint at all. */
   tolerance: number;
   /** Heatmap colormap family. */
   colormap: Colormap;
-  /** Viewport-normalization percentile (§8.3; higher = dimmer, more headroom). */
+  /** Viewport-normalization percentile (higher = dimmer, more headroom). */
   normPercentile: number;
   /** Price rows grouped into one heatmap cell (tick grouping). */
   tickGrouping: number;
@@ -143,18 +186,32 @@ export interface FlowMapSettings {
   railVisible: boolean;
   /** Which heatmap overlays are on. */
   overlays: OverlayVisibility;
-  /** Depth display channel (contract C2): sum | bid | ask | imbalance. */
+  /** Depth display channel: sum | bid | ask | imbalance. */
   depthChannel: DepthChannelMode;
+  /**
+   * Chart style: `normal` is the smooth heatmap; `pixel`
+   * draws posterized device-pixel blocks in the active theme and colormap.
+   * Added in settingsVersion 3: a blob without the key (or with junk) adopts the
+   * default, the same field-level policy as every other knob (see module doc).
+   */
+  chartStyle: ChartStyle;
   /** PerfHud diagnostics chip visibility (H toggles; polled off renderer.stats). */
   hudVisible: boolean;
-  /** Play the alert chime on a fired alert batch (P3). */
+  /** Play the alert chime on a fired alert batch. */
   alertSound: boolean;
 }
 
 export const SETTINGS_KEY = 'flowmap.settings.v1';
 
-/** Current persisted schema version (F6 chart-harmony migration). */
-export const SETTINGS_VERSION = 2;
+/**
+ * Current persisted schema version. 2 = the chart-harmony migration; 3 = the
+ * `chartStyle` field. Only the colormap migration reads a stored
+ * version, and it keeps its own threshold (COLORMAP_MIGRATED_VERSION), so this
+ * bump never re-forces a colormap the user chose under version 2.
+ */
+export const SETTINGS_VERSION = 3;
+/** The first version whose stored colormap is trusted (chart-harmony fix). */
+const COLORMAP_MIGRATED_VERSION = 2;
 
 export const DEFAULT_SETTINGS: FlowMapSettings = {
   settingsVersion: SETTINGS_VERSION,
@@ -178,10 +235,12 @@ export const DEFAULT_SETTINGS: FlowMapSettings = {
   historyDepth: '1h',
   railVisible: true,
   overlays: { ...DEFAULT_OVERLAY_VISIBILITY },
-  // The default is today's rendering, bit-identical (contract C2).
+  // The default is today's rendering, bit-identical.
   depthChannel: 'sum',
+  // Smooth by default. Pixel is opt-in from the drawer.
+  chartStyle: DEFAULT_CHART_STYLE,
   hudVisible: false,
-  // On by default: an alert is useless when the user looks away (P3).
+  // On by default: an alert is useless when the user looks away.
   alertSound: true,
 };
 
@@ -214,13 +273,13 @@ export function normalizeSettings(raw: unknown): FlowMapSettings {
     settingsVersion: SETTINGS_VERSION,
     contrast: Math.round(clampNumber(o.contrast, 0, 100, DEFAULT_SETTINGS.contrast)),
     tolerance: Math.round(clampNumber(o.tolerance, 0, 100, DEFAULT_SETTINGS.tolerance)),
-    // F6 chart-harmony migration: a blob with no `settingsVersion` (or < 2)
+    // Chart-harmony migration: a blob with no `settingsVersion` (or < 2)
     // predates the theme-aware chart, so its stored family choice is overridden
     // ONCE with 'theme'. Version >= 2 honours an explicit choice; junk values
     // (including the legacy 'thermal' / 'alt' from the never-applied knob) fall
     // back to DEFAULT_COLORMAP. See the module docblock.
     colormap:
-      storedVersion >= SETTINGS_VERSION
+      storedVersion >= COLORMAP_MIGRATED_VERSION
         ? isColormap(o.colormap)
           ? (o.colormap as Colormap)
           : DEFAULT_COLORMAP
@@ -243,6 +302,7 @@ export function normalizeSettings(raw: unknown): FlowMapSettings {
     depthChannel: DEPTH_CHANNELS.includes(o.depthChannel as DepthChannelMode)
       ? (o.depthChannel as DepthChannelMode)
       : DEFAULT_SETTINGS.depthChannel,
+    chartStyle: chartStyleOf(o.chartStyle),
     hudVisible: typeof o.hudVisible === 'boolean' ? o.hudVisible : DEFAULT_SETTINGS.hudVisible,
     alertSound: typeof o.alertSound === 'boolean' ? o.alertSound : DEFAULT_SETTINGS.alertSound,
   };

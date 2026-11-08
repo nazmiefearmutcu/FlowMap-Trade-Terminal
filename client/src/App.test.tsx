@@ -1,6 +1,6 @@
 /**
- * App-shell integration smoke (campaign 3 INT lane): the FULL app mounts with
- * every lane layer in the chart stack, and each feature key shows/hides its
+ * App-shell integration smoke: the FULL app mounts with every layer in the
+ * chart stack, and each feature key shows/hides its
  * panel. jsdom has no WebGL2, so the renderer honestly degrades to the
  * gl-fallback path — which is exactly the "mounts and stays alive" surface this
  * test wants to pin (the GL pixels themselves are CB's golden tests).
@@ -124,11 +124,11 @@ describe('App integration smoke', () => {
     expect(container.querySelector('[data-testid="settings-open"]')).not.toBeNull();
     // jsdom has no WebGL2: the honest fallback shows, the app stays alive.
     expect(container.querySelector('[data-testid="gl-fallback"]')).not.toBeNull();
-    // Chart overlay stack (bottom → top lane mounts, all inside the viewport)
+    // Chart overlay stack (bottom → top layers mount, all inside the viewport)
     expect(container.querySelector('[data-testid="indi-overlay"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="drawing-layer"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="alerts-chip"]')).not.toBeNull();
-    // Drawer still lists the depth-channel control (lane CD) + Appearance (INT)
+    // Drawer still lists the depth-channel control and the Appearance section
     click(container.querySelector('[data-testid="settings-open"]')!);
     expect(container.querySelector('[data-testid="setting-depthChannel"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="setting-theme"]')).not.toBeNull();
@@ -196,13 +196,13 @@ describe('App integration smoke', () => {
     fireKey('t');
     expect(document.documentElement.dataset.theme).toBe('paper');
     expect(container.querySelector('[data-testid="mode-toggle"]')).not.toBeNull();
-    // campaign-4: the registry grew — walk the FULL cycle back home. One press
+    // The theme registry has grown: walk the FULL cycle back home. One press
     // was already consumed above, so length-1 more wraps around.
     for (let i = 0; i < THEME_IDS.length - 1; i++) fireKey('t');
     expect(document.documentElement.dataset.theme).toBe('midnight');
   });
 
-  // fix 2026-09-10 F1-4: ONE theme store. First run with prefers-color-scheme:
+  // One theme store. First run with prefers-color-scheme:
   // light must paint the paper chrome AND keep it — the store (which App's
   // effect mirrors onto <html data-theme>) and cycleTheme read the same value,
   // so there is no midnight flip and no cycle desync.
@@ -246,8 +246,8 @@ describe('App integration smoke', () => {
   });
 });
 
-describe('App — refused-replay fallback + explicit session identity (QA7 H1/H2)', () => {
-  it('re-runs the symbol-switch reset when a refused replay falls back to LIVE (QA7 H1)', () => {
+describe('App — refused-replay fallback + explicit session identity', () => {
+  it('re-runs the symbol-switch reset when a refused replay falls back to LIVE', () => {
     mountApp(); // jsdom: gl-fallback path, but the reset effect is the same
     const spy = vi.spyOn(bookStore, 'resetForSession');
     // Subscribe replay on the shared connection, then let the server refuse it
@@ -268,9 +268,8 @@ describe('App — refused-replay fallback + explicit session identity (QA7 H1/H2
 
   it('REPLAY opens the current instrument picker and cancel preserves the stream and band', () => {
     const { container } = mountApp();
-    // A session on 'native' while the persisted drawer default is 'deep' (the
-    // QA7 harness shape). The replay button renders only when the server says
-    // replay exists.
+    // A session on 'native' while the persisted drawer default is 'deep'. The
+    // replay button renders only when the server says replay exists.
     act(() => {
       useFlowMapStore.setState({
         capability: { replay: true },
@@ -290,7 +289,7 @@ describe('App — refused-replay fallback + explicit session identity (QA7 H1/H2
     expect(document.querySelector('[aria-labelledby="replay-picker-title"]')).toBeNull();
   });
 
-  it('mode toggle with no subscription is a no-op — never substitutes the demo stream (QA7 H2)', () => {
+  it('mode toggle with no subscription is a no-op — never substitutes the demo stream', () => {
     const { container } = mountApp();
     act(() => {
       useFlowMapStore.getState().disconnect();

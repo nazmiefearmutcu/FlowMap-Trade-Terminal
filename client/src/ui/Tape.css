@@ -1,0 +1,6 @@
+/* The screen-reader side word (.app-visually-hidden, app/AppShell.css) is clipped
+   against this cell, so it takes its position from the time cell and never reaches
+   an ancestor. */
+.tape__time {
+  position: relative;
+}

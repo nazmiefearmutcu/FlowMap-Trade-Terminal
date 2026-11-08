@@ -1,4 +1,4 @@
-"""Block publication unless the selected release has all eight installers."""
+"""Block publication unless the release has all eight installers and its licence files."""
 
 import argparse
 import json
@@ -15,6 +15,12 @@ INSTALLER_SUFFIXES = (
 )
 INSTALLER_EXTENSIONS = (".dmg", ".exe", ".msi", ".deb", ".appimage")
 CHECKSUM_LINE = re.compile(r"[0-9a-fA-F]{64} [ *](.+)")
+# Shipped beside the installers: the third-party notices, the Apache-2.0 licence and
+# NOTICE, and the SIL OFL texts of the bundled fonts.
+RELEASE_FILES = (
+    "THIRD-PARTY-NOTICES.txt", "LICENSE", "NOTICE",
+    "LICENSE-inter.txt", "LICENSE-jetbrains-mono.txt",
+)
 
 
 class ReleaseValidationError(ValueError):
@@ -47,9 +53,19 @@ def require_installers(label, names, expected):
         raise ReleaseValidationError(label + " " + "; ".join(problems))
 
 
+def require_release_files(label, names):
+    missing = set(RELEASE_FILES) - set(names)
+    if missing:
+        raise ReleaseValidationError(
+            label + " missing release files: " + ", ".join(sorted(missing))
+        )
+
+
 def validate_release_assets(tag, checksum_text, release):
-    if not re.fullmatch(r"v[0-9]+(?:\.[0-9]+){2,3}", tag):
-        raise ReleaseValidationError("Expected a vX.Y.Z or vX.Y.Z.W release tag")
+    # Strict SemVer: Cargo and npm reject four-part versions, so a vX.Y.Z.W tag
+    # could never produce a buildable release. Hotfixes use a patch version.
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+        raise ReleaseValidationError("Expected a vX.Y.Z release tag")
     expected = {f"FlowMap_{tag[1:]}_{suffix}" for suffix in INSTALLER_SUFFIXES}
     checksummed = set()
     # Only LF (optionally CRLF) separates records; splitlines() also discards
@@ -82,6 +98,8 @@ def validate_release_assets(tag, checksum_text, release):
     require_installers("GitHub release assets", uploaded, expected)
     if "SHA256SUMS" not in uploaded:
         raise ReleaseValidationError("GitHub release assets missing SHA256SUMS")
+    require_release_files("SHA256SUMS", checksummed)
+    require_release_files("GitHub release assets", uploaded)
 
 
 def main():

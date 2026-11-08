@@ -11,15 +11,16 @@ import {
   setAlertsStorage,
   type StorageLike,
 } from '../state/alertsStore';
-import { bookStore } from '../state/bookStore';
+import { bookStore, getSnapshot } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
+import { t } from '../i18n';
 import { resetProbeSpotForTest, recordProbeSpot } from './lastProbe';
-import { PriceAlerts, marketPriceNow } from './PriceAlerts';
+import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
+import { PriceAlerts, marketPriceNow, referencePriceNow } from './PriceAlerts';
 
-vi.mock('./alertSound', () => ({
+vi.mock('./alertSound', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./alertSound')>()),
   playAlertSound: vi.fn(() => true),
-  resetAlertSoundForTest: vi.fn(),
-  BEEP_MIN_GAP_MS: 150,
 }));
 
 import { playAlertSound } from './alertSound';
@@ -135,6 +136,17 @@ describe('marketPriceNow', () => {
     bookStore.resetForTest();
     expect(marketPriceNow()).toBeNull();
   });
+
+  it('refuses a quote older than the live bar, while the reference still reads it', () => {
+    const at = getSnapshot().bbo!.receivedAtMs!;
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(at + 60_000);
+    try {
+      expect(marketPriceNow()).toBeNull(); // a silent feed never fires
+      expect(referencePriceNow()).toBe(101); // direction is still set from the last price
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });
 
 describe('PriceAlerts', () => {
@@ -183,7 +195,7 @@ describe('PriceAlerts', () => {
     expect(fired!.className).toContain('alert-line--pulse');
     expect(toasts).toHaveLength(1);
     expect(toasts[0]).toContain('105');
-    expect(toasts[0]).toContain('SIM-DEMO'); // P7: the toast names the symbol
+    expect(toasts[0]).toContain('SIM-DEMO'); // the toast names the symbol
     expect(playMock).toHaveBeenCalledTimes(1); // one chime per fired batch
 
     // Pulse is transient; the triggered state persists.
@@ -204,6 +216,57 @@ describe('PriceAlerts', () => {
     expect(alertsFor('sim:SIM-DEMO')[0].price).toBe(97.5);
     expect(alertsFor('sim:SIM-DEMO')[0].above).toBe(false); // below the mid
     expect(container.querySelectorAll('.alert-line')).toHaveLength(1);
+  });
+
+  it('`A` refuses with a reason when no live price exists, rather than guessing the direction', () => {
+    const toasts: string[] = [];
+    (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
+    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    bookStore.resetForTest(); // no BBO or trade: there is no live reference
+    const before = alertsFor('sim:SIM-DEMO').length;
+    render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+    fireKey('a');
+    expect(alertsFor('sim:SIM-DEMO')).toHaveLength(before);
+    expect(toasts).toHaveLength(1);
+  });
+
+  it('leaving the chart stage forgets the probe, so `A` cannot use a price the pointer left behind', () => {
+    const stage = document.createElement('div');
+    document.body.appendChild(stage);
+    const toasts: string[] = [];
+    (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
+    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} containerRef={{ current: stage }} />);
+    act(() => {
+      stage.dispatchEvent(new Event('pointerleave'));
+    });
+    fireKey('a');
+    expect(alertsFor('sim:SIM-DEMO')).toHaveLength(0);
+    expect(toasts).toHaveLength(1); // told how to create one, not silently dropped
+    stage.remove();
+  });
+
+  it('`A` ignores a probe older than the freshness window (the cursor has moved on)', () => {
+    vi.useFakeTimers();
+    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+    vi.advanceTimersByTime(2_500); // older than the 2 s probe freshness
+    const toasts: string[] = [];
+    (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
+    fireKey('a');
+    expect(alertsFor('sim:SIM-DEMO')).toHaveLength(0);
+    expect(toasts).toHaveLength(1); // told how to create one, not silently dropped
+  });
+
+  it('`A` refuses a level exactly at the market price (it would fire at once)', () => {
+    // Book mid is 101 (see installBook); the crosshair sits exactly on it.
+    recordProbeSpot({ price: 101, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    const toasts: string[] = [];
+    (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
+    render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+    fireKey('a');
+    expect(alertsFor('sim:SIM-DEMO')).toHaveLength(0);
+    expect(toasts).toHaveLength(1);
   });
 
   it('`A` with no crosshair probe (or an off-grid one) is an honest no-op', () => {
@@ -289,7 +352,33 @@ describe('PriceAlerts', () => {
     expect(playMock).not.toHaveBeenCalled();
   });
 
-  it('P7: replay mode never evaluates (or latches) alerts on historical prices', async () => {
+  it('a silent feed does not fire on its last print; the next fresh quote does', async () => {
+    vi.useFakeTimers();
+    addAlert('sim:SIM-DEMO', 105, 101)!; // above the 101 mid of the installed book
+    const at = getSnapshot().bbo!.receivedAtMs!;
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(at + 60_000);
+    try {
+      render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      // The book still reads 101/103 but the quote is a minute old: no fire.
+      expect(alertsFor('sim:SIM-DEMO')[0].triggered).toBe(false);
+      expect(playMock).not.toHaveBeenCalled();
+
+      clock.mockReturnValue(at + 60_000);
+      installBook(105, 107); // a fresh quote crossing the level
+      clock.mockReturnValue(at + 60_100);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(alertsFor('sim:SIM-DEMO')[0].triggered).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('replay mode never evaluates (or latches) alerts on historical prices', async () => {
     vi.useFakeTimers();
     const toasts: string[] = [];
     (window as { __flowmapToast?: unknown }).__flowmapToast = (msg: string) => toasts.push(msg);
@@ -318,5 +407,65 @@ describe('PriceAlerts', () => {
     expect(alertsFor('sim:SIM-DEMO')[0].triggered).toBe(true);
     expect(toasts).toHaveLength(1);
     expect(container.querySelector('.alert-line--triggered')).not.toBeNull();
+  });
+
+  it('`A` in replay creates no alert, so the next live tick cannot fire one', async () => {
+    vi.useFakeTimers();
+    const toasts: string[] = [];
+    (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
+    useFlowMapStore.setState({
+      subscription: { market: 'sim', symbol: 'SIM-DEMO', mode: 'replay', band: 'native' },
+    });
+    // 105 sits above the book mid (101): the level a historical print could carry.
+    recordProbeSpot({ price: 105, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    const { container } = render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+    fireKey('a');
+    expect(alertsFor('sim:SIM-DEMO')).toHaveLength(0);
+    expect(toasts).toHaveLength(1); // told why, not silently dropped
+
+    // Back to LIVE with a crossing book: there is no replay-anchored alert to fire.
+    act(() => {
+      useFlowMapStore.setState({
+        subscription: { market: 'sim', symbol: 'SIM-DEMO', mode: 'live', band: 'native' },
+      });
+    });
+    installBook(105, 107);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(toasts).toHaveLength(1);
+    expect(playMock).not.toHaveBeenCalled();
+    expect(container.querySelector('.alert-line--triggered')).toBeNull();
+  });
+
+  it('the add row is disabled with the reason while replaying', () => {
+    useFlowMapStore.setState({
+      subscription: { market: 'sim', symbol: 'SIM-DEMO', mode: 'replay', band: 'native' },
+    });
+    const { container } = render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="alerts-chip"]')!.click();
+    });
+    expect(container.querySelector<HTMLInputElement>('[data-testid="alerts-add-input"]')!.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="alerts-add-go"]')!.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="alerts-add-hint"]')!.textContent).toBe(
+      t('alerts.replayBlocked'),
+    );
+  });
+});
+
+describe('PriceAlerts A key follows the single-key preference', () => {
+  afterEach(() => setSingleKeyShortcutsEnabled(true));
+
+  it('does nothing and says nothing while single-key shortcuts are off', () => {
+    const toasts: string[] = [];
+    (window as { __flowmapToast?: (m: string) => void }).__flowmapToast = (m) => toasts.push(m);
+    recordProbeSpot({ price: 97.5, priceDecimals: 2, x: 10, y: 20, at: Date.now() });
+    setSingleKeyShortcutsEnabled(false);
+    const before = alertsFor('sim:SIM-DEMO').length;
+    render(<PriceAlerts rendererRef={fakeRenderer((row) => row * 10)} />);
+    fireKey('a');
+    expect(alertsFor('sim:SIM-DEMO')).toHaveLength(before);
+    expect(toasts).toHaveLength(0);
   });
 });

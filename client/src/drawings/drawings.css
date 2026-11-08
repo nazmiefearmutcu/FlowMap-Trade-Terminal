@@ -1,14 +1,14 @@
 /* ============================================================================
-   Lane CF drawing styles — DrawingLayer canvas overlay + DrawToolbar panel.
-   Mounted by INT via `import './drawings/drawings.css'` (the components also
-   import it directly so standalone test pages work). Token vocabulary matches
-   ui/theme.css; nothing hardcodes the palette except the SWATCH hexes (the
-   drawing palette itself — user-authored canvas content that must survive
-   theme switches; see DrawToolbar.tsx).
+   Drawing styles: the DrawingLayer canvas overlay and the DrawToolbar panel.
+   The components import this sheet themselves, so standalone pages get the
+   same styles. Token vocabulary matches ui/theme.css. Nothing hardcodes the
+   palette except the SWATCH hexes, which are the drawing palette itself:
+   user-authored canvas content that must survive theme switches (see
+   DrawToolbar.tsx).
 
-   CANVAS RULE (campaign contract §5): every new canvas lives inside a
-   positioned wrapper. .draw-layer is position:absolute; inset:0 — it MUST be
-   mounted inside the stage viewport (position:relative), never bare.
+   CANVAS RULE: every canvas lives inside a positioned wrapper. .draw-layer is
+   position:absolute; inset:0, so it MUST be mounted inside the stage viewport
+   (position:relative), never bare.
    ========================================================================= */
 
 /* --- the drawing overlay (inside .stage__viewport) ------------------------- */
@@ -37,9 +37,21 @@
   display: block;
   pointer-events: none; /* the WRAPPER takes the pointer, never the canvas */
 }
-/* Chip-style surfaces INSIDE the chart viewport use the FIXED dark-island
-   tokens (--chart-*, ui/theme.css): the canvas is ramp-dark in every theme, so
-   their ink/borders must not follow light themes (fix 2026-09-10 F1-3). */
+/* Idle live region: no chip, but still announced when a tool is armed. */
+.draw-layer__mode.is-idle {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+/* Chip-style surfaces INSIDE the chart viewport use the chart tokens (--chart-*,
+   ui/theme.css). Each theme sets them for its own chart ground, so these chips
+   read on light and dark grounds alike. */
 .draw-layer__mode {
   position: absolute;
   top: 8px;
@@ -47,10 +59,10 @@
   transform: translateX(-50%);
   z-index: 7;
   padding: 4px 10px;
-  font-size: var(--fs-2xs, 9px);
+  font-size: var(--fs-2xs, 11px);
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: var(--chart-accent, #33d6c4);
+  color: var(--chart-accent, #2a8f7e);
   background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
   border: 1px solid var(--chart-chip-border, #1a2030);
   border-radius: 999px;
@@ -64,7 +76,7 @@
   z-index: 8;
   min-width: 90px;
   padding: 2px 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--fs-sm, 11px);
   color: var(--chart-ink, #e6edf3);
   background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
@@ -73,7 +85,11 @@
   outline: none;
 }
 .draw-layer__text-input:focus {
-  border-color: var(--chart-accent, #33d6c4);
+  border-color: var(--chart-accent, #2a8f7e);
+}
+.draw-layer__text-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 /* --- the vertical toolbar (D toggles) -------------------------------------- */
@@ -89,7 +105,7 @@
   background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
   border: 1px solid var(--chart-chip-border, #1a2030);
   border-radius: 8px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
 }
 .draw-toolbar__btn {
   display: grid;
@@ -108,9 +124,9 @@
   background: var(--chart-chip-border, #1a2030);
 }
 .draw-toolbar__btn.is-active {
-  color: var(--chart-accent, #33d6c4);
+  color: var(--chart-accent, #2a8f7e);
   background: transparent;
-  border-color: var(--chart-accent, #33d6c4);
+  border-color: var(--chart-accent, #2a8f7e);
 }
 .draw-toolbar__btn:disabled {
   opacity: 0.35;
@@ -137,7 +153,7 @@
   height: 18px;
   padding: 0;
   margin: 4px auto;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid color-mix(in srgb, var(--chart-ink) 22%, transparent);
   border-radius: 50%;
   cursor: pointer;
 }
@@ -169,5 +185,15 @@
   .draw-layer__text-input {
     transition: none;
     animation: none;
+  }
+}
+
+/* Windows High Contrast (forced colors): the active tool and swatch keep an
+   outline, since their author background and ring are stripped (WCAG 1.4.1). */
+@media (forced-colors: active) {
+  .draw-toolbar__btn.is-active,
+  .draw-toolbar__swatch.is-active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Overlay GL primitives (§8.3 overlays, M2 T10).
+ * Overlay GL primitives.
  *
  * All the graphical overlays (bubbles, BBO, VWAP, profile, markers) draw with
  * exactly TWO tiny GL programs kept here:
@@ -78,7 +78,14 @@ in vec4 v_color;
 in float v_size;
 out vec4 o_color;
 const float RIM_DARKEN = 0.34;
+// Pixel chart style: 1 draws the point as a flat square — the same
+// premultiplied colour and alpha, with no circle mask, gloss or rim.
+uniform int u_square;
 void main() {
+  if (u_square == 1) {
+    o_color = vec4(v_color.rgb * v_color.a, v_color.a);
+    return;
+  }
   vec2 d = gl_PointCoord * 2.0 - 1.0;
   float r = sqrt(dot(d, d));
   if (r > 1.0) discard;
@@ -161,6 +168,24 @@ function lineNormalClip(
   return [nx * halfWpxToClipX, ny * halfWpxToClipY];
 }
 
+/**
+ * Upload the first `count` floats of `data` into `buffer`. The GPU store is
+ * reallocated only when the CPU capacity has grown past `allocatedBytes`; a
+ * steady batch re-uploads its prefix in place with bufferSubData, which
+ * avoids a fresh allocation every flush.
+ */
+function uploadPrefix(
+  gl: WebGL2RenderingContext,
+  buffer: WebGLBuffer,
+  data: Float32Array,
+  count: number,
+  allocatedBytes: number,
+): void {
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  if (allocatedBytes !== data.byteLength) gl.bufferData(gl.ARRAY_BUFFER, data.byteLength, gl.DYNAMIC_DRAW);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, count);
+}
+
 /** Colored-triangle batch in clip space. Reused across overlays; begin/flush. */
 export class SolidBatch {
   private readonly gl: WebGL2RenderingContext;
@@ -170,6 +195,8 @@ export class SolidBatch {
   /** 6 floats per vertex: x, y, r, g, b, a. */
   private data: Float32Array;
   private n = 0; // vertex count
+  /** Bytes of GPU store allocated for the current CPU capacity. */
+  private gpuBytes = 0;
 
   constructor(gl: WebGL2RenderingContext, initialVerts = 1024) {
     this.gl = gl;
@@ -293,7 +320,8 @@ export class SolidBatch {
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, this.data.subarray(0, this.n * 6), gl.DYNAMIC_DRAW);
+    uploadPrefix(gl, this.buffer, this.data, this.n * 6, this.gpuBytes);
+    this.gpuBytes = this.data.byteLength;
     gl.drawArrays(gl.TRIANGLES, 0, this.n);
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
@@ -318,10 +346,16 @@ export class PointBatch {
   /** 7 floats per point: x, y, sizePx, r, g, b, a. */
   private data: Float32Array;
   private n = 0;
+  /** Bytes of GPU store allocated for the current CPU capacity. */
+  private gpuBytes = 0;
+  /** Flat squares instead of glossy round dots (pixel chart style). */
+  private square = false;
+  private readonly uSquare: WebGLUniformLocation | null;
 
   constructor(gl: WebGL2RenderingContext, initialPoints = 512) {
     this.gl = gl;
     this.program = link(gl, POINT_VERT, POINT_FRAG);
+    this.uSquare = gl.getUniformLocation(this.program, 'u_square');
     this.data = new Float32Array(initialPoints * 7);
     const vao = gl.createVertexArray();
     const buffer = gl.createBuffer();
@@ -342,6 +376,11 @@ export class PointBatch {
 
   begin(): void {
     this.n = 0;
+  }
+
+  /** Draw the points of the NEXT flush as squares (true) or round dots (false). */
+  setSquare(on: boolean): void {
+    this.square = on;
   }
 
   get pointCount(): number {
@@ -384,9 +423,11 @@ export class PointBatch {
     );
     gl.disable(gl.DEPTH_TEST);
     gl.useProgram(this.program);
+    gl.uniform1i(this.uSquare, this.square ? 1 : 0);
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, this.data.subarray(0, this.n * 7), gl.DYNAMIC_DRAW);
+    uploadPrefix(gl, this.buffer, this.data, this.n * 7, this.gpuBytes);
+    this.gpuBytes = this.data.byteLength;
     gl.drawArrays(gl.POINTS, 0, this.n);
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);

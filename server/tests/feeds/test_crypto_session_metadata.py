@@ -49,6 +49,42 @@ def messages(frames):
     return result
 
 
+async def test_cold_prepare_overlaps_symbol_resolution_with_venue_listing(monkeypatch):
+    """Symbol translation and the venue listing (which carries the tick) are
+    independent cold fetches. Both must be in flight before either finishes, so
+    a cold subscribe waits for the slower one instead of both stacked."""
+    started: list[str] = []
+    both_started = asyncio.Event()
+
+    def mark(name: str) -> None:
+        started.append(name)
+        if len(started) == 2:
+            both_started.set()
+
+    async def resolve(market, symbol):
+        mark("resolve")
+        async with asyncio.timeout(1):
+            await both_started.wait()
+        return symbol
+
+    async def listing(market, **_kw):
+        mark("listing")
+        async with asyncio.timeout(1):
+            await both_started.wait()
+        return ["BTCUSDT"]
+
+    async def price_tick(market, symbol):
+        return 0.5
+
+    monkeypatch.setattr("flowmap_server.feeds.crypto.resolve_symbol_cached", resolve)
+    monkeypatch.setattr("flowmap_server.data.venues.venue_symbols", listing)
+    monkeypatch.setattr("flowmap_server.data.venues.venue_price_tick", price_tick)
+    feed = CryptoFeed("binance", "BTCUSDT", "spot", Config())
+    await feed.prepare()
+    assert sorted(started) == ["listing", "resolve"]
+    assert feed.preferred_tick == 0.5
+
+
 @pytest.mark.parametrize(
     "exchange,settings,endpoint,format",
     [
@@ -80,7 +116,11 @@ async def test_real_session_first_hello_declares_selected_connector_without_secr
     async def price_tick(market, symbol):
         return 0.5
 
+    async def listing(market, **_kw):
+        return []
+
     monkeypatch.setattr("flowmap_server.feeds.crypto.resolve_symbol_cached", resolve)
+    monkeypatch.setattr("flowmap_server.data.venues.venue_symbols", listing)
     monkeypatch.setattr("flowmap_server.data.venues.venue_price_tick", price_tick)
     feed = CryptoFeed(
         exchange,

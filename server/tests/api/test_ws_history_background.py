@@ -43,6 +43,8 @@ class Socket:
 
 
 class Session:
+    conn_stats = None
+
     def __init__(self, release=None):
         self.release = release
         self.started = asyncio.Event()
@@ -87,6 +89,7 @@ async def test_pong_and_symbol_switch_proceed_while_history_is_blocked():
     assert 0 <= conn.latency_ms < 50
     await asyncio.wait_for(conn._handle_frame(wire.encode(events.Subscribe(
         market="sim", symbol="NEW", mode="live"))), 1)
+    await asyncio.wait_for(conn._subscribe_task, 1)
     assert conn._session is new and manager.unsubscribed == [old]
     old_work = conn._history_work
     await conn._handle_frame(wire.encode(request(2)))
@@ -145,14 +148,28 @@ async def test_unsubscribe_discards_response_waiting_for_the_send_lock():
     assert manager.unsubscribed == [session]
 
 
+class FakeClock:
+    """Monotonic nanoseconds that move only when a test advances them."""
+
+    def __init__(self) -> None:
+        self.ns = 1_000_000_000
+
+    def __call__(self) -> int:
+        return self.ns
+
+    def advance(self, seconds: float) -> None:
+        self.ns += round(seconds * 1e9)
+
+
 async def test_live_pongs_prevent_false_timeout_during_a_long_overview(monkeypatch):
-    monkeypatch.setattr(ws_mod, "PING_INTERVAL_S", 0.01)
-    monkeypatch.setattr(ws_mod, "LIVENESS_TIMEOUT_S", 0.04)
+    monkeypatch.setattr(ws_mod, "PING_INTERVAL_S", 0.005)
+    monkeypatch.setattr(ws_mod, "LIVENESS_TIMEOUT_S", 0.25)
+    clock = FakeClock()
     release = asyncio.Event()
     session = Session(release)
     socket = Socket()
     socket.auto_pong = True
-    conn = ws_mod._Connection(socket, Manager({}))
+    conn = ws_mod._Connection(socket, Manager({}), clock=clock)
     conn._session = session
     # This fake starts with an active subscription; complete its handshake
     # before exercising the steady-state history/keepalive traffic.
@@ -166,10 +183,15 @@ async def test_live_pongs_prevent_false_timeout_during_a_long_overview(monkeypat
     running = asyncio.create_task(conn.run())
     await session.started.wait()
     try:
-        await asyncio.sleep(0.12)  # three liveness windows, with real receive-loop Pongs
+        # 0.8 s of fake time is more than three liveness windows. Only the
+        # Pongs that the receive loop reads keep the peer fresh.
+        for _ in range(40):
+            clock.advance(0.02)
+            await asyncio.sleep(0.005)
         assert not socket.closed
         assert not running.done()
-        assert conn.latency_ms < 20
+        pings = sum(isinstance(wire.decode(data)[0], events.Ping) for data in socket.sent)
+        assert pings >= 10, "keepalive pings were not sent during the long overview"
         worker = conn._history_work
         socket.messages.put_nowait({"type": "websocket.disconnect"})
         await asyncio.wait_for(running, 1)
@@ -183,3 +205,20 @@ async def test_live_pongs_prevent_false_timeout_during_a_long_overview(monkeypat
         if not running.done():
             running.cancel()
             await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_silent_peer_is_timed_out_within_the_same_liveness_window(monkeypatch):
+    # Control for the test above: without Pongs the same fake-time window must trip.
+    monkeypatch.setattr(ws_mod, "PING_INTERVAL_S", 0.005)
+    monkeypatch.setattr(ws_mod, "LIVENESS_TIMEOUT_S", 0.25)
+    clock = FakeClock()
+    socket = Socket()  # never answers a Ping
+    conn = ws_mod._Connection(socket, Manager({}), clock=clock)
+    runner = asyncio.create_task(conn.run())
+    for _ in range(40):  # 0.8 s of fake time, well past the window
+        if runner.done():
+            break
+        clock.advance(0.02)
+        await asyncio.sleep(0.005)
+    await asyncio.wait_for(runner, 2)
+    assert socket.closed

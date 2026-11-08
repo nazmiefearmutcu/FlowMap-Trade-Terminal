@@ -1,13 +1,15 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { expect, test, type Page } from '@playwright/test';
+import { waitFrames } from './waits';
 
 /**
- * M3 T4 — the two-market feature-parity matrix (the §G3 gate).
+ * The two-market feature-parity matrix.
  *
- * A machine-checkable assertion of design-spec §7's two-market table: EVERY
+ * A machine-checkable assertion of the two-market table: EVERY
  * feature is driven through the SAME market-agnostic renderer + UI shell for a
  * crypto-shaped session (L2 · tick · exchange) AND an equity-keyless-shaped
  * session (SYNTH_PROFILE · poll · na), and each cell is asserted to hold the
@@ -16,7 +18,7 @@ import { expect, test, type Page } from '@playwright/test';
  *
  * Both markets are injected through the dev hooks (`window.__flowmapLive`) with
  * `?panels=1` (full UI mounts; the sim feed is suppressed so it does not fight the
- * injected data). Per §7:
+ * injected data). Per market:
  *
  *   feature      crypto (L2/tick)            equity keyless (SYNTH/poll)
  *   heatmap      RAMP_THEME (row 5, default) RAMP_SYNTH (amber) — ramps DIFFER
@@ -84,7 +86,7 @@ async function bootPanels(page: Page): Promise<void> {
   await page.goto('/?panels=1');
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       return !!(live?.renderer && live?.bookStore && live?.store);
     },
     undefined,
@@ -98,7 +100,7 @@ async function bootPanels(page: Page): Promise<void> {
  */
 async function injectCrypto(page: Page): Promise<Captured> {
   return page.evaluate((tags) => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     const r = live.renderer;
 
     // BTC-scale L2 grid: $0.50 tick, epoch anchored near ~$63k.
@@ -233,7 +235,7 @@ async function injectCrypto(page: Page): Promise<Captured> {
  */
 async function injectEquityKeyless(page: Page): Promise<Captured> {
   return page.evaluate((tags) => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     const r = live.renderer;
 
     // Equity SYNTH grid: cent tick, re-anchored near AAPL's real price (~$180).
@@ -327,7 +329,7 @@ async function injectEquityKeyless(page: Page): Promise<Captured> {
       size: null,
     });
 
-    // Terminal closed Status (§7.1): warmup profile stays; next open ~90 s out.
+    // Terminal closed status: warmup profile stays; next open ~90 s out.
     const nextOpenMs = Date.now() + 90_000;
     live.store.setState({
       feedState: 'closed',
@@ -348,7 +350,7 @@ async function injectEquityKeyless(page: Page): Promise<Captured> {
 }
 
 /**
- * Crosshair + replay transport are present in BOTH markets (§7 bottom rows).
+ * Crosshair + replay transport are present in BOTH markets (bottom rows of the table).
  * The crosshair mounts only on hover, so we actively drive it over the canvas and
  * assert the exact price+size readout renders — real evidence, not a static probe.
  */
@@ -364,11 +366,11 @@ async function assertCrosshairAndReplay(page: Page): Promise<void> {
   // The transport is now MODE-GATED: replay controls exist only in replay mode.
   // This helper boots `?panels=1`, which never subscribes, so mode is always
   // 'live' — asserting the controls are merely absent would be vacuous and would
-  // leave the §7 `replay_controls` matrix cell unevidenced. Flip the store into
+  // leave the `replay_controls` matrix cell unevidenced. Flip the store into
   // replay, assert the controls mount, then restore.
   expect(await page.locator('[data-testid="transport"]').count(), 'transport present').toBe(1);
   await page.evaluate(() => {
-    const live = (window as unknown as { __flowmapLive: { store: any } }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: { store: LooseProbe } }).__flowmapLive;
     const sub = live.store.getState().subscription;
     live.store.setState({
       subscription: { ...(sub ?? { market: 'sim', symbol: 'SIM-DEMO' }), mode: 'replay' },
@@ -378,7 +380,7 @@ async function assertCrosshairAndReplay(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="seek-scrubber"]'), 'replay scrubber').toHaveCount(1);
   await expect(page.locator('[data-testid="transport-play"]'), 'replay play/pause').toHaveCount(1);
   await page.evaluate(() => {
-    const live = (window as unknown as { __flowmapLive: { store: any } }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: { store: LooseProbe } }).__flowmapLive;
     const sub = live.store.getState().subscription;
     live.store.setState({ subscription: { ...sub, mode: 'live' } });
   });
@@ -387,9 +389,9 @@ async function assertCrosshairAndReplay(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="seek-scrubber"]'), 'no dead scrubber in live').toHaveCount(0);
 }
 
-/** Assert the crypto column of the §7 table (full-fidelity L2/tick). */
+/** Assert the crypto column of the table (full-fidelity L2/tick). */
 async function assertCryptoCells(page: Page, cap: Captured): Promise<void> {
-  // heatmap: theme density ramp (midnight's own row 5 — S2-Q1 decoupling).
+  // heatmap: theme density ramp (midnight's own row 5).
   expect(
     cap.ramp,
     'crypto heatmap is RAMP_THEME (the default theme real-depth ramp)',
@@ -432,7 +434,7 @@ async function assertCryptoCells(page: Page, cap: Captured): Promise<void> {
   await assertCrosshairAndReplay(page);
 }
 
-/** Assert the equity-keyless column of the §7 table (honest reduced fidelity). */
+/** Assert the equity-keyless column of the table (honest reduced fidelity). */
 async function assertEquityCells(page: Page, cap: Captured): Promise<void> {
   // heatmap: SYNTH amber ramp.
   expect(cap.ramp, 'equity heatmap is RAMP_SYNTH').toBe(RAMP_SYNTH);
@@ -458,7 +460,7 @@ async function assertEquityCells(page: Page, cap: Captured): Promise<void> {
   await expect(caps).toContainText('SIDE NA');
   expect(cap.cap?.trade_side, 'equity side is na').toBe('na');
 
-  // BBO overlay: NOT fabricated — null for keyless (§7 honesty constraint).
+  // BBO overlay: NOT fabricated — null for keyless (honesty constraint).
   expect(cap.effBboNull, 'equity draws no fabricated BBO').toBe(true);
   expect(cap.hasChannelBbo, 'equity has no channel BBO').toBe(false);
 
@@ -478,7 +480,7 @@ async function assertEquityCells(page: Page, cap: Captured): Promise<void> {
   await expect(page.locator('[data-testid="closed-banner"]')).toContainText('MARKET CLOSED');
 }
 
-test('§7 parity — crypto column: L2 · TAPE TICK · SIDE EXCHANGE (full fidelity)', async ({ page }) => {
+test('parity — crypto column: L2 · TAPE TICK · SIDE EXCHANGE (full fidelity)', async ({ page }) => {
   test.setTimeout(120_000);
   const errors: string[] = [];
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -486,7 +488,7 @@ test('§7 parity — crypto column: L2 · TAPE TICK · SIDE EXCHANGE (full fidel
 
   await bootPanels(page);
   const cap = await injectCrypto(page);
-  await page.waitForTimeout(250);
+  await waitFrames(page, 3);
   await assertCryptoCells(page, cap);
 
   mkdirSync(ARTIFACT_DIR, { recursive: true });
@@ -495,7 +497,7 @@ test('§7 parity — crypto column: L2 · TAPE TICK · SIDE EXCHANGE (full fidel
   expect(errors, `console/page errors: ${errors.join(' | ')}`).toEqual([]);
 });
 
-test('§7 parity — equity keyless column: SYNTH · TAPE POLL · SIDE NA (honest reduced)', async ({
+test('parity — equity keyless column: SYNTH · TAPE POLL · SIDE NA (honest reduced)', async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -505,7 +507,7 @@ test('§7 parity — equity keyless column: SYNTH · TAPE POLL · SIDE NA (hones
 
   await bootPanels(page);
   const cap = await injectEquityKeyless(page);
-  await page.waitForTimeout(250);
+  await waitFrames(page, 3);
   await assertEquityCells(page, cap);
 
   mkdirSync(ARTIFACT_DIR, { recursive: true });
@@ -514,7 +516,7 @@ test('§7 parity — equity keyless column: SYNTH · TAPE POLL · SIDE NA (hones
   expect(errors, `console/page errors: ${errors.join(' | ')}`).toEqual([]);
 });
 
-test('§7 parity — both markets through ONE renderer: ramps differ + matrix', async ({ page }) => {
+test('parity — both markets through ONE renderer: ramps differ + matrix', async ({ page }) => {
   test.setTimeout(120_000);
   const errors: string[] = [];
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -532,7 +534,7 @@ test('§7 parity — both markets through ONE renderer: ramps differ + matrix', 
   // Reset the SAME renderer + book for a new session (the market-switch path),
   // then drive the equity-keyless session through it.
   await page.evaluate(() => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     live.renderer.resetForSession();
     live.bookStore.resetForSession();
   });
@@ -554,10 +556,10 @@ test('§7 parity — both markets through ONE renderer: ramps differ + matrix', 
   expect(crypto.effBboNull).toBe(false);
   expect(equity.effBboNull).toBe(true);
 
-  // Resolve the §7 matrix and write it as a machine-readable report artifact.
+  // Resolve the capability matrix and write it as a machine-readable report artifact.
   const matrix = {
     generated_at: new Date().toISOString(),
-    spec: '§7 capability model — honest dual-market parity',
+    spec: 'capability model — honest dual-market parity',
     renderer: 'one market-agnostic WebGL2 renderer (crypto + equity, same instance)',
     features: {
       heatmap: { crypto: 'midnight density (RAMP_THEME=5)', equity_keyless: 'SYNTH amber (RAMP_SYNTH)', differ: crypto.ramp !== equity.ramp },

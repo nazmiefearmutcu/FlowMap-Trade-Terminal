@@ -66,7 +66,7 @@ describe('camera view mapping', () => {
   });
 });
 
-describe('viewToGrid / screenToGrid — the crosshair inverse (T9)', () => {
+describe('viewToGrid / screenToGrid — the crosshair inverse', () => {
   const view = toView({ colCenter: 1000, colSpan: 200, rowCenter: 256, rowSpan: 120, followTime: false, followPrice: 'off' });
   // colOffset=900, colScale=200, rowOffset=196, rowScale=120.
 
@@ -449,11 +449,11 @@ describe('clampCamera', () => {
 });
 
 /**
- * QA3 H-2 + M3 H-1 (swarm wave 2, F3): the time axis must not leave the known
+ * The time axis must not leave the known
  * data. The renderer supplies a {@link TimeWindow}; these tests pin the two
  * bounds it drives:
  *   - pan  → colOffset stops one small overscroll band past either history end
- *            (QA3 measured colOffset −92 129 at oldest 0, 0.31 % painted);
+ * (measured colOffset −92 129 at oldest 0, 0.31 % painted);
  *   - zoom → the full known history can be shown despite a small GPU cache.
  * The window is OPT-IN: bare limits keep the legacy free camera.
  */
@@ -491,7 +491,7 @@ describe('axis ownership when history bounds change', () => {
   });
 });
 
-describe('time data window — pan + zoom bounds (F3)', () => {
+describe('time data window — pan + zoom bounds', () => {
   /** LIMITS + a known window whose full-res resident span equals the extent. */
   function winLimits(oldest: number, newest: number): CameraLimits {
     return { ...LIMITS, timeWindow: { newest, resident: range(oldest, newest) } };

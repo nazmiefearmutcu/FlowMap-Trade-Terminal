@@ -1,5 +1,5 @@
 /**
- * VolBars unit tests (swarm2 wave 4 F26 — Bookmap H7 volume strip).
+ * VolBars unit tests (Bookmap volume strip).
  *
  * The bucket MATH is the contract: aggregation into screen buckets (with the
  * reconstructed-candle SPAN spread), the dominant-side color choice, honest

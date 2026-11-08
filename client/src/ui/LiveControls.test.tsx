@@ -1,11 +1,10 @@
 /**
- * LiveControls chip tests (campaign 2026-09-11). There were NO tests for these
- * chips before (survey S4 §4 gap 1). Matrix covered here:
+ * LiveControls chip tests. Matrix covered here:
  *   - hidden while following + price tracking is on;
  *   - GO LIVE appears when time-follow is off, click routes to onGoLive;
  *   - TRACK PRICE appears when the price axis is locked, click routes to
  *     onTrackPrice; its tooltip tells the truth about the off-edge composite;
- *   - REPLAY mode renders nothing (no fake affordances — S4 D4).
+ *   - REPLAY mode renders nothing (no fake affordances).
  *
  * The component polls the renderer at 4 Hz; fake timers drive the poll.
  */
@@ -145,7 +144,7 @@ describe('LiveControls', () => {
     expect(chip!.getAttribute('title')).toContain('return to the live edge');
   });
 
-  it('renders NOTHING in replay mode — no GO LIVE / TRACK PRICE fake affordances (S4 D4)', () => {
+  it('renders NOTHING in replay mode — no GO LIVE / TRACK PRICE fake affordances', () => {
     const r = fakeRenderer({ following: false, priceFollow: 'off' });
     const { container } = render(
       <LiveControls

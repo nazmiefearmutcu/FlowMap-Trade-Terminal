@@ -1,12 +1,12 @@
 /**
- * Watchlist panel (campaign 4, lane C2) — the right rail's favorites surface.
+ * Watchlist panel — the right rail's favorites surface.
  *
  * Rows come from the module-scoped `watchlist/store` (persisted favorites,
- * `flowmap.watchlist.v1`); their live prices come from lane C1's shared
- * `state/quoteFeed` poll loop (frozen P2) — this panel never talks to the
+ * `flowmap.watchlist.v1`); their live prices come from the shared
+ * `state/quoteFeed` poll loop — this panel never talks to the
  * network itself, so N watched symbols share ONE poller and one TTL server-side.
  *
- * Honesty rules (§7):
+ * Honesty rules:
  *   - a quote that never arrived renders em-dashes, never a made-up price;
  *   - `reachable === false` renders em-dashes + a `no data` chip;
  *   - `stale === true` dims the row and shows a `stale` chip while keeping the
@@ -15,11 +15,13 @@
  *     so the global `canvas { position: absolute }` rule is a non-issue.
  *
  * The panel is self-contained: it imports its own CSS and takes only
- * `{ activeKey, onSelect }` (contract P5). INT mounts it above DomLadder.
+ * `{ activeKey, onSelect }`. The app mounts it above the DOM ladder.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { formatFixed } from '../i18n/format';
+import { useT } from '../i18n/useT';
 import { subscribeQuotes } from '../state/quoteFeed';
 import { bookSessionKey, getSnapshot, subscribe, type BookSnapshot } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
@@ -35,13 +37,14 @@ import {
 import { loadRecents } from './recents';
 import { fmtPct, fmtPrice, sparkDirection, sparkPath } from './spark';
 import { useIntelligenceStore } from '../state/intelligenceStore';
+import { safeLocalStorage } from '../state/safeStorage';
 import '../watchlist/watchlist.css';
 import './TradingPanels.css';
 
 /**
- * Structural view of the frozen P2 quote payload (C1's `Quote`). Kept locally
- * so this file compiles before/independently of the quoteFeed module's own
- * type exports; every field is widened so C1's exact nullability choices stay
+ * Structural view of the quote payload from the shared quote feed. Kept locally
+ * so this file compiles independently of the quoteFeed module's own type
+ * exports; every field is widened so the feed's exact nullability stays
  * assignable.
  */
 export interface WatchQuote {
@@ -123,15 +126,10 @@ export function quoteChangeText(q: WatchQuote | undefined): string {
   return fmtPct(q.changePct);
 }
 
-function browserStorage(): Storage | null {
-  try {
-    return typeof window !== 'undefined' ? window.localStorage : null;
-  } catch {
-    return null;
-  }
-}
-
 export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element {
+  const t = useT();
+  // Resolved once per render, so the per-row markup below reuses it.
+  const jetTitle = t('watchlist.jetTitle');
   const watchKeys = useWatchlist();
   const [quotes, setQuotes] = useState<Record<string, WatchQuote>>({});
   const [activeQuote, setActiveQuote] = useState<ActiveWatchQuote | null>(null);
@@ -193,7 +191,7 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
   const activeValid = isValidWatchKey(activeKey);
   const activePresent = activeValid && isWatchlisted(activeKey);
 
-  // Quote wiring (P2): one subscription for the whole list; empty list → no
+  // Quote wiring: one subscription for the whole list; empty list → no
   // subscription at all. `watchKeys` identity is stable between mutations, so
   // this effect re-runs exactly on add/remove and cleans up on unmount.
   useEffect(() => {
@@ -213,7 +211,7 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
   }, [watchKeys]);
 
   // Empty state suggestions: recents are a shortcut, NOT auto-favorites.
-  const recents = useMemo(() => (empty ? loadRecents(browserStorage()) : []), [empty]);
+  const recents = useMemo(() => (empty ? loadRecents(safeLocalStorage()) : []), [empty]);
 
   const talentMap = useIntelligenceStore((s) => s.talent);
   const corporateJets = useIntelligenceStore((s) => s.corporateJets);
@@ -223,9 +221,9 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
   }, [activeKey]);
 
   return (
-    <section className="panel watchlist" data-testid="watchlist" aria-label="Watchlist">
+    <section className="panel watchlist" data-testid="watchlist" aria-label={t('watchlist.title')}>
       <header className="panel__header watchlist__header">
-        <span className="panel__title">Watchlist</span>
+        <span className="panel__title">{t('watchlist.title')}</span>
         <span className="panel__badge watchlist__count" data-testid="watchlist-count">
           {watchKeys.length}
         </span>
@@ -236,27 +234,27 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
           disabled={activePresent || full || !activeValid}
           title={
             full
-              ? `Watchlist full (${WATCHLIST_CAP})`
+              ? t('watchlist.full', { cap: WATCHLIST_CAP })
               : !activeValid
-                ? 'No active symbol to add'
+                ? t('watchlist.noActive')
                 : activePresent
-                  ? `${symbolOf(activeKey)} is already on the watchlist`
-                  : `Add ${symbolOf(activeKey)} to the watchlist`
+                  ? t('watchlist.alreadyOn', { symbol: symbolOf(activeKey) })
+                  : t('watchlist.addSymbol', { symbol: symbolOf(activeKey) })
           }
           data-testid="watchlist-add"
         >
-          + Add current
+          {t('watchlist.addCurrent')}
         </button>
       </header>
 
       {empty ? (
         <div className="watchlist__empty" data-testid="watchlist-empty">
           <p className="watchlist__empty-copy">
-            No symbols yet — add the active symbol, or jump to a recent one.
+            {t('watchlist.emptyCopy')}
           </p>
           {recents.length > 0 && (
             <>
-              <span className="watchlist__empty-label">Recent symbols</span>
+              <span className="watchlist__empty-label">{t('watchlist.recent')}</span>
               <div className="watchlist__suggestions">
                 {recents.map((r) => {
                   const key = `${r.market}:${r.symbol}`;
@@ -293,24 +291,15 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
                 ? sparkPath(q.spark, SPARK_W, SPARK_H)
                 : '';
             return (
+              // A list item, not a button: the symbol is the keyboard and
+              // assistive-technology control, and the star and remove buttons
+              // are siblings of it. The row click is a pointer convenience.
               <li
                 key={key}
                 className={`watchlist__row${key === activeKey ? ' is-active' : ''}${
                   stale ? ' is-stale' : ''
                 }${unreachable ? ' is-unreachable' : ''}`}
-                role="button"
-                tabIndex={0}
-                aria-current={key === activeKey ? 'true' : undefined}
                 onClick={() => onSelect(key)}
-                onKeyDown={(e) => {
-                  // Nested star/remove buttons bubble; their native Enter/Space
-                  // activation must win (R2-M2). Only the row itself selects.
-                  if (e.target !== e.currentTarget) return;
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onSelect(key);
-                  }
-                }}
                 title={key}
                 data-testid={`watchlist-row-${key}`}
                 data-key={key}
@@ -320,7 +309,7 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
                   type="button"
                   className="watchlist__star"
                   aria-pressed="true"
-                  aria-label={`Remove ${symbolOf(key)} from watchlist`}
+                  aria-label={t('watchlist.starAria', { symbol: symbolOf(key) })}
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleWatchlist(key);
@@ -330,11 +319,25 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
                   ★
                 </button>
                 <span className="watchlist__identity">
-                  <span className="watchlist__sym">{symbolOf(key)}</span>
+                  <button
+                    type="button"
+                    className="watchlist__sym"
+                    data-testid={`watchlist-select-${key}`}
+                    aria-current={key === activeKey ? 'true' : undefined}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelect(key);
+                    }}
+                  >
+                    {symbolOf(key)}
+                  </button>
                   <span className="watchlist__source" data-testid={`watchlist-source-${key}`}
-                    title={live ? 'Active stream quote; daily change and sparkline remain HTTP snapshots'
-                      : 'Shared HTTP quote snapshot, refreshed every 10 seconds'}>
-                    {source === 'live-mid' ? 'LIVE MID' : source === 'live-last' ? 'LIVE LAST' : 'SNAPSHOT'}
+                    title={live ? t('watchlist.liveTitle') : t('watchlist.snapshotTitle')}>
+                    {source === 'live-mid'
+                      ? t('watchlist.source.liveMid')
+                      : source === 'live-last'
+                        ? t('watchlist.source.liveLast')
+                        : t('watchlist.source.snapshot')}
                   </span>
                 </span>
                 <svg
@@ -356,29 +359,34 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
                 <span
                   className={`watchlist__chg is-${dir}`}
                   data-testid={`watchlist-change-${key}`}
-                  title="Daily change from the shared quote snapshot"
+                  title={t('watchlist.changeTitle')}
                 >
                   {quoteChangeText(q)}
                 </span>
                 {(() => {
                   const s = symbolOf(key).toUpperCase();
-                  const t = talentMap[s];
+                  const talent = talentMap[s];
                   const jet = corporateJets.some((j) => j.symbol === s && j.isMaHub);
                   return (
                     <>
-                      {t && Number.isFinite(t.talentDeltaPct) && Number.isFinite(t.rdOpenings) && (
+                      {talent && Number.isFinite(talent.talentDeltaPct) && Number.isFinite(talent.rdOpenings) && (
                         <span
-                          className={`watchlist__chip watchlist__talent is-${t.talentDeltaPct >= 0 ? 'pos' : 'neg'}`}
-                          title={`Talent Velocity: ${t.talentDeltaPct >= 0 ? '+' : ''}${t.talentDeltaPct.toFixed(1)}% R&D Openings (${t.rdOpenings} listings)`}
+                          className={`watchlist__chip watchlist__talent is-${talent.talentDeltaPct >= 0 ? 'pos' : 'neg'}`}
+                          title={t('watchlist.talentTitle', {
+                            delta: `${talent.talentDeltaPct >= 0 ? '+' : ''}${formatFixed(talent.talentDeltaPct, 1)}`,
+                            count: talent.rdOpenings,
+                          })}
                           data-testid={`watchlist-talent-${key}`}
                         >
-                          {t.talentDeltaPct >= 0 ? '+' : ''}{t.talentDeltaPct.toFixed(0)}%
+                          {talent.talentDeltaPct >= 0 ? '+' : ''}{formatFixed(talent.talentDeltaPct, 0)}%
                         </span>
                       )}
                       {jet && (
                         <span
                           className="watchlist__chip watchlist__jet"
-                          title="Executive Jet Transit Alert: Corporate jet telemetry active in M&A/Finance Hub"
+                          title={jetTitle}
+                          aria-label={jetTitle}
+                          role="img"
                           data-testid={`watchlist-jet-${key}`}
                         >
                           ✈️
@@ -392,20 +400,20 @@ export function Watchlist({ activeKey, onSelect }: WatchlistProps): JSX.Element 
                     className="watchlist__chip watchlist__chip--na"
                     data-testid={`watchlist-nodata-${key}`}
                   >
-                    no data
+                    {t('watchlist.noData')}
                   </span>
                 ) : stale ? (
                   <span
                     className="watchlist__chip watchlist__chip--stale"
                     data-testid={`watchlist-stale-${key}`}
                   >
-                    stale
+                    {t('watchlist.stale')}
                   </span>
                 ) : null}
                 <button
                   type="button"
                   className="watchlist__remove"
-                  aria-label={`Remove ${symbolOf(key)} from watchlist`}
+                  aria-label={t('watchlist.removeAria', { symbol: symbolOf(key) })}
                   onClick={(e) => {
                     e.stopPropagation();
                     removeFromWatchlist(key);

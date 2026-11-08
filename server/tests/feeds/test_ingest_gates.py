@@ -1,18 +1,18 @@
-"""Live-ingestion hardening tests (campaign A2-2/3/4/5).
+"""Live-ingestion hardening tests.
 
 Pins four feed-boundary behaviors, all at the LIVE ingestion seams only
 (replay/sim deliberately have no gate — recorded history is never re-gated):
 
-- **Timestamp sanity (A2-2):** crypto `_BridgeSink` / equity `_EquitySink` /
+- **Timestamp sanity:** crypto `_BridgeSink` / equity `_EquitySink` /
   equity warmup-bar selection drop records whose venue stamp is non-positive,
   1970-era (the ms/ns mixup signature) or beyond the 24 h horizon, counting
   and (once) logging each drop.
-- **Bounded fan-in (A2-3):** the connector->consumer queue inside
+- **Bounded fan-in:** the connector->consumer queue inside
   ``events()`` has drop-oldest semantics, a dropped counter, and never
   raises; the end sentinel always survives.
-- **Connector-task join (A2-4):** a consumer that closes (or abandons) the
+- **Connector-task join:** a consumer that closes (or abandons) the
   events generator leaves NO live connector task behind.
-- **Symbol-translation memo (A2-5):** ``resolve_symbol_cached`` downloads a
+- **Symbol-translation memo:** ``resolve_symbol_cached`` downloads a
   venue's ccxt markets once per (market, symbol) for the server lifetime.
 """
 
@@ -68,7 +68,7 @@ def _clean_resolver_cache():
 
 
 # ---------------------------------------------------------------------------
-# A2-2: the shared gate helper
+# Timestamp sanity: the shared gate helper
 
 
 def test_ts_gate_boundaries():
@@ -84,7 +84,7 @@ def test_ts_gate_boundaries():
 
 
 # ---------------------------------------------------------------------------
-# A2-2: crypto bridge sink
+# Timestamp sanity: crypto bridge sink
 
 
 def _ctrade(ts: int, tid: str = "t1", price: float = 100.0) -> CTrade:
@@ -150,7 +150,7 @@ async def test_bridge_sink_drops_future_snapshot_before_it_becomes_a_book():
 
 
 # ---------------------------------------------------------------------------
-# A2-2: equity keyed sink + keyless warmup bars
+# Timestamp sanity: equity keyed sink + keyless warmup bars
 
 
 def _stktrade(ts: int) -> StkTrade:
@@ -246,7 +246,7 @@ def test_warmup_bars_gate_implausible_stamps():
 
 
 # ---------------------------------------------------------------------------
-# A2-3: bounded drop-oldest fan-in queue
+# Bounded fan-in: drop-oldest queue
 
 
 async def test_bounded_queue_drops_oldest_counts_and_never_raises():
@@ -313,7 +313,7 @@ async def test_crypto_feed_full_queue_drops_oldest_but_ends_cleanly():
 
 
 # ---------------------------------------------------------------------------
-# A2-4: an abandoned/closed events() generator must not leak the connector task
+# Connector-task join: an abandoned/closed events() generator must not leak the connector task
 
 
 async def _assert_task_gone(name: str, grace_s: float = 2.0) -> bool:
@@ -380,7 +380,7 @@ async def test_consumer_exception_abandonment_still_cancels_connector():
 
 
 # ---------------------------------------------------------------------------
-# A2-5: symbol translation memoized for the server lifetime
+# Symbol-translation memo: symbol translation memoized for the server lifetime
 
 
 async def test_resolve_symbol_cached_memoizes(monkeypatch):

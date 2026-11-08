@@ -4,6 +4,8 @@
  * box, and reports the net direction so the caller can colour it up/down.
  */
 
+import { formatFixed, formatPrice } from '../i18n/format';
+
 /** SVG polyline `d` for `values` fitted into a `w`×`h` box with `pad` margin. */
 export function sparkPath(values: readonly number[], w: number, h: number, pad = 1): string {
   const n = values.length;
@@ -47,18 +49,21 @@ export function sparkDirection(values: readonly number[]): number {
 export function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return '—';
   const sign = v > 0 ? '+' : v < 0 ? '−' : '';
-  return `${sign}${Math.abs(v).toFixed(2)}%`;
+  return `${sign}${formatFixed(Math.abs(v), 2)}%`;
 }
 
-/** Compact price, adapting decimals to magnitude. */
+/**
+ * Compact price, adapting decimals to magnitude. Never digit-grouped: the top
+ * bar, DOM ladder, price axis and tape print prices ungrouped, so the search
+ * palette must print the same number the same way.
+ */
 export function fmtPrice(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return '—';
   const a = Math.abs(v);
-  if (a >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
-  if (a >= 1) return v.toFixed(2);
-  if (a >= 0.01) return v.toFixed(4);
+  if (a >= 1) return formatPrice(v, 2);
+  if (a >= 0.01) return formatPrice(v, 4);
   if (a === 0) return '0.00';
   // Sub-cent quotes: fixed-point with ~3 significant digits. `toPrecision`
   // would print "1.2e-9" here — exponential notation is not an honest price.
-  return v.toFixed(Math.min(20, Math.ceil(-Math.log10(a)) + 2));
+  return formatPrice(v, Math.min(20, Math.ceil(-Math.log10(a)) + 2));
 }

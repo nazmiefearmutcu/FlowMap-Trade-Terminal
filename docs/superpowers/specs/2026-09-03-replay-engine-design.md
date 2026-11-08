@@ -2,7 +2,7 @@
 
 # Replay Engine — Design (2026-09-03)
 
-Status: implemented (this commit). Owner: review-fix campaign, wave 3.
+Status: implemented.
 
 ## Problem
 
@@ -10,7 +10,7 @@ The client ships a full replay transport (Live/Replay toggle, play/pause,
 speed, seek scrubber) but the server had no engine behind it: `build_feed`
 routed by market only, so `mode='replay'` served the SAME live feed under a
 replay label, and Seek/SetSpeed/Pause/Resume were decoded then dropped
-("inert at M1"). Dead controls presented as active — the exact §7 honesty
+("inert until the replay milestone"). Dead controls presented as active — the exact honesty
 violation the project elsewhere refuses.
 
 ## Approaches considered

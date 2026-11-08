@@ -1,5 +1,5 @@
 /**
- * View transform — the pan/zoom camera (§8.3, M2 T6).
+ * View transform — the pan/zoom camera.
  *
  * This module is the reason FlowMap does not have the v1 1-fps bug. v1
  * re-rasterized all resident history on the CPU every frame it panned; here the
@@ -54,6 +54,7 @@ import type { HeatmapView } from './heatmap';
 import type { ResidentRange } from './tileRing';
 import { priceToRow, rowToPrice, type HybridScale, type PriceScale } from './priceScale';
 import { fractionRow } from './priceProjection';
+import { clamp } from './numeric';
 
 /**
  * How the price axis auto-scales.
@@ -169,7 +170,7 @@ export interface CameraLimits {
    *    colSpan]` with `slack = min(colSpan, COL_OVERSCROLL)`, so the view can
    *    overscroll past the ends of history by at most one small band — a bounded
    *    edge with the oldest data still on screen, never the unbounded col_seq
-   *    void the QA3 probe measured (`colOffset −92 129` / `−192 129` at
+   * void the probe measured (`colOffset −92 129` / `−192 129` at
    *    `oldest 0`, 0.31 % painted);
    * The resident cache does not impose a zoom-out cap. Loading/aggregating the
    * history is the renderer's responsibility.
@@ -179,7 +180,7 @@ export interface CameraLimits {
 }
 
 /** Absolute col_seq the stream starts at — the pan clamp's hard floor (the
- *  backfill loader's start-of-history contract, net/history.ts). */
+ * backfill loader's start-of-history contract, net/history.ts). */
 export const COL_SEQ_FLOOR = 0;
 
 /**
@@ -208,9 +209,6 @@ export const HISTORY_VIEW_PADDING = 1;
  * Leave headroom for shader additions/subtractions at the upper boundary. */
 const PRICE_DOMAIN_MIN = 2 ** -126;
 const PRICE_DOMAIN_MAX = 3.4028234663852886e38 / 4;
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v;
-}
 
 /** Positive physical prices beyond the stored band remain navigable. Avoid
  * zero/log(0) and floating-point overflow rather than capping at book extent. */
@@ -270,7 +268,7 @@ export function maxColSpanFor(limits: CameraLimits): number {
  * on screen: the view's LEFT edge is bounded to
  * `[floor − slack, newest + 1 + slack − colSpan]` with
  * `slack = min(colSpan, COL_OVERSCROLL)` — at either limit the oldest/newest
- * data touches the viewport edge (the "start of history" cue QA3 asked for),
+ * data touches the viewport edge (the "start of history" cue asked for),
  * with at most one small overscroll band past it. Returns null when there is no
  * {@link TimeWindow} (unbounded, the legacy behavior) or before the first
  * column (`newest < floor`).
@@ -371,7 +369,7 @@ export function applyKill(s: CameraState, kill: FollowKill): CameraState {
  * and `'off'` are unchanged — zooming never re-enables a follow the user turned
  * off, and never disables the tracking they left on.
  */
-export function adoptPriceSpan(s: CameraState): CameraState {
+function adoptPriceSpan(s: CameraState): CameraState {
   return s.followPrice === 'fit' ? { ...s, followPrice: 'track' } : s;
 }
 
@@ -547,7 +545,7 @@ export function toView(s: CameraState): HeatmapView {
 }
 
 /** Fractional absolute grid coordinate under a viewport point (crosshair). */
-export interface GridPoint {
+interface GridPoint {
   /** Fractional absolute column (floor → the col_seq the shader painted). */
   colf: number;
   /** Fractional absolute row (floor → the row index; row 0 = bottom of grid). */

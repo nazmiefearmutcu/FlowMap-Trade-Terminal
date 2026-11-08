@@ -1,3 +1,4 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 /**
- * M2 integration-gate fix — the heatmap renderer must RESET on a subscription
+ * The heatmap renderer must RESET on a subscription
  * change (symbol / market switch). Before the fix the renderer had no
  * session-change detection: it kept the OLD symbol's tile ring and a camera fit
  * to the OLD price frame, so a switch left stale tiles on screen while the new
@@ -57,7 +58,7 @@ test('heatmap renderer resets its GL state + refits on a session switch', async 
   // Wait for the live wiring: renderer up, connection `live`, a populated ring.
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       if (!live || !live.renderer) return false;
       const range = live.renderer.residentRange();
       return live.store.getState().status === 'live' && range !== null && range.count > 20;
@@ -83,16 +84,20 @@ test('heatmap renderer resets its GL state + refits on a session switch', async 
       return { thermal, width: off.width, height: off.height };
     }, THERMAL_LUMA);
 
-  // The heatmap is populated + rendering before the switch.
-  const statsBefore = await readStats();
+  // The heatmap is populated + rendering before the switch. The read can land between
+  // presents, so poll until a frame carries the heat.
+  let statsBefore: CanvasStats = { thermal: 0, width: 0, height: 0 };
+  await expect.poll(async () => {
+    statsBefore = await readStats();
+    return statsBefore.thermal;
+  }, { timeout: 30_000 }).toBeGreaterThan(MIN_THERMAL_PIXELS);
   expect(statsBefore.width).toBeGreaterThan(0);
-  expect(statsBefore.thermal).toBeGreaterThan(MIN_THERMAL_PIXELS);
 
   // Capture the pre-reset state AND call resetForSession() in ONE evaluate so the
   // emptied ring is observed atomically (no live column can slip in between —
   // page JS is single-threaded, the reset runs before any stream handler).
   const reset = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     const beforeRange = r.residentRange();
     const beforeSeq = r.newestColSeq;
     r.resetForSession();
@@ -116,7 +121,7 @@ test('heatmap renderer resets its GL state + refits on a session switch', async 
   // (b) the live feed rebuilds a fresh ring and the camera re-follows the edge.
   await page.waitForFunction(
     () => {
-      const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+      const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
       const range = r.residentRange();
       return range !== null && range.count > 8 && r.newestColSeq >= 0 && r.following;
     },
@@ -124,14 +129,19 @@ test('heatmap renderer resets its GL state + refits on a session switch', async 
     { timeout: 20_000 },
   );
 
-  // Give the refit a moment of live streaming, then confirm it keeps advancing.
+  // Wait for live streaming to advance past the refit, then confirm it keeps advancing.
   const repop1 = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     return { count: r.residentRange().count, seq: r.newestColSeq };
   });
-  await page.waitForTimeout(1000);
+  await expect
+    .poll(
+      () => page.evaluate(() => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.newestColSeq),
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThanOrEqual(repop1.seq + 3);
   const repop2 = await page.evaluate(() => {
-    const r = (window as unknown as { __flowmapLive: any }).__flowmapLive.renderer;
+    const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     return { count: r.residentRange().count, seq: r.newestColSeq };
   });
   expect(repop2.seq, `col_seq must advance after reset (was ${repop1.seq}, now ${repop2.seq})`).toBeGreaterThan(

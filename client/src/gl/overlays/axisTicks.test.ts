@@ -9,6 +9,7 @@ import {
   priceTickModel,
   priceTicks,
   timeLabelFormatter,
+  timeLabelFormatterFor,
   timeTickModel,
   timeTicks,
   logPriceTickModel,
@@ -123,7 +124,28 @@ describe('timeTickModel', () => {
   });
 });
 
-describe('timeLabelFormatter — adaptive ms selector (S4-Q5, amended R2-M1)', () => {
+describe('timeLabelFormatterFor — the active Time zone preference', () => {
+  // 2023-11-14 22:13:20 UTC; New York is UTC-5 in November.
+  const NS = 1_700_000_000_000_000_000n;
+
+  it('utc keeps the byte-identical session formatter', () => {
+    expect(timeLabelFormatterFor(1_000_000_000n, 'utc')(NS)).toBe(timeLabelFormatter(1_000_000_000n)(NS));
+    expect(timeLabelFormatterFor(250_000_000n, 'utc')(NS)).toBe(timeLabelFormatter(250_000_000n)(NS));
+  });
+
+  it('exchange renders the wall clock of the exchange zone', () => {
+    expect(timeLabelFormatterFor(1_000_000_000n, 'exchange', 'America/New_York')(NS)).toBe('17:13:20');
+    expect(timeLabelFormatterFor(1_000_000_000n, 'utc')(NS)).toBe('22:13:20');
+  });
+
+  it('sub-second cadences keep millisecond precision in the chosen zone', () => {
+    const withMs = NS + 250_000_000n;
+    expect(timeLabelFormatterFor(250_000_000n, 'exchange', 'America/New_York')(withMs)).toBe('17:13:20.250');
+    expect(timeLabelFormatterFor(1_000_000_000n, 'exchange', 'America/New_York')(withMs)).toBe('17:13:20');
+  });
+});
+
+describe('timeLabelFormatter — adaptive ms selector', () => {
   it('uses the ms format at or below a 0.5 s step', () => {
     expect(timeLabelFormatter(100_000_000n)).toBe(fmtClockMs); // 100 ms cadence
     expect(timeLabelFormatter(250_000_000n)).toBe(fmtClockMs); // 250 ms crypto cadence
@@ -141,7 +163,7 @@ describe('timeLabelFormatter — adaptive ms selector (S4-Q5, amended R2-M1)', (
 
     const half = timeTickModel(0n, 5_000_000_000n, 10); // want 0.5 s → exactly 0.5 s
     expect(half.step).toBe(500_000_000n);
-    // Amended R2-M1: at exactly 0.5 s the ms form keeps consecutive labels
+    // At exactly 0.5 s the ms form keeps consecutive labels
     // distinct (HH:MM:SS would read 00:00:00 / 00:00:00 for .0 and .5).
     expect(timeLabelFormatter(half.step)).toBe(fmtClockMs);
     expect(timeLabelFormatter(half.step)(0n)).toBe('00:00:00.000');

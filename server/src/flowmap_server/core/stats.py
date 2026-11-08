@@ -1,4 +1,4 @@
-"""Server-side operational statistics producer (campaign contract C1).
+"""Server-side operational statistics producer.
 
 Every drop/restart counter the server already maintained was write-only:
 :class:`~flowmap_server.feeds.base.BoundedFeedQueue.dropped`,
@@ -8,8 +8,8 @@ single aggregate they feed, mounted as ``SessionManager.stats``; the API layer
 surfaces ``stats.snapshot()`` verbatim (``/api/health`` v3) and the WS layer
 feeds per-connection measurements through the hooks.
 
-The snapshot shape is FROZEN (contract C1 — SB renders it verbatim, must not
-reshape it)::
+The snapshot shape is a stable wire contract: clients render it verbatim, so it
+must not be reshaped::
 
     {
         "drops":       {"feed": int, "tx_lag": int, "snapshot": int},
@@ -20,7 +20,14 @@ reshape it)::
         "clock_skew_ms": float,        # latest client-minus-server wall skew
         "recording":   {"enabled": bool, "flush_failures": int,
                         "last_flush_ts": int | None},
+        "feeds":       {"poll_failures": int, "markers_dropped": int,
+                        "quotes_dropped": int, "collectors": {name: str}},
     }
+
+Additive fields: ``recording`` gains
+``dropped_rows`` and ``wedged``, the top-level ``feeds`` block carries the
+producer counters the feeds layer reports into, and ``orphaned_work`` counts
+worker threads that outlived their request. Existing keys are unchanged.
 
 Counter semantics (where each number comes from):
 
@@ -53,6 +60,10 @@ Counter semantics (where each number comes from):
   recorder; ``flush_failures`` — Parquet write failures (transient disk/AV
   conditions, retried with backoff by the session); ``last_flush_ts`` — wall
   ns of the most recent successful recording flush.
+- ``trades.out_of_interval`` (additive) — trades stamped
+  outside the grid interval they were folded into, summed over the live
+  sessions' grids. They stay in the bar, so this counts venue clock or ordering
+  trouble; it is not lost volume.
 
 Threading: every mutator runs on the event-loop thread (counters are plain
 int increments, no locks on the hot path). ``snapshot()`` may be called from
@@ -100,6 +111,7 @@ class SessionStats:
         self._rejected = 0
         self._flush_failures = 0
         self._flush_stalls = 0
+        self._orphaned_work = 0
 
         self._latency_ms = 0.0
         self._clock_skew_ms = 0.0
@@ -112,6 +124,23 @@ class SessionStats:
         # Session ids with an open session recorder.
         self._recording: set[str] = set()
         self._last_flush_ts: int | None = None
+        # Per recording session: wall ns of its last sign of life (opening, a
+        # successful flush, or an idle heartbeat from its cadence check). The
+        # stalled flag reads these per session, so a healthy quiet symbol
+        # cannot hide a wedged writer on another one.
+        self._healthy_ts: dict[str, int] = {}
+        # Per recording session: the recorder's refused-row total (its
+        # ``dropped_rows`` map summed), and the sessions whose in-flight write
+        # is currently wedged (stalled past the watchdog, not yet landed).
+        self._rec_dropped: dict[str, int] = {}
+        self._wedged: set[str] = set()
+        # Per session: the grid's out-of-interval trade total (running count).
+        self._out_of_interval: dict[str, int] = {}
+        # Feed-layer producer counters: the feeds report into these.
+        self._poll_failures = 0
+        self._markers_dropped = 0
+        self._quotes_dropped = 0
+        self._collectors: dict[str, str] = {}
 
     # -- counter increments (hot path: plain int adds) -------------------------
 
@@ -132,6 +161,26 @@ class SessionStats:
 
     def inc_flush_failure(self) -> None:
         self._flush_failures += 1
+
+    def inc_orphaned_work(self, n: int = 1) -> None:
+        """A worker thread outlived the request that awaited it (see ``orphaned_work``)."""
+        self._orphaned_work += n
+
+    def inc_poll_failures(self, n: int = 1) -> None:
+        """A keyless/keyed price poll failed (EquityFeed.poll_failures)."""
+        self._poll_failures += n
+
+    def inc_markers_dropped(self, n: int = 1) -> None:
+        """A gap/session marker was discarded by a full bounded queue."""
+        self._markers_dropped += n
+
+    def inc_quotes_dropped(self, n: int = 1) -> None:
+        """A live quote was discarded by the equity sink (venue stamp or overflow)."""
+        self._quotes_dropped += n
+
+    def note_collector_status(self, name: str, status: str) -> None:
+        """Latest ``last_status`` of a background collector (macro, flows, ...)."""
+        self._collectors[str(name)] = str(status)
 
     # -- per-connection measurement hooks (fed by the WS layer) ----------------
 
@@ -161,9 +210,14 @@ class SessionStats:
         self._last_sample_ns.pop(key, None)
 
     def forget_session(self, key: str) -> None:
-        """Drop a session's staleness entry (it left the manager's table)."""
+        """Drop a session's staleness and recording entries (it left the manager's table)."""
         self._started_ns.pop(key, None)
         self._last_sample_ns.pop(key, None)
+        self._recording.discard(key)
+        self._healthy_ts.pop(key, None)
+        self._rec_dropped.pop(key, None)
+        self._wedged.discard(key)
+        self._out_of_interval.pop(key, None)
 
     def note_live_sample(self, key: str) -> None:
         """Record a feed-event arrival for *key* (called per consumed event)."""
@@ -174,25 +228,58 @@ class SessionStats:
     def note_recording(self, key: str, enabled: bool) -> None:
         if enabled:
             self._recording.add(key)
+            # Opening is the first sign of life. A writer that never flushes or
+            # heartbeats after this is a stall, not an unknown.
+            self._healthy_ts.setdefault(key, self._wall_clock())
         else:
             self._recording.discard(key)
+            self._healthy_ts.pop(key, None)
 
-    def note_flush(self) -> None:
-        """Record a successful recording flush (wall-clock stamped)."""
-        self._last_flush_ts = self._wall_clock()
+    def note_flush(self, key: str | None = None) -> None:
+        """Record a successful recording flush (wall-clock stamped).
 
-    def note_flush_stall(self) -> None:
+        ``key`` is the flushing session; without it only the global
+        ``last_flush_ts`` moves and that session's stalled check is unchanged."""
+        now = self._wall_clock()
+        self._last_flush_ts = now
+        if key is not None:
+            self._healthy_ts[key] = now
+
+    def note_recording_idle(self, key: str) -> None:
+        """Heartbeat: session *key*'s open recorder found nothing to write and no
+        write in flight.
+
+        A quiet symbol buffers no rows, so no flush can land. Without this
+        heartbeat the stalled flag would read a healthy idle writer as wedged."""
+        self._healthy_ts[key] = self._wall_clock()
+
+    def note_flush_stall(self, key: str | None = None) -> None:
         """Count a WEDGED recording flush (see ``_REC_STALL_S`` in session.py).
 
         A stall (an in-flight flush task that never completes) is the only
         silent recording-stop path; this counter + the snapshot's
-        ``last_flush_age_s``/``stalled`` fields surface it on /api/health."""
+        ``last_flush_age_s``/``stalled`` fields surface it on /api/health.
+        ``key`` marks that session's writer as wedged until it clears."""
         self._flush_stalls += 1
+        if key is not None:
+            self._wedged.add(key)
 
-    # -- snapshot (contract C1 — shape frozen) -----------------------------------
+    def clear_flush_wedged(self, key: str) -> None:
+        """Session *key* has no write in flight any more: it is no longer wedged."""
+        self._wedged.discard(key)
+
+    def note_recording_dropped(self, key: str, total: int) -> None:
+        """Latest refused-row total of session *key*'s recorder (its running count)."""
+        self._rec_dropped[key] = max(0, int(total))
+
+    def note_out_of_interval(self, key: str, total: int) -> None:
+        """Latest out-of-interval trade total of session *key*'s grid (its running count)."""
+        self._out_of_interval[key] = max(0, int(total))
+
+    # -- snapshot -----------------------------------
 
     def snapshot(self) -> dict[str, object]:
-        """The frozen C1 dict; rendered verbatim by ``/api/health`` v3."""
+        """The snapshot dict; rendered verbatim by ``/api/health``."""
         now = self._wall_clock()
         try:
             started = dict(self._started_ns)
@@ -205,6 +292,15 @@ class SessionStats:
             for key, birth in started.items()
         }
         active = self._active_fn() if self._active_fn is not None else len(started)
+        # A writer is healthy while it flushes OR reports idle at each cadence
+        # check. Only a silent writer (no flush, no heartbeat for 60 s) stalls,
+        # judged per open recorder. snapshot() may run on a worker thread.
+        healthy = dict(self._healthy_ts)
+        stalled = any(
+            (now - healthy[key]) / 1e9 > 60.0
+            for key in tuple(self._recording)
+            if key in healthy
+        )
         return {
             "drops": {
                 "feed": self._drops_feed,
@@ -230,10 +326,23 @@ class SessionStats:
                     if self._last_flush_ts is not None
                     else None
                 ),
-                "stalled": bool(
-                    self._recording
-                    and self._last_flush_ts is not None
-                    and (now - self._last_flush_ts) / 1e9 > 60.0
-                ),
+                "stalled": bool(stalled),
+                # Refused rows across the open recorders (buffer overflow) and
+                # the count of writes currently wedged past the watchdog.
+                "dropped_rows": sum(self._rec_dropped.values()),
+                "wedged": len(self._wedged),
+            },
+            "trades": {
+                "out_of_interval": sum(self._out_of_interval.values()),
+            },
+            # Worker threads (recorder open, overview steps) whose awaiting
+            # request was cancelled or timed out. The thread cannot be stopped,
+            # so it is counted until it finishes.
+            "orphaned_work": self._orphaned_work,
+            "feeds": {
+                "poll_failures": self._poll_failures,
+                "markers_dropped": self._markers_dropped,
+                "quotes_dropped": self._quotes_dropped,
+                "collectors": dict(self._collectors),
             },
         }

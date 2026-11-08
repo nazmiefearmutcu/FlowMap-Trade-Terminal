@@ -1,5 +1,5 @@
 /**
- * Streaming EMA kernel vs the old branch's golden vectors (ema.test.ts, ported):
+ * Streaming EMA kernel vs the reference implementation's golden vectors:
  * hand-checked chain, seed placement, skip-and-carry NaN policy.
  */
 
@@ -43,7 +43,7 @@ describe('ema kernel', () => {
   });
 
   it('cross-checks the streaming form against a batch EMA on a long run', () => {
-    // Batch reference: the old branch's exact loop, run over the same closes.
+    // Batch reference: the reference implementation's exact loop, run over the same closes.
     const values: number[] = [];
     let s = 20260826 >>> 0;
     const rand = () => {

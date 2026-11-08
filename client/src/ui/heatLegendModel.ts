@@ -3,6 +3,10 @@ import { rampCssGradient, rampCssGradientReversed, rampForColormap, RAMP_IMBALAN
 import { resolveAppearance, stopsGradient } from '../theme/appearance';
 import type { ThemeId, ChartStop } from '../theme/registry';
 import type { DepthChannelMode } from './settings';
+import { honestDepthTier } from '../gl/depthTier';
+import { depthTier } from './DomLadder';
+import { MODE_SYNTH_PROFILE } from '../proto/types';
+import { t } from '../i18n';
 export interface LegendInput {
    channel?: DepthChannelMode;
    colormap: Colormap;
@@ -31,18 +35,46 @@ export function resolveLegend(input: LegendInput, density?: readonly ChartStop[]
   if (synth) {
    row = activeSynth ? RAMP_THEME_SYNTH : RAMP_SYNTH;
    gradient = activeSynth ? stopsGradient(activeSynth) : rampCssGradient(row);
-   rampName = 'synthetic amber colormap';
+   rampName = t('heat.rampSynthetic');
   } else if (channel === 'imbalance') {
    row = RAMP_IMBALANCE;
    gradient = appearance ? stopsGradient(appearance.imbalance, true) : rampCssGradientReversed(row);
-   rampName = 'divergent imbalance (ask blue → bid amber)';
+   rampName = t('heat.rampImbalance');
   } else {
    row = activeDensity ? RAMP_THEME : rampForColormap(colormap);
    gradient = activeDensity ? stopsGradient(activeDensity) : rampCssGradient(row);
-   rampName = `${colormap} colormap`;
+   rampName = t('heat.rampColormap', { name: colormap });
   }
   return { row, gradient, rampName, effectiveChannel: channel,
-   topCap: channel === 'imbalance' ? 'ask-heavy' : 'more',
-   bottomCap: channel === 'imbalance' ? 'bid-heavy' : 'less',
-   channelNote: channel === 'bid' ? 'bid depth' : channel === 'ask' ? 'ask depth' : null };
+   topCap: channel === 'imbalance' ? t('heat.capAskHeavy') : t('heat.capMore'),
+   bottomCap: channel === 'imbalance' ? t('heat.capBidHeavy') : t('heat.capLess'),
+   channelNote: channel === 'bid' ? t('heat.channelBid') : channel === 'ask' ? t('heat.channelAsk') : null };
+}
+
+/**
+ * Whether the depth on screen is synthetic. A capability the server marks
+ * `synthetic: true` (the sim feed and keyless equity recordings) is synthetic
+ * whatever its tier says. Otherwise the verdict follows the renderer's ramp
+ * ({@link honestDepthTier}): a replay without recorded-density provenance is
+ * SYNTH, a recorded replay keeps the tier its recording carries, and the book
+ * mode decides only when the capability names no tier. The legend, crosshair
+ * and measure readouts all read this, so they agree with the amber ramp.
+ */
+export function depthIsSynthetic(capability: Record<string, unknown> | null | undefined, bookMode: number | null): boolean {
+  if (capability?.synthetic === true) return true;
+  const honest = honestDepthTier(capability);
+  if (typeof honest === 'string') return honest === 'SYNTH' || honest === 'SYNTH_PROFILE';
+  return bookMode === MODE_SYNTH_PROFILE;
+}
+
+/**
+ * The depth label every readout prints (legend tier, crosshair source tag, measure
+ * depth): `SYNTH` for synthetic depth, `L2-SNAPSHOT` for a polled venue book, which
+ * is a snapshot and must never read as a native L2 feed, and otherwise the
+ * {@link depthTier} of the DOM ladder. Shared here so the three surfaces agree.
+ */
+export function depthReadoutTier(capability: Record<string, unknown> | null | undefined, bookMode: number | null): string | null {
+  if (depthIsSynthetic(capability, bookMode)) return 'SYNTH';
+  if (capability?.depth === 'L2-snapshot') return 'L2-SNAPSHOT';
+  return depthTier(capability ?? null, bookMode);
 }

@@ -6,12 +6,12 @@ import { THEMES, THEME_IDS, type ThemeId } from '../../src/theme/registry';
 import { buildRamp } from '../../src/gl/lut';
 
 /**
- * Visual campaign 2026-09-11 (lane L4) — the chart follows the active theme.
+ * Visual check: the chart follows the active theme.
  *
  * The active colormap family is stamped on `<html data-chart-ramp>`.
  * Every family keeps the theme's chart ground and ink. This spec checks the
  * DOM token side unconditionally and probes the
- * real GL canvas HARD: R1-H1 (StrictMode-stale theme gate) made the paper boot
+ * real GL canvas HARD: A StrictMode-stale theme gate made the paper boot
  * render the dark FLOW island until a theme switch, so the paper case now
  * requires a light canvas at boot plus `renderer.currentRamp === RAMP_THEME`.
  *
@@ -95,7 +95,7 @@ function dominantCanvasColor(page: Page): Promise<Px | null> {
 
 /** Mean luma of every 4th pixel over the GL canvas (the chart area), or null
  *  when the canvas is unreachable. Guarded: a light theme must not need a
- *  theme switch for the canvas to leave the dark island (R1-H1). */
+ *  theme switch for the canvas to leave the dark island. */
 function meanCanvasLuma(page: Page): Promise<number | null> {
   return page.evaluate(() => {
     const c = document.querySelector('canvas#gl') as HTMLCanvasElement | null;
@@ -148,7 +148,7 @@ async function reloadSim(page: Page): Promise<void> {
 test('default midnight + theme colormap boots with its navy chart ground', async ({ page }) => {
   await bootSim(page);
 
-  // Post-migration default colormap is `theme` (F6 wiring stamps it on <html>).
+  // Post-migration default colormap is `theme` (the theme wiring stamps it on <html>).
   await expect
     .poll(() => page.evaluate(() => document.documentElement.dataset.chartRamp), { timeout: 15_000 })
     .toBe('theme');
@@ -156,7 +156,7 @@ test('default midnight + theme colormap boots with its navy chart ground', async
   expect(await chartVar(page, '--chart-bg')).toBe(cssRgb(THEMES.midnight.chart.bg));
   expect(await chartVar(page, '--chart-ink')).toBe(cssRgb(THEMES.midnight.chart.ink));
 
-  // S2-Q1 decoupling check: midnight's OWN density ramp is served from the
+  // Decoupling check: midnight's OWN density ramp is served from the
   // theme row now — the renderer must report RAMP_THEME (5), not the frozen
   // FLOW row 3. This is the user-visible shorthand for "midnight got its
   // Bookmap-class ramp" (the row-5 bytes are pinned by chart.test.ts).
@@ -179,8 +179,8 @@ test('default midnight + theme colormap boots with its navy chart ground', async
   const dom = await dominantCanvasColor(page);
   if (dom) {
     expect(luma(dom), `dark ground expected, dominant=${dom.join(',')}`).toBeLessThan(70);
-    // F10 policy: the modal colour is the midnight ramp head (~10,25,67), not
-    // the bare bg — pin it to the active ramp instead (QA25, measured dist 7).
+    // Modal-colour policy: the modal colour is the midnight ramp head (~10,25,67), not
+    // the bare bg — pin it to the active ramp instead (measured dist 7).
     expect(
       nearestStopDistance(dom, 'midnight'),
       `dominant=${dom.join(',')} nearest midnight stop`,
@@ -213,7 +213,7 @@ test('paper theme flips the chart ground + ink to the light palette', async ({ p
   // Dark ink on a light ground: luma clearly below mid.
   expect(luma([Number(inkRgb![1]), Number(inkRgb![2]), Number(inkRgb![3])])).toBeLessThan(128);
 
-  // Canvas ground follows the theme ramp AT BOOT (R1-H1 hard check): before the
+  // Canvas ground follows the theme ramp AT BOOT (hard check): before the
   // fix, StrictMode's stale gate left renderer #2 on RAMP_FLOW (dark island)
   // until a theme cycle. `currentRamp` is exposed diagnostics on the renderer.
   const ramp = await page.evaluate(() => {
@@ -221,7 +221,7 @@ test('paper theme flips the chart ground + ink to the light palette', async ({ p
       .__flowmapLive;
     return typeof live?.renderer?.currentRamp === 'number' ? live.renderer.currentRamp : null;
   });
-  expect(ramp, 'renderer should resolve RAMP_THEME(5) at boot (R1-H1)').toBe(5);
+  expect(ramp, 'renderer should resolve RAMP_THEME(5) at boot').toBe(5);
 
   // The GL canvas must be a light field: mean luma over the chart area > 90
   // (tolerance for grid/overlay ink), dominant colour near the paper bg.
@@ -230,7 +230,7 @@ test('paper theme flips the chart ground + ink to the light palette', async ({ p
   expect(mean!, `light canvas expected, mean luma ${mean}`).toBeGreaterThan(90);
   const dom = await dominantCanvasColor(page);
   expect(dom, 'GL canvas probe should be reachable').not.toBeNull();
-  // F10 policy (QA25, measured dist 26): modal colour is a paper ramp stop.
+  // Modal-colour policy (measured dist 26): modal colour is a paper ramp stop.
   expect(
     nearestStopDistance(dom!, 'paper'),
     `dominant=${dom!.join(',')} nearest paper stop`,

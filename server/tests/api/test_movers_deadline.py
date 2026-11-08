@@ -1,4 +1,4 @@
-"""A2-5 hardening: bounded movers sweep + explicit network timeouts.
+"""Bounded movers sweep + explicit network timeouts.
 
 - ``_bounded_quote_sweep`` (the production movers fetch set) must respect a
   wall-clock deadline: a hung/slow provider cancels past the deadline and the

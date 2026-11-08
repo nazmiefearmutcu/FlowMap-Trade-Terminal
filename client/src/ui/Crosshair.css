@@ -1,4 +1,4 @@
-/* Crosshair overlay (§9 trading-terminal look, T9). The wrapper sits over the
+/* Crosshair overlay (trading-terminal look). The wrapper sits over the
    canvas and never eats pointer events — the GL canvas keeps the gestures. */
 
 .crosshair {
@@ -14,8 +14,8 @@
 .crosshair__vline,
 .crosshair__hline {
   position: absolute;
-  background: var(--chart-accent, #33d6c4);
-  background: color-mix(in srgb, var(--chart-accent, #33d6c4) 55%, transparent);
+  background: var(--chart-accent);
+  background: color-mix(in srgb, var(--chart-accent) 55%, transparent);
 }
 
 .crosshair__vline {
@@ -32,19 +32,19 @@
   transform: translateY(-0.5px);
 }
 
-/* Compact near-black readout box, monospace numerics. */
+/* Compact readout box on the theme chip tokens, monospace numerics. */
 .crosshair__box {
   position: absolute;
   min-width: 132px;
   padding: 6px 8px;
-  background: var(--chart-chip-bg, rgba(8, 11, 17, 0.92));
-  border: 1px solid var(--chart-chip-border, #1a2030);
+  background: var(--chart-chip-bg);
+  border: 1px solid var(--chart-chip-border);
   border-radius: 4px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
-  font-family: var(--font-mono, 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  box-shadow: var(--shadow-pop);
+  font-family: var(--font-mono);
   font-size: var(--fs-sm, 11px);
   line-height: 1.35;
-  color: var(--chart-ink, #e6edf3);
+  color: var(--chart-ink);
 }
 
 /* Header row carrying the depth-source provenance tag. */
@@ -56,13 +56,13 @@
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
   letter-spacing: 0.06em;
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
 }
 
-/* Amber SYNTH tag — synthetic depth must never read as real (§7 honesty).
-   Chart-owned ink: matches the chip plate pinned by a legacy ramp (M-3). */
+/* Amber SYNTH tag: synthetic depth must never read as real.
+   Chart-owned ink: matches the chip plate pinned by a fixed colormap ramp. */
 .crosshair__tag--synth {
-  color: var(--chart-warn, #d6a13a);
+  color: var(--chart-warn);
   font-weight: 600;
 }
 
@@ -74,22 +74,22 @@
 }
 
 .crosshair__line--dim {
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
 }
 
 .crosshair__key {
-  color: var(--chart-ink-dim, #93a1b4);
+  color: var(--chart-ink-dim);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  font-size: var(--fs-xs, 10px);
+  font-size: var(--fs-xs, 11px);
 }
 
 .crosshair__key--bid {
-  color: var(--chart-accent, #33d6c4);
+  color: var(--chart-accent);
 }
 
 .crosshair__key--ask {
-  color: var(--sell, #c65454);
+  color: var(--sell);
 }
 
 .crosshair__val {
@@ -99,19 +99,19 @@
 }
 
 .crosshair__val--price {
-  color: var(--chart-ink, #e6edf3);
+  color: var(--chart-ink);
   font-weight: 600;
 }
 
 .crosshair__val--bid {
-  color: var(--chart-accent, #33d6c4);
+  color: var(--chart-accent);
 }
 
 .crosshair__val--ask {
-  color: var(--sell, #c65454);
+  color: var(--sell);
 }
 
-/* Synthetic sizes rendered amber so SYNTH depth never reads as real (§7). */
+/* Synthetic sizes rendered amber so SYNTH depth never reads as real. */
 .crosshair__val--synth {
-  color: var(--chart-warn, #d6a13a);
+  color: var(--chart-warn);
 }

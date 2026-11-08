@@ -2,14 +2,15 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useFlowMapStore } from '../state/store';
-import { ChartStartupGate } from './ChartStartupGate';
+import { ChartStartupGate, chartDiagnosticsText } from './ChartStartupGate';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let element: HTMLDivElement;
 let root: Root;
 let callbacks: Map<number, FrameRequestCallback>;
 let nextId: number;
-let renderer: { marketFrameReady: boolean; residentRange?: () => { count: number } | null };
+let renderer: { marketFrameReady: boolean; residentRange?: () => { count: number } | null; getRenderFailure?: () => string | null };
+let renderFailure: string | null;
 let residentCount: number;
 let rendererRef: { current: typeof renderer | null };
 
@@ -26,7 +27,12 @@ beforeEach(() => {
     subscription: { market: 'binance-spot', symbol: 'BTCUSDT', band: 'deep', mode: 'live' },
   });
   residentCount = 16;
-  renderer = { marketFrameReady: false, residentRange: () => residentCount ? { count: residentCount } : null };
+  renderFailure = null;
+  renderer = {
+    marketFrameReady: false,
+    residentRange: () => residentCount ? { count: residentCount } : null,
+    getRenderFailure: () => renderFailure,
+  };
   rendererRef = { current: renderer };
   element = document.createElement('div');
   root = createRoot(element);
@@ -89,10 +95,50 @@ it('waits again after graphics readiness is lost and keeps refused feeds honest'
   act(() => useFlowMapStore.setState({ noFeed: true, feedState: 'closed' }));
   reveal(300);
   expect(element.querySelector('[role="status"]')).not.toBeNull();
-  expect(element.textContent).toContain('no feed');
+  expect(element.textContent).toContain('NO FEED');
 });
 
-it('leaves the existing graphics error surface uncovered', () => {
+it('offers a symbol search, and no retry, while the market has no feed', () => {
+  const onSearchSymbols = vi.fn();
+  act(() => root.render(
+    <ChartStartupGate rendererRef={rendererRef} onResubscribe={vi.fn()} onSearchSymbols={onSearchSymbols} />,
+  ));
+  act(() => useFlowMapStore.setState({ noFeed: true, feedState: 'closed' }));
+  expect(element.querySelector('strong')?.textContent).toBe('NO FEED');
+  // The sentence lives in the closed banner; the gate does not repeat it.
+  expect(element.textContent).not.toContain('no feed available for this market');
+  expect(element.querySelector('[data-testid="chart-startup-resubscribe"]')).toBeNull();
+  act(() => element.querySelector<HTMLButtonElement>('[data-testid="chart-startup-search"]')?.click());
+  expect(onSearchSymbols).toHaveBeenCalledOnce();
+});
+
+it('offers a retry on the current instrument and a symbol search when history is unavailable', () => {
+  residentCount = 0;
+  const onResubscribe = vi.fn();
+  const onSearchSymbols = vi.fn();
+  act(() => root.render(
+    <ChartStartupGate rendererRef={rendererRef} onResubscribe={onResubscribe} onSearchSymbols={onSearchSymbols} />,
+  ));
+  act(() => useFlowMapStore.setState({ feedState: 'closed' }));
+  frame(100);
+  expect(element.querySelector('strong')?.textContent).toBe('Historical data unavailable');
+  const retry = element.querySelector<HTMLButtonElement>('[data-testid="chart-startup-resubscribe"]');
+  expect(retry?.textContent).toBe('Retry');
+  act(() => retry?.click());
+  expect(onResubscribe).toHaveBeenCalledWith('binance-spot', 'BTCUSDT');
+  act(() => element.querySelector<HTMLButtonElement>('[data-testid="chart-startup-search"]')?.click());
+  expect(onSearchSymbols).toHaveBeenCalledOnce();
+});
+
+it('shows no recovery controls when the host supplies none', () => {
+  residentCount = 0;
+  act(() => useFlowMapStore.setState({ feedState: 'closed' }));
+  frame(100);
+  expect(element.querySelector('strong')?.textContent).toBe('Historical data unavailable');
+  expect(element.querySelector('.chart-startup__actions')).toBeNull();
+});
+
+it('hides the gate while disabled', () => {
   act(() => root.render(<ChartStartupGate rendererRef={rendererRef} disabled />));
   expect(element.querySelector('[role="status"]')).toBeNull();
   expect(callbacks.size).toBe(0);
@@ -178,4 +224,95 @@ it('reveals a successfully drawn market on a slow display without requiring 25 F
   expect(element.querySelector('[role="status"]')).not.toBeNull();
   frame(300);
   expect(element.querySelector('[role="status"]')).toBeNull();
+});
+
+it('shows a chart failure with Retry and Copy diagnostics instead of Preparing chart', () => {
+  const onRetry = vi.fn();
+  act(() => root.render(<ChartStartupGate rendererRef={rendererRef} onRetry={onRetry} />));
+  expect(element.textContent).toContain('Preparing chart');
+  renderFailure = 'shader link failed: uniform u_norm';
+  frame(100);
+  frame(1700);
+  expect(element.querySelector('[role="status"]')).toBeNull();
+  const alert = element.querySelector('[role="alert"]');
+  expect(alert?.textContent).toContain('Chart could not start');
+  expect(alert?.textContent).toContain('shader link failed: uniform u_norm');
+  expect(element.textContent).not.toContain('Preparing chart');
+  act(() => (element.querySelector('[data-testid="chart-startup-retry"]') as HTMLButtonElement).click());
+  expect(onRetry).toHaveBeenCalledTimes(1);
+  renderFailure = null;
+  frame(200);
+  expect(element.querySelector('[role="alert"]')).toBeNull();
+  expect(element.querySelector('[role="status"]')).not.toBeNull();
+});
+
+it('does not swap the chart for the failure view on a single bad frame', () => {
+  const onRetry = vi.fn();
+  act(() => root.render(<ChartStartupGate rendererRef={rendererRef} onRetry={onRetry} />));
+  renderFailure = 'one-off frame error';
+  frame(100);
+  frame(116);
+  expect(element.querySelector('[role="alert"]')).toBeNull();
+  renderFailure = null;
+  frame(132);
+  frame(1800);
+  expect(element.querySelector('[role="alert"]')).toBeNull();
+});
+
+it('omits Retry when no retry handler is supplied', () => {
+  renderFailure = 'boom';
+  frame(100);
+  frame(1700);
+  expect(element.querySelector('[role="alert"]')).not.toBeNull();
+  expect(element.querySelector('[data-testid="chart-startup-retry"]')).toBeNull();
+  expect(element.querySelector('[data-testid="chart-startup-copy"]')).not.toBeNull();
+});
+
+it('copies plain-text diagnostics to the clipboard and reports the outcome', async () => {
+  const writeText = vi.fn(async (_text: string) => undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  try {
+    renderFailure = 'shader link failed';
+    frame(100);
+    frame(1700);
+    await act(async () => {
+      (element.querySelector('[data-testid="chart-startup-copy"]') as HTMLButtonElement).click();
+    });
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const copied = writeText.mock.calls[0]?.[0] ?? '';
+    expect(copied).toContain('FlowMap chart diagnostics');
+    expect(copied).toContain('render failure: shader link failed');
+    expect(copied).toContain('instrument: binance-spot:BTCUSDT');
+    expect(element.querySelector('[data-testid="chart-startup-copy-state"]')?.textContent).toBe('Diagnostics copied to the clipboard.');
+
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    await act(async () => {
+      (element.querySelector('[data-testid="chart-startup-copy"]') as HTMLButtonElement).click();
+    });
+    expect(element.querySelector('[data-testid="chart-startup-copy-state"]')?.textContent).toBe('Could not copy. Select the technical details instead.');
+  } finally {
+    Reflect.deleteProperty(navigator, 'clipboard');
+  }
+});
+
+it('builds diagnostics without empty session or instrument fields', () => {
+  const text = chartDiagnosticsText({
+    failure: 'gl lost',
+    connection: 'live',
+    feed: 'closed',
+    sessionId: null,
+    instrument: null,
+    now: new Date('2026-11-08T10:00:00.000Z'),
+    userAgent: 'test-agent',
+  });
+  expect(text).toBe([
+    'FlowMap chart diagnostics',
+    'time: 2026-11-08T10:00:00.000Z',
+    'render failure: gl lost',
+    'connection: live',
+    'feed: closed',
+    'session: none',
+    'instrument: none',
+    'user agent: test-agent',
+  ].join('\n'));
 });

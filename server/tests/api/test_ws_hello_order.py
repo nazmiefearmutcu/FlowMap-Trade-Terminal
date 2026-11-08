@@ -122,9 +122,9 @@ async def test_failed_hello_send_does_not_enable_pings(monkeypatch):
 async def test_silent_peer_still_expires_before_hello(monkeypatch):
     ticks = PingTicks(monkeypatch)
     socket = Socket()
-    conn = ws_mod._Connection(socket, None)
-    monkeypatch.setattr(ws_mod.time, "monotonic_ns", lambda: (
-        conn._last_recv_ns + int((ws_mod.LIVENESS_TIMEOUT_S + 1) * 1e9)))
+    now = {"ns": 1_000_000_000}
+    conn = ws_mod._Connection(socket, None, clock=lambda: now["ns"])
+    now["ns"] += int((ws_mod.LIVENESS_TIMEOUT_S + 1) * 1e9)  # silent past the window
     running = asyncio.create_task(conn._ping_loop())
     try:
         await asyncio.wait_for(ticks.ready.get(), 1)

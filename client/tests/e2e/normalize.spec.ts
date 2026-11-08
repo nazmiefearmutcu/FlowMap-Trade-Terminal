@@ -1,3 +1,4 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 /**
- * T9 verification — viewport-percentile normalization + crosshair readout, driven
+ * Viewport-percentile normalization + crosshair readout, driven
  * through the REAL renderer (ring, per-tile histograms, EMA, exact CPU cache,
  * camera inverse, Crosshair DOM). The app is opened with `?normalize=1` (no live
  * feed) and `renderer.preloadNormalizeScenario()` injects two equal-shaped density
@@ -40,6 +41,11 @@ interface CanvasStats {
   thermal: number;
   meanLuma: number;
   norm: number;
+  /** The normalizer's own state: the EMA has reached its raw target; calculation is idle, pending or ready. */
+  settled: boolean;
+  calculation: string;
+  /** Frames drawn so far, for the failure trail. */
+  draws: number;
 }
 
 interface Scenario {
@@ -56,7 +62,7 @@ interface Scenario {
   capacityCols: number;
 }
 
-test('§8.3 T9: viewport normalization renormalizes a dim region + crosshair reads exact size', async ({
+test('viewport normalization renormalizes a dim region + crosshair reads exact size', async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -69,7 +75,7 @@ test('§8.3 T9: viewport normalization renormalizes a dim region + crosshair rea
 
   await page.goto('/?normalize=1');
   await page.waitForFunction(
-    () => !!(window as unknown as { __flowmapLive?: any }).__flowmapLive?.renderer,
+    () => !!(window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive?.renderer,
     undefined,
     { timeout: 45_000 },
   );
@@ -77,7 +83,7 @@ test('§8.3 T9: viewport normalization renormalizes a dim region + crosshair rea
   // Preload the two-region scenario + known wall; publish the epoch to the store
   // so the crosshair's row→price mapping is defined.
   const sc: Scenario = await page.evaluate(() => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     const s = live.renderer.preloadNormalizeScenario();
     live.store.setState({ epochs: new Map([[s.epoch, s.params]]), gridEpoch: s.epoch });
     (window as unknown as { __sc: unknown }).__sc = s;
@@ -86,8 +92,8 @@ test('§8.3 T9: viewport normalization renormalizes a dim region + crosshair rea
 
   const frameWindow = (win: { colLo: number; colHi: number }): Promise<void> =>
     page.evaluate((w) => {
-      const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
-      const s = (window as unknown as { __sc: any }).__sc;
+      const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
+      const s = (window as unknown as { __sc: LooseProbe }).__sc;
       live.renderer.setViewForTest(w.colLo, w.colHi - w.colLo + 1, s.band.lo, s.band.hi - s.band.lo);
     }, win);
 
@@ -109,18 +115,51 @@ test('§8.3 T9: viewport normalization renormalizes a dim region + crosshair rea
         lumaSum += luma;
         n++;
       }
-      const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
-      return { thermal, meanLuma: lumaSum / n, norm: live.renderer.currentNorm };
+      const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
+      const normalizer = live.renderer.normalizerForTest;
+      return { thermal, meanLuma: lumaSum / n, norm: live.renderer.currentNorm,
+        settled: normalizer.settled, calculation: normalizer.calculationState,
+        draws: live.renderer.stats().draws };
     }, THERMAL_LUMA);
 
+  // A capture is settled when the normalizer reports its EMA settled with no calculation
+  // pending, the norm is in its regime, and two reads agree on the norm and the
+  // painted pixels within a small tolerance (the EMA keeps easing by a fraction of a
+  // percent per frame, so exact equality is never reached).
+  const near = (a: number, b: number, relative: number): boolean =>
+    Math.abs(a - b) <= relative * Math.max(Math.abs(a), Math.abs(b), 1);
+  const settledStats = async (regime: (norm: number) => boolean): Promise<CanvasStats> => {
+    const held: { previous?: CanvasStats; settled?: CanvasStats } = {};
+    // The last reads are kept so a failed settle names the norms and draw counts seen.
+    const trail: CanvasStats[] = [];
+    try {
+      await expect.poll(async () => {
+        const now = await readStats();
+        trail.push(now);
+        if (trail.length > 12) trail.shift();
+        const previous = held.previous;
+        const stable = previous !== undefined && now.settled && now.calculation !== 'pending'
+          && near(previous.norm, now.norm, 0.005) && near(previous.thermal, now.thermal, 0.01)
+          && regime(now.norm);
+        held.previous = now;
+        if (stable) held.settled = now;
+        return stable;
+      }, { timeout: 30_000 }).toBe(true);
+    } catch (error) {
+      throw new Error(`normalizer did not settle; last reads (norm/thermal/settled/calc/draws): ${
+        trail.map(r => `${r.norm.toFixed(1)}/${r.thermal}/${r.settled}/${r.calculation}/${r.draws}`).join(' ')}
+${String(error)}`);
+    }
+    return held.settled!;
+  };
+
   // --- (a) Renormalization: bright region, then pan into the dim region. --------
+  // Wait for the EMA to settle onto each regime, instead of a fixed sleep.
   await frameWindow(sc.brightWindow);
-  await page.waitForTimeout(800); // let the EMA settle onto the bright regime
-  const bright = await readStats();
+  const bright = await settledStats((norm) => norm > 100);
 
   await frameWindow(sc.dimWindow);
-  await page.waitForTimeout(800); // renormalize down to the dim regime
-  const dim = await readStats();
+  const dim = await settledStats((norm) => norm < 50);
 
   // Save the renormalized dim region as the report artifact.
   mkdirSync(ARTIFACT_DIR, { recursive: true });
@@ -129,23 +168,25 @@ test('§8.3 T9: viewport normalization renormalizes a dim region + crosshair rea
 
   // The norm is VIEWPORT-adaptive: bright edge is far brighter than the dim
   // region, and panning renormalizes far downward (not stuck on the live edge).
-  expect(bright.norm, `bright norm ${bright.norm.toFixed(1)}`).toBeGreaterThan(100);
-  expect(dim.norm, `dim norm ${dim.norm.toFixed(1)}`).toBeLessThan(50);
-  expect(bright.norm / dim.norm).toBeGreaterThan(5);
+  const readings = `norms bright ${bright.norm.toFixed(1)} dim ${dim.norm.toFixed(1)}, `
+    + `thermal bright ${bright.thermal} dim ${dim.thermal}`;
+  expect(bright.norm, readings).toBeGreaterThan(100);
+  expect(dim.norm, readings).toBeLessThan(50);
+  expect(bright.norm / dim.norm, readings).toBeGreaterThan(5);
 
   // The dim region is NOT near-black (a global norm would leave it ≈ 0 thermal)
   // and its contrast is COMPARABLE to the bright region after renormalization.
-  expect(dim.thermal, `dim thermal ${dim.thermal} (near-black would be ~0)`).toBeGreaterThan(3000);
-  // F10 (2026-09-14) moved the global policy (tol 0, gamma 0.653), which lifts
-  // the bright field far more than the dim one: QA25's same-data A/B measured
-  // dim/bright 0.306 shipped vs 0.808 pre-F10 (normRatio unchanged ~12.3).
-  expect(dim.thermal).toBeGreaterThan(bright.thermal * 0.25);
-  expect(dim.thermal).toBeLessThan(bright.thermal * 2);
+  expect(dim.thermal, `${readings} (near-black would be ~0)`).toBeGreaterThan(3000);
+  // The global policy (tolerance 0, gamma 0.653) lifts the bright field far more than
+  // the dim one. A same-data A/B measured dim/bright 0.306 with the policy and 0.808
+  // without it (normRatio unchanged ~12.3).
+  expect(dim.thermal, readings).toBeGreaterThan(bright.thermal * 0.25);
+  expect(dim.thermal, readings).toBeLessThan(bright.thermal * 2);
 
   // --- (b) Crosshair: hover the known wall cell via a CDP mouse move. -----------
   const hover = await page.evaluate(() => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
-    const s = (window as unknown as { __sc: any }).__sc;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
+    const s = (window as unknown as { __sc: LooseProbe }).__sc;
     // Frame a level-0 view around the known wall (col, row) so group === 1.
     live.renderer.setViewForTest(s.wall.col - 60, 120, s.wall.row - 60, 120);
     const px = live.renderer.cellToCanvasCss(s.wall.col, s.wall.row);

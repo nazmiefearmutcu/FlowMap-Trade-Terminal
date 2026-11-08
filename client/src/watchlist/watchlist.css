@@ -1,5 +1,5 @@
 /* ============================================================================
-   Watchlist panel (campaign 4, lane C2) — right-rail favorites with live
+   Watchlist panel — right-rail favorites with live
    quotes. Imported directly by ui/Watchlist.tsx (the Crosshair.css pattern).
    Token vocabulary matches ui/theme.css; no hardcoded palette. The panel is
    `flex: 0 0 auto` so it never steals height from DomLadder/Tape below it —
@@ -84,8 +84,13 @@
   background: var(--bg-3);
 }
 
-.watchlist__row.is-stale {
-  opacity: 0.55;
+/* Stale is a color change, not an opacity fade: a faded row drops its text below
+   AA on the light themes. The muted ink still reads as "not live", and the stale
+   chip carries the words. */
+.watchlist__row.is-stale .watchlist__sym,
+.watchlist__row.is-stale .watchlist__px,
+.watchlist__row.is-stale .watchlist__chg {
+  color: var(--text-3);
 }
 
 .watchlist__star {
@@ -119,6 +124,22 @@
 
 .watchlist__row.is-active .watchlist__sym {
   font-weight: 600;
+}
+
+/* The symbol is a real button now (select + aria-current): strip its chrome so it
+   reads exactly like the plain label it replaced, and keep a visible focus ring. */
+button.watchlist__sym {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.watchlist__sym:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .watchlist__spark {
@@ -230,27 +251,27 @@
 
 .watchlist__talent {
   font-weight: 600;
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   padding: 0 3px;
 }
 
 .watchlist__talent.is-pos {
-  color: #4ade80;
-  border-color: rgba(74, 222, 128, 0.3);
-  background: rgba(74, 222, 128, 0.1);
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
 }
 
 .watchlist__talent.is-neg {
-  color: #f87171;
-  border-color: rgba(248, 113, 113, 0.3);
-  background: rgba(248, 113, 113, 0.1);
+  color: var(--sell);
+  border-color: var(--sell-line);
+  background: var(--sell-dim);
 }
 
 .watchlist__jet {
   padding: 0 2px;
-  border-color: rgba(56, 189, 248, 0.3);
-  background: rgba(56, 189, 248, 0.1);
-  font-size: 10px;
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+  font-size: var(--fs-2xs);
 }
 
 .watchlist__remove {
@@ -317,4 +338,13 @@
   color: var(--text);
   border-color: var(--line-2);
   background: var(--bg-3);
+}
+
+/* Windows High Contrast drops the row's background fill, so the active row keeps a
+   system outline as well as its accent edge. */
+@media (forced-colors: active) {
+  .watchlist__row.is-active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }

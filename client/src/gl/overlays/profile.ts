@@ -1,6 +1,6 @@
 /**
- * Volume (liquidity) profile overlay (§2 G2, §8.3, M2 T10). Toggleable; OFF by
- * default (§9 settings drawer).
+ * Volume (liquidity) profile overlay. Toggleable; OFF by
+ * default (settings drawer).
  *
  * A volume-by-price histogram drawn as horizontal bars on the RIGHT side,
  * accumulated over the VISIBLE column window from the exact per-column density
@@ -10,7 +10,7 @@
  * rows, cost is O(visible), never O(history).
  *
  * This is a resting-liquidity-by-price profile (from the L2 density grid), which
- * §7 allows as the profile source ("from BarColumn vol OR from column density");
+ * allows as the profile source ("from BarColumn vol OR from column density");
  * it is the exact, row-aligned choice and reads honestly as book volume-at-price.
  */
 
@@ -20,6 +20,27 @@ import { visibleColRange } from './coords';
 import { quoteDecimals } from './axisTicks';
 import { priceToRow, rowToPrice, type PriceScale } from '../priceScale';
 import { ViewWorker } from '../viewWorker';
+import { systemClock, type GlClock } from '../clock';
+import { t } from '../../i18n';
+
+/** A moving view keeps its last profile; a new window is requested after this quiet period. */
+const PROFILE_SETTLE_MS = 150;
+/** Worker failures retried for one window before the profile stays failed until the view changes. */
+const PROFILE_MAX_RETRIES = 3;
+/** First retry delay after a worker failure; doubles per failure up to the cap. */
+const PROFILE_RETRY_BASE_MS = 2000;
+const PROFILE_RETRY_MAX_MS = 30_000;
+
+/** The window a worker run covers, captured when the run starts. */
+interface ProfileRun {
+  colLo: number;
+  colHi: number;
+  rowLo: number;
+  rowHi: number;
+  scale: PriceScale;
+  key: string;
+  version: number;
+}
 
 function sameGeometry(a: PriceScale, b: PriceScale): boolean {
   if (a.kind !== b.kind || a.rows !== b.rows) return false;
@@ -68,7 +89,7 @@ export interface ProfileResult {
  * quantitative claim. Omit it (the linear grid) and the raw sums are kept
  * bit-for-bit, so uniform-grid bar lengths and the POC row are unchanged.
  *
- * `rowStride` (survey #4, the row bound), when > 1, scans only every `stride`-th
+ * `rowStride` (the row bound), when > 1, scans only every `stride`-th
  * row — aligned to absolute grid rows (the first multiple of `stride` at or
  * above `rowLo`). Callers pass the ACTIVE MIP BLOCK (4^level): at that level the
  * heatmap already sums each block into one displayed cell, so the sub-block
@@ -78,7 +99,7 @@ export interface ProfileResult {
  * O(cols × grid-rows) pass to O(cols × 4 × viewport-pixels). `rowStride = 1`
  * (the default) reproduces the legacy full scan bit-for-bit.
  *
- * **Honesty contract for stride > 1 (R1-M1).** The bins are a SUBSAMPLE, not
+ * **Honesty contract for stride > 1.** The bins are a SUBSAMPLE, not
  * block sums: each sampled row contributes only its own density, while the
  * heatmap cell behind it is the SUM of its 4^L-row block. Consequently the
  * sampled `pocRow`/`max` can disagree with the true block-sum POC (e.g. four
@@ -182,14 +203,29 @@ export class Profile {
   /** Per-frame bin accumulator, reused across dirty frames (no per-frame alloc). */
   private scratch: Float64Array = new Float64Array(0);
   private worker: ViewWorker | null = null;
+  /** The window the screen should show (the latest view). */
   private viewKey = '';
+  /** The window and frame version the shown worker result was computed for. */
+  private completedKey = '';
   private completedVersion = -1;
   private workerResult: ProfileResult | null = null;
   private generation = 0;
+  /** Worker failures since the last success or view change (bounded retry). */
+  private failures = 0;
+  /** Earliest clock time at which a run may start (settle period or retry backoff). */
+  private notBefore = 0;
+  /** Pending re-draw that starts a deferred run without new input. */
+  private wakeAt = Infinity;
+  private wakeTimer: unknown = null;
+  /** Key and result of the last synchronous (within-budget) accumulation. */
+  private syncKey = '';
+  private syncResult: ProfileResult | null = null;
   calculationState: 'idle' | 'pending' | 'ready' | 'failed' = 'idle';
+  private readonly clock: GlClock;
 
-  constructor(opts: ProfileOptions = {}) {
+  constructor(opts: ProfileOptions = {}, clock: GlClock = systemClock) {
     this.opts = { ...DEFAULTS, ...opts };
+    this.clock = clock;
   }
 
   draw(frame: OverlayFrame): void {
@@ -226,50 +262,56 @@ export class Profile {
     let result: ProfileResult;
     if (scale && colHi - colLo + 1 > this.opts.maxCols) {
       const key = JSON.stringify([colLo, colHi, rowLo, rowHi, scale]);
+      const now = this.clock.now();
       if (key !== this.viewKey) {
-        this.worker?.dispose(); this.worker = null; this.generation++;
-        this.viewKey = key; this.workerResult = null; this.completedVersion = -1;
-        this.calculationState = 'idle';
+        // The view moved. A run in flight keeps its own captured window and is left
+        // to finish: disposing it on every pan threw the work away and restarted it
+        // each frame, so a moving view never got a profile. The new window is asked
+        // for once the view has been still for PROFILE_SETTLE_MS, and the last
+        // result stays on screen meanwhile.
+        this.viewKey = key;
+        this.failures = 0;
+        // Nothing is on screen yet: the first window starts at once. Only a
+        // profile that is being held waits for the view to settle.
+        this.notBefore = this.workerResult === null ? now : now + PROFILE_SETTLE_MS;
+        if (this.notBefore > now) this.wake(frame.changed, this.notBefore);
       }
       const version = frame.dataVersion ?? 0;
-      if (this.calculationState !== 'failed' && !this.worker?.busy && this.completedVersion !== version) {
-        this.worker ??= new ViewWorker();
-        this.calculationState = 'pending';
-        const generation = this.generation;
-        const read = frame.columnArrays, nativeScale = frame.columnScale, changed = frame.changed;
-        const columns = function* () {
-          for (let c = colLo; c <= colHi; c++) {
-            const arrays = read(c);
-            yield arrays ? { ...arrays, scale: nativeScale?.(c) ?? scale } : null;
-          }
-        };
-        void this.worker.run({ kind: 'profile', rowLo, rowHi, target: scale, normalizeWidths: scale.kind !== 'linear' }, columns()).then(value => {
-          if (generation !== this.generation) return;
-          const bins = value.bins as Float64Array;
-          let max = 0, pocRow = -1;
-          for (let i = 0; i < bins.length; i++) if (bins[i] > max) { max = bins[i]; pocRow = rowLo + i; }
-          this.workerResult = { bins, rowLo, max, pocRow, sampled: value.sampled || value.missing > 0 };
-          this.completedVersion = version; this.calculationState = 'ready'; changed?.();
-        }).catch(() => { if (generation === this.generation) { this.calculationState = 'failed'; changed?.(); } });
+      const stale = this.completedKey !== key || this.completedVersion !== version;
+      if (stale && this.failures <= PROFILE_MAX_RETRIES && !this.worker?.busy) {
+        if (now < this.notBefore) this.wake(frame.changed, this.notBefore);
+        else this.startRun(frame, { colLo, colHi, rowLo, rowHi, scale, key, version });
       }
       if (!this.workerResult) {
         this.last = null;
-        text.badge(gm.dims.cssW - 3, 18, this.calculationState === 'failed' ? 'Profil hesaplanamadı' : 'Profil hesaplanıyor…', { align: 'right', color: OVERLAY.profile.css, size: 10 });
+        // Localised through the active locale: the badge is redrawn on every frame.
+        text.badge(gm.dims.cssW - 3, 18, this.calculationState === 'failed' ? t('gl.profileFailed') : t('gl.profilePending'), { align: 'right', color: OVERLAY.profile.css, size: 10 });
         return;
       }
-      result = { ...this.workerResult, sampled: this.workerResult.sampled || this.completedVersion !== version };
+      result = {
+        ...this.workerResult,
+        sampled: this.workerResult.sampled || this.completedVersion !== version || this.completedKey !== key,
+      };
     } else {
-      result = accumulateProfile(
-      colLo,
-      colHi,
-      rowLo,
-      rowHi,
-      frame.columnArrays,
-      scale !== undefined && scale.kind !== 'linear' ? (row) => gm.stepAtRow(row) : undefined,
-      this.scratch,
-      1,
-      scale && frame.columnScale ? { target: scale, source: frame.columnScale } : undefined,
-    );
+      // Within budget the sum runs on this thread. The result is reused while the
+      // window, the frame version and the scale are unchanged: nothing
+      // in those inputs moved, so a rescan would return the same bins.
+      const syncKey = `${colLo}|${colHi}|${rowLo}|${rowHi}|${frame.dataVersion ?? 0}|${scale ? JSON.stringify(scale) : ''}`;
+      if (this.syncResult === null || syncKey !== this.syncKey) {
+        this.syncKey = syncKey;
+        this.syncResult = accumulateProfile(
+          colLo,
+          colHi,
+          rowLo,
+          rowHi,
+          frame.columnArrays,
+          scale !== undefined && scale.kind !== 'linear' ? (row) => gm.stepAtRow(row) : undefined,
+          this.scratch,
+          1,
+          scale && frame.columnScale ? { target: scale, source: frame.columnScale } : undefined,
+        );
+      }
+      result = this.syncResult;
     }
     this.scratch = result.bins;
     this.last = result;
@@ -310,6 +352,55 @@ export class Profile {
     }
   }
 
+  /**
+   * Start the off-thread sum for one window. A worker that fails is disposed and
+   * dropped; the next attempt gets a fresh one after a backoff.
+   */
+  private startRun(frame: OverlayFrame, run: ProfileRun): void {
+    const { colLo, colHi, rowLo, rowHi, scale, key, version } = run;
+    this.worker ??= new ViewWorker(this.clock);
+    const worker = this.worker;
+    const generation = this.generation;
+    this.calculationState = 'pending';
+    const read = frame.columnArrays, nativeScale = frame.columnScale, changed = frame.changed;
+    const columns = function* () {
+      for (let c = colLo; c <= colHi; c++) {
+        const arrays = read(c);
+        yield arrays ? { ...arrays, scale: nativeScale?.(c) ?? scale } : null;
+      }
+    };
+    void worker.run({ kind: 'profile', rowLo, rowHi, target: scale, normalizeWidths: scale.kind !== 'linear' }, columns()).then(value => {
+      if (generation !== this.generation) return;
+      const bins = value.bins as Float64Array;
+      let max = 0, pocRow = -1;
+      for (let i = 0; i < bins.length; i++) if (bins[i] > max) { max = bins[i]; pocRow = rowLo + i; }
+      this.workerResult = { bins, rowLo, max, pocRow, sampled: value.sampled || value.missing > 0 };
+      this.completedKey = key; this.completedVersion = version; this.failures = 0;
+      this.calculationState = 'ready'; changed?.();
+    }).catch(() => {
+      if (generation !== this.generation) return;
+      // A failed worker rejects every later run, so it is dropped here.
+      if (worker === this.worker) { worker.dispose(); this.worker = null; }
+      this.failures += 1;
+      this.calculationState = 'failed';
+      this.notBefore = this.clock.now() + Math.min(PROFILE_RETRY_MAX_MS, PROFILE_RETRY_BASE_MS * 2 ** (this.failures - 1));
+      this.wake(changed, this.notBefore);
+      changed?.();
+    });
+  }
+
+  /** Re-draw at `at` (clock time) so a deferred run starts without new input. */
+  private wake(changed: (() => void) | undefined, at: number): void {
+    if (changed === undefined || at >= this.wakeAt) return;
+    if (this.wakeTimer !== null) this.clock.clearTimer(this.wakeTimer);
+    this.wakeAt = at;
+    this.wakeTimer = this.clock.setTimer(() => {
+      this.wakeTimer = null;
+      this.wakeAt = Infinity;
+      changed();
+    }, Math.max(0, at - this.clock.now()));
+  }
+
   setOptions(opts: Partial<ProfileOptions>): void {
     this.opts = { ...this.opts, ...opts };
   }
@@ -317,10 +408,18 @@ export class Profile {
     this.generation++;
     this.worker?.dispose();
     this.worker = null;
+    if (this.wakeTimer !== null) this.clock.clearTimer(this.wakeTimer);
+    this.wakeTimer = null;
+    this.wakeAt = Infinity;
     this.workerResult = null;
     this.last = null;
     this.viewKey = '';
+    this.completedKey = '';
     this.completedVersion = -1;
+    this.failures = 0;
+    this.notBefore = 0;
+    this.syncKey = '';
+    this.syncResult = null;
     this.calculationState = 'idle';
     this.scratch = new Float64Array(0);
   }

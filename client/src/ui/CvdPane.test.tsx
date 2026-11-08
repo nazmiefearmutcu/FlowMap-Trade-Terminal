@@ -184,8 +184,8 @@ describe('CvdPane loop pacing', () => {
   });
 });
 
-describe('CvdPane ink tokens (R1-H3)', () => {
-  it('dark ground keeps the shipped midnight/amber ink (byte-identical)', () => {
+describe('CvdPane ink tokens', () => {
+  it('dark ground keeps the midnight/amber ink (byte-identical)', () => {
     const ink = resolveCvdInk(
       (name) =>
         ({
@@ -227,7 +227,7 @@ describe('CvdPane ink tokens (R1-H3)', () => {
     expect(ink.pillText).toBe('rgba(243, 241, 234, 1)');
   });
 
-  it('unresolvable tokens fall back to the shipped literals', () => {
+  it('unresolvable tokens fall back to the fallback literals', () => {
     const ink = resolveCvdInk(() => '');
     expect(ink.axis).toBe('rgba(163, 176, 194, 0.75)');
     expect(ink.zero).toBe('rgba(120, 132, 150, 0.28)');

@@ -1,4 +1,4 @@
-"""Parked-replay freshness re-validation (handoff §6) + the disk probe.
+"""Parked-replay freshness re-validation + the disk probe.
 
 A replay session's feed is a SNAPSHOT of the recording taken when the session
 was created: it can never serve columns recorded after its tail. These tests
@@ -39,7 +39,7 @@ P0 = 100.0 - ROWS * TICK / 2  # 84.0 — the manager's sim grid for max_rows=64
 MARKET, SYMBOL = "sim", "SIM-DEMO"
 N0 = 12  # columns in the initial recording: t0 = 0..(N0-1)*DT
 
-# Replay keys carry the window as part of identity (survey-1 #2); a no-window
+# Replay keys carry the window as part of identity; a no-window
 # subscribe is (None, None).
 KEY = (MARKET, SYMBOL, "replay", None, "native", None, None)
 

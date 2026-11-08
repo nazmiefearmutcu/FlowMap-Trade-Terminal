@@ -1,6 +1,6 @@
 /**
- * Alert chime (campaign-4 contract P3, lane C1) — a short two-tone beep when a
- * fired alert batch lands, so alerts work when the user looks away.
+ * Alert chime — a short two-tone beep when a fired alert batch lands, so alerts
+ * work when the user looks away.
  *
  * Deliberate constraints:
  *   - LAZY AudioContext: created on the first beep, never at import time (a
@@ -14,8 +14,24 @@
  *   - Best-effort: a missing/blocked AudioContext is silence, never an error
  *     into the evaluation path.
  *
- * The `alertSound` setting (ui/settings.ts) gates the CALL from PriceAlerts.
+ * The `alertSound` setting gates the CALL: see {@link alertSoundEnabled}.
  */
+
+import { safeLocalStorage } from '../state/safeStorage';
+import { loadSettings } from './settings';
+
+/**
+ * The persisted `alertSound` setting, read at fire time so a Settings toggle
+ * takes effect without re-mounting anything. Absent or blocked storage reads as
+ * ON (the default); the settings module itself never throws.
+ */
+export function alertSoundEnabled(): boolean {
+  try {
+    return loadSettings(safeLocalStorage()).alertSound;
+  } catch {
+    return true;
+  }
+}
 
 /** Minimum spacing between beeps (ms). One beep per burst. */
 export const BEEP_MIN_GAP_MS = 150;
@@ -103,11 +119,16 @@ export function playAlertSound(now = Date.now()): boolean {
   if (now - lastBeepAt < BEEP_MIN_GAP_MS) return false;
   const audio = context();
   if (audio === null) return false;
-  lastBeepAt = now;
-  if (audio.state === 'suspended') {
+  if (audio.state !== 'running') {
+    // A suspended (or interrupted) context would QUEUE the chime and play it
+    // late, when the user returns to a tab that fired minutes ago. Ask for a
+    // resume instead and schedule nothing; the rate-limit clock is untouched so
+    // the next fired batch after the gesture resumes the context still sounds.
     tryResume(audio);
     armGestureResume();
+    return false;
   }
+  lastBeepAt = now;
   for (const [freq, offset, dur] of TONES) scheduleTone(audio, freq, offset, dur);
   return true;
 }

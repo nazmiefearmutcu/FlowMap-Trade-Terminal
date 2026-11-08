@@ -1,4 +1,4 @@
-"""Feed abstraction shared by all data sources (M1 T6 sim, T9 crypto, ...).
+"""Feed abstraction shared by all data sources (sim, crypto, ...).
 
 A feed is an async stream of canonical events:
 
@@ -18,8 +18,10 @@ an ``async def`` generator method presents to callers.
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections import deque
 from collections.abc import AsyncIterator, Callable
-from typing import Protocol, runtime_checkable
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 import msgspec
 import numpy as np
@@ -30,6 +32,7 @@ __all__ = [
     "BookState",
     "BarSample",
     "BoundedFeedQueue",
+    "DropCounters",
     "FEED_QUEUE_MAXSIZE",
     "Feed",
     "FeedEvent",
@@ -37,6 +40,9 @@ __all__ = [
     "TS_HORIZON_NS",
     "ts_ns_sane",
 ]
+
+
+logger = logging.getLogger(__name__)
 
 
 class BookState(msgspec.Struct):
@@ -108,7 +114,20 @@ def ts_ns_sane(ts_ns: int, *, now_ns: int) -> bool:
 FEED_QUEUE_MAXSIZE = 8192
 
 
-class BoundedFeedQueue:
+_QueueItemT = TypeVar("_QueueItemT")
+
+
+class DropCounters(Protocol):
+    """The drop counters a feed reports into (``core.stats.SessionStats``).
+
+    Duck-typed on purpose: the feeds layer does not import the core telemetry."""
+
+    def inc_feed_drops(self, n: int = 1) -> None: ...
+
+    def inc_snapshot_drops(self, n: int = 1) -> None: ...
+
+
+class BoundedFeedQueue(Generic[_QueueItemT]):
     """A bounded ``asyncio.Queue`` with drop-OLDEST semantics for feed fan-in.
 
     The connector task produces via :meth:`put_nowait` (never blocks, never
@@ -124,33 +143,61 @@ class BoundedFeedQueue:
         maxsize: int = FEED_QUEUE_MAXSIZE,
         on_drop: Callable[[], None] | None = None,
     ) -> None:
-        self._q: asyncio.Queue[object] = asyncio.Queue(maxsize=max(1, maxsize))
+        self._items: deque[_QueueItemT] = deque()
+        self._maxsize = max(1, maxsize)
+        self._arrived = asyncio.Event()
         self.dropped = 0
-        # Optional telemetry hook (campaign C1): fired on every drop-OLDEST
+        # Markers (gap, liquidation, session_break) are evicted only when nothing
+        # else is left to evict; this counts the ones that were lost anyway.
+        self.markers_dropped = 0
+        # Optional telemetry hook: fired on every drop-OLDEST
         # eviction so the server-wide stats aggregate can count feed drops
         # without polling per-feed counters. Must never raise into the producer.
         self.on_drop = on_drop
 
-    def put_nowait(self, item: object) -> None:
-        q = self._q
-        if q.full():
-            try:
-                q.get_nowait()
-            except asyncio.QueueEmpty:  # pragma: no cover — full() just said otherwise
-                return
-            self.dropped += 1
-            if self.on_drop is not None:
-                try:
-                    self.on_drop()
-                except Exception:  # noqa: BLE001 — telemetry must not kill the feed
-                    pass
-        q.put_nowait(item)
+    def put_nowait(self, item: _QueueItemT) -> None:
+        items = self._items
+        if len(items) >= self._maxsize:
+            self._evict_one()
+        items.append(item)
+        self._arrived.set()
 
-    async def get(self) -> object:
-        return await self._q.get()
+    def _evict_one(self) -> None:
+        """Drop the oldest item, but keep a Marker when a non-Marker can go instead.
+
+        A Marker is the only record of a gap or a halt, and the client is never
+        told when one is lost, so trades (which a later tick replaces) are the
+        cheaper thing to lose."""
+        items = self._items
+        victim = 0
+        if isinstance(items[0], Marker):
+            for index, candidate in enumerate(items):
+                if not isinstance(candidate, Marker):
+                    victim = index
+                    break
+        if victim == 0:
+            dropped = items.popleft()
+        else:
+            dropped = items[victim]
+            del items[victim]
+        self.dropped += 1
+        if isinstance(dropped, Marker):
+            self.markers_dropped += 1
+        if self.on_drop is not None:
+            try:
+                self.on_drop()
+            except Exception:  # telemetry must not kill the feed
+                logger.debug("drop telemetry hook failed", exc_info=True)
+
+    async def get(self) -> _QueueItemT:
+        items = self._items
+        while not items:
+            self._arrived.clear()
+            await self._arrived.wait()
+        return items.popleft()
 
     def qsize(self) -> int:
-        return self._q.qsize()
+        return len(self._items)
 
 
 @runtime_checkable
@@ -162,7 +209,7 @@ class Feed(Protocol):
     ``events()`` again on the same instance. On re-call the feed SHOULD
     resume from current/live data, not replay history. SimFeed replays
     deterministically from ``start_ns``, which is acceptable for the sim;
-    real feeds (T9 crypto) must reconnect and resume live.
+    real feeds (crypto) must reconnect and resume live.
 
     Optional declaration (not part of the structural check): a feed MAY carry
     ``preferred_tick: float`` — the venue's price tick for its own symbols.

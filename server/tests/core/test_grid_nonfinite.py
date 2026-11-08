@@ -1,4 +1,4 @@
-"""Non-finite trade-price hardening (A2-1).
+"""Non-finite trade-price hardening.
 
 A ``+inf`` price used to slip past the malformed-trade guard (``price > 0`` is
 true for inf) and poison the session-cumulative ``vwap_num_cum`` — and every

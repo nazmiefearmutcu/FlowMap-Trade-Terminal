@@ -39,10 +39,13 @@ test('inside quotes and tape keep exchange precision with grouped depth', async 
 });
 
 test('the terminal restores the selected instrument on reload', async ({ page }) => {
+  // The app module loads lazily, so the shell after a reload can take well over the
+  // default 5 s expectation window on a loaded runner. Every wait here is a condition.
+  test.setTimeout(90_000);
   await page.goto('/?spy=1');
   await page.evaluate(() => localStorage.setItem('flowmap.active-symbol.v1', JSON.stringify({ market: 'binance-spot', symbol: 'RUNEUSDT' })));
   await page.reload();
-  await expect(page.getByTestId('venue')).toContainText('RUNEUSDT');
+  await expect(page.getByTestId('venue')).toContainText('RUNEUSDT', { timeout: 30_000 });
   await page.waitForFunction(() => (window as unknown as { __flowmapControls?: Array<{ type: number }> }).__flowmapControls?.some(m => m.type === 64));
   const first = await page.evaluate(() => (window as unknown as { __flowmapControls: Array<{ type: number; market?: string; symbol?: string }> }).__flowmapControls.find(m => m.type === 64));
   expect(first?.market).toBe('binance-spot');
@@ -50,19 +53,31 @@ test('the terminal restores the selected instrument on reload', async ({ page })
 });
 
 test('time presets retain live follow and All continues to cover arriving history', async ({ page }) => {
+  // Two condition waits on the live stream (a new column, then coverage of the
+  // arriving history) run after the pre-attach backfill; a loaded runner needs the
+  // headroom, so the test has its own allowance.
+  test.setTimeout(120_000);
   await page.goto('/?spy=1');
   await page.waitForFunction(() => (window.__flowmapLive?.renderer.timeline()?.newestSeq ?? -1) >= 10);
   await page.getByTestId('time-window-1m').click();
   expect(await page.evaluate(() => ({ follow: window.__flowmapLive!.renderer.following,
     ms: window.__flowmapLive!.renderer.timeWindowMs }))).toEqual({ follow: true, ms: 60000 });
   await page.getByTestId('time-window-All').click();
-  const before = await page.evaluate(() => window.__flowmapLive!.renderer.timeline()!.newestSeq);
-  await page.waitForFunction(before => window.__flowmapLive!.renderer.timeline()!.newestSeq >= before + 10, before);
-  const result = await page.evaluate(() => {
-    const r = window.__flowmapLive!.renderer, tl = r.timeline()!;
-    return { following: r.following, span: tl.viewEndCol - tl.viewStartCol, count: tl.newestSeq - tl.oldestSeq + 1 };
+  // The timeline is null until the resident window exists again after the switch.
+  const ready = await page.waitForFunction(() => {
+    const tl = window.__flowmapLive?.renderer.timeline();
+    return tl ? { newest: tl.newestSeq } : null;
   });
-  expect(result.following).toBe(true);
-  expect(result.span).toBeCloseTo(result.count, 4);
+  const before = (await ready.jsonValue() as { newest: number }).newest;
+  await page.waitForFunction(before => (window.__flowmapLive?.renderer.timeline()?.newestSeq ?? -1) >= before + 10, before);
+  // All keeps the view at least as wide as the resident history (residency can start
+  // after column 0) and its right edge on the newest arriving column. The right edge
+  // follows the stream one frame at a time, so this is a condition wait.
+  await expect.poll(() => page.evaluate(() => {
+    const r = window.__flowmapLive!.renderer, tl = r.timeline()!;
+    const span = tl.viewEndCol - tl.viewStartCol, count = tl.newestSeq - tl.oldestSeq + 1;
+    return { following: r.following, span, count, end: tl.viewEndCol, newest: tl.newestSeq,
+      covered: span >= count && tl.viewEndCol >= tl.newestSeq };
+  }), { timeout: 45_000 }).toMatchObject({ following: true, covered: true });
   await expect(page.getByTestId('time-window-All')).toHaveAttribute('aria-pressed', 'true');
 });

@@ -1,5 +1,5 @@
 /**
- * Seam detector unit tests (QA3 C-1 honesty fix).
+ * Seam detector unit tests.
  *
  * Numbers mirror the measured repro: live columns at dt=250 ms, a reconstructed
  * block at 3.75 s/col, a −1806.5 s leading backward jump and a −9 s trailing one.

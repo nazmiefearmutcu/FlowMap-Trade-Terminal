@@ -1,5 +1,5 @@
 /**
- * The `?` shortcuts overlay (A5) — a small centred modal listing every real
+ * The `?` shortcuts overlay — a small centred modal listing every real
  * binding, from the same {@link KEYSHEET} the settings drawer renders. Toggled
  * by the App-level `?` handler (see ui/keysheet.ts `isHelpToggle`), it is a
  * proper dialog: `role="dialog"` + `aria-modal`, focus moves to the close
@@ -11,8 +11,9 @@ import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 import { isTopOverlay, pushOverlay } from './overlayStack';
-import { KEYSHEET, isHelpToggle } from './keysheet';
+import { isHelpToggle, keysheetRows } from './keysheet';
 import { classifyTarget } from '../input/keys';
+import { isSingleKeyShortcutsEnabled, useSingleKeyShortcuts } from '../input/shortcutPrefs';
 import { useT } from '../i18n/useT';
 
 interface ShortcutsOverlayProps {
@@ -21,6 +22,9 @@ interface ShortcutsOverlayProps {
 
 export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Element {
   const t = useT(); // i18n shell pass
+  // The footer names the `?` toggle only while single-key shortcuts are on, and
+  // the sheet lists only the bindings that currently work.
+  const singleKeys = useSingleKeyShortcuts();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
@@ -33,13 +37,15 @@ export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Elemen
   // work wherever focus sits inside the overlay. Being registry-topmost is what
   // lets this handler act without also firing the drawer's Escape handler.
   // `?` shares the App-level predicate (isHelpToggle): a '?' typed into an
-  // editable is a character, not a toggle.
+  // editable is a character, not a toggle. With single-key shortcuts switched off
+  // (WCAG 2.1.4) only Escape closes the overlay.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (!isTopOverlay('shortcuts')) return;
       const ctx = classifyTarget(e.target);
-      if (e.key === 'Escape' || isHelpToggle(e.key, ctx)) {
+      const helpToggle = isSingleKeyShortcutsEnabled() && isHelpToggle(e.key, ctx);
+      if (e.key === 'Escape' || helpToggle) {
         e.preventDefault();
         onClose();
       }
@@ -111,7 +117,7 @@ export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Elemen
           </button>
         </header>
         <div className="keysheet keyshelp__sheet" data-testid="shortcuts-list">
-          {KEYSHEET.map((entry) => (
+          {keysheetRows(singleKeys).map((entry) => (
             <div key={entry.keys} className="keysheet__row">
               <kbd className="keysheet__keys">{entry.keys}</kbd>
               <span className="keysheet__action">{t(entry.actionKey)}</span>
@@ -120,9 +126,16 @@ export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps): JSX.Elemen
         </div>
         <div className="keyshelp__foot">
           <span>
-            <kbd>?</kbd> {t('shortcuts.footerToggle')} · <kbd>esc</kbd>{' '}
-            {t('shortcuts.footerClose')}
+            {singleKeys && (
+              <>
+                <kbd>?</kbd> {t('shortcuts.footerToggle')} ·{' '}
+              </>
+            )}
+            <kbd>esc</kbd> {t('shortcuts.footerClose')}
           </span>
+        </div>
+        <div className="keyshelp__foot" data-testid="shortcuts-single-key-note">
+          <span>{singleKeys ? t('shortcuts.singleKeysHint') : t('shortcuts.singleKeysOff')}</span>
         </div>
       </div>
     </div>,

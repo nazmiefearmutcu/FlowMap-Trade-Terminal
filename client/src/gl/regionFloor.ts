@@ -1,9 +1,7 @@
 /**
- * Per-REGION black-point support (lane F17; D5 lever L1, owner's scrollback
- * complaint 2026-09-13/14).
+ * Per-REGION black-point support for scrolled-back, reconstructed history.
  *
- * The owner-visible problem (measured in `swarm2/D5.md`): one GLOBAL tolerance
- * floor is calibrated on the LIVE book, but the reconstructed (stretched
+ * One GLOBAL tolerance floor is calibrated on the LIVE book, but the reconstructed (stretched
  * 1 m-candle) columns carry a different density scale — BTC recon sits at
  * ≈0.5× live (the floor hides it) while ETH recon sits at ≈26× live. A single
  * t-space floor therefore reads correctly for at most one regime. The fix is a
@@ -29,12 +27,12 @@ export type RegionKind = typeof REGION_LIVE | typeof REGION_RECON;
 
 /**
  * Default multiplier applied to the Tolerance slider's floor for reconstructed
- * (tagged) columns — the relative L1 lever. 1 = exactly the live floor (an
- * inert mechanism); 0 = the tol-0 endpoint D5 measured as the coverage ceiling
+ * (tagged) columns — the relative lever. 1 = exactly the live floor (an
+ * inert mechanism); 0 = the tol-0 endpoint measured as the coverage ceiling
  * (their depth-rich ETH window: 1.12 → 22.8 % ink). Calibrated on the live
- * stack (swarm2/F17.md, ETH recon 6477–8191, densest 373-col window):
+ * stack (ETH recon 6477–8191, densest 373-col window):
  *   inert 1.05 % · ×0.5 1.21 % · ×0.25 1.33 % · ×0.1 1.39 % · ×0.02 1.44 % ·
- *   ×0 1.46 % · D5 tol0+norm-floor0 reference 1.45 %
+ * ×0 1.46 % · tol0+norm-floor0 reference 1.45 %
  * i.e. 0.1 captures ~95 % of the achievable coverage while still keeping a
  * 10× denoise on the recon carpet. The multiplier is RELATIVE by construction
  * (a fraction of the viewport white in t-space), so the ≈0.5× (BTC) and ≈26×

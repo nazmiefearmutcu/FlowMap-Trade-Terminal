@@ -16,7 +16,10 @@ import { resetQuoteFeedForTest, type Quote } from './quoteFeed';
 import { useFlowMapStore } from './store';
 import { useAlertMonitor } from './alertMonitor';
 
-vi.mock('../ui/alertSound', () => ({ playAlertSound: vi.fn() }));
+vi.mock('../ui/alertSound', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../ui/alertSound')>()),
+  playAlertSound: vi.fn(),
+}));
 
 import { playAlertSound } from '../ui/alertSound';
 
@@ -197,7 +200,7 @@ describe('useAlertMonitor', () => {
     expect(fresh.some((u) => u.includes('symbol=OTHER'))).toBe(true); // still watched
   });
 
-  it('chimes once per fired batch on the monitor path (R2-M1)', async () => {
+  it('chimes once per fired batch on the monitor path', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => quote({ symbol: 'OTHER', price: 250 }),
@@ -212,7 +215,7 @@ describe('useAlertMonitor', () => {
     expect(vi.mocked(playAlertSound)).toHaveBeenCalledTimes(1);
   });
 
-  it('stays silent on the monitor path when alertSound is disabled (R2-M1)', async () => {
+  it('stays silent on the monitor path when alertSound is disabled', async () => {
     window.localStorage.setItem(
       'flowmap.settings.v1',
       JSON.stringify({ alertSound: false }),

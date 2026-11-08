@@ -32,3 +32,12 @@ docs/superpowers/plans/
 
 # Generated perf artifacts
 client/perf_report.json
+
+# Local runtime data written by the server outside the app-data dir (an older
+# default warehouse location, or a source run from the repository root)
+.flowmap_data/
+*.duckdb
+*.duckdb.wal
+
+# Alternate Cargo target directories (e.g. CARGO_TARGET_DIR=target-alt)
+app/src-tauri/target-*/

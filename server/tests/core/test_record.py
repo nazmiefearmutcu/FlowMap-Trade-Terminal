@@ -1,4 +1,4 @@
-"""Recording + retention + tail-load tests (design spec §7 replay, §8.1 restart).
+"""Recording + retention + tail-load tests.
 
 All data is driven by ``SimFeed.generate_history`` (deterministic, no wall
 clock); files land under pytest ``tmp_path``. The tests pin:
@@ -636,7 +636,7 @@ def test_safe_component_refuses_traversal(tmp_path):
 
 
 def test_separator_spelling_still_records(tmp_path):
-    """Regression (review R1 M-2): ccxt unified spellings are legitimate
+    """Regression: ccxt unified spellings are legitimate
     symbols; their separators sanitize instead of disabling recording."""
     rec = Recorder(tmp_path / "rec", 20.0)
     session = rec.open_session(MARKET, "XBT/USD")

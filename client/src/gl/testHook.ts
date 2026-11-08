@@ -1,17 +1,18 @@
 /**
- * Deterministic e2e hook for the WebGL2 heatmap (T4 verification).
+ * Deterministic e2e hook for the WebGL2 heatmap (verification).
  *
  * Installed on `window.__flowmapTest` ONLY when the app is opened with
  * `?test=heatmap` (see App.tsx) so production builds never expose it. It lets a
  * Playwright spec drive the real renderer in a real browser and read pixels
- * back — GL cannot be meaningfully unit-mocked. Live wiring to the WS stream is
- * T5; this hook feeds synthetic columns instead.
+ * back — GL cannot be meaningfully unit-mocked. This hook feeds synthetic columns
+ * instead of the live WebSocket stream.
  */
 
 import type { GLContext } from './context';
 import { initGL } from './context';
 import {
   Heatmap,
+  sanitizeDpr,
   effectiveRowMode,
   levelBlendFor,
   selectLevel,
@@ -35,7 +36,7 @@ import { MODE_L2 } from '../proto/types';
 import { COLS_PER_TILE, TileRing, type ResidentRange } from './tileRing';
 import type { PriceScale } from './priceScale';
 
-/** Additive per-draw sampler diagnostics (campaign visual 2026-09-11; lane F). */
+/** Additive per-draw sampler diagnostics. */
 export interface HeatmapSampleInfo {
   colsPerPixel: number;
   /** Gaussian sigma of the last draw's field sampler, in COLUMN units. */
@@ -44,17 +45,17 @@ export interface HeatmapSampleInfo {
   smoothTaps: number;
   /** Vertical softening offset of the last draw, in ROW units (0 = legacy). */
   rowDy: number;
-  /** Row-mip cross-fade weight of the last draw (lane P; 0..1). */
+  /** Row-mip cross-fade weight of the last draw (0..1). */
   rowFade: number;
-  /** SUM-mip level cross-fade weight of the last draw (wave P2; 0..1). */
+  /** SUM-mip level cross-fade weight of the last draw (0..1). */
   levelFade: number;
   /** Finer level blended into the last draw (k-1), or -1 for a pure level. */
   finerLevel: number;
 }
 
 /**
- * Lane F's `Heatmap.sampleInfo()` — read through an optional handle so this
- * lane type-checks before/after that method lands; before the first draw the
+ * The `Heatmap.sampleInfo()` — read through an optional handle so this
+ * file type-checks before and after that method lands; before the first draw the
  * values mirror the `colsPerPixel = 1` plan exactly as the contract specifies.
  */
 function sampleInfoOf(heatmap: Heatmap): HeatmapSampleInfo {
@@ -79,7 +80,7 @@ function sampleInfoOf(heatmap: Heatmap): HeatmapSampleInfo {
 export interface FlowmapTestApi {
   /**
    * Create context+ring+lut+heatmap on the canvas at a fixed pixel size. Pass
-   * `mips=true` (T7) to build + attach the SUM-mip chain so zoom-out sampling
+   * `mips=true` to build + attach the SUM-mip chain so zoom-out sampling
    * exercises the coarse levels (requires EXT_color_buffer_float; the returned
    * `mipsEnabled` reports whether it was actually created).
    */
@@ -98,7 +99,7 @@ export interface FlowmapTestApi {
   setEncoding(decodeScale: number, norm: number, synth?: boolean): void;
   /**
    * Register theme stops into the lut store and re-upload atlas rows 5/6
-   * (campaign visual 2026-09-11). `null`/`null` restores the flow/synth identity.
+   * `null`/`null` restores the flow/synth identity.
    */
   setThemeRamp(density: readonly RampStop[] | null, synth: readonly RampStop[] | null): void;
   /** Select a colormap family row via the real {@link rampForMode} rule; with
@@ -113,14 +114,14 @@ export interface FlowmapTestApi {
   readPixels(x: number, y: number, w: number, h: number): number[];
   residentRange(): ResidentRange | null;
   /**
-   * The SUM-mip level the current view+canvas would sample (T7 diagnostics),
-   * plus (lane F) the last-draw Gaussian sampler plan: `colsPerPixel` (view
+   * The SUM-mip level the current view+canvas would sample (diagnostics),
+   * plus the last-draw Gaussian sampler plan: `colsPerPixel` (view
    * scale), `smoothSigma` (sigma in column units) and `smoothTaps` (1 or 9),
    * both uploaded through the SAME {@link smoothPlanFor} helper the draw uses —
    * the report can never drift from the paint. `rowOnly`/`rowFade` mirror the
-   * real draw's lane-P row-mip selection: they come from the SAME
+   * real draw's row-mip selection: they come from the SAME
    * {@link effectiveRowMode} helper the draw calls (fade > 0 && a usable row
-   * chain). `levelFade`/`finerLevel` likewise mirror the wave-P2 SUM-mip level
+   * chain). `levelFade`/`finerLevel` likewise mirror the SUM-mip level
    * cross-fade through the SAME {@link levelBlendFor} helper: fade 0 means the
    * legacy level upload (no second sample, finerLevel -1); inside a transition
    * band `finerLevel` is the level blended in (k-1). The row path never blends
@@ -140,9 +141,9 @@ export interface FlowmapTestApi {
     finerLevel: number;
   };
   /**
-   * Set the tick-grouping mip floor (contract P1; campaign 4) on the hook's
+   * Set the tick-grouping mip floor on the hook's
    * Heatmap: 0 = off, 1 = 4-row cells, 2 = 16-row cells (clamped to the chain).
-   * Lets the e2e lane pixel-probe that a forced level actually SUMS rows.
+   * Lets the e2e suite pixel-probe that a forced level actually SUMS rows.
    */
   setLevelFloor(levelFloor: number): void;
   /** `levelInfo` evaluated WITH a candidate floor (no mutation). */
@@ -178,7 +179,8 @@ export function installHeatmapTestHook(canvas: HTMLCanvasElement): void {
       const ring = new TileRing(ctx.gl, rows, layers);
       const lut = createLUTTexture(ctx.gl);
       const heatmap = new Heatmap(ctx, ring, lut);
-      // SUM-mip chain (T7): only when requested AND float FBOs are available.
+      heatmap.dpr = sanitizeDpr(window.devicePixelRatio);
+      // SUM-mip chain: only when requested AND float FBOs are available.
       let mipChain: MipChain | null = null;
       if (mips && ctx.caps.colorBufferFloat) {
         mipChain = new MipChain(ctx, COLS_PER_TILE, rows, layers);
@@ -206,7 +208,7 @@ export function installHeatmapTestHook(canvas: HTMLCanvasElement): void {
         ask === null ? null : Float32Array.from(ask),
         state.ring.rows,
       );
-      // Incremental SUM-mip regen for the affected 4/16-column group (T7).
+      // Incremental SUM-mip regen for the affected 4/16-column group.
       state.mips?.updateFrom(state.ring, colSeq);
     },
 
@@ -274,13 +276,13 @@ export function installHeatmapTestHook(canvas: HTMLCanvasElement): void {
       const maxLevel = state.mips ? state.mips.maxLevel : 0;
       const rowsPerPixel = state.view.rowScale / Math.max(1, gl.drawingBufferHeight);
       const colsPerPixel = state.view.colScale / Math.max(1, gl.drawingBufferWidth);
-      // Lane P: `rowOnly`/`rowFade` mirror the draw's selection through the SAME
+      // `rowOnly`/`rowFade` mirror the draw's selection through the SAME
       // helper the draw uses (with the same tick-grouping floor folded into the
       // eligibility), so the additive report can never drift from the paint.
       const sel = selectLevel(rowsPerPixel, maxLevel, colsPerPixel, state.heatmap.levelFloor);
       const rowEligible = sel.rowOnly === true && state.mips !== null && state.mips.rowUsable;
       const field = effectiveRowMode(rowsPerPixel, rowEligible);
-      // Wave P2: mirror the draw's SUM-path level cross-fade for the CURRENT
+      // Mirror the draw's SUM-path level cross-fade for the CURRENT
       // view through the same pure helper. The row path owns the row axis and
       // never blends levels, so it reports fade 0 / finer -1.
       const blend = levelBlendFor(

@@ -52,6 +52,7 @@ class FakeWebSocket implements SocketLike {
   onmessage: ((ev: { data: unknown }) => void) | null = null;
   onerror: ((ev?: unknown) => void) | null = null;
   readonly sent: Uint8Array[] = [];
+  closed = false;
   constructor(readonly url: string) {}
   send(data: ArrayBufferLike | ArrayBufferView | string): void {
     if (typeof data !== 'string' && ArrayBuffer.isView(data)) {
@@ -59,6 +60,7 @@ class FakeWebSocket implements SocketLike {
     }
   }
   close(): void {
+    this.closed = true;
     this.onclose?.();
   }
   /** Server-side drop with an optional CloseEvent.code (e.g. 1003). */
@@ -157,7 +159,7 @@ describe('FlowMap store', () => {
     expect(store.getState().feedState).toBeNull();
     expect(store.getState().nextOpenTs).toBeNull();
 
-    // Terminal closed Status (spec §7.1): equity RTH window shut on a weekend.
+    // Terminal closed Status: equity RTH window shut on a weekend.
     const nextOpen = 1_752_710_400_000_000_000n;
     sockets[0].deliver(
       coldFrameBytes(MsgType.STATUS, {
@@ -384,7 +386,7 @@ describe('FlowMap store — replay transport', () => {
     expect(store.getState().paused).toBe(false);
   });
 
-  it('plumbs an optional replay window through connectAndSubscribe (P6)', () => {
+  it('plumbs an optional replay window through connectAndSubscribe', () => {
     installFakeTransport();
     const store = useFlowMapStore;
     const start = 1_752_710_400_000_000_000n;
@@ -428,7 +430,7 @@ describe('FlowMap store — replay transport', () => {
     });
   });
 
-  it('an unbounded subscribe keeps the exact pre-P6 subscription shape', () => {
+  it('an unbounded subscribe keeps the exact pre-window subscription shape', () => {
     installFakeTransport();
     const store = useFlowMapStore;
     store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
@@ -474,7 +476,7 @@ describe('sessionResetKey', () => {
     expect(sessionResetKey({ ...sub })).toBe(sessionResetKey(sub));
   });
 
-  it('changes on a replay WINDOW (P6) but not when no window is set', () => {
+  it('changes on a replay window but not when no window is set', () => {
     // An unbounded replay subscription is the SAME grid as today: key unchanged.
     expect(sessionResetKey({ ...sub, mode: 'replay' })).not.toBe(sessionResetKey(sub));
     const start = 1_752_710_400_000_000_000n;
@@ -529,7 +531,7 @@ describe('FlowMap store — replay refusal fallback (close 1003)', () => {
     // symbol-switch reset (GL teardown + price-fit re-arm) has to key on.
     expect(s.sessionRevision).toBe(before);
     // ...and the identity stays EXPLICIT: the fallback keeps the user's
-    // instrument; it never substitutes the demo stream (QA7 H2).
+    // instrument; it never substitutes the demo stream.
     expect(s.subscription).toEqual({ market: 'crypto', symbol: 'BTCUSDT', mode: 'live', band: 'native' });
   });
 
@@ -668,18 +670,21 @@ describe('FlowMap store — reconnect banner inputs (close info + attempts + ret
     // only way a socket can appear).
     store.getState().retryNow();
     expect(sockets).toHaveLength(2);
+    // A click while that replacement is still pending (no Hello yet) replaces it
+    // rather than doing nothing: a wedged socket must not hold the banner.
     store.getState().retryNow();
-    expect(sockets).toHaveLength(2); // a second click with a live socket: no-op
+    expect(sockets).toHaveLength(3);
+    expect(sockets[1].closed).toBe(true);
 
-    sockets[1].open();
-    sockets[1].deliver(goldenU8('cold_hello'));
+    sockets[2].open();
+    sockets[2].deliver(goldenU8('cold_hello'));
     expect(store.getState().lastClose).toBeNull();
     expect(store.getState().reconnectAttempts).toBe(0);
     expect(store.getState().status).toBe('live');
   });
 });
 
-describe('FlowMap store — replay state is the server’s (C: honest transport pill)', () => {
+describe('FlowMap store — replay state is the server’s (honest transport pill)', () => {
   const start = 1_791_900_000_123_456_789n;
   function replayHello(position = start, speed = 7, paused = true): Uint8Array {
     return coldFrameBytes(MsgType.HELLO, { protocol_version: 1, session_id: 'parked-replay', grid_epoch: 0,
@@ -712,7 +717,7 @@ describe('FlowMap store — replay state is the server’s (C: honest transport 
     expect(store.getState().speed).toBe(7); expect(store.getState().paused).toBe(true);
   });
 
-  it('a reconnecting Hello re-asserts speed/paused instead of blind-resetting (R2 M-1: the parked session keeps its clock)', () => {
+  it('a reconnecting Hello re-asserts speed/paused instead of blind-resetting (the parked session keeps its clock)', () => {
     installFakeTransport(NO_TIMERS);
     const store = useFlowMapStore;
 
@@ -766,5 +771,224 @@ describe('FlowMap store — replay state is the server’s (C: honest transport 
     sockets[1].deliver(goldenU8('cold_hello'));
     store.getState().setSpeed(7);
     expect(store.getState().speed).toBe(7);
+  });
+});
+
+describe('FlowMap store — refusal, protocol skew and grid revision', () => {
+  it('a live 1003 refusal stops at once and carries the server reason', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BAD/SYM');
+    sockets[0].open();
+    sockets[0].deliver(
+      coldFrameBytes(MsgType.STATUS, {
+        feed_state: 'degraded',
+        capability: { reason: 'invalid symbol' },
+        latency_ms: 0,
+        clock_skew_ms: 0,
+        next_open_ts: null,
+      }),
+    );
+    sockets[0].drop(1003);
+    expect(store.getState().refusal).toEqual({ reason: 'invalid symbol' });
+    expect(store.getState().status).toBe('closed');
+    expect(sockets).toHaveLength(1); // one attempt, no retry loop
+  });
+
+  it('a different subscription clears an outstanding refusal', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BAD/SYM');
+    sockets[0].open();
+    sockets[0].deliver(
+      coldFrameBytes(MsgType.STATUS, {
+        feed_state: 'degraded',
+        capability: {},
+        latency_ms: 0,
+        clock_skew_ms: 0,
+        next_open_ts: null,
+      }),
+    );
+    sockets[0].drop(1003);
+    expect(store.getState().refusal).toEqual({ reason: null });
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    expect(store.getState().refusal).toBeNull();
+  });
+
+  it('a protocol version mismatch parks the store and names both versions', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    sockets[0].open();
+    const bytes = goldenU8('cold_hello');
+    bytes[1] = 7; // the server speaks another envelope version
+    sockets[0].deliver(bytes);
+    expect(store.getState().protocolMismatch).toEqual({ got: 7, expected: 1 });
+    expect(store.getState().status).toBe('closed');
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('a symbol change is a new grid revision (scroll-back and GL are re-keyed)', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    const before = store.getState().sessionRevision;
+    store.getState().connectAndSubscribe('crypto', 'ETHUSDT');
+    expect(store.getState().sessionRevision).toBe(before + 1);
+  });
+
+  it("a live-to-replay toggle on the same grid keeps the revision (scroll-back survives)", () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe("crypto", "BTCUSDT", "live");
+    const before = store.getState().sessionRevision;
+    store.getState().connectAndSubscribe("crypto", "BTCUSDT", "replay");
+    expect(store.getState().sessionRevision).toBe(before);
+  });
+});
+
+describe('FlowMap store — pre-Hello progress Status', () => {
+  it('a progress Status (feed_state reconnecting) does not surface as a feed state', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    const sock = sockets[0];
+    sock.open();
+    const status = (feed_state: string) =>
+      coldFrameBytes(MsgType.STATUS, {
+        feed_state,
+        capability: {},
+        latency_ms: 0,
+        clock_skew_ms: 0,
+        next_open_ts: null,
+      });
+    sock.deliver(status('reconnecting'));
+    expect(store.getState().feedState).toBeNull();
+    sock.deliver(status('live'));
+    expect(store.getState().feedState).toBe('live');
+  });
+});
+
+describe('FlowMap store — recording degraded flag (Status capability)', () => {
+  it('a Status reporting a wedged recording writer sets the flag and a healthy one clears it', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    const sock = sockets[0];
+    sock.open();
+    const status = (capability: Record<string, unknown>) =>
+      coldFrameBytes(MsgType.STATUS, {
+        feed_state: 'live',
+        capability,
+        latency_ms: 0,
+        clock_skew_ms: 0,
+        next_open_ts: null,
+      });
+    expect(store.getState().recordingDegraded).toBe(false);
+    sock.deliver(status({ recording_health: 'wedged' }));
+    expect(store.getState().recordingDegraded).toBe(true);
+    sock.deliver(status({}));
+    expect(store.getState().recordingDegraded).toBe(false);
+  });
+
+  it('a different subscription clears the flag with the rest of the session', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    const sock = sockets[0];
+    sock.open();
+    sock.deliver(
+      coldFrameBytes(MsgType.STATUS, {
+        feed_state: 'live',
+        capability: { recording_health: 'wedged' },
+        latency_ms: 0,
+        clock_skew_ms: 0,
+        next_open_ts: null,
+      }),
+    );
+    expect(store.getState().recordingDegraded).toBe(true);
+    store.getState().connectAndSubscribe('crypto', 'ETHUSDT');
+    expect(store.getState().recordingDegraded).toBe(false);
+  });
+});
+
+describe('FlowMap store — attach epoch and reconnect re-attach', () => {
+  it('bumps attachEpoch on every Hello, including a same-session reconnect', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    // The store is a module singleton, so count from wherever earlier tests left it.
+    const base = store.getState().attachEpoch;
+
+    sockets[0].open();
+    sockets[0].deliver(goldenU8('cold_hello'));
+    expect(store.getState().attachEpoch).toBe(base + 1);
+
+    // The socket drops and comes back inside the server's grace window: the
+    // replacement Hello carries the SAME session id and re-sends the tape tail.
+    sockets[0].drop(1001);
+    store.getState().retryNow();
+    sockets[1].open();
+    sockets[1].deliver(goldenU8('cold_hello'));
+    expect(store.getState().sessionId).toBe('golden-session-0001');
+    expect(store.getState().attachEpoch).toBe(base + 2);
+  });
+
+  it('keeps attachEpoch across a re-subscribe to the same stream (no Hello, no bump)', () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    sockets[0].open();
+    sockets[0].deliver(goldenU8('cold_hello'));
+    const afterHello = store.getState().attachEpoch;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    expect(store.getState().attachEpoch).toBe(afterHello);
+  });
+});
+
+describe('FlowMap store — desktop sidecar hold', () => {
+  type ShellWin = { __TAURI_INTERNALS__?: unknown };
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /** A fake shell bridge whose sidecar status is driven by the test. */
+  function installShell(initial: unknown): (payload: unknown) => void {
+    const callbacks: ((event: { payload: unknown }) => void)[] = [];
+    (window as unknown as ShellWin).__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string) => {
+        if (cmd === 'sidecar_status') return initial;
+        if (cmd === 'plugin:event|listen') return 1;
+        return undefined;
+      },
+      transformCallback: (cb: (event: { payload: unknown }) => void) => {
+        callbacks.push(cb);
+        return callbacks.length;
+      },
+    };
+    return (payload) => {
+      for (const cb of callbacks) cb({ payload });
+    };
+  }
+
+  afterEach(() => {
+    delete (window as unknown as ShellWin).__TAURI_INTERNALS__;
+  });
+
+  it('parks the reconnect while the shell reports the engine down, then reconnects on live', async () => {
+    installFakeTransport(NO_TIMERS);
+    const emit = installShell({ state: 'live' });
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    await settle();
+    sockets[0].open();
+    sockets[0].deliver(goldenU8('cold_hello'));
+
+    emit({ state: 'restarting', port: null, logPath: null, detail: '' });
+    sockets[0].drop(1001);
+    store.getState().retryNow();
+    expect(sockets).toHaveLength(1);
+    expect(store.getState().status).toBe('reconnecting');
+
+    emit({ state: 'live', port: 8731, logPath: null, detail: '' });
+    expect(sockets).toHaveLength(2);
   });
 });

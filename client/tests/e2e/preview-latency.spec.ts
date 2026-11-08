@@ -1,8 +1,9 @@
 import { expect, test, type Route } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
-// Known observations are fixtures. Every external preview request remains
-// unanswered, so a graph can only pass by reading its persisted observation.
+// Known observations are fixtures. Every provider request remains unanswered and
+// the server's preview snapshot is empty, so a graph can only pass by reading its
+// persisted observation.
 const entries = [
   { market: 'equity', symbol: 'AAPL', price: 343.46, changePct: 1,
     spark: [340, 345, 343.46], asOf: 1792180800000000000 },
@@ -13,6 +14,8 @@ const entries = [
 ];
 
 test('cached previews are correct on the first frame while every provider is blocked', async ({ page }, testInfo) => {
+  // The first load compiles the lazy app on a cold dev server; see the wait below.
+  test.setTimeout(120_000);
   await page.addInitScript(({ quotes }) => {
     localStorage.setItem('flowmap.recents', JSON.stringify(quotes.map(q => `${q.market}:${q.symbol}`)));
     localStorage.setItem('flowmap.preview-quotes.v1', JSON.stringify({ version: 1,
@@ -20,9 +23,16 @@ test('cached previews are correct on the first frame while every provider is blo
   }, { quotes: entries });
   const held: Route[] = [];
   await page.route(/\/api\/(?:quote|movers|universe|venues)(?:\?|$)/, route => { held.push(route); });
+  // The server's own preview snapshot answers empty and well formed, so a populated
+  // server quote cannot replace the cached first frame.
+  await page.route(/\/api\/previews(?:\?|$)/, route => route.fulfill({ json: {
+    quotes: [], revision: 0, generation: 'blocked', total: 0, completed: 0, ready: 0, warming: false,
+  } }));
   await page.routeWebSocket(/\/ws$/, () => {});
   await page.goto('/');
-  await expect(page.getByTestId('symbol-search-trigger')).toBeVisible();
+  // The app module loads lazily (main.tsx), so the first page load after a cold dev
+  // server start can take several seconds to compile before the shell mounts.
+  await expect(page.getByTestId('symbol-search-trigger')).toBeVisible({ timeout: 30_000 });
   const opened = await page.evaluate(async () => {
     const start = performance.now();
     document.querySelector<HTMLButtonElement>('[data-testid="symbol-search-trigger"]')!.click();
@@ -60,7 +70,7 @@ test('cached previews are correct on the first frame while every provider is blo
         path: document.querySelector('.sympal__pv-spark path')?.getAttribute('d') };
     }, { key: index % 2 === 0 ? 'ArrowDown' : 'ArrowUp', expectedSymbol: index % 2 === 0 ? 'BTCUSDT' : 'AAPL' });
     expect(sample.symbol).toBe(index % 2 === 0 ? 'BTCUSDT' : 'AAPL');
-    expect(sample.price).toBe(index % 2 === 0 ? '81,000' : '343.46');
+    expect(sample.price).toBe(index % 2 === 0 ? '81000.00' : '343.46');
     expect(sample.path).toBeTruthy();
     expect(sample.committedMs).not.toBeNull();
     samples.push(sample);
@@ -75,6 +85,7 @@ test('cached previews are correct on the first frame while every provider is blo
 });
 
 test('startup collects the whole catalogue before search and restores a never-opened last symbol', async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
   const directory: { crypto_market: string; crypto_symbols: string[]; equity_tickers: string[] } =
     JSON.parse(readFileSync(new URL('../../../server/src/flowmap_server/data/universe.json', import.meta.url), 'utf8'));
   const catalogue = [

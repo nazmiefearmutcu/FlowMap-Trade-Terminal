@@ -1,12 +1,13 @@
+import type { LooseProbe } from './probe';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 /**
- * T11 verification — the DOM ladder + time & sales tape panels (§9 right rail)
- * render live off the module-scoped bookStore, honestly badged (§7).
+ * The DOM ladder + time & sales tape panels (right rail)
+ * render live off the module-scoped bookStore, honestly badged.
  *
  * The page opens with `?panels=1` (no live feed — so the sim stream does not fight
  * the injected data). The spec publishes a known epoch + L2/tick capability to the
@@ -31,10 +32,25 @@ const MODE_L2 = 0;
 const SIDE_BUY = 0;
 const SIDE_SELL = 1;
 
-const TEAL = 'rgb(31, 182, 166)';
-const RED = 'rgb(211, 82, 79)';
+/**
+ * The buy and sell tape colours are theme tokens (App.css: `.tape__row--buy .tape__px`
+ * uses --accent, `.tape__row--sell .tape__px` uses --sell), so the expected values are
+ * resolved from the active theme rather than fixed literals.
+ */
+const themeTapeColours = (page: Page): Promise<{ buy: string; sell: string }> =>
+  page.evaluate(() => {
+    const probe = document.createElement('span');
+    document.body.appendChild(probe);
+    const resolve = (value: string): string => {
+      probe.style.color = value;
+      return getComputedStyle(probe).color;
+    };
+    const colours = { buy: resolve('var(--accent)'), sell: resolve('var(--sell)') };
+    probe.remove();
+    return colours;
+  });
 
-test('§9 T11: DOM ladder + tape render honestly off the bookStore', async ({ page }) => {
+test('DOM ladder + tape render honestly off the bookStore', async ({ page }) => {
   test.setTimeout(120_000);
 
   const consoleErrors: string[] = [];
@@ -45,14 +61,14 @@ test('§9 T11: DOM ladder + tape render honestly off the bookStore', async ({ pa
 
   await page.goto('/?panels=1');
   await page.waitForFunction(
-    () => !!(window as unknown as { __flowmapLive?: any }).__flowmapLive?.bookStore,
+    () => !!(window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive?.bookStore,
     undefined,
     { timeout: 45_000 },
   );
 
   // Publish the epoch + capability, then inject a known book/bbo/trades.
   await page.evaluate((tags) => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     const params = { epoch: 1, tick: 0.5, tick_multiple: 1, dt_ns: 25_000_000, p0: 50, rows: 200 };
     live.store.setState({
       epochs: new Map([[1, params]]),
@@ -118,8 +134,10 @@ test('§9 T11: DOM ladder + tape render honestly off the bookStore', async ({ pa
 
   const buyColor = await rows.nth(0).locator('.tape__px').evaluate((el) => getComputedStyle(el).color);
   const sellColor = await rows.nth(1).locator('.tape__px').evaluate((el) => getComputedStyle(el).color);
-  expect(buyColor).toBe(TEAL);
-  expect(sellColor).toBe(RED);
+  const tape = await themeTapeColours(page);
+  expect(tape.buy, 'the resolved --accent token must be a colour').toMatch(/^rgb/);
+  expect(buyColor).toBe(tape.buy);
+  expect(sellColor).toBe(tape.sell);
 
   // (d) collapse each panel body, then hide the whole rail.
   await page.locator('[data-testid="ladder-collapse"]').click();

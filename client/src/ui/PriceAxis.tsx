@@ -1,5 +1,5 @@
 /**
- * Price axis (§9: price axis right), M2 T10 + the §9 axis-scale control surface.
+ * Price axis: the right-hand gutter and its auto-scale control surface.
  *
  * A thin right-hand gutter whose `<canvas>` the {@link Renderer} draws price
  * ticks into every dirty frame (see gl/overlays/axes.ts `drawPriceAxis`). The
@@ -18,7 +18,7 @@
  * off/on. It is a SIBLING of the canvas, not an overlay on it, so a click lands
  * on the button and never reaches the gesture listeners underneath.
  *
- * Chip truth (survey S4 D2/D4, campaign 2026-09-11):
+ * Chip truth:
  *   - The label must not claim `TRACK` while tracking cannot act. `track` is
  *     gated by `stepPriceFollow` on the newest column being inside the view, so
  *     when `renderer.liveEdgeVisible === false` the chip reads `TRK·WAIT`
@@ -34,6 +34,8 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { PriceFollow } from '../gl/camera';
 import type { Renderer } from '../gl/renderer';
 import { observeCanvasBox } from '../gl/canvasBox';
+import { useT } from '../i18n/useT';
+import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 
 /** Poll interval (ms) for the chip's state. Short: the chip must not visibly lag
  *  the gesture that changed it (a wheel over the gutter changes it instantly). */
@@ -44,22 +46,15 @@ const POLL_MS = 100;
  *  frame, so a persistent box mismatch must not thrash it every poll tick. */
 const HEAL_COOLDOWN_MS = 1000;
 
-/** Chip text per mode. Decorative — the accessible name is static (see below). */
-const CHIP_TEXT: Record<PriceFollow, string> = {
-  fit: 'FIT',
-  track: 'TRACK',
-  off: 'LOCK',
+/** Chip text key per mode (translated; decorative — the accessible name is static, see below). */
+const CHIP_KEY: Record<PriceFollow, string> = {
+  fit: 'desk.chip.fit',
+  track: 'desk.chip.track',
+  off: 'desk.chip.lock',
 };
 
 /**
- * CP1 seam (B2 lane): `liveEdgeVisible` is optional until the renderer lane
- * lands it. A missing getter reads as "unknown" — the chip keeps the plain mode
- * label rather than inventing a paused state it cannot verify.
- */
-type RendererCp1 = Renderer & { readonly liveEdgeVisible?: boolean };
-
-/**
- * QA9-1 heal surface. `overlays` is TS-private on the Renderer, so this is a
+ * Heal surface. `overlays` is TS-private on the Renderer, so this is a
  * STANDALONE structural view (casting) rather than an intersection — a
  * `Renderer & { overlays }` intersection collapses to `never` (private member
  * in one constituent, public in the other). `syncGutters` is the manager's
@@ -68,28 +63,46 @@ type RendererCp1 = Renderer & { readonly liveEdgeVisible?: boolean };
  */
 type AxisHealView = {
   attachOverlaySurfaces: (price: HTMLCanvasElement | null, time: HTMLCanvasElement | null) => void;
+  /**
+   * The DPR the renderer last sized its backing stores with.
+   * Optional: a build without the getter degrades to the live window ratio.
+   */
+  readonly dpr?: number;
   overlays?: {
     readonly timeAxis?: { readonly canvas: HTMLCanvasElement } | null;
     syncGutters?: (dpr: number) => boolean;
   } | null;
 };
 
+/**
+ * The device-pixel ratio the gutter bitmap must match. Reads the renderer's
+ * cached ratio so the axis sizes its canvas with the SAME ratio the chart
+ * uses; a window-ratio read can disagree after a monitor move until the
+ * renderer's next resize.
+ */
+function gutterDpr(r: AxisHealView): number {
+  const cached = r.dpr;
+  if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) return cached;
+  return window.devicePixelRatio || 1;
+}
+
 interface PriceAxisProps {
   canvasRef: RefObject<HTMLCanvasElement>;
   rendererRef: RefObject<Renderer | null>;
-  /** D4: persist + apply a chip-driven mode change through the App (settings
+  /** Persist and apply a chip-driven mode change through the App (settings
    *  patch semantics). Absent = drive the renderer directly (standalone/tests). */
   onSetPriceFollow?: (mode: PriceFollow) => void;
 }
 
 export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxisProps): JSX.Element {
+  const t = useT();
   const [mode, setMode] = useState<PriceFollow>('fit');
   const [edgeVisible, setEdgeVisible] = useState(true);
   const healedAtRef = useRef(0);
   const boxRef = useRef<ReturnType<typeof observeCanvasBox> | null>(null);
 
   /**
-   * QA9-1: keep the LIVE canvas bound to the renderer and its backing store
+   * Keep the LIVE canvas bound to the renderer and its backing store
    * matched to the on-screen box — WITHOUT waiting for a window resize.
    *
    * Two failure shapes this closes: (a) a fresh boot whose first frames landed
@@ -110,7 +123,7 @@ export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxi
     const cw = box?.width ?? 0;
     const ch = box?.height ?? 0;
     if (cw <= 0 || ch <= 0) return; // pre-layout / hidden: nothing to match yet
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = gutterDpr(r);
     const wantW = Math.max(1, Math.round(cw * dpr));
     const wantH = Math.max(1, Math.round(ch * dpr));
     if (c.width === wantW && c.height === wantH) return; // already in sync
@@ -146,10 +159,10 @@ export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxi
       boxRef.current = observeCanvasBox(canvasRef.current);
     }
     const id = window.setInterval(() => {
-      const r = rendererRef.current as RendererCp1 | null;
+      const r = rendererRef.current;
       if (!r) return;
       setMode((m) => (m === r.priceFollow ? m : r.priceFollow));
-      const edge = r.liveEdgeVisible !== false;
+      const edge = r.liveEdgeVisible;
       setEdgeVisible((e) => (e === edge ? e : edge));
       healAxis();
     }, POLL_MS);
@@ -174,7 +187,15 @@ export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxi
 
   const on = mode !== 'off';
   const waiting = mode === 'track' && !edgeVisible;
-  const label = waiting ? 'TRK·WAIT' : CHIP_TEXT[mode];
+  const label = waiting ? t('desk.chip.waiting') : t(CHIP_KEY[mode]);
+  // The bare P and R keys work only while single-key shortcuts are on; the copy
+  // names them only then, and points at the button otherwise.
+  const singleKeys = useSingleKeyShortcuts();
+  const hint = waiting
+    ? t(singleKeys ? 'axis.autoWaiting' : 'axis.autoWaitingNoKey')
+    : on
+      ? t(singleKeys ? 'axis.autoOn' : 'axis.autoOnNoKey')
+      : t(singleKeys ? 'axis.autoOff' : 'axis.autoOffNoKey');
   return (
     <div className="price-axis">
       {/* aria-hidden lives on the CANVAS, not the wrapper: an interactive button
@@ -185,19 +206,13 @@ export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxi
         type="button"
         className={`axis-auto${on ? ' is-on' : ''}`}
         data-testid="price-auto"
-        // STATIC accessible name + aria-pressed. A label that flips AUTO↔LOCK
-        // alongside aria-pressed double-encodes the state and would be announced
-        // as "LOCK, not pressed" — the exact opposite of the truth.
-        aria-label="Price auto-scale"
+        // The name carries the VISIBLE mode word (the label in the name must
+        // contain the visible text). aria-pressed still encodes ON/OFF, so the
+        // word names the mode and the pressed state says whether auto-scale is on.
+        aria-label={t('axis.autoAria', { mode: label })}
         aria-pressed={on}
         data-edge={waiting ? 'hidden' : 'visible'}
-        title={
-          waiting
-            ? 'price tracking is armed but paused — the live edge is off-screen. Press R / GO LIVE to return to it (your price zoom is kept).'
-            : on
-              ? 'price auto-scale ON — click to lock (P). Double-click the axis to re-fit.'
-              : 'price auto-scale OFF — click to restore (P)'
-        }
+        title={hint}
         onClick={onToggle}
       >
         {label}

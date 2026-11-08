@@ -37,6 +37,8 @@ class CorporateJetTracker:
                 raise ValueError('aircraft registry requires verified symbol, company and tail')
             self.registry[icao.lower()] = dict(info)
         self._session: aiohttp.ClientSession | None = None
+        # Per registry entry, the outcome of the latest pass.
+        self.last_status: dict[str, dict[str, Any]] = {}
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -48,7 +50,12 @@ class CorporateJetTracker:
             await self._session.close()
 
     async def check_aircraft_states(self) -> list[dict[str, Any]]:
-        """Return valid matched source positions with the source position clock."""
+        """Return fresh, valid matched source positions with the source position clock.
+
+        ``last_status`` records, per registry entry, whether the query succeeded.
+        A rate limit or outage is then not the same as "no aircraft airborne".
+        """
+        self.last_status = {}
         if not self.registry:
             return []
         session = await self._get_session()
@@ -57,12 +64,21 @@ class CorporateJetTracker:
             try:
                 async with session.get(_OPENSKY_API_URL, params={'icao24': icao}, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                     if resp.status != 200:
+                        self.last_status[icao] = {'ok': False, 'reason': _opensky_reason(resp.status),
+                                                  'http_status': resp.status}
+                        log.warning('OpenSky returned HTTP %s for registry entry %s', resp.status, icao)
+                        if resp.status == 429:
+                            # Stop this pass: further queries would only deepen the rate limit.
+                            break
                         continue
                     data = await resp.json()
                     states = data.get('states') if isinstance(data, dict) else None
                     if not isinstance(states, list):
+                        self.last_status[icao] = {'ok': False, 'reason': 'malformed_response', 'http_status': 200}
                         continue
                     received_at_ns = time.time_ns()
+                    stale = 0
+                    produced = False
                     for state in states:
                         if not isinstance(state, (list, tuple)) or len(state) < 10 or str(state[0]).lower() != icao:
                             continue
@@ -73,6 +89,11 @@ class CorporateJetTracker:
                         source_ns = int(Decimal(str(position_time)) * 1_000_000_000)
                         if source_ns <= 0 or source_ns > 2**63 - 1:
                             continue
+                        if received_at_ns - source_ns > MAX_POSITION_AGE_NS:
+                            # An old position still carries its last airborne/on-ground flag.
+                            stale += 1
+                            continue
+                        produced = True
                         altitude = state[7] if _finite_number(state[7]) else None
                         on_ground = state[8] if isinstance(state[8], bool) else None
                         velocity = state[9] if _finite_number(state[9]) and state[9] >= 0 else None
@@ -85,6 +106,22 @@ class CorporateJetTracker:
                             'altitude_m': altitude, 'on_ground': on_ground, 'velocity_mps': velocity,
                             'status': 'On ground' if on_ground is True else 'Airborne' if on_ground is False else 'Position observed',
                         })
+                    self.last_status[icao] = {
+                        'ok': True, 'http_status': 200,
+                        'reason': None if produced else ('stale_positions_only' if stale else 'no_state'),
+                        'stale_states': stale,
+                    }
             except Exception as exc:
-                log.debug('OpenSky query for %s failed: %s', icao, exc)
+                self.last_status[icao] = {'ok': False, 'reason': 'unreachable', 'http_status': None}
+                log.warning('OpenSky query for %s failed: %s', icao, exc)
         return events
+
+
+# A position older than this is not reported as current telemetry.
+MAX_POSITION_AGE_NS = 15 * 60 * 1_000_000_000
+
+
+def _opensky_reason(status: int) -> str:
+    if status == 429:
+        return 'rate_limited'
+    return f'http_{status}'

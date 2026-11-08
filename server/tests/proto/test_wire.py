@@ -218,7 +218,7 @@ def test_scale_of_falls_back_to_linear_on_an_unusable_or_unknown_kind():
 
 
 def test_subscribe_client_ts_ns_is_backward_compatible():
-    """The OPTIONAL Subscribe.client_ts_ns (campaign SB item 4) must round
+    """The OPTIONAL Subscribe.client_ts_ns must round
     trip, and a payload from an OLD client (key absent or null) must decode
     to the default without error."""
     from flowmap_server.proto.events import Subscribe
@@ -236,3 +236,35 @@ def test_subscribe_client_ts_ns_is_backward_compatible():
     # The full wire path: envelope decode of the new golden vector round trips.
     ev, _ = wire.decode(wire.encode(new), 0)
     assert isinstance(ev, Subscribe) and ev.client_ts_ns == new.client_ts_ns
+
+
+def test_trade_seq_is_a_little_endian_uint16_in_the_former_pad_bytes():
+    trade = events.Trade(ts_ns=1_000, price=100.5, size=2.5, side=events.SIDE_BUY,
+                         side_src=events.SIDE_SRC_EXCHANGE, venue="binance", seq=0xBEEF)
+    frame = wire.encode(trade)
+    assert frame[8 + 26:8 + 28] == b"\xef\xbe"  # payload offset 26, after the 26-byte fields
+    decoded, nxt = wire.decode(frame)
+    assert nxt == len(frame) and decoded.seq == 0xBEEF
+    assert decoded.venue == "binance" and decoded.ts_ns == 1_000
+
+
+def test_trade_without_a_seq_encodes_unknown_and_round_trips_to_zero():
+    trade = events.Trade(ts_ns=5, price=1.0, size=1.0, side=events.SIDE_SELL,
+                         side_src=events.SIDE_SRC_INFERRED, venue="iex")
+    frame = wire.encode(trade)
+    assert frame[8 + 26:8 + 28] == b"\x00\x00"
+    assert wire.decode(frame)[0].seq == 0
+
+
+@pytest.mark.parametrize("seq", [-1, 0x10000])
+def test_trade_seq_outside_uint16_is_refused_at_encode(seq):
+    trade = events.Trade(ts_ns=5, price=1.0, size=1.0, side=events.SIDE_SELL,
+                         side_src=events.SIDE_SRC_INFERRED, venue="iex", seq=seq)
+    with pytest.raises(ValueError):
+        wire.encode(trade)
+
+
+def test_trade_seq_upper_bound_round_trips():
+    trade = events.Trade(ts_ns=5, price=1.0, size=1.0, side=events.SIDE_SELL,
+                         side_src=events.SIDE_SRC_INFERRED, venue="iex", seq=0xFFFF)
+    assert wire.decode(wire.encode(trade))[0].seq == 0xFFFF

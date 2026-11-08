@@ -1,5 +1,5 @@
 /**
- * Indicator registry (campaign 3, lane CG) — the single source of truth the
+ * Indicator registry — the single source of truth the
  * IndicatorPicker renders from and the overlay canvas computes with.
  *
  * Each descriptor binds:
@@ -10,8 +10,7 @@
  *    color expressed as a CSS variable so themes own the palette);
  *  - a factory binding the params into a streaming kernel (kernels/*.ts).
  *
- * Adding an indicator = a kernels/ module + one entry here. Nothing else in the
- * lane needs to change.
+ * Adding an indicator = a kernels/ module + one entry here. Nothing else needs to change.
  */
 
 import { createAtr } from './kernels/atr';
@@ -109,7 +108,7 @@ export const INDICATOR_DEFS: readonly IndicatorDef[] = [
   },
   {
     id: 'vwap',
-    name: 'VWAP (session)',
+    name: 'VWAP (since added)',
     pane: 'overlay',
     params: [],
     outputs: [{ key: 'vwap', label: 'VWAP', colorVar: colorVar(3) }],

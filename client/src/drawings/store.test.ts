@@ -1,19 +1,20 @@
 /**
- * Store tests (lane CF): the drawings zustand store — two-phase placement,
- * per-symbol persistence with outgoing-scope flush, bounded undo/redo (≥ 20
- * contract), z-order, styling and the toolbar toggle.
+ * Store tests: the drawings zustand store — two-phase placement,
+ * per-symbol persistence with outgoing-scope flush, bounded undo/redo (at least
+ * 20 steps), z-order, styling and the toolbar toggle.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   UNDO_CAP,
+  flushDrawingsPersist,
   resetDrawingsForTest,
   setDrawingsStorage,
   toggleDrawToolbar,
   useDrawingsStore,
 } from './store';
-import { MAX_DRAWINGS_PER_SYMBOL, drawingsKey, type StorageLike } from './persist';
+import { MAX_DRAWINGS_PER_SYMBOL, drawingsKey, loadDrawings, type StorageLike } from './persist';
 import type { ChartPoint } from './types';
 
 function memStorage(): StorageLike & { map: Map<string, string> } {
@@ -79,12 +80,48 @@ describe('placement lifecycle', () => {
     expect(useDrawingsStore.getState().tool).toBe('fib');
   });
 
-  it('enforces the per-symbol cap (bounded 200, contract constant)', () => {
-    // The eviction MATH is pinned exhaustively in persist.test.ts (capDrawings);
-    // here we pin that the store routes additions through the same cap: 200 is
-    // the documented bound, and the store's addDraftPoint calls capDrawings.
+  it('refuses placement at the per-symbol limit and evicts nothing', () => {
     expect(MAX_DRAWINGS_PER_SYMBOL).toBe(200);
     expect(UNDO_CAP).toBeGreaterThanOrEqual(20);
+    loadScope();
+    const s = useDrawingsStore.getState;
+    for (let i = 0; i < MAX_DRAWINGS_PER_SYMBOL; i += 1) {
+      s().armTool('hline');
+      s().addDraftPoint(P(BigInt(i + 1) * 1_000_000_000n, 100 + i));
+    }
+    const full = s().items;
+    expect(full.length).toBe(MAX_DRAWINGS_PER_SYMBOL);
+    const oldestId = full[0].id;
+
+    s().armTool('hline');
+    expect(s().addDraftPoint(P(999n * 1_000_000_000n, 1))).toBeNull();
+    expect(s().items.length).toBe(MAX_DRAWINGS_PER_SYMBOL);
+    expect(s().items[0].id).toBe(oldestId); // the oldest drawing is still there
+    expect(s().limitRefusals).toBe(1);
+    expect(s().tool).toBeNull(); // the armed tool is dropped with the refusal
+  });
+
+  it('keeps a drag in memory and writes storage once, on flush', () => {
+    loadScope();
+    useDrawingsStore.getState().armTool('hline');
+    useDrawingsStore.getState().addDraftPoint(P(1_000_000_000n, 100));
+    const key = drawingsKey('crypto', 'TEST');
+    const before = store.map.get(key);
+    let writes = 0;
+    const setItem = store.setItem;
+    store.setItem = (k, v) => {
+      writes += 1;
+      setItem(k, v);
+    };
+    const id = useDrawingsStore.getState().items[0].id;
+    for (let i = 1; i <= 20; i += 1) useDrawingsStore.getState().moveBy(id, 1_000_000_000n, 0.5);
+    expect(writes).toBe(0); // no localStorage write per pointer move
+    expect(store.map.get(key)).toBe(before);
+    flushDrawingsPersist();
+    expect(writes).toBe(1);
+    flushDrawingsPersist(); // nothing pending now
+    expect(writes).toBe(1);
+    expect(loadDrawings(store, 'crypto', 'TEST')[0].points[0].tNs).toBe(21_000_000_000n);
   });
 });
 
@@ -125,7 +162,7 @@ describe('persistence', () => {
   });
 });
 
-describe('undo / redo (≥ 20 contract)', () => {
+describe('undo / redo (at least 20 steps)', () => {
   it('undo restores the pre-mutation document; redo reapplies', () => {
     loadScope();
     useDrawingsStore.getState().armTool('hline');
@@ -155,7 +192,7 @@ describe('undo / redo (≥ 20 contract)', () => {
     expect(useDrawingsStore.getState().items[0].points[0]).toEqual(P(0n, 10));
   });
 
-  it('survives 30 mutations (above the ≥20 contract) within the cap', () => {
+  it('survives 30 mutations (above the 20-step minimum) within the cap', () => {
     loadScope();
     useDrawingsStore.getState().armTool('hline');
     const d = useDrawingsStore.getState().addDraftPoint(P(0n, 0))!;

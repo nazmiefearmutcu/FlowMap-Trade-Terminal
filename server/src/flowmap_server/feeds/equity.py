@@ -1,8 +1,8 @@
-"""US-equity feed: Crocodile equity providers -> canonical FeedEvents (M3 T1).
+"""US-equity feed: Crocodile equity providers -> canonical FeedEvents.
 
 Equities have **no free L2 depth**. This feed therefore auto-selects a tier
 from the credentials in :class:`~flowmap_server.config.Config` and expresses
-each tier's real capability honestly (spec §7):
+each tier's real capability honestly:
 
 ============  ================================================================
 Tier          What ``events()`` emits
@@ -31,25 +31,25 @@ previous book over each interval, thus renders a **two-sided** depth-over-time
 whose bid/ask boundary walks with price (grid ``mode=L1_BAND``, two channels on
 the wire; the badge stays honestly ``SYNTH``). The emitted sizes are a bounded
 *relative* intensity, not a share count: a liquid name's cumulative shares (tens
-of millions) cast to the grid's float16 ring would overflow to ``inf`` (spec
-§8.1), so the single combined-peak scale bounds every texel while preserving
-between-bucket ratios (the point-of-control) and the cross-side bid/ask
-comparison exactly. Warmup uses **the most recent session's bars only**, so bar
-timestamps stay ~1 m apart and the grid never bridges an overnight gap into
-thousands of empty columns (spec §7.1 "no empty-column accumulation").
+of millions) cast to the grid's float16 ring would overflow to ``inf``, so the
+single combined-peak scale bounds every texel while preserving between-bucket
+ratios (the point-of-control) and the cross-side bid/ask comparison exactly.
+Warmup uses **the most recent session's bars only**, so bar timestamps stay
+~1 m apart and the grid never bridges an overnight gap into thousands of empty
+columns.
 
 **Market-closed** — the :class:`~flowmap_server.feeds.base.Feed` protocol's
 ``FeedEvent`` union has no ``Status`` (that is a session/protocol message), so
-this feed exposes the closed state two ways the session layer (T2) reads:
+this feed exposes the closed state two ways the session layer reads:
 
 - ``feed.feed_state`` (``"live"`` | ``"closed"``) and ``feed.next_open_ts``
-  (UTC ns of the next RTH open) — attributes T2 maps onto
+  (UTC ns of the next RTH open) — attributes the session layer maps onto
   ``Status{feed_state='closed', next_open_ts=...}``; and
 - an in-band ``Marker{kind='session_break', text='market closed — ...'}``.
 
 When closed, the warmup SYNTH profile from the last session still renders; the
 feed emits **no** live trades (a stale last price is not a print) and does NOT
-spam empty live columns — ``events()`` returns after the session_break so T2
+spam empty live columns — ``events()`` returns after the session_break so the session layer
 can schedule a restart at ``next_open_ts`` (``events()`` is re-callable per the
 Feed restart contract and re-fetches on the next call).
 
@@ -70,165 +70,62 @@ import logging
 import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-
-import numpy as np
+from typing import Protocol, cast
 
 from crocodile.core.schema.records import OHLCV as EqBar
-from crocodile.core.schema.records import Quote as EqQuote
-from crocodile.core.schema.records import Trade as EqTrade
 from crocodile.core.scheduler.calendar import MARKET_TZ, USMarketCalendar
+from crocodile.core.sink.base import Sink
 from crocodile.equity.depth.vap import reference_price as eq_reference_price
 
 from flowmap_server.config import Config
-from flowmap_server.feeds.base import BarSample, BookState, BoundedFeedQueue, FeedEvent, ts_ns_sane
+from flowmap_server.feeds.base import (
+    BarSample,
+    BookState,
+    BoundedFeedQueue,
+    DropCounters,
+    FeedEvent,
+    ts_ns_sane,
+)
+from flowmap_server.feeds.equity_poll import _GooglePricePoller
+from flowmap_server.feeds.equity_profile import (
+    DEFAULT_PROFILE_TICK,
+    PROFILE_PEAK_TARGET,
+    _bar_finite,
+    _bar_ts,
+    _ProfileBuilder,
+)
+from flowmap_server.feeds.equity_sink import _EquitySink
 from flowmap_server.proto.events import (
-    BBO,
-    SIDE_BUY,
-    SIDE_SELL,
-    SIDE_SRC_INFERRED,
     SIDE_SRC_NA,
     SIDE_UNKNOWN,
     Marker,
     Trade,
 )
 
-__all__ = ["EQUITY_MARKET", "EQUITY_MARKETS", "EquityFeed"]
+__all__ = ["DEFAULT_PROFILE_TICK", "EQUITY_MARKET", "EQUITY_MARKETS", "EquityFeed", "PROFILE_PEAK_TARGET"]
 
 logger = logging.getLogger(__name__)
 
-# Subscribe.market string routed to EquityFeed by the session feed factory (T2).
+# Subscribe.market string routed to EquityFeed by the session feed factory.
 EQUITY_MARKET = "equity"
 EQUITY_MARKETS = frozenset({EQUITY_MARKET})
-
-# SYNTH profile price granularity: US equities quote in cents. Bar volume is
-# bucketed to this tick before the grid re-buckets to its own rows.
-DEFAULT_PROFILE_TICK = 0.01
-# SYNTH profile normalized peak. Each emitted volume-at-price column is rescaled
-# so its densest bucket equals this — a bounded *relative* intensity, NOT a share
-# count. A liquid name's raw cumulative shares (tens of millions) would overflow
-# the grid's float16 ring/wire (max 65 504) to ``inf`` (spec §8.1); normalizing
-# per column keeps every texel ~1e3 (≈65× headroom) no matter how large the
-# session's cumulative volume grows, and — unlike a fixed divisor on an unbounded
-# cumulative sum — can never creep back into overflow (spec §8.3 fixed-scale
-# intent). Between-bucket ratios (hence the point-of-control) are preserved.
-PROFILE_PEAK_TARGET = 1000.0
-# Keyless last-price display venue tag (spec §7: not an exchange print/NBBO).
+# Keyless last-price display venue tag (not an exchange print or NBBO).
 SYNTH_VENUE = "synthetic"
-# Live keyless bar refresh cadence (spec §7: Yahoo >=60 s/symbol).
+# Live keyless bar refresh cadence (Yahoo: at least 60 s per symbol).
 BAR_REFRESH_NS = 60 * 10**9
-# Total timeout for the poller's own aiohttp session (A2-5): a hung scrape must
-# cost one poll, not the feed loop.
-_HTTP_TIMEOUT_S = 10.0
-
-# Provider hard caps (single-symbol here, kept for parity with the reference).
-_ALPACA_CAP = 30
-_FINNHUB_CAP = 50
+# Consecutive failed keyless price polls before the live tape says so (gap Marker).
+_POLL_FAILURES_BEFORE_NOTICE = 3
+# Keyed tiers: no provider event for this long is a silent socket or a stuck
+# provider, not a quiet name, so the feed fails and the session restarts it.
+# The check cadence bounds how quickly the calendar close is noticed.
+_KEYED_EVENT_TIMEOUT_S = 120.0
+_KEYED_CHECK_S = 5.0
 
 
 BarsFn = Callable[[], Awaitable[Sequence[EqBar]]]
 PriceFn = Callable[[], Awaitable[float | None]]
 SleepFn = Callable[[float], Awaitable[None]]
 NowFn = Callable[[], int]
-
-
-def _bar_ts(bar: EqBar) -> int:
-    """A bar's canonical UTC-ns timestamp (source over local)."""
-    return int(bar.source_ts if bar.source_ts is not None else bar.local_ts)
-
-
-def _bar_finite(bar: EqBar) -> bool:
-    """True iff the bar's OHLCV are all finite and volume is non-negative.
-
-    Yahoo bars can carry gaps (already dropped in the client), but NaN/inf can
-    still slip through resampling — a poisoned typical price would scatter a
-    non-finite density texel, so bad bars are skipped, never emitted."""
-    vals = (bar.open, bar.high, bar.low, bar.close, bar.volume)
-    return all(v is not None and math.isfinite(v) for v in vals) and bar.volume >= 0.0
-
-
-def _typical_price(bar: EqBar) -> float:
-    """Bar typical price ``(H+L+C)/3`` — the volume-at-price anchor and the
-    same convention spec §7 uses for the approx VWAP."""
-    return (bar.high + bar.low + bar.close) / 3.0
-
-
-class _ProfileBuilder:
-    """Accumulates 1 m bars into a cumulative volume-at-price density.
-
-    Each bar contributes its whole volume to exactly one cent bucket (its
-    typical price), so the internal accumulation conserves volume
-    (:meth:`total_volume` is the true summed share volume). Bucketing by integer
-    index avoids float-key drift. :meth:`book_state` emits a *normalized* view of
-    that profile — rescaled so the peak bucket == ``PROFILE_PEAK_TARGET`` — which
-    keeps the wire/grid density bounded far below float16's ceiling for any
-    cumulative total (the raw shares would overflow the grid's f16 ring to
-    ``inf``)."""
-
-    def __init__(self, tick: float = DEFAULT_PROFILE_TICK) -> None:
-        if not (tick > 0.0):
-            raise ValueError("profile tick must be positive")
-        self._tick = tick
-        self._buckets: dict[int, float] = {}
-
-    def add_bar(self, bar: EqBar) -> bool:
-        """Add one bar's volume at its typical price. Returns False (skipped)
-        for non-finite/negative-volume bars or a non-positive typical price."""
-        if not _bar_finite(bar):
-            return False
-        tp = _typical_price(bar)
-        if not (tp > 0.0):
-            return False
-        idx = int(round(tp / self._tick))
-        self._buckets[idx] = self._buckets.get(idx, 0.0) + float(bar.volume)
-        return True
-
-    def total_volume(self) -> float:
-        return float(sum(self._buckets.values()))
-
-    def book_state(self, ts_ns: int, ref: float | None = None) -> BookState:
-        """The cumulative volume-at-price profile as a **two-sided** normalized
-        :class:`BookState`, split at ``ref`` (engine ``split_ladder``
-        semantics): buckets with ``price <= ref`` are the bid channel, ``price >
-        ref`` the ask channel. The occupied buckets carry the profile's SHAPE
-        rescaled so its **combined** (bid+ask) peak == ``PROFILE_PEAK_TARGET``.
-
-        The single combined scale factor keeps between-bucket ratios — hence the
-        point-of-control and the *cross-side* bid/ask intensity comparison —
-        exact, while bounding every texel far below float16's ceiling for any
-        cumulative total (a liquid name's raw cumulative shares, tens of millions,
-        would overflow the grid's float16 ring to ``inf``; spec §8.1). The ask
-        side legitimately shrinks/vanishes when ``ref`` sits near the profile's
-        top (little volume traded above the current price — an honest asymmetry).
-
-        ``ref is None`` keeps the legacy one-sided shape (everything on bid, ask
-        empty) for callers that have no reference price."""
-        if not self._buckets:
-            empty = np.empty(0, dtype=np.float64)
-            return BookState(
-                ts_ns=int(ts_ns), bid_px=empty, bid_sz=empty, ask_px=empty, ask_sz=empty
-            )
-        idxs = np.fromiter(sorted(self._buckets), dtype=np.int64)
-        px = idxs.astype(np.float64) * self._tick
-        raw = np.array([self._buckets[int(i)] for i in idxs], dtype=np.float64)
-        peak = float(raw.max())
-        # Combined-peak normalization BEFORE the split: bounded by construction,
-        # so a growing cumulative sum can never creep back into f16 overflow and
-        # the bid/ask magnitudes stay directly comparable.
-        sz = raw * (PROFILE_PEAK_TARGET / peak) if peak > 0.0 else raw
-        empty = np.empty(0, dtype=np.float64)
-        if ref is None:
-            return BookState(
-                ts_ns=int(ts_ns), bid_px=px, bid_sz=sz, ask_px=empty, ask_sz=empty
-            )
-        bid_mask = px <= float(ref)
-        ask_mask = ~bid_mask
-        return BookState(
-            ts_ns=int(ts_ns),
-            bid_px=px[bid_mask],
-            bid_sz=sz[bid_mask],
-            ask_px=px[ask_mask],
-            ask_sz=sz[ask_mask],
-        )
 
 
 class _FeedEnd:
@@ -240,199 +137,19 @@ class _FeedEnd:
         self.exc = exc
 
 
-class _EquitySink:
-    """Translate Crocodile equity records -> canonical events (keyed tiers).
-
-    US tapes carry no aggressor side, so it is inferred and stamped
-    ``side_src=inferred`` (spec §7):
-
-    - **quote rule** (alpaca, ``use_quote_rule=True``): trade above the last
-      streamed BBO midpoint is a buy, below a sell, at the mid falls back to
-      the tick rule;
-    - **tick rule** (finnhub): up-tick buy, down-tick sell, flat carries the
-      previous side; the first print defaults to buy (any fixed default is
-      equally arbitrary — documented in the reference feed).
-
-    Implements just enough of :class:`crocodile.core.sink.base.Sink` (``put`` /
-    ``flush``) to run inside ``collect``'s TaskGroup; not a real Parquet sink.
-    """
-
-    def __init__(
-        self,
-        emit: Callable[[FeedEvent], None],
-        *,
-        use_quote_rule: bool,
-        now_ns: Callable[[], int] | None = None,
-        stats: object | None = None,
-    ) -> None:
-        self._emit = emit
-        self._use_quote_rule = use_quote_rule
-        # Server-wide telemetry aggregate (campaign C1; duck-typed).
-        self._stats = stats
-        # Live-ingest timestamp sanity gate (A2-2): a provider clock in the
-        # wrong unit or wedged in the far future must not enter the ring or the
-        # recording. Injected for tests; production uses the wall clock.
-        self._now_ns = now_ns or time.time_ns
-        self.dropped_ts = 0
-        self._last_px: float | None = None
-        self._last_side = SIDE_BUY
-        self._bbo: tuple[float, float] | None = None  # (bid_px, ask_px)
-
-    async def put(self, record: object) -> None:
-        if isinstance(record, (EqTrade, EqQuote)):
-            ts = _rec_ts(record)
-            if not ts_ns_sane(ts, now_ns=self._now_ns()):
-                self.dropped_ts += 1
-                if self.dropped_ts == 1:
-                    # One warning for the first bad stamp (a provider clock
-                    # that slips back to sane must not be missed); the rest
-                    # only count.
-                    logger.warning(
-                        "equity feed: dropped sample with implausible ts_ns=%r "
-                        "(outside [2010, now+24h]); dropped_ts=%d",
-                        ts,
-                        self.dropped_ts,
-                    )
-                if self._stats is not None:
-                    self._stats.inc_snapshot_drops()
-                return
-        if isinstance(record, EqTrade):
-            # The merged record now carries a `side` field, but every US equity
-            # provider fills it with Side.UNKNOWN — the consolidated tape does
-            # not publish the aggressor. An earlier revision here promoted a
-            # non-UNKNOWN side to `SIDE_SRC_EXCHANGE`; that was wrong twice
-            # over: it read the field instead of the record's `prov` block, so
-            # a provider-side inference would have been laundered into
-            # "exchange-true", and it contradicted this tier's own
-            # `trade_side: "inferred"` badge. Inference is the honest answer
-            # here, and it must run on EVERY print or the tick rule's
-            # `_last_px`/`_last_side` go stale.
-            self._emit(
-                Trade(
-                    ts_ns=_rec_ts(record),
-                    price=float(record.price),
-                    size=float(record.amount),
-                    side=self._infer_side(float(record.price)),
-                    side_src=SIDE_SRC_INFERRED,
-                    venue=record.source,
-                )
-            )
-        elif isinstance(record, EqQuote) and self._use_quote_rule:
-            bid_px, ask_px = float(record.bid_px), float(record.ask_px)
-            bid_sz, ask_sz = float(record.bid_sz), float(record.ask_sz)
-            self._bbo = (bid_px, ask_px)
-            ts = _rec_ts(record)
-            self._emit(
-                BBO(ts_ns=ts, bid_px=bid_px, bid_sz=bid_sz, ask_px=ask_px, ask_sz=ask_sz)
-            )
-            # Real L1 top-of-book as a two-sided depth column (fills the keyed
-            # depth channel; badge stays honest `L1`). Displayed sizes are round
-            # lots, far under the grid's float16 ceiling — emitted raw so the
-            # true bid/ask size imbalance survives. Prices must be strictly
-            # positive: Alpaca sends a 0 price to mean "no quote on this side"
-            # (at the open, on illiquid names, or during a halt); admitting it
-            # would snap the reanchor midpoint to ~half the real price.
-            prices_ok = math.isfinite(bid_px) and bid_px > 0.0 and math.isfinite(ask_px) and ask_px > 0.0
-            sizes_ok = math.isfinite(bid_sz) and bid_sz >= 0.0 and math.isfinite(ask_sz) and ask_sz >= 0.0
-            if prices_ok and sizes_ok:
-                self._emit(
-                    BookState(
-                        ts_ns=ts,
-                        bid_px=np.array([bid_px], dtype=np.float64),
-                        bid_sz=np.array([bid_sz], dtype=np.float64),
-                        ask_px=np.array([ask_px], dtype=np.float64),
-                        ask_sz=np.array([ask_sz], dtype=np.float64),
-                    )
-                )
-        # Bars/fundamentals/status/etc.: not part of the canonical tape dialect.
-
-    async def flush(self) -> None:
-        return None
-
-    async def close(self) -> None:
-        return None
-
-    def _infer_side(self, price: float) -> int:
-        if self._use_quote_rule and self._bbo is not None:
-            bid, ask = self._bbo
-            if math.isfinite(bid) and math.isfinite(ask):
-                mid = 0.5 * (bid + ask)
-                if price > mid:
-                    side = SIDE_BUY
-                elif price < mid:
-                    side = SIDE_SELL
-                else:
-                    side = self._flat_side(price)
-            else:
-                side = self._flat_side(price)
-        else:
-            side = self._flat_side(price)
-        self._last_px = price
-        self._last_side = side
-        return side
-
-    def _flat_side(self, price: float) -> int:
-        prev = self._last_px
-        if prev is None or price > prev:
-            return SIDE_BUY
-        if price < prev:
-            return SIDE_SELL
-        return self._last_side
+# What the keyed provider task puts on the feed queue: an event or the end.
+_EquityItem = FeedEvent | _FeedEnd
 
 
-def _rec_ts(record: EqTrade | EqQuote) -> int:
-    return int(record.source_ts if record.source_ts is not None else record.local_ts)
-
-
-class _GooglePricePoller:
-    """Default keyless last-price source: a one-shot google_finance scrape.
-
-    Owns a lazily-created aiohttp session + provider so each poll is a single
-    fragile CSS scrape (spec §7); failures are the caller's to swallow. Never
-    imported at module load (heavy deps) and never touched by pytest (tests
-    inject ``price_fn``)."""
-
-    def __init__(self, symbol: str) -> None:
-        self._symbol = symbol
-        self._provider: object | None = None
-        self._session: object | None = None
-
-    async def poll(self) -> float | None:
-        import aiohttp
-
-        from crocodile.equity.providers.google_finance.connector import GoogleFinanceProvider
-        from crocodile.equity.reference.registry import InstrumentRegistry
-        from crocodile.core.sink.memory import MemorySink
-
-        if self._provider is None:
-            self._provider = GoogleFinanceProvider(
-                [self._symbol], ["trade"], MemorySink(), InstrumentRegistry()
-            )
-        session = self._session
-        if session is None or getattr(session, "closed", True):
-            # Total timeout (A2-5): the engine's default is aiohttp's 5-minute
-            # client default — one hung scrape must cost a poll, not the loop.
-            session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_S)
-            )
-            self._session = session
-        self._provider.session = session  # type: ignore[attr-defined]
-        recs = await self._provider._scrape_symbol(self._symbol)  # type: ignore[attr-defined]
-        for rec in recs:
-            if isinstance(rec, EqTrade) and math.isfinite(rec.price):
-                return float(rec.price)
-        return None
-
-    async def close(self) -> None:
-        session = self._session
-        self._session = None
-        if session is not None and not getattr(session, "closed", True):
-            with contextlib.suppress(Exception):
-                await session.close()  # type: ignore[attr-defined]
+def _closed_marker_text(has_profile: bool) -> str:
+    """session_break text that says whether a profile is actually on screen."""
+    if has_profile:
+        return "market closed — SYNTH profile from last session"
+    return "market closed — no cached history available"
 
 
 class EquityFeed:
-    """Live US-equity feed (implements the Feed protocol; spec §7 / §7.1).
+    """Live US-equity feed (implements the Feed protocol).
 
     ``events()`` is re-callable (Feed restart contract): each call builds fresh
     state, re-fetches bars, and re-evaluates the session window. The tier is
@@ -454,11 +171,11 @@ class EquityFeed:
         calendar: USMarketCalendar | None = None,
         profile_tick: float = DEFAULT_PROFILE_TICK,
         bar_refresh_ns: int = BAR_REFRESH_NS,
-        stats: object | None = None,
+        stats: DropCounters | None = None,
     ) -> None:
         self.symbol = symbol.upper()
         self._cfg = cfg
-        self._now_ns: NowFn = now_ns_fn or (lambda: int(__import__("time").time_ns()))
+        self._now_ns: NowFn = now_ns_fn or time.time_ns
         self._bars_fn = bars_fn
         self._price_fn = price_fn
         self._sleep: SleepFn = sleep_fn or asyncio.sleep
@@ -468,16 +185,19 @@ class EquityFeed:
         self._bar_refresh_ns = bar_refresh_ns
 
         self._tier = self._select_tier()
-        self.capability: dict[str, object] = _CAPABILITY[self._tier]
+        # A per-instance copy: a shared module-level dict would leak any per-feed write.
+        self.capability: dict[str, object] = dict(_CAPABILITY[self._tier])
 
-        # Session state the session layer (T2) reads to emit Status. Reset at
+        # Session state the session layer reads to emit Status. Reset at
         # the start of every events() call so a re-called feed starts honest.
         self.feed_state: str = "live"
         self.next_open_ts: int | None = None
+        # Consecutive keyless price polls that returned no usable price.
+        self.poll_failures = 0
 
         # Lazily-created default keyless price poller (network; never in tests).
         self._poller: _GooglePricePoller | None = None
-        # Server-wide telemetry aggregate (campaign C1; duck-typed). Feeds the
+        # Server-wide telemetry aggregate (duck-typed). Feeds the
         # drop counters at the source: queue evictions + ts-gate drops.
         self._stats = stats
 
@@ -527,7 +247,7 @@ class EquityFeed:
         """The most recent session's finite, plausibly-stamped bars (grouped by
         ET date), sorted by time. Restricting to one session keeps warmup
         timestamps ~1 m apart so the grid never bridges an overnight/weekend
-        gap into empty columns (spec §7.1). Bars with implausible stamps
+        gap into empty columns. Bars with implausible stamps
         (non-positive, 1970-era — the ms/ns mixup signature — or absurdly
         future) are dropped at this live-ingestion boundary, never re-gated
         later from recordings."""
@@ -585,6 +305,7 @@ class EquityFeed:
         """Fresh canonical event stream (re-callable; resumes live)."""
         self.feed_state = "live"
         self.next_open_ts = None
+        self.poll_failures = 0
         if self._tier == "keyless":
             async for ev in self._keyless_events():
                 yield ev
@@ -606,7 +327,7 @@ class EquityFeed:
     async def _keyless_events(self, *, history_only: bool = False) -> AsyncIterator[FeedEvent]:
         try:
             bars = await self._fetch_bars()
-        except Exception:  # noqa: BLE001 — a 429 storm must degrade, not kill the feed
+        except Exception:  # a 429 storm must degrade, not kill the feed
             logger.warning(
                 "keyless bar fetch failed for %s; starting with an empty profile "
                 "(refresh retries every %ds)",
@@ -625,7 +346,7 @@ class EquityFeed:
             last_bar_ts = max(last_bar_ts, ts)
             # Reference = this bar's close, so the two-sided split boundary walks
             # with historical price: a genuine bid-below / ask-above depth-over-
-            # time as the cumulative volume-profile fills in (spec §7).
+            # time as the cumulative volume-profile fills in.
             ref = float(bar.close)
             yield builder.book_state(ts, ref)
             # Real published bar prices drive the historical overlay. They
@@ -647,7 +368,7 @@ class EquityFeed:
             yield Marker(
                 ts_ns=last_bar_ts or now,
                 kind="session_break",
-                text="market closed — SYNTH profile from last session",
+                text=_closed_marker_text(builder.has_profile()),
             )
             return
 
@@ -671,55 +392,117 @@ class EquityFeed:
         grid_s = self._cfg.dt_equity_keyless_grid_ns / 1e9
         next_refresh = self._now_ns() + self._bar_refresh_ns
         next_poll = self._now_ns()
-        while True:
-            now = self._now_ns()
-            state, next_open = self._session_state(now)
-            if state == "closed":
-                self.feed_state = "closed"
-                self.next_open_ts = next_open
-                yield Marker(
-                    ts_ns=now,
-                    kind="session_break",
-                    text="market closed — SYNTH profile from last session",
-                )
-                return
-
-            if now >= next_refresh:
-                try:
-                    for bar in self._select_warmup_bars(await self._fetch_bars()):
-                        ts = _bar_ts(bar)
-                        if ts > last_bar_ts and builder.add_bar(bar):
-                            last_bar_ts = ts
-                except Exception:  # noqa: BLE001 — stale profile survives a bad refresh
-                    logger.debug(
-                        "keyless bar refresh failed for %s", self.symbol, exc_info=True
-                    )
-                next_refresh = now + self._bar_refresh_ns
-
-            if now >= next_poll:
-                price = await self._poll_price_safe()
-                if price is not None and math.isfinite(price) and price > 0.0:
-                    # Display-only tape: google last-price is not a print/NBBO.
-                    # The same price is the two-sided split reference so the
-                    # bid/ask boundary follows the live market.
-                    ref = float(price)
-                    yield Trade(
+        # The price scrape runs as its own task: a slow scrape (bounded by
+        # _HTTP_TIMEOUT_S) must not hold the one-column-per-grid-tick cadence.
+        poll: asyncio.Task | None = None
+        stale_announced = False
+        try:
+            while True:
+                now = self._now_ns()
+                state, next_open = self._session_state(now)
+                if state == "closed":
+                    self.feed_state = "closed"
+                    self.next_open_ts = next_open
+                    yield Marker(
                         ts_ns=now,
-                        price=float(price),
-                        size=1.0,
-                        side=SIDE_UNKNOWN,
-                        side_src=SIDE_SRC_NA,
-                        venue=SYNTH_VENUE,
+                        kind="session_break",
+                        text=_closed_marker_text(builder.has_profile()),
                     )
-                # Integer-ns arithmetic ONLY: a float offset (now + 10.0) loses
-                # the whole poll interval to float64 rounding at ns magnitudes
-                # (~1.8e18, ulp 256 ns) and would poll every column instead.
-                next_poll = now + self._cfg.dt_equity_keyless_ns
-            # Re-assert the resting profile so the grid advances a column and
-            # the current column rolls with the (bar-refreshed) profile, split
-            # two-sided at the latest reference price.
-            yield builder.book_state(now, ref)
-            await self._sleep(grid_s)
+                    return
+
+                if now >= next_refresh:
+                    try:
+                        for bar in self._select_warmup_bars(await self._fetch_bars()):
+                            ts = _bar_ts(bar)
+                            if ts > last_bar_ts and builder.add_bar(bar):
+                                last_bar_ts = ts
+                    except Exception:  # stale profile survives a bad refresh
+                        logger.warning(
+                            "keyless bar refresh failed for %s; keeping the prior profile",
+                            self.symbol,
+                            exc_info=True,
+                        )
+                    next_refresh = now + self._bar_refresh_ns
+
+                # A profile from an earlier ET session must not be re-asserted as the
+                # live book (its bars are stamped with that session's clock). Withhold
+                # the depth, say which session it is from, and report degraded until a
+                # refresh brings the current session.
+                stale_date = self._stale_profile_date(last_bar_ts, now)
+                if stale_date is not None:
+                    self.feed_state = "degraded"
+                    if not stale_announced:
+                        stale_announced = True
+                        yield Marker(
+                            ts_ns=now,
+                            kind="gap",
+                            text=(
+                                f"stale profile from {stale_date.isoformat()}: "
+                                "live depth withheld until today's bars load"
+                            ),
+                        )
+                else:
+                    stale_announced = False
+                    self.feed_state = "live"
+
+                if poll is None and now >= next_poll:
+                    poll = asyncio.create_task(
+                        self._poll_price_safe(), name=f"equity-price-poll:{self.symbol}"
+                    )
+                    # Integer-ns arithmetic ONLY: a float offset (now + 10.0) loses
+                    # the whole poll interval to float64 rounding at ns magnitudes
+                    # (~1.8e18, ulp 256 ns) and would poll every column instead.
+                    next_poll = now + self._cfg.dt_equity_keyless_ns
+                if poll is not None and poll.done():
+                    price = poll.result()  # _poll_price_safe never raises
+                    poll = None
+                    if price is not None and math.isfinite(price) and price > 0.0:
+                        self.poll_failures = 0
+                        # Display-only tape: google last-price is not a print/NBBO.
+                        # The same price is the two-sided split reference so the
+                        # bid/ask boundary follows the live market.
+                        ref = float(price)
+                        yield Trade(
+                            ts_ns=now,
+                            price=float(price),
+                            size=1.0,
+                            side=SIDE_UNKNOWN,
+                            side_src=SIDE_SRC_NA,
+                            venue=SYNTH_VENUE,
+                        )
+                    else:
+                        self.poll_failures += 1
+                        if self.poll_failures == _POLL_FAILURES_BEFORE_NOTICE:
+                            logger.warning(
+                                "live price unavailable for %s after %d consecutive failed polls",
+                                self.symbol,
+                                self.poll_failures,
+                            )
+                            yield Marker(
+                                ts_ns=now,
+                                kind="gap",
+                                text=(
+                                    f"live price unavailable after {self.poll_failures} "
+                                    "failed polls; the last trade may be stale"
+                                ),
+                            )
+                if stale_date is None:
+                    # Re-assert the resting profile so the grid advances a column and
+                    # the current column rolls with the (bar-refreshed) profile, split
+                    # two-sided at the latest reference price.
+                    yield builder.book_state(now, ref)
+                await self._sleep(grid_s)
+        finally:
+            if poll is not None and not poll.done():
+                poll.cancel()
+
+    def _stale_profile_date(self, last_bar_ts: int, now: int) -> datetime.date | None:
+        """ET date of the warmup profile when it belongs to an earlier session than
+        ``now``; None when the profile is current or there is no profile."""
+        if last_bar_ts <= 0:
+            return None
+        profile_date = self._et_date(last_bar_ts)
+        return profile_date if profile_date != self._et_date(now) else None
 
     async def _fetch_bars(self) -> Sequence[EqBar]:
         if self._bars_fn is not None:
@@ -738,7 +521,7 @@ class EquityFeed:
             if self._poller is None:
                 self._poller = _GooglePricePoller(self.symbol)
             return await self._poller.poll()
-        except Exception:  # noqa: BLE001 — a stale tape is honest; never kill the loop
+        except Exception:  # a stale tape is honest; never kill the loop
             logger.debug("keyless price poll failed for %s", self.symbol, exc_info=True)
             return None
 
@@ -749,9 +532,27 @@ class EquityFeed:
 
     # -- keyed (structured; lightly tested — no live keys on this machine) ------
 
+    def _closed_now(self) -> bool:
+        """Mark the feed closed (for the session layer) when RTH is over."""
+        state, next_open = self._session_state(self._now_ns())
+        if state != "closed":
+            return False
+        self.feed_state = "closed"
+        self.next_open_ts = next_open
+        return True
+
     async def _keyed_events(self) -> AsyncIterator[FeedEvent]:
-        # Bounded fan-in (A2-3): same drop-oldest contract as the crypto bridge.
-        queue = BoundedFeedQueue(
+        # Keyed tiers follow the same RTH window as the keyless path: outside it
+        # they emit a closed session_break and no live stream, never a live status.
+        if self._closed_now():
+            yield Marker(
+                ts_ns=self._now_ns(),
+                kind="session_break",
+                text=_closed_marker_text(False),
+            )
+            return
+        # Bounded fan-in: same drop-oldest contract as the crypto bridge.
+        queue: BoundedFeedQueue[_EquityItem] = BoundedFeedQueue(
             on_drop=self._stats.inc_feed_drops if self._stats is not None else None
         )
         sink = _EquitySink(
@@ -764,9 +565,35 @@ class EquityFeed:
             self._drive_keyed(provider, sink, queue),
             name=f"equity-feed-{self._tier}:{self.symbol}",
         )
+        loop = asyncio.get_running_loop()
+        last_event = loop.time()
+        next_calendar_check = last_event
         try:
             while True:
-                ev = await queue.get()
+                # The calendar is checked on its own cadence, not only when the stream
+                # goes quiet: liquid names keep printing after the RTH close, and those
+                # prints must not keep the feed reported as live.
+                if loop.time() >= next_calendar_check:
+                    next_calendar_check = loop.time() + _KEYED_CHECK_S
+                    if self._closed_now():
+                        yield Marker(
+                            ts_ns=self._now_ns(),
+                            kind="session_break",
+                            text=_closed_marker_text(False),
+                        )
+                        return
+                try:
+                    ev = await asyncio.wait_for(queue.get(), timeout=_KEYED_CHECK_S)
+                except TimeoutError:
+                    if loop.time() - last_event >= _KEYED_EVENT_TIMEOUT_S:
+                        # Raised, not returned: the session restarts the feed with backoff
+                        # and reports degraded, the same as a crashed crypto connector.
+                        raise RuntimeError(
+                            f"no {self._tier} equity events for {_KEYED_EVENT_TIMEOUT_S:g}s "
+                            f"({self.symbol})"
+                        ) from None
+                    continue
+                last_event = loop.time()
                 if isinstance(ev, _FeedEnd):
                     if ev.exc is not None:
                         raise ev.exc
@@ -783,12 +610,14 @@ class EquityFeed:
         from crocodile.equity.providers.factory import make_provider
         from crocodile.equity.reference.registry import InstrumentRegistry
 
+        # The engine writes to a Sink; _EquitySink is that surface (see _drive_keyed).
+        out = cast(Sink, sink)
         if self._tier == "alpaca":
             return make_provider(
                 "alpaca",
                 [self.symbol],
                 ["trade", "quote"],
-                out=sink,  # type: ignore[arg-type]
+                out=out,
                 registry=InstrumentRegistry(),
                 key=self._cfg.alpaca_key,
                 secret=self._cfg.alpaca_secret,
@@ -797,31 +626,76 @@ class EquityFeed:
             "finnhub",
             [self.symbol],
             ["trade"],
-            out=sink,  # type: ignore[arg-type]
+            out=out,
             registry=InstrumentRegistry(),
             token=self._cfg.finnhub_key,
         )
 
     @staticmethod
     async def _drive_keyed(
-        provider: object, sink: _EquitySink, queue: BoundedFeedQueue
+        provider: object, sink: _EquitySink, queue: BoundedFeedQueue[_EquityItem]
     ) -> None:
         from crocodile.equity.client.collect import collect
+        from crocodile.equity.providers.base import Provider
 
+        watched = _WatchedProvider(provider)
         try:
-            await collect([provider], sink, max_reconnects=-1)  # type: ignore[list-item]
+            # _EquitySink implements the put/flush surface collect drives; it is not a
+            # Sink subclass because its put accepts the wider object it is fed. The
+            # watcher supplies the run() surface collect() drives (a Provider subclass
+            # would inherit the engine's whole base class).
+            await collect(
+                [cast(Provider, watched)], cast(Sink, sink), max_reconnects=-1
+            )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 — forwarded to the consumer
+        except Exception as exc:  # forwarded to the consumer
             queue.put_nowait(_FeedEnd(exc))
         else:
-            queue.put_nowait(_FeedEnd(None))
+            # collect() only logs a provider exception, so the failure is read back
+            # from the watcher. A keyed provider runs with max_reconnects=-1 and
+            # must never return normally; a clean return is an unexpected end.
+            if watched.error is not None:
+                queue.put_nowait(_FeedEnd(watched.error))
+            else:
+                queue.put_nowait(
+                    _FeedEnd(RuntimeError("equity provider ended without an error"))
+                )
 
 
-# Per-tier capability descriptors (spec §7 dual-market parity table).
+class _RunnableProvider(Protocol):
+    """The crocodile provider surface a keyed watcher drives: its ``run`` coroutine."""
+
+    async def run(self, *, max_reconnects: int) -> None: ...
+
+
+class _WatchedProvider:
+    """Wraps a crocodile provider to record how its ``run`` ended.
+
+    ``collect`` isolates provider exceptions and logs them, so the caller cannot
+    see them. This wrapper keeps the exception and re-raises it unchanged so the
+    supervised behaviour of collect() is untouched.
+    """
+
+    def __init__(self, provider: object) -> None:
+        self._provider = cast(_RunnableProvider, provider)
+        self.error: BaseException | None = None
+        self.name = getattr(provider, "name", repr(provider))
+
+    async def run(self, *, max_reconnects: int) -> None:
+        try:
+            await self._provider.run(max_reconnects=max_reconnects)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.error = exc
+            raise
+
+
+# Per-tier capability descriptors (dual-market parity table).
 #
 # ``cvd`` is stated EXPLICITLY per tier so the client can badge it honestly
-# (GOAL 3 symmetry): keyless has NO aggressor side (SIDE_UNKNOWN is never counted
+# Keyless has NO aggressor side (SIDE_UNKNOWN is never counted
 # in grid.on_trade), so its cvd_cum is meaningless -> ``na``; the keyed tiers
 # infer side (quote/tick rule) so their CVD is honestly ``inferred`` — never the
 # exchange-true ``exchange`` that crypto/sim get. Unavailable capabilities use an
@@ -841,7 +715,9 @@ _CAPABILITY: dict[str, dict[str, object]] = {
         "trade_side": "inferred",
         "cvd": "inferred",
         "vwap": "from_tape",
-        "markers": ["halt", "gap", "session_break"],
+        # No halt or gap marker: keyed records are not scanned for halts or stalls.
+        # session_break is emitted by the calendar gate in _keyed_events.
+        "markers": ["session_break"],
     },
     "finnhub": {
         "depth": "N/A",
@@ -849,6 +725,6 @@ _CAPABILITY: dict[str, dict[str, object]] = {
         "trade_side": "inferred",
         "cvd": "inferred",
         "vwap": "from_tape",
-        "markers": ["gap", "session_break"],
+        "markers": ["session_break"],
     },
 }

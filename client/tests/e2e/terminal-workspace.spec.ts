@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 test('market desk has persistent layouts and resizes the aligned chart without resetting its stream', async ({ page }) => {
+  // Four layouts, two resize drags and a reload, each waiting on a visible control.
+  // The default 30 s budget is too small for that on a loaded software-GL runner.
+  test.setTimeout(120_000);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
@@ -16,18 +19,22 @@ test('market desk has persistent layouts and resizes the aligned chart without r
   const canvasWidth = await page.locator('#gl').evaluate(el => el.clientWidth);
   const separator = page.locator('[role="separator"][aria-orientation="vertical"]');
   await separator.focus();
-  await page.keyboard.press('ArrowRight');
-  await page.keyboard.press('ArrowRight');
+  // The rail is on the separator's right: moving the separator left (ArrowLeft) widens it,
+  // the same direction a pointer drag to the left takes.
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
   await expect(separator).toHaveAttribute('aria-valuenow', '372');
   await expect.poll(() => page.locator('#gl').evaluate(el => el.clientWidth)).toBeLessThan(canvasWidth);
+  await expect(separator).toBeVisible();
   const railBox = await separator.boundingBox();
   expect(railBox).not.toBeNull();
   await page.mouse.move(railBox!.x + railBox!.width / 2, railBox!.y + railBox!.height / 2);
   await page.mouse.down(); await page.mouse.move(railBox!.x + railBox!.width / 2 - 32, railBox!.y + railBox!.height / 2); await page.mouse.up();
   await expect(separator).toHaveAttribute('aria-valuenow', '404');
-  await separator.focus(); await page.keyboard.press('ArrowLeft'); await page.keyboard.press('ArrowLeft');
+  await separator.focus(); await page.keyboard.press('ArrowRight'); await page.keyboard.press('ArrowRight');
   await expect(separator).toHaveAttribute('aria-valuenow', '372');
   const cvdSeparator = page.getByRole('separator', { name: 'Resize CVD pane' });
+  await expect(cvdSeparator).toBeVisible();
   const cvdBox = await cvdSeparator.boundingBox();
   expect(cvdBox).not.toBeNull();
   await page.mouse.move(cvdBox!.x + cvdBox!.width / 2, cvdBox!.y + cvdBox!.height / 2);
@@ -43,6 +50,7 @@ test('market desk has persistent layouts and resizes the aligned chart without r
   expect(cvdLayout.cvdBottom).toBeLessThanOrEqual(cvdLayout.timelineTop);
   expect(cvdLayout.height).toBe(184);
   const bookSeparator = page.getByRole('separator', { name: 'Resize book and tape panels' });
+  await expect(bookSeparator).toBeVisible();
   const bookBox = await bookSeparator.boundingBox();
   expect(bookBox).not.toBeNull();
   await page.mouse.move(bookBox!.x + bookBox!.width / 2, bookBox!.y + bookBox!.height / 2);
@@ -63,6 +71,7 @@ test('market desk has persistent layouts and resizes the aligned chart without r
   await expect(page.getByTestId('chart-startup-gate')).toHaveCount(0);
   expect(await page.getByTestId('tape-body').evaluate(el => el.clientHeight)).toBeGreaterThan(20);
   await expect(page.getByTestId('tape-row').first()).toBeVisible();
-  await page.screenshot({ path: 'C:/Users/Kullanıcı/Documents/Codex/2026-10-04/sen/outputs/terminal-desk-preview.png' });
+  // The preview lands in this test's Playwright output folder, not a personal path.
+  await page.screenshot({ path: test.info().outputPath('terminal-desk-preview.png') });
   expect(errors).toEqual([]);
 });

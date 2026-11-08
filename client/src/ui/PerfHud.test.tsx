@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { setLocale } from '../i18n';
 import { PerfHud } from './PerfHud';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -60,7 +61,7 @@ describe('PerfHud', () => {
     input.remove();
   });
 
-  it('shows — for every field when the renderer has no stats() (pre-C3 build)', () => {
+  it('shows — for every field when the renderer has no stats() (renderer without stats)', () => {
     const { container } = render(
       <PerfHud rendererRef={{ current: null }} visible onToggle={() => {}} />,
     );
@@ -70,7 +71,7 @@ describe('PerfHud', () => {
     }
   });
 
-  it('renders live stats (C3 shape) and reformats cacheBytes as MB', async () => {
+  it('renders live stats and reformats cacheBytes as MB', async () => {
     const stats = { fps: 59.94, frameMs: 0.31, uploads: 4, draws: 12, cacheBytes: 140_509_184 };
     const renderer = { current: { stats: () => stats } as unknown as never };
     const { container } = render(<PerfHud rendererRef={renderer} visible onToggle={() => {}} />);
@@ -107,5 +108,35 @@ describe('PerfHud', () => {
     };
     const { container } = render(<PerfHud rendererRef={renderer} visible onToggle={() => {}} />);
     expect(container.querySelector('[data-testid="perfhud-fps"]')!.textContent).toBe('—');
+  });
+});
+
+describe('PerfHud in Turkish', () => {
+  afterEach(() => setLocale('en'));
+
+  it('labels the chip in Turkish and uses the locale decimal separator', () => {
+    setLocale('tr');
+    const stats = { fps: 59.94, frameMs: 0.31, uploads: 1234, draws: 12, cacheBytes: 140_509_184 };
+    const renderer = { current: { stats: () => stats } as unknown as never };
+    const { container } = render(<PerfHud rendererRef={renderer} visible onToggle={() => {}} />);
+    expect(container.querySelector('[role="group"]')!.getAttribute('aria-label')).toBe('çizim performansı');
+    expect(container.textContent).toContain('kare');
+    expect(container.textContent).not.toContain('frame');
+    expect(container.querySelector('[data-testid="perfhud-fps"]')!.textContent).toBe('59,9');
+    expect(container.querySelector('[data-testid="perfhud-frame"]')!.textContent).toBe('0,3ms');
+    expect(container.querySelector('[data-testid="perfhud-uploads"]')!.textContent).toBe('1.234');
+    expect(container.querySelector('[data-testid="perfhud-cache"]')!.textContent).toBe('134MB');
+  });
+});
+
+describe('PerfHud announces nothing on its 2 Hz refresh (WCAG 4.1.3)', () => {
+  it('is a named group, not a live region', () => {
+    const renderer = { current: { stats: () => ({ fps: 60, frameMs: 1, uploads: 0, draws: 1, cacheBytes: 0 }) } as unknown as never };
+    const { container } = render(<PerfHud rendererRef={renderer} visible onToggle={() => {}} />);
+    const hud = container.querySelector('[data-testid="perf-hud"]')!;
+    expect(hud.getAttribute('role')).toBe('group');
+    expect(hud.getAttribute('aria-label')).toBeTruthy();
+    expect(hud.hasAttribute('aria-live')).toBe(false);
+    expect(container.querySelector('[role="status"]')).toBeNull();
   });
 });

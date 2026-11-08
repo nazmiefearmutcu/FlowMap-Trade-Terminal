@@ -1,0 +1,37 @@
+/* Top bar pieces that used to be inline styles. Colours come from the theme tokens. */
+
+.venue__symbol {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.topbar__sim {
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: var(--r-1);
+  padding: 0 6px;
+  font: 600 var(--fs-2xs) / 16px var(--font-mono);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* Stalled-recording chip: same warning treatment as the replay-unavailable chip. */
+.recording-stalled {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--r-1);
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+/* Windows High Contrast drops the background fill that marks the active mode,
+   so the selected mode keeps a system outline instead. */
+@media (forced-colors: active) {
+  .modeseg__btn.is-on {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}

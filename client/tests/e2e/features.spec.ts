@@ -1,15 +1,16 @@
+import type { LooseProbe } from './probe';
 import { expect, test, type Page } from '@playwright/test';
 import type { Renderer } from '../../src/gl/renderer';
 import type { useFlowMapStore } from '../../src/state/store';
 import { expectEmptyPickerAndCancel, openRecordedReplayPicker, seedReplayLocale } from './replayPicker';
 
 /**
- * Campaign 4 (lane E1) — end-to-end coverage for the features shipped by lane
- * C1 (price alerts), lane C2 (watchlist) and lane D (themes + i18n shell),
+ * End-to-end coverage for price alerts, the watchlist, and themes with the i18n
+ * shell,
  * driven through the REAL app against the server+vite stack booted by
  * playwright.config's webServer array.
  *
- * Determinism rules honoured here (contract P8 / rule 6):
+ * Determinism rules honoured here:
  *   - no fixed sleeps; every wait is a condition (expect.poll /
  *     page.waitForFunction);
  *   - the alert-fire spec drives a CONTROLLED book through the existing
@@ -20,7 +21,7 @@ import { expectEmptyPickerAndCancel, openRecordedReplayPicker, seedReplayLocale 
  *     waits only on observable conditions (toolbar state, canvas ink,
  *     persisted storage).
  *
- * The onboarding wizard (campaign 3) is a first-run modal with a full-viewport
+ * The onboarding wizard is a first-run modal with a full-viewport
  * scrim; every spec seeds its documented dismissal flag (`flowmap.onboarded=1`)
  * BEFORE the app boots, so the scrim can never intercept a pointer event.
  */
@@ -55,7 +56,7 @@ async function bootLive(page: Page): Promise<void> {
   await page.goto('/?spy=1');
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       return !!live && live.store.getState().status === 'live';
     },
     undefined,
@@ -67,7 +68,7 @@ async function bootLive(page: Page): Promise<void> {
 async function bootPanels(page: Page): Promise<void> {
   await page.goto('/?panels=1');
   await page.waitForFunction(
-    () => !!(window as unknown as { __flowmapLive?: any }).__flowmapLive?.bookStore,
+    () => !!(window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive?.bookStore,
     undefined,
     { timeout: 45_000 },
   );
@@ -77,7 +78,7 @@ async function bootPanels(page: Page): Promise<void> {
 async function waitColumns(page: Page): Promise<void> {
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       const range = live?.renderer?.residentRange();
       return !!range && range.count > 5;
     },
@@ -223,7 +224,7 @@ function layerInk(page: Page): Promise<number> {
 async function storeSubscription(page: Page): Promise<{ symbol?: string; mode?: string } | null> {
   return page.evaluate(
     () =>
-      (window as unknown as { __flowmapLive: any }).__flowmapLive.store.getState().subscription,
+      (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.store.getState().subscription,
   );
 }
 
@@ -314,7 +315,7 @@ test('drawings: trendline draw → persist across reload (same symbol)', async (
 async function bootLiveAfterReload(page: Page): Promise<void> {
   await page.waitForFunction(
     () => {
-      const live = (window as unknown as { __flowmapLive?: any }).__flowmapLive;
+      const live = (window as unknown as { __flowmapLive?: LooseProbe }).__flowmapLive;
       return !!live && live.store.getState().status === 'live';
     },
     undefined,
@@ -340,7 +341,7 @@ test('alerts: typed level fires deterministically, fired state + marker visible'
   // Point the session metadata at the sim key (PriceAlerts renders nothing
   // without a subscription) and publish an epoch the marker line maps through.
   await page.evaluate(() => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     live.store.setState({
       subscription: { market: 'sim', symbol: 'SIM-DEMO', mode: 'live', band: 'native' },
       epochs: new Map([
@@ -355,7 +356,7 @@ test('alerts: typed level fires deterministically, fired state + marker visible'
 
   // Controlled book: ONE trade at 100 (no BBO → marketPriceNow() = newest trade).
   await page.evaluate((t) => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     live.bookStore.ingestForTest({
       type: t,
       ts_ns: 1_000_000n,
@@ -382,7 +383,7 @@ test('alerts: typed level fires deterministically, fired state + marker visible'
   // Deterministic crossing: inject a print at 40 <= 50; the next evaluation
   // tick (100 ms cadence) fires it — polled as a CONDITION, never timing-pinned.
   await page.evaluate((t) => {
-    const live = (window as unknown as { __flowmapLive: any }).__flowmapLive;
+    const live = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive;
     live.bookStore.ingestForTest({
       type: t,
       ts_ns: 2_000_000n,
@@ -422,12 +423,12 @@ test('replay: empty picker preserves LIVE; replay alert-guard coverage limitatio
   // FLOWMAP_RECORDING_ENABLED=0 means the real picker offers no window. It
   // keeps the current LIVE session running and never sends a replay Subscribe.
   await expectEmptyPickerAndCancel(page, await openRecordedReplayPicker(page));
-  // This passing picker test does not enter replay or prove the P7 no-fire
+  // This passing picker test does not enter replay or prove the replay no-fire
   // guard. PriceAlerts.test.tsx covers that guard with a deterministic crossing.
   test.info().annotations.push({
     type: 'coverage-limitation',
     description:
-      'P7 replay-only alert no-fire guard is not exercised: browser server uses FLOWMAP_RECORDING_ENABLED=0. Empty-picker/LIVE/cancel contract passed; deterministic guard coverage is in PriceAlerts.test.tsx.',
+      'Replay-only alert no-fire guard is not exercised: browser server uses FLOWMAP_RECORDING_ENABLED=0. Empty-picker/LIVE/cancel contract passed; deterministic guard coverage is in PriceAlerts.test.tsx.',
   });
 });
 

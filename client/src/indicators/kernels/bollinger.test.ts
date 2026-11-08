@@ -1,5 +1,5 @@
 /**
- * Streaming Bollinger kernel vs the old branch's goldens: the hand-checked
+ * Streaming Bollinger kernel vs the reference implementation's goldens: the hand-checked
  * window (basis 3.8, σ √0.96/… from values 2..5), the flat-window σ=0 clamp,
  * the population-σ (ddof=0) naive reference, and NaN poisoning.
  */

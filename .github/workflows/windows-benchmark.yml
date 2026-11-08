@@ -1,0 +1,53 @@
+name: windows-benchmark
+
+# Scheduled checks for the Windows benchmark harness (scripts/windows-benchmark).
+# Its unit tests were never executed by any workflow, so a regression in the
+# sampler, the provenance checks or the campaign verdict logic shipped silently.
+#
+# Not covered here: the sustained campaign itself (campaign.py) needs a private
+# native build, PresentMon 2.6.0 and interactive ETW access, none of which a
+# hosted runner provides. Run it on the qualification machine and archive its
+# JSON; this workflow does not claim a soak result.
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: windows-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  harness-tests:
+    name: benchmark harness unit tests (windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.12.12"
+
+      - name: Sync server environment (locked)
+        working-directory: server
+        run: uv sync --frozen
+
+      - name: Run harness tests
+        working-directory: server
+        run: uv run pytest ../scripts/windows-benchmark -q -p no:cacheprovider
+
+      # The Node harness tests (the health probe and the driver contract) run on
+      # the same runner. They have no dependencies: node:test ships with Node.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Run Node harness tests
+        run: node --test scripts/windows-benchmark/driver-contract.test.cjs scripts/windows-benchmark/health.test.cjs
