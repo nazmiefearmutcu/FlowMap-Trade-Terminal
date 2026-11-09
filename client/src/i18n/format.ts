@@ -16,7 +16,7 @@
  *     localStorage `flowmap.timeZone` and is shared by every clock on screen.
  */
 
-import { getLocale } from './index';
+import { getLocale, t } from './index';
 import { useSyncExternalStore } from 'react';
 
 /** BCP-47 tag for the active UI locale (number and date conventions). */
@@ -328,6 +328,9 @@ export function zonedWallToNs(text: string, zone: string | undefined): bigint | 
   return BigInt(instant) * 1_000_000n;
 }
 
+/** One short-name formatter per (locale, zone): the top bar asks for the label every second. */
+const zoneNameFormatters = new Map<string, Intl.DateTimeFormat>();
+
 /**
  * Short zone label for a preference: the system's abbreviation (`GMT+3`, `EST`)
  * for local, `UTC` for utc, and `UTC` or the exchange abbreviation for exchange.
@@ -336,11 +339,18 @@ export function zoneLabel(pref: TimeZonePref, exchangeZone = 'UTC', ms = Date.no
   const zone = resolveTimeZone(pref, exchangeZone);
   if (zone === 'UTC') return 'UTC';
   try {
-    const part = new Intl.DateTimeFormat(intlLocale(), { timeZone: zone, timeZoneName: 'short' })
+    const locale = intlLocale();
+    const key = `${locale}|${zone ?? ''}`;
+    let format = zoneNameFormatters.get(key);
+    if (format === undefined) {
+      format = new Intl.DateTimeFormat(locale, { timeZone: zone, timeZoneName: 'short' });
+      zoneNameFormatters.set(key, format);
+    }
+    const part = format
       .formatToParts(new Date(ms))
       .find((p) => p.type === 'timeZoneName');
-    return part?.value ?? 'local';
+    return part?.value ?? t('format.zoneLocal');
   } catch {
-    return 'local';
+    return t('format.zoneLocal');
   }
 }

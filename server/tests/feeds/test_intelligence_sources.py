@@ -107,6 +107,7 @@ async def test_capitol_filters_real_filings_and_preserves_ranges(monkeypatch, da
     assert detail["transaction_date"] == recent["transaction_date"]
     assert detail["date"] == today.isoformat()
     assert detail["politician"] == recent["representative"]
+    assert result[0]["headline"] == ""
     warehouse.insert_intelligence.assert_called_once()
     assert warehouse.insert_intelligence.call_args.args[4] is None
 
@@ -139,6 +140,7 @@ async def test_contracts_keep_source_fields_and_a_real_zero_award(monkeypatch):
     detail = json.loads(result[0]["detail"])
     assert detail == {"recipient": record["Recipient Name"], "award_id": record["Award ID"],
                       "agency": "NASA", "description": "Source description", "date": "2026-10-10"}
+    assert result[0]["headline"] == ""
     assert session.calls[0][2]["json"]["limit"] == 8
     warehouse.insert_intelligence.assert_called_once()
     assert warehouse.insert_intelligence.call_args.args[4] == 0
@@ -158,8 +160,7 @@ async def test_contract_missing_or_invalid_fields_remain_unknown(monkeypatch, am
     assert detail["agency"] is None
     assert detail["description"] is None
     assert detail["date"] is None
-    assert "Department of Defense" not in result[0]["headline"]
-    assert "$" not in result[0]["headline"]
+    assert result[0]["headline"] == ""
     assert warehouse.insert_intelligence.call_args.args[4] is None
 
 
@@ -286,6 +287,7 @@ async def test_macro_reading_keeps_observation_dates_and_the_oldest_as_of(monkey
     result = await provider.compute_current_stress()
     assert result["as_of"] == "2000-01-05"
     assert result["series_dates"]["T10Y2Y"] == recent
+    assert result["source_status"] == {"SOFR": "ok", "BAMLH0A0HYM2": "ok", "T10Y2Y": "ok"}
     assert result["stale"] is True  # January 2000 is far outside the freshness window
     assert result["method"]["model"].startswith("uncalibrated heuristic")
     assert warehouse.insert_macro_stress.call_args.args[0] == "2000-01-05"
@@ -303,6 +305,8 @@ async def test_macro_failure_names_its_reason_and_persists_nothing(monkeypatch):
     assert result["available"] is False
     assert result["missing_series"] == ["SOFR"]
     assert result["unavailable_reason"] == "fred_no_observation"
+    assert result["source_status"] == {"SOFR": "fred_no_observation", "BAMLH0A0HYM2": "ok",
+                                       "T10Y2Y": "ok"}
     warehouse.insert_macro_stress.assert_not_called()
 
 

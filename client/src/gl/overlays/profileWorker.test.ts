@@ -154,4 +154,27 @@ describe('profile worker lifecycle', () => {
     profile.draw({ ...frame, dataVersion: 2 } as OverlayFrame);
     expect(columnArrays.mock.calls.length).toBeGreaterThan(reads);
   });
+
+  it('a stream of new data under a held profile starts at most one run per settle period', async () => {
+    mockWorker();
+    const changed = vi.fn();
+    const profile = new Profile({ maxCols: 2 }, clock);
+    profile.draw(frameAt(0, changed));
+    pending[0].resolve(result());
+    await vi.waitFor(() => expect(profile.calculationState).toBe('ready'));
+    profile.draw(frameAt(0, changed));
+
+    at(1050); // new data under the same window, inside the settle period
+    profile.draw({ ...frameAt(0, changed), dataVersion: 2 } as OverlayFrame);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    at(1140);
+    profile.draw({ ...frameAt(0, changed), dataVersion: 3 } as OverlayFrame);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    at(1150); // one settle period after the last run started
+    profile.draw({ ...frameAt(0, changed), dataVersion: 3 } as OverlayFrame);
+    expect(run).toHaveBeenCalledTimes(2);
+    profile.dispose();
+  });
 });

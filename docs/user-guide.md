@@ -88,12 +88,12 @@ Market grammar (what you can type into the search or the socket):
   deribit, okx; every other ccxt venue via snapshot polling.
 - `equity:AAPL` — keyless synthetic depth (Yahoo 1-minute bars) on a distinct
   amber ramp; with `ALPACA_API_KEY`/`ALPACA_API_SECRET` or `FINNHUB_API_KEY` in the
-  environment it upgrades to real L1 top-of-book and tick tape during market
+  environment that starts FlowMap (the installed app forwards them to its server) it upgrades to real L1 top-of-book and tick tape during market
   hours.
 
 **Capability badges, never silent downgrades.** The top bar shows what the
-active feed actually delivers — `L2` / `L1` / `SYNTH`, `TAPE TICK` / `TAPE
-POLL`, `SIDE EXCHANGE` / `SIDE NA`, and `RECORDED DENSITY` when the depth on screen is read back from a recording. A simulated feed (`sim:SIM-DEMO`) shows a `SIM` chip. A replay keeps its real depth tier (a keyless equity recording still reads `SYNTH`) and adds `RECORDED DENSITY`. If a badge says the side or the tape is
+active feed actually delivers — `L2` / `L2-SNAPSHOT` / `L1` / `SYNTH`, `TAPE TICK` / `TAPE
+POLL`, `SIDE EXCHANGE` / `SIDE NA`, and `RECORDED DENSITY` when the depth on screen is read back from a recording. A simulated feed (`sim:SIM-DEMO`) shows a `SIM` chip. A replay keeps its real depth tier (a keyless equity recording still reads `SYNTH`) and adds `RECORDED DENSITY`. `L2-SNAPSHOT` is a real book that a polled venue re-reads whole on each tick (the ccxt venues), so it is less detailed than a streamed `L2` book and carries an amber caution style. If a badge says the side or the tape is
 degraded, that is the truth of the stream, not a UI guess.
 
 Up to 4 sessions can be subscribed at once (`FLOWMAP_MAX_SESSIONS`).
@@ -361,7 +361,7 @@ from this table. Update both when a binding changes.
 | Vertical drag on price gutter | Scale the price axis about the viewport centre |
 | Double-click on price gutter | Re-fit the price axis |
 
-**Single-key shortcuts.** Settings → *Keyboard* → *Single-key shortcuts* turns off the single-character shortcuts: `Space`, `/`, `E`, `M`, `A`, `H`, `C`, `D`, `I`, `J`, `F`, `P`, `R`, `T`, `?`, and the chart's `+`, `−`, `[` and `]`. Chords with Ctrl or Cmd (such as `Ctrl+K` and `Ctrl+Z`) keep working, and so do the mouse gestures and the arrow keys. The arrow keys are not characters, so with the switch off they still pan the chart, and `Shift`+`↑` and `Shift`+`↓` still zoom the price axis. The choice is kept in this browser.
+**Single-key shortcuts.** Settings → *Keyboard* → *Single-key shortcuts* turns off the single-character shortcuts: `Space`, `/`, `E`, `M`, `A`, `H`, `C`, `D`, `I`, `J`, `F`, `P`, `R`, `T`, `?`, and the chart's `+`, `−`, `[` and `]`. Chords with Ctrl or Cmd (such as `Ctrl+K` and `Ctrl+Z`) keep working, and so do the mouse gestures and the arrow keys. The arrow keys are not characters, so with the switch off they still pan the chart, and `Shift`+`↑` and `Shift`+`↓` still zoom the price axis. While the switch is off, the rows that need a single key are marked off in the `?` overlay and in the Settings keysheet. The choice is kept in this browser.
 
 ## Export
 
@@ -391,8 +391,8 @@ Two exports, both local:
 ## Health endpoint
 
 `GET /api/health` answers "is the server alive?" and needs no session token, though the Host
-check still applies. Without a token it returns only `status`, `version`, `protocol_version` and
-`uptime_s`. The operational snapshot is returned to requests that carry the session token. Source
+check still applies. Without a token it returns only `status`, `version`, `protocol_version`, `uptime_s` and
+`recording_enabled`. The operational snapshot is returned to requests that carry the session token. Source
 runs set no token, so there every request that passes the Host check gets it: recording-enabled,
 the active sessions with their feed kind and live or degraded state, `config_error`, and a v3
 `stats` object (when the stats producer is present; `stats_available` says

@@ -361,7 +361,7 @@ class RecordingMixin:
             try:
                 await self._drain_recording_work(self.run_task)
             except asyncio.CancelledError:
-                pass
+                pass  # the caller is leaving; the feed's own finally has already run
             except Exception:
                 logger.exception("feed exit failed during recording teardown")
         await self._close_recording()

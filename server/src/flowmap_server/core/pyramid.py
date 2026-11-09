@@ -287,7 +287,7 @@ class PersistentPyramid:
                         cache.setdefault(path, scalar)
                     self._scalar_by_name[name] = path, scalar
                 except (ValueError, TypeError, IndexError):
-                    continue
+                    continue  # a malformed scalar entry is skipped; the rest still index
             self._indices_seeded = True
         parts = PartSnapshot()
         parts.start, parts.end = start, end
@@ -385,7 +385,7 @@ class PersistentPyramid:
                         return None
             return source
         except (OSError, ValueError, KeyError, TypeError):
-            return None
+            return None  # an unreadable or malformed index entry counts as no index
 
     def generation(self, parts, start=0, end=2**32 - 1, known_epochs=None) -> str:
         # Fresh raw stamps, including absence, invalidate process-local display

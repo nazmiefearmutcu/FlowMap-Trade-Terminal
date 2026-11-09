@@ -78,6 +78,13 @@ describe('tapeBadge', () => {
     expect(tapeBadge({ tape: '10s' })).toBe('TAPE 10S');
     expect(tapeBadge(null)).toBe('TAPE');
   });
+
+  it('reads the tier in the active locale, with the top bar wording', () => {
+    const tr = (key: string) => tFor('tr', key);
+    expect(tapeBadge({ tape: 'tick' }, tr)).toBe(`${tFor('tr', 'chip.tape')} ${tFor('tr', 'chip.tick')}`);
+    expect(tapeBadge({ tape: 'poll' }, tr)).not.toContain('POLL');
+    expect(tapeBadge(null, tr)).toBe(tFor('tr', 'chip.tape'));
+  });
 });
 
 describe('sideClass', () => {
@@ -334,6 +341,17 @@ describe('Tape inspection controls', () => {
     click(container.querySelector('[data-testid="tape-hold"]')!);
     expect(container.querySelectorAll('[data-testid="tape-row"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="tape-row"]')?.getAttribute('data-price')).toBe('101.00');
+  });
+
+  it('names the hold toggle by its state instead of marking it pressed', () => {
+    print(1n, 100);
+    const { container } = render(<Tape />);
+    const hold = () => container.querySelector('[data-testid="tape-hold"]') as HTMLButtonElement;
+    expect(hold().getAttribute('aria-pressed')).toBeNull();
+    const idle = hold().textContent;
+    click(hold());
+    expect(hold().getAttribute('aria-pressed')).toBeNull();
+    expect(hold().textContent).not.toBe(idle);
   });
 
   it('holds on hover and resumes on leave without stopping ingestion', () => {

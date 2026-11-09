@@ -8,6 +8,7 @@ import type { RefObject } from 'react';
 import { formatNumber } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import type { IntelligenceEvent } from '../state/intelligenceStore';
+import { intelHeading, intelKindKey } from './IntelligenceDrawerEvents';
 
 interface IntelDrawerHeaderProps {
   closeRef: RefObject<HTMLButtonElement>;
@@ -78,20 +79,22 @@ export function IntelReceivedEvents({ events }: { events: readonly IntelligenceE
   return (
     <section className="intel-section" data-testid="intel-received-events">
       <h3 className="intel-section__title">{t('intel.receivedTitle')}</h3>
-      {events.map((event) => (
-        <article key={event.id} className="intel-card">
-          <div className="intel-card__top">
-            <span className="intel-card__sym">{event.symbol}</span>
-            <span>{event.kind}</span>
-            <span>{event.source || t('intel.sourceMissing')}</span>
-          </div>
-          <div className="intel-card__heading">{event.headline}</div>
-          <div className="intel-card__desc">{event.detail}</div>
-          {event.amountUsd !== undefined && (
-            <div>{t('intel.amount', { amount: `$${formatNumber(event.amountUsd)}` })}</div>
-          )}
-        </article>
-      ))}
+      {events.map((event) => {
+        const kindKey = intelKindKey(event.kind);
+        return (
+          <article key={event.id} className="intel-card">
+            <div className="intel-card__top">
+              <span className="intel-card__sym">{event.symbol}</span>
+              <span>{kindKey ? t(kindKey) : event.kind}</span>
+              <span>{event.source || t('intel.sourceMissing')}</span>
+            </div>
+            <div className="intel-card__heading">{intelHeading(event, t)}</div>
+            {event.amountUsd !== undefined && (
+              <div>{t('intel.amount', { amount: `$${formatNumber(event.amountUsd)}` })}</div>
+            )}
+          </article>
+        );
+      })}
     </section>
   );
 }

@@ -106,6 +106,12 @@ export const HANDSHAKE_MAX_MS = 30_000;
  */
 export const SUBSCRIBE_HANDSHAKE_MAX_MS = 60_000;
 /**
+ * Refusal reason the server sends with a degraded Status when the subscribe boot
+ * runs past its deadline (ws.py REASON_SUBSCRIBE_TIMEOUT). Transient: the same
+ * subscribe may succeed on a later attempt, so the socket close reconnects.
+ */
+const SUBSCRIBE_TIMEOUT_REASON = 'subscribe_timeout';
+/**
  * Liveness deadline once live: the server pings about once per second, so this
  * much silence means the socket is half-open or the sidecar stopped answering.
  * The frame stamp, not the browser's close event, decides that the link is dead.
@@ -902,13 +908,16 @@ export class Connection {
     // A 1003 + degraded Status on a LIVE subscription is a refusal the same
     // subscribe cannot cure (an invalid symbol, for one): terminal, not a retry.
     const refusedLive = refusal === 'degraded' && !refusedReplay;
+    const reason = this.lastStatusReason;
     // A 1011 after a degraded Status is the server failing the subscribe itself
     // (ws.py: an unexpected subscribe error). Re-sending the same subscribe would
     // fail the same way, so it is terminal like a 1003 refusal: surface the
     // server's reason and stop, instead of reconnecting into the same failure.
+    // A subscribe-boot deadline is the exception: it is a stall, not a verdict on
+    // the symbol, so the close reconnects with backoff like any wire death.
     const failedSubscribe = code === Connection.CLOSE_INTERNAL_ERROR
-      && this.lastStatusFeedState === 'degraded';
-    const reason = this.lastStatusReason;
+      && this.lastStatusFeedState === 'degraded'
+      && reason !== SUBSCRIBE_TIMEOUT_REASON;
     this.lastClose = {
       code: code ?? null,
       wasClean: code !== undefined && Connection.CLEAN_CLOSE_CODES.has(code),

@@ -555,6 +555,7 @@ async def crypto_klines(
     """
     from crocodile.crypto.client.backfill import SUPPORTED_CHANNELS
 
+    from flowmap_server.data.venues import UnlistedSymbolError
     from flowmap_server.feeds.crypto import resolve_symbol_cached
 
     exchange, _, seg = market.partition("-")
@@ -563,7 +564,13 @@ async def crypto_klines(
     # spelling must not silently cost us the native path (and with it the taker
     # split) by failing the venue's REST call. Memoized: a re-subscribe
     # or restart must not re-download the venue's whole ccxt market table.
-    symbol = await resolve_symbol_cached(market, symbol)
+    try:
+        symbol = await resolve_symbol_cached(market, symbol)
+    except UnlistedSymbolError:
+        # The venue does not list the symbol: there is no kline to fetch, so
+        # this is a clean cold start, not a ValueError into the kline path.
+        logger.warning("%s does not list %s; no klines to backfill", market, symbol)
+        return []
     kw = {"interval": interval, "max_bars": max_bars, "now_ns": now_ns}
     if "ohlcv" in SUPPORTED_CHANNELS.get(exchange, frozenset()):
         # Native first: only the venue's own klines carry the taker buy/sell

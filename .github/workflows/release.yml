@@ -58,9 +58,10 @@ env:
   RUST_TOOLCHAIN: "1.98.0"
 
 # Two runs for the same tag must not race to publish; a running release is
-# never cancelled half-way through an upload.
+# never cancelled half-way through an upload. Both triggers resolve to the tag name,
+# so a tag push and a manual re-release of that tag queue against each other.
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref }}
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -181,7 +182,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # Apple Silicon. macos-14 is no longer offered to this repository (the run was
+          # refused with "configuration 'macos-14-arm64-us-default' is not supported"), so the
+          # leg uses the current Apple Silicon image; ci.yml's shell-macos leg matches it.
+          - os: macos-15
             triple: aarch64-apple-darwin
             kind: macos
           # Intel macOS. NOT `macos-13`: that image was retired on 2025-12-04, so
@@ -218,6 +222,12 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag && format('refs/tags/{0}', needs.prepare.outputs.tag) || github.sha }}
           persist-credentials: false
+
+      # The About panel prints the commit the build came from (client/src/ui/About.tsx).
+      # The commit is read from the checkout, which is the tag, not from github.sha,
+      # because a manual re-release runs on a branch head.
+      - name: Pin the build commit for About
+        run: echo "VITE_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Install Rust (host target ${{ matrix.triple }})
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -647,6 +657,23 @@ jobs:
           if [ ! -s SHA256SUMS ]; then echo "no checksum lines collected"; exit 1; fi
           cat SHA256SUMS
 
+      # The approval can wait for hours. Re-read the release state right before anything
+      # is created, edited, clobbered or deleted, so a release published in the meantime
+      # is never overwritten.
+      - name: Refuse to overwrite a release published during this run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            DRAFT="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+            if [ "$DRAFT" != "true" ]; then
+              echo "Release $TAG was published before this publish job ran. Refusing to overwrite it." >&2
+              exit 1
+            fi
+          fi
+
       - name: Ensure a draft release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -670,6 +697,18 @@ jobs:
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES"
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag               --title "FlowMap $TAG" --notes-file "$NOTES" --draft
+          fi
+
+      # Refuses a manifest whose last byte is a bare carriage return, before any checksum
+      # tool reads it. GNU sha256sum on Linux has accepted that shape while Git Bash's
+      # rejects it, so the verdict must not depend on the runner. Keep the release draft
+      # if this fails.
+      - name: Refuse a checksum manifest that ends in a bare carriage return
+        run: |
+          set -euo pipefail
+          if [ -s SHA256SUMS ] && [ "$(tail -c 1 SHA256SUMS | od -An -tx1 | tr -d ' \n')" = "0d" ]; then
+            echo "SHA256SUMS ends with a bare carriage return; keep the release draft and regenerate the manifest." >&2
+            exit 1
           fi
 
       - name: Upload installers and SHA256SUMS to the draft release

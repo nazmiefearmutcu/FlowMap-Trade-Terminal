@@ -105,7 +105,7 @@ pub(crate) fn lang_from_apple_languages(output: &str) -> Option<Lang> {
 #[cfg(target_os = "macos")]
 pub(crate) fn detect_lang() -> Lang {
     // A Finder-launched app has no LANG, so the user's language list is the source.
-    Command::new("defaults")
+    Command::new("/usr/bin/defaults")
         .args(["read", "-g", "AppleLanguages"])
         .output()
         .ok()

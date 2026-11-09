@@ -1422,6 +1422,7 @@ body,
 }
 
 .tape__time {
+  position: relative;
   color: var(--text-3);
   font-size: var(--fs-xs);
 }
@@ -1562,12 +1563,6 @@ body,
 .go-live:hover {
   color: var(--bg);
   background: var(--accent);
-}
-.go-live__behind {
-  font-variant-numeric: tabular-nums;
-  font-family: var(--font-mono);
-  font-weight: 500;
-  opacity: 0.75;
 }
 
 /* Transport state pill — about the CAMERA (FOLLOWING / SCROLLED BACK), never
@@ -2209,6 +2204,10 @@ body,
   font-size: var(--fs-2xs);
   letter-spacing: 0.08em;
   color: var(--chart-ink-dim);
+}
+/* A snapshot book (not a native L2 feed) takes the caution ink, as the synthetic tier does. */
+.heat-legend__tier--caution {
+  color: var(--warn);
 }
 /* Depth-channel note ("bid depth" / "ask depth") under the tier tag. */
 .heat-legend__channel {

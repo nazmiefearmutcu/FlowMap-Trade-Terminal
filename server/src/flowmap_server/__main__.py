@@ -17,6 +17,7 @@ import uvicorn
 
 from flowmap_server.api.app import create_app
 from flowmap_server.config import Config
+from flowmap_server.core.session_common import SERVER_DRAIN_BOUND_S
 from flowmap_server.logging_setup import configure_logging, shutdown_logging
 
 __all__ = ["main", "configure_logging"]
@@ -91,7 +92,8 @@ def main() -> None:
                     host=cfg.host, port=cfg.port,
                     log_level=log_level, log_config=None,
                     ws_max_size=WS_MAX_MESSAGE_BYTES,
-                    limit_concurrency=HTTP_WS_CONCURRENCY)
+                    limit_concurrency=HTTP_WS_CONCURRENCY,
+                    timeout_graceful_shutdown=SERVER_DRAIN_BOUND_S)
     finally:
         shutdown_logging()
 

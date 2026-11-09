@@ -32,7 +32,7 @@ precision highp sampler2DArray;
 in vec2 v_uv;
 out vec4 fragColor;
 
-// Density tiles: RG16F, R = bid, G = ask. texelFetch only — no filtering.
+// Density tiles: RG32F, R = bid, G = ask. texelFetch only — no filtering.
 uniform highp sampler2DArray u_tiles;
 uniform highp sampler2D u_geometry;
 uniform int u_geometryEnabled;

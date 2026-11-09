@@ -71,12 +71,14 @@ class FanoutMixin:
         t0_ns: int | None = None,
         is_partial: bool = False,
         partial_kind: str = "",
+        latest_key: str = "",
     ) -> None:
         if self._preparing_closed_history:
             return
         for client in self._clients:
             client.offer(
-                frame, col_msg=col, t0_ns=t0_ns, is_partial=is_partial, partial_kind=partial_kind
+                frame, col_msg=col, t0_ns=t0_ns, is_partial=is_partial, partial_kind=partial_kind,
+                latest_key=latest_key,
             )
 
     # -- snapshot / history ----------------------------------------------------

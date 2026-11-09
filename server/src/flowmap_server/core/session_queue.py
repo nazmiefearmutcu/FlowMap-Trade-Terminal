@@ -10,7 +10,7 @@ from flowmap_server.proto import events, wire
 
 
 class _Frame:
-    __slots__ = ("col", "data", "enq_ns", "is_partial", "partial_kind", "protected", "t0_ns")
+    __slots__ = ("col", "data", "enq_ns", "is_partial", "latest_key", "partial_kind", "protected", "t0_ns")
 
     def __init__(
         self,
@@ -21,6 +21,7 @@ class _Frame:
         protected: bool = False,
         is_partial: bool = False,
         partial_kind: str = "",
+        latest_key: str = "",
     ) -> None:
         self.data = data
         self.col = col
@@ -29,6 +30,7 @@ class _Frame:
         self.protected = protected
         self.is_partial = is_partial
         self.partial_kind = partial_kind
+        self.latest_key = latest_key
 
 
 class _Gap:
@@ -93,6 +95,7 @@ class ClientTx:
         protected: bool = False,
         is_partial: bool = False,
         partial_kind: str = "",
+        latest_key: str = "",
     ) -> None:
         now = self._clock()
         if col_msg:
@@ -117,7 +120,17 @@ class ClientTx:
                 _Frame(msg_bytes, True, t0_ns, now, protected, is_partial, partial_kind)
             )
             return
-        self._q.append(_Frame(msg_bytes, False, t0_ns, now, protected))
+        if latest_key:
+            # Latest-wins per key for a non-column frame that is a full state
+            # (the instant L2 book): a queued one is superseded, so a lagging
+            # client holds at most one of them, never a backlog of stale books.
+            for i, e in enumerate(self._q):
+                if isinstance(e, _Frame) and not e.col and e.latest_key == latest_key:
+                    del self._q[i]
+                    if not e.protected:
+                        self._noncol -= 1
+                    break
+        self._q.append(_Frame(msg_bytes, False, t0_ns, now, protected, latest_key=latest_key))
         if protected:
             # Snapshot frames: exempt from (and not counted toward) the
             # non-column cap — a tape/BBO flood must never evict Hello.

@@ -218,6 +218,12 @@ describe('time-zone preference', () => {
     expect(zoneLabel('exchange', exchangeZoneFor('equity'), NOON_UTC)).not.toBe('UTC');
   });
 
+  it('labels a zone the platform cannot format in the active locale', () => {
+    expect(zoneLabel('exchange', 'Not/A_Zone')).toBe('local');
+    setLocale('tr');
+    expect(zoneLabel('exchange', 'Not/A_Zone')).toBe('yerel');
+  });
+
   it('persists the choice and restores it on boot', () => {
     setTimeZonePref('utc');
     expect(localStorage.getItem(TIME_ZONE_STORAGE_KEY)).toBe('utc');

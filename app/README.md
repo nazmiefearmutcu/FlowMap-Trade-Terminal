@@ -166,6 +166,11 @@ bash app/scripts/bundle-python.sh <target-triple>            # 2. pyruntime
 cd app/src-tauri && cargo tauri build                        # 3. client build + installers
 ```
 
+Run these from the repository root. On Windows, run them in Git-Bash. The tools
+they need must be on `PATH`: Node and npm, `uv` (step 2 exports the locked
+requirements with `uv export`), and Rust 1.89 or newer with the Tauri CLI version
+that CI and `Cargo.lock` pin: `cargo install tauri-cli --version 2.11.5 --locked`.
+
 `cargo tauri build` runs `beforeBuildCommand` (`npm --prefix ../../client run
 build`), so the client is always rebuilt and never a stale `client/dist` is
 packaged. Step 2 is still required: the Windows and Linux configs declare
@@ -179,19 +184,20 @@ API. A CI job that has a token can fetch that JSON once and pass its path as
 `<target-triple>` ∈ `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`,
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`,
 `aarch64-apple-darwin` (default). On Windows run `bundle-python.sh` under
-**Git-Bash**. Outputs land in `target/release/bundle/{msi,nsis,deb,appimage}/`,
-named for the arch — `FlowMap_<version>_x64-setup.exe` on Intel/AMD,
-`FlowMap_<version>_arm64-setup.exe` on ARM.
+**Git-Bash**. Outputs land in `app/src-tauri/target/release/bundle/{msi,nsis,deb,appimage}/`,
+named for the arch: `FlowMap_<version>_x64-setup.exe` and
+`FlowMap_<version>_x64_en-US.msi` on Intel/AMD, and the `arm64` names on ARM.
 
-The Windows installers (NSIS and MSI) are English by default. NSIS also offers
-Turkish, with a language selector. The MSI is still English-only. Its
-localization needs a decision on shipping one MSI per language.
+The NSIS installer is English by default and offers Turkish with a language
+selector. The MSI is English-only: Tauri builds one MSI per WiX language, so a
+Turkish MSI would be a second installer per architecture, and the release asset
+list (`scripts/validate_release_assets.py`) names one MSI per architecture.
 
 The MSI uninstall does not prompt. It removes the program files and keeps the
 recordings and logs in the app-data folder. The NSIS uninstaller asks first and
 keeps them unless the user asks for deletion (`windows/hooks.nsi`).
 
-`.github/workflows/release.yml` does exactly this across a `macos-14` (arm),
+`.github/workflows/release.yml` does exactly this across a `macos-15` (arm),
 `macos-15-intel`, `windows-latest` (x64), `windows-11-arm` (ARM64) and
 `ubuntu-22.04` matrix on every `vX.Y.Z` tag (hotfixes are patch versions), smoke-tests
 each bundle's server (`/api/health`), reports each installer's size to the job
@@ -199,8 +205,9 @@ summary, and attaches the installers and `THIRD-PARTY-NOTICES.txt` to the GitHub
 Release. The two Windows legs also install what they built and run
 `scripts/packaged_smoke_windows.py`: the installed app must answer `/api/health`,
 refuse a foreign `Host` and an unauthenticated request, close on WM_CLOSE, and leave
-no python process from its runtime behind. macOS and Linux installed-app smoke tests
-are not implemented yet. Every leg is a **native** build — the Python wheels are
+no python process from its runtime behind. `scripts/packaged_smoke_posix.py` runs the
+same loopback checks on the macOS legs (the DMG's `FlowMap.app`) and on the Linux legs
+(the `.deb` and the AppImage). Every leg is a **native** build — the Python wheels are
 platform-specific and cannot be cross-built.
 
 ### Windows on ARM: the dependency exceptions

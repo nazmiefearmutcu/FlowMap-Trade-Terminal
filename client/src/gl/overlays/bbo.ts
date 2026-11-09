@@ -102,7 +102,7 @@ export class Bbo {
       // Right-edge badge: e.g. "A 100.75 ×8·L2".
       const sizeText = formatSizeReadout(sz);
       const label = `${key} ${formatPrice(price, decimals)}${sizeText !== '' ? ` ×${sizeText}` : ''}${tag}`;
-      text.badge(cssW - 3, cy, label, { align: 'right', color: color.css, size: 10 });
+      text.badge(cssW - 3, cy, label, { align: 'right', color: color.css, size: 10 }); // size-budget: dense price tag
     };
 
     drawSide(ask, bbo.askPx, bbo.askSz, OVERLAY.ask, t('overlay.bbo.askSide'), askCy);

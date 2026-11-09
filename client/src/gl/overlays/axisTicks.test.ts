@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import { priceDecimals } from '../numeric';
 import {
   fmtClock,
   fmtClockMs,
   niceStep,
   niceTimeStepNs,
-  priceDecimals,
   priceTickModel,
   priceTicks,
   timeLabelFormatter,
@@ -56,14 +56,6 @@ describe('priceTickModel', () => {
 
   it('is empty (step 0) for a degenerate range', () => {
     expect(priceTickModel(100, 100, 5, 0.5)).toEqual({ step: 0, ticks: [] });
-  });
-});
-
-describe('priceDecimals', () => {
-  it('derives decimals from the step', () => {
-    expect(priceDecimals(0.5)).toBe(1);
-    expect(priceDecimals(0.01)).toBe(2);
-    expect(priceDecimals(1)).toBe(0);
   });
 });
 

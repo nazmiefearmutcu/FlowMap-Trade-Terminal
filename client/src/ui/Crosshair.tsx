@@ -16,7 +16,15 @@
  * never storms React.
  */
 
-import { useEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type MutableRefObject,
+  type RefObject,
+  type SetStateAction,
+} from 'react';
 
 import type { CrosshairReadout, Renderer } from '../gl/renderer';
 import { getSnapshot } from '../state/bookStore';
@@ -80,6 +88,88 @@ export function fmtTime(ns: bigint | null, pref: TimeZonePref = 'utc', exchangeZ
   return `${formatClock(ms, pref, exchangeZone, true)} ${zoneLabel(pref, exchangeZone, ms)}`;
 }
 
+/**
+ * Pointer probe: while the pointer is over the canvas, reads the exact readout under
+ * it (rAF-coalesced, re-read about ten times a second while still), shares the probed
+ * price for the A key, and commits only changed readouts.
+ */
+function useCrosshairProbe(
+  canvasRef: RefObject<HTMLCanvasElement>,
+  rendererRef: MutableRefObject<Renderer | null>,
+  probeKeyRef: MutableRefObject<string>,
+  setHover: Dispatch<SetStateAction<HoverState | null>>,
+): void {
+  const rafRef = useRef(0);
+useEffect(() => {
+  const canvas = canvasRef.current;
+  if (!canvas) return;
+
+  let pointer: { x: number; y: number } | null = null;
+  // While the pointer is still, the camera and data move underneath it, so the
+  // readout is re-read about ten times a second. Re-reading every frame (60/s)
+  // with a motionless cursor was constant CPU work for no visible change.
+  const REPROBE_MS = 100;
+  let reprobeTimer = 0;
+  const clearReprobe = (): void => {
+    if (reprobeTimer) window.clearTimeout(reprobeTimer);
+    reprobeTimer = 0;
+  };
+  const probe = (): void => {
+      rafRef.current = 0;
+      if (!pointer) return;
+      const { x, y } = pointer;
+      const renderer = rendererRef.current;
+      const readout = renderer ? renderer.probeAt(x, y) : null;
+      // Share the probe (price under the cursor) with feature components —
+      // the `A` alert key anchors at exactly this price. Cheap, off-render.
+      recordProbeSpot({
+        key: probeKeyRef.current,
+        price: readout?.price ?? null,
+        priceDecimals: readout?.priceDecimals ?? 2,
+        x,
+        y,
+        at: Date.now(),
+      });
+      setHover(prev => prev && prev.x === x && prev.y === y && sameReadout(prev.readout, readout) ? prev : { x, y, readout });
+      // Only changed readouts commit a React render. The next probe is due in
+      // REPROBE_MS, not on the next frame.
+      reprobeTimer = window.setTimeout(() => {
+        reprobeTimer = 0;
+        if (pointer && !rafRef.current) rafRef.current = requestAnimationFrame(probe);
+      }, REPROBE_MS);
+  };
+  const onMove = (e: PointerEvent): void => {
+    const rect = canvas.getBoundingClientRect();
+    pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    // A moving pointer probes immediately; the throttle only governs stillness.
+    clearReprobe();
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(probe);
+  };
+  const onLeave = (): void => {
+    pointer = null;
+    // The A alert key must not anchor on the price left behind by a pointer that
+    // has already gone.
+    clearProbeSpot();
+    clearReprobe();
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    }
+    setHover(null);
+  };
+
+  canvas.addEventListener('pointermove', onMove);
+  canvas.addEventListener('pointerleave', onLeave);
+  return () => {
+    pointer = null;
+    canvas.removeEventListener('pointermove', onMove);
+    canvas.removeEventListener('pointerleave', onLeave);
+    clearReprobe();
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+  };
+}, [canvasRef, rendererRef, probeKeyRef, setHover]);
+}
+
 export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Element | null {
   const [hover, setHover] = useState<HoverState | null>(null);
   const capability = useFlowMapStore((s) => s.capability);
@@ -89,7 +179,6 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   const t = useT();
   const group = marketGroup(market);
   const exchangeZone = exchangeZoneFor(group);
-  const rafRef = useRef(0);
   // The market:symbol the probe is read on, in the same form PriceAlerts keys its
   // alerts by. Held in a ref so the pointer loop never re-subscribes for a switch.
   const probeKeyRef = useRef('');
@@ -97,74 +186,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
     probeKeyRef.current = `${market}:${symbol}`;
   }, [market, symbol]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    let pointer: { x: number; y: number } | null = null;
-    // While the pointer is still, the camera and data move underneath it, so the
-    // readout is re-read about ten times a second. Re-reading every frame (60/s)
-    // with a motionless cursor was constant CPU work for no visible change.
-    const REPROBE_MS = 100;
-    let reprobeTimer = 0;
-    const clearReprobe = (): void => {
-      if (reprobeTimer) window.clearTimeout(reprobeTimer);
-      reprobeTimer = 0;
-    };
-    const probe = (): void => {
-        rafRef.current = 0;
-        if (!pointer) return;
-        const { x, y } = pointer;
-        const renderer = rendererRef.current;
-        const readout = renderer ? renderer.probeAt(x, y) : null;
-        // Share the probe (price under the cursor) with feature components —
-        // the `A` alert key anchors at exactly this price. Cheap, off-render.
-        recordProbeSpot({
-          key: probeKeyRef.current,
-          price: readout?.price ?? null,
-          priceDecimals: readout?.priceDecimals ?? 2,
-          x,
-          y,
-          at: Date.now(),
-        });
-        setHover(prev => prev && prev.x === x && prev.y === y && sameReadout(prev.readout, readout) ? prev : { x, y, readout });
-        // Only changed readouts commit a React render. The next probe is due in
-        // REPROBE_MS, not on the next frame.
-        reprobeTimer = window.setTimeout(() => {
-          reprobeTimer = 0;
-          if (pointer && !rafRef.current) rafRef.current = requestAnimationFrame(probe);
-        }, REPROBE_MS);
-    };
-    const onMove = (e: PointerEvent): void => {
-      const rect = canvas.getBoundingClientRect();
-      pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      // A moving pointer probes immediately; the throttle only governs stillness.
-      clearReprobe();
-      if (!rafRef.current) rafRef.current = requestAnimationFrame(probe);
-    };
-    const onLeave = (): void => {
-      pointer = null;
-      // The A alert key must not anchor on the price left behind by a pointer that
-      // has already gone.
-      clearProbeSpot();
-      clearReprobe();
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = 0;
-      }
-      setHover(null);
-    };
-
-    canvas.addEventListener('pointermove', onMove);
-    canvas.addEventListener('pointerleave', onLeave);
-    return () => {
-      pointer = null;
-      canvas.removeEventListener('pointermove', onMove);
-      canvas.removeEventListener('pointerleave', onLeave);
-      clearReprobe();
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, [canvasRef, rendererRef]);
+  useCrosshairProbe(canvasRef, rendererRef, probeKeyRef, setHover);
 
   if (!hover) return null;
   const { x, y, readout } = hover;

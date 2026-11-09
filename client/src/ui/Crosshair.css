@@ -66,6 +66,11 @@
   font-weight: 600;
 }
 
+/* Snapshot depth (a polled book, not a native L2 feed): the same amber ink, unfilled. */
+.crosshair__tag--caution {
+  color: var(--chart-warn);
+}
+
 .crosshair__line {
   display: flex;
   justify-content: space-between;

@@ -35,23 +35,22 @@
  * fights the GL loop. Epoch geometry + capability are low-frequency store state.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 import { MODE_SYNTH_PROFILE, type EpochParams } from '../proto/types';
 import { depthTier, isRecordedDensity, type DepthTier } from './DomLadderTier';
-import { priceToRow, rowToPrice, scaleFromEpoch, stepAtRow } from '../gl/priceScale';
-import { subscribe, getSnapshot, bookSessionKey, type BookSnapshot } from '../state/bookStore';
+import { priceToRow, rowToPrice, scaleFromEpoch, stepAtRow, type PriceScale } from '../gl/priceScale';
+import { bookSessionKey, type BookSnapshot } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
 import { formatPrice, formatSizeCompact } from '../i18n/format';
 import { useT } from '../i18n/useT';
+import { LadderHeader } from './DomLadderHeader';
+import { ROW_H, clampRow, useBookSnapshot, useLockedWheel, useVisibleRowCount } from './DomLadderHooks';
 import './TradingPanels.css';
 import './DomLadder.css';
 
 export { depthTier, isRecordedDensity, type DepthTier } from './DomLadderTier';
 
-/** Row height in CSS px — must match `.ladder__row` height in App.css. */
-const ROW_H = 17;
-const DEFAULT_LADDER_ROWS = 21;
 /** Density below this is treated as an empty book level (f16 residue floor). */
 const DENSITY_EPS = 1e-6;
 
@@ -79,7 +78,6 @@ export interface LadderModel {
    */
   spread: number | null;
 }
-
 
 /**
  * How to LAY OUT the rungs — decoupled from the honesty {@link DepthTier} badge.
@@ -114,17 +112,6 @@ export function priceDecimals(step: number): number {
     if (scaled >= 1 && Math.abs(scaled - Math.round(scaled)) < 1e-8) return decimals;
   }
   return 12;
-}
-
-function clampRow(r: number, rows: number): number {
-  // NaN guard FIRST: priceToRow returns NaN for a non-positive price on a
-  // non-uniform (log-winged) grid, and `NaN < 0` / `NaN > rows-1` are both
-  // false — so an unguarded clamp would return NaN and quietly poison every
-  // downstream row comparison. -1 is the established "no such row" sentinel.
-  if (!Number.isFinite(r)) return -1;
-  if (r < 0) return 0;
-  if (r > rows - 1) return rows - 1;
-  return r;
 }
 
 /** Match NumPy rint in the server's depth binning, including half-to-even. */
@@ -344,43 +331,13 @@ export function DomLadder(): JSX.Element {
   const sessionKey = useFlowMapStore(bookSessionKey);
   const status = useFlowMapStore((s) => s.status);
   const feedState = useFlowMapStore((s) => s.feedState);
-  const [snap, setSnap] = useState<BookSnapshot>(() => getSnapshot());
+  const mode = useFlowMapStore((s) => s.subscription?.mode ?? 'live');
+  const snap = useBookSnapshot();
   const [collapsed, setCollapsed] = useState(false);
   const [locked, setLocked] = useState(false);
-  const [visRows, setVisRows] = useState(DEFAULT_LADDER_ROWS);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [centerPrice, setCenterPrice] = useState<number | null>(null);
-  const wheelHandlerRef = useRef<(e: WheelEvent) => void>(() => {});
-
-  // Trade-only flushes keep the same book and BBO objects, so the ladder keeps
-  // its previous snapshot and skips the rebuild. A session reset still propagates
-  // through sessionVersion / sessionKey (mirrors the Tape guard).
-  useEffect(
-    () =>
-      subscribe((s) =>
-        setSnap((prev) =>
-          prev.book === s.book &&
-          prev.bbo === s.bbo &&
-          prev.sessionKey === s.sessionKey &&
-          prev.sessionVersion === s.sessionVersion
-            ? prev
-            : s,
-        ),
-      ),
-    [],
-  );
-
-  // Fit the number of rungs to the panel height (odd, so the mid sits centered).
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => {
-      const n = Math.floor(el.clientHeight / ROW_H);
-      if (n >= 3) setVisRows(n % 2 === 0 ? n - 1 : n);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [collapsed]);
+  const visRows = useVisibleRowCount(bodyRef, collapsed);
 
   const params = epochs.get(snap.book?.epoch ?? gridEpoch ?? -1);
   const bookMode = snap.book ? snap.book.mode : null;
@@ -389,6 +346,7 @@ export function DomLadder(): JSX.Element {
   // A recorded interval keeps the book layout whatever its tier (as it always has).
   const shape = ladderShape(recorded ? null : tier, bookMode);
   const scale = useMemo(() => params ? scaleFromEpoch(params) : null, [params]);
+  useLockedWheel({ bodyRef, collapsed, locked, scale, params, centerPrice, onCenterPrice: setCenterPrice });
   // The lock pins a PRICE, not a row: re-anchor to a row against the CURRENT
   // epoch each render, so a mid-stream p0/step change keeps the same price
   // centered instead of drifting to a stale row index.
@@ -414,25 +372,6 @@ export function DomLadder(): JSX.Element {
     setCenterPrice(null);
   }, [sessionKey]);
 
-  useLayoutEffect(() => {
-    wheelHandlerRef.current = (e: WheelEvent): void => {
-      if (!locked || !scale || !params || centerPrice === null || e.deltaY === 0) return;
-      e.preventDefault();
-      const amount = e.deltaMode === 1 ? Math.abs(e.deltaY) : Math.abs(e.deltaY) / ROW_H;
-      const rungs = Math.max(1, Math.min(12, Math.round(amount)));
-      const row = clampRow(priceToRow(scale, centerPrice) - Math.sign(e.deltaY) * rungs, params.rows);
-      if (row >= 0) setCenterPrice(rowToPrice(scale, row));
-    };
-  }, [locked, scale, params, centerPrice]);
-
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const onWheel = (event: WheelEvent): void => wheelHandlerRef.current(event);
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [collapsed]);
-
   const totals = useMemo(() => model.rows.reduce((sum, row) => ({
     bid: sum.bid + (Number.isFinite(row.bidSz) && row.bidSz > 0 ? row.bidSz : 0),
     ask: sum.ask + (Number.isFinite(row.askSz) && row.askSz > 0 ? row.askSz : 0),
@@ -447,7 +386,6 @@ export function DomLadder(): JSX.Element {
     model.spread !== null && params && params.tick > 0
       ? Math.round(model.spread / params.tick)
       : null;
-  const mode = useFlowMapStore((s) => s.subscription?.mode ?? 'live');
   const emptyMsg =
     feedState === 'closed'
       ? t('ladder.empty.closed')
@@ -461,6 +399,15 @@ export function DomLadder(): JSX.Element {
               t('ladder.empty.replay')
             : t('ladder.empty.waiting');
 
+  const toggleLock = (): void => {
+    if (!locked && model.midRow !== null && scale) setCenterPrice(rowToPrice(scale, model.midRow));
+    setLocked((v) => !v);
+  };
+  const centerOnMid = (): void => {
+    setLocked(false);
+    setCenterPrice(null);
+  };
+
   return (
     <section
       className={`panel dom-ladder${collapsed ? ' is-collapsed' : ''}${
@@ -468,149 +415,171 @@ export function DomLadder(): JSX.Element {
       }`}
       data-testid="dom-ladder"
     >
-      <header className="panel__header">
-        <h2 className="panel__heading">
-          <button
-            type="button"
-            className="panel__collapse"
-            aria-expanded={!collapsed}
-            onClick={() => setCollapsed((c) => !c)}
-            data-testid="ladder-collapse"
-          >
-            <span className="panel__chevron">{collapsed ? '▸' : '▾'}</span>
-            <span className="panel__title">{t('ladder.title')}</span>
-          </button>
-        </h2>
-        <span
-          className={`panel__badge panel__badge--${badgeClass}`}
-          data-testid="ladder-badge"
-        >
-          {badge}
-        </span>
-        {recorded && (
-          <span
-            className="panel__badge panel__badge--recorded-density"
-            data-testid="ladder-provenance"
-            title={t('ladder.recordedTitle')}
-          >
-            {t('chip.recordedDensity')}
-          </span>
-        )}
-        {spreadTicks !== null && (
-          <span className="panel__spread" data-testid="ladder-spread">
-            {t('ladder.spreadShort')} {snap.bbo ? '' : '≈'}{formatPrice(model.spread!, model.priceDecimals)}
-            {spreadTicks > 0 ? ` (${spreadTicks}t)` : ''}
-          </span>
-        )}
-        {params && scale && model.midRow !== null && (
-          <span className="panel__resolution" data-testid="ladder-resolution"
-            title={t('ladder.resolutionTitle')}>
-            Δ {formatPrice(stepAtRow(scale, Math.floor(model.midRow)), priceDecimals(params.tick))}
-          </span>
-        )}
-        <button
-          type="button"
-          className={`panel__lock${locked ? ' is-on' : ''}`}
-          disabled={model.midRow === null}
-          aria-pressed={locked}
-          title={locked ? t('ladder.lockedTitle') : t('ladder.followTitle')}
-          onClick={() => {
-            if (!locked && model.midRow !== null && scale) setCenterPrice(rowToPrice(scale, model.midRow));
-            setLocked((v) => !v);
-          }}
-          data-testid="ladder-lock"
-        >
-          {locked ? t('ladder.locked') : t('ladder.follow')}
-        </button>
-        <button type="button" className="panel__lock ladder__center" data-testid="ladder-center"
-          disabled={model.midRow === null}
-          title={t('ladder.centerTitle')}
-          onClick={() => { setLocked(false); setCenterPrice(null); }}>{t('ladder.center')}</button>
-      </header>
+      <LadderHeader
+        collapsed={collapsed}
+        onToggleCollapsed={() => setCollapsed((c) => !c)}
+        badge={badge}
+        badgeClass={badgeClass}
+        recorded={recorded}
+        spread={spreadTicks !== null
+          ? { price: formatPrice(model.spread!, model.priceDecimals), approximate: !snap.bbo, ticks: spreadTicks }
+          : null}
+        resolution={params && scale && model.midRow !== null
+          ? formatPrice(stepAtRow(scale, Math.floor(model.midRow)), priceDecimals(params.tick))
+          : null}
+        locked={locked}
+        midAvailable={model.midRow !== null}
+        onToggleLock={toggleLock}
+        onCenter={centerOnMid}
+      />
       {!collapsed && (
-        <>
-        {model.rows.length > 0 && tier !== 'SYNTH' && shape !== 'profile' && (
-          <div className="ladder__summary" data-testid="ladder-totals"
-            title={t('ladder.totalsTitle')}>
-            <span>{t('ladder.visibleSum')}</span><span className="ladder__total-bid">{t('ladder.bidShort')} {fmtSz(totals.bid) || '0'}</span>
-            <span className="ladder__total-ask">{t('ladder.askShort')} {fmtSz(totals.ask) || '0'}</span>
-            <span className="ladder__browse">{locked ? t('ladder.wheelBrowse')
-              : recorded && model.spread === null ? t('ladder.followDensity') : t('ladder.followMid')}</span>
-          </div>
-        )}
-        <div className="ladder__body" ref={bodyRef} data-testid="ladder-body">
-          {model.rows.length === 0 ? (
-            <div className="panel__empty">{emptyMsg}</div>
-          ) : (
-            <>
-              {(shape === 'book' || shape === 'l1') && midOffsetPx !== null
-                && (!recorded || model.spread !== null) && (
-                <div
-                  className="ladder__mid"
-                  aria-hidden="true"
-                  data-testid="ladder-mid"
-                  style={{ top: `calc(50% + ${midOffsetPx.toFixed(1)}px)` }}
-                />
-              )}
-              {model.rows.map((r) => (
-                <div
-                  key={r.row}
-                  className={`ladder__row${r.isBestBid ? ' is-bestbid' : ''}${
-                    r.isBestAsk ? ' is-bestask' : ''
-                  }`}
-                  data-testid="ladder-row"
-                  data-row={r.row}
-                  data-price={formatPrice(r.price, model.priceDecimals)}
-                  title={scale ? t('ladder.groupTitle', {
-                    low: formatPrice(rowToPrice(scale, r.row - 0.5), model.priceDecimals),
-                    high: formatPrice(rowToPrice(scale, r.row + 0.5), model.priceDecimals),
-                  }) : undefined}
-                  data-bid={r.bidSz.toFixed(4)}
-                  data-ask={r.askSz.toFixed(4)}
-                >
-                  {shape === 'profile' ? (
-                    <div className="ladder__profile">
-                      <div
-                        className={`ladder__bar ladder__bar--profile${r.profilePct > 0 ? '' : ' is-empty'}`}
-                        style={{ width: `${r.profilePct}%` }}
-                      />
-                      <span className="ladder__sz">
-                        {fmtSz(r.profileSz)}
-                      </span>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="ladder__cell ladder__cell--bid">
-                        <div
-                          className={`ladder__bar ladder__bar--bid${r.bidPct > 0 ? '' : ' is-empty'}`}
-                          style={{ width: `${r.bidPct}%` }}
-                        />
-                        <span className="app-visually-hidden">{t('ladder.bidFull')}</span>
-                        <span className="ladder__sz">
-                          {fmtSz(r.bidSz)}
-                        </span>
-                      </div>
-                      <div className="ladder__px">{formatPrice(r.price, model.priceDecimals)}</div>
-                      <div className="ladder__cell ladder__cell--ask">
-                        <div
-                          className={`ladder__bar ladder__bar--ask${r.askPct > 0 ? '' : ' is-empty'}`}
-                          style={{ width: `${r.askPct}%` }}
-                        />
-                        <span className="app-visually-hidden">{t('ladder.askFull')}</span>
-                        <span className="ladder__sz">
-                          {fmtSz(r.askSz)}
-                        </span>
-                      </div>
-                    </>
-                  )}
-                  {shape === 'profile' && <div className="ladder__px ladder__px--synth">{formatPrice(r.price, model.priceDecimals)}</div>}
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-        </>
+        <LadderBody
+          bodyRef={bodyRef}
+          model={model}
+          shape={shape}
+          synth={tier === 'SYNTH'}
+          recorded={recorded}
+          locked={locked}
+          scale={scale}
+          midOffsetPx={midOffsetPx}
+          totals={totals}
+          emptyMsg={emptyMsg}
+        />
       )}
     </section>
+  );
+}
+
+interface LadderBodyProps {
+  bodyRef: RefObject<HTMLDivElement>;
+  model: LadderModel;
+  shape: LadderShape;
+  /** The honesty tier is SYNTH: no visible-sum summary for fabricated depth. */
+  synth: boolean;
+  recorded: boolean;
+  locked: boolean;
+  scale: PriceScale | null;
+  midOffsetPx: number | null;
+  totals: { bid: number; ask: number };
+  emptyMsg: string;
+}
+
+/** The visible-sum summary and the rung list (or the empty message). */
+function LadderBody({
+  bodyRef,
+  model,
+  shape,
+  synth,
+  recorded,
+  locked,
+  scale,
+  midOffsetPx,
+  totals,
+  emptyMsg,
+}: LadderBodyProps) {
+  const t = useT();
+  return (
+    <>
+      {model.rows.length > 0 && !synth && shape !== 'profile' && (
+        <div className="ladder__summary" data-testid="ladder-totals"
+          title={t('ladder.totalsTitle')}>
+          <span>{t('ladder.visibleSum')}</span><span className="ladder__total-bid">{t('ladder.bidShort')} {fmtSz(totals.bid) || '0'}</span>
+          <span className="ladder__total-ask">{t('ladder.askShort')} {fmtSz(totals.ask) || '0'}</span>
+          <span className="ladder__browse">{locked ? t('ladder.wheelBrowse')
+            : recorded && model.spread === null ? t('ladder.followDensity') : t('ladder.followMid')}</span>
+        </div>
+      )}
+      <div className="ladder__body" ref={bodyRef} data-testid="ladder-body">
+        {model.rows.length === 0 ? (
+          <div className="panel__empty">{emptyMsg}</div>
+        ) : (
+          <>
+            {(shape === 'book' || shape === 'l1') && midOffsetPx !== null
+              && (!recorded || model.spread !== null) && (
+              <div
+                className="ladder__mid"
+                aria-hidden="true"
+                data-testid="ladder-mid"
+                style={{ top: `calc(50% + ${midOffsetPx.toFixed(1)}px)` }}
+              />
+            )}
+            {model.rows.map((r) => (
+              <LadderRowView
+                key={r.row}
+                r={r}
+                shape={shape}
+                priceDecimals={model.priceDecimals}
+                scale={scale}
+              />
+            ))}
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+interface LadderRowViewProps {
+  r: LadderRowVM;
+  shape: LadderShape;
+  priceDecimals: number;
+  scale: PriceScale | null;
+}
+
+/** One rung: the bid cell, the price, and the ask cell (a one-sided profile bar in profile mode). */
+function LadderRowView({ r, shape, priceDecimals: decimals, scale }: LadderRowViewProps) {
+  const t = useT();
+  return (
+    <div
+      className={`ladder__row${r.isBestBid ? ' is-bestbid' : ''}${
+        r.isBestAsk ? ' is-bestask' : ''
+      }`}
+      data-testid="ladder-row"
+      data-row={r.row}
+      data-price={formatPrice(r.price, decimals)}
+      title={scale ? t('ladder.groupTitle', {
+        low: formatPrice(rowToPrice(scale, r.row - 0.5), decimals),
+        high: formatPrice(rowToPrice(scale, r.row + 0.5), decimals),
+      }) : undefined}
+      data-bid={r.bidSz.toFixed(4)}
+      data-ask={r.askSz.toFixed(4)}
+    >
+      {shape === 'profile' ? (
+        <div className="ladder__profile">
+          <div
+            className={`ladder__bar ladder__bar--profile${r.profilePct > 0 ? '' : ' is-empty'}`}
+            style={{ width: `${r.profilePct}%` }}
+          />
+          <span className="ladder__sz">
+            {fmtSz(r.profileSz)}
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="ladder__cell ladder__cell--bid">
+            <div
+              className={`ladder__bar ladder__bar--bid${r.bidPct > 0 ? '' : ' is-empty'}`}
+              style={{ width: `${r.bidPct}%` }}
+            />
+            <span className="app-visually-hidden">{t('ladder.bidFull')}</span>
+            <span className="ladder__sz">
+              {fmtSz(r.bidSz)}
+            </span>
+          </div>
+          <div className="ladder__px">{formatPrice(r.price, decimals)}</div>
+          <div className="ladder__cell ladder__cell--ask">
+            <div
+              className={`ladder__bar ladder__bar--ask${r.askPct > 0 ? '' : ' is-empty'}`}
+              style={{ width: `${r.askPct}%` }}
+            />
+            <span className="app-visually-hidden">{t('ladder.askFull')}</span>
+            <span className="ladder__sz">
+              {fmtSz(r.askSz)}
+            </span>
+          </div>
+        </>
+      )}
+      {shape === 'profile' && <div className="ladder__px ladder__px--synth">{formatPrice(r.price, decimals)}</div>}
+    </div>
   );
 }

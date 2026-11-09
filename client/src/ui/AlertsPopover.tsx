@@ -11,7 +11,7 @@
  * trap and Escape-to-close through the open-overlay registry.
  */
 
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 
 import type { PriceAlert } from '../state/alertsStore';
 import { exchangeZoneFor, formatClock, useTimeZone, zoneLabel } from '../i18n/format';
@@ -54,34 +54,39 @@ export interface AlertsPopoverProps {
   now: number;
 }
 
-export function AlertsPopover({
-  alerts,
-  refPx,
-  group = '',
-  addBlockedReason = null,
-  onClose,
-  onCreate,
-  onDelete,
-  onSnooze,
-  onRearm,
-  onClearFired,
-  now,
-}: AlertsPopoverProps): JSX.Element {
-  const t = useT();
-  const singleKeys = useSingleKeyShortcuts();
-  // Clock times follow the Settings zone like every other clock on screen (the
-  // top bar, tape and crosshair); the zone hook re-renders this popover on change.
-  const zonePref = useTimeZone();
-  const exchangeZone = exchangeZoneFor(group);
-  const clockText = (ms: number): string =>
-    `${formatClock(ms, zonePref, exchangeZone)} ${zoneLabel(zonePref, exchangeZone, ms)}`;
-  const [draft, setDraft] = useState('');
-  /** Why the last add was refused (the level sits on the market), or null. */
-  const [hint, setHint] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const closeRef = useRef<HTMLButtonElement | null>(null);
-  const sectionRef = useRef<HTMLElement | null>(null);
+/**
+ * Tab and Shift+Tab stay inside the dialog. The disabled "add" button is skipped, so
+ * the cycle never dead-ends on an unfocusable stop: the browser's own tab order skips
+ * disabled controls, and the trap must too, or a disabled last stop strands focus.
+ */
+function trapTabKey(root: HTMLElement | null, e: ReactKeyboardEvent): void {
+  if (e.key !== 'Tab') return;
+  if (!root) return;
+  const focusable = root.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey) {
+    if (active === first || !root.contains(active)) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else if (active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 
+/**
+ * The dialog's focus lifecycle: the close button takes focus on open, Escape closes
+ * only the TOP overlay, and focus returns to the opener on close (WCAG 2.4.3, the bell
+ * chip). Returns the ref the close button mounts on.
+ */
+function useDialogFocus(onClose: () => void): RefObject<HTMLButtonElement> {
+  const closeRef = useRef<HTMLButtonElement | null>(null);
   // The parent re-creates `onClose` every poll tick (~10 Hz), so the overlay
   // effect below must NOT depend on it — otherwise its cleanup refocuses the
   // opener and its body refocuses the close button 10×/s, stealing focus from
@@ -109,32 +114,175 @@ export function AlertsPopover({
     };
     // Mount-only by design (see the ref comment above).
   }, []);
+  return closeRef;
+}
 
-  // Trap Tab / Shift+Tab inside the dialog while it is open (the disabled "add"
-  // button is skipped so the cycle never dead-ends on an unfocusable stop).
-  const onTrapKeyDown = (e: ReactKeyboardEvent): void => {
-    if (e.key !== 'Tab') return;
-    const root = sectionRef.current;
-    if (!root) return;
-    // Disabled controls are skipped by the browser's own tab order, so the trap
-    // must skip them too: a disabled last stop would strand focus outside.
-    const focusable = root.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    );
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    if (e.shiftKey) {
-      if (active === first || !root.contains(active)) {
-        e.preventDefault();
-        last.focus();
-      }
-    } else if (active === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
+interface AlertRowProps {
+  alert: PriceAlert;
+  now: number;
+  clockText: (ms: number) => string;
+  onRearm: (id: string) => void;
+  onSnooze: (id: string) => void;
+  onDelete: (id: string) => void;
+}
+
+/** One alert: its level, its state, and the re-arm or snooze and delete controls. */
+function AlertRow({ alert: a, now, clockText, onRearm, onSnooze, onDelete }: AlertRowProps): JSX.Element {
+  const t = useT();
+  const muted = mutedFor(a.snoozedUntil, now);
+  // Five honest states: a fired alert now waits for the
+  // hysteresis band; once price returns inside it the alert is
+  // RE-ARMED (has fired before, currently armed); a manual re-arm
+  // while price is still beyond shows the band it is waiting for.
+  const dir = a.above ? '↑' : '↓';
+  const state = a.triggered
+    ? t('alerts.state.fired', { time: a.triggeredAt !== null ? clockText(a.triggeredAt) : '—' })
+    : muted !== null
+      ? t('alerts.state.muted', { seconds: muted })
+      : a.rearmPx !== null
+        ? t('alerts.state.rearming', { price: alertPriceText(a.rearmPx) })
+        : a.triggeredAt !== null
+          ? t('alerts.state.rearmed', { dir })
+          : t('alerts.state.armed', { dir });
+  const stateCls = a.triggered
+    ? ' alert-row__state--fired'
+    : muted !== null
+      ? ' alert-row__state--muted'
+      : '';
+  const needsRearm = a.triggered || muted !== null;
+  return (
+    <div className="alert-row" data-testid="alert-row">
+      <span className="alert-row__px">
+        {a.above ? '↑' : '↓'} {alertPriceText(a.price)}
+      </span>
+      <span className={`alert-row__state${stateCls}`} data-testid="alert-state">
+        {state}
+      </span>
+      {needsRearm ? (
+        <button
+          type="button"
+          className="alert-row__btn"
+          data-testid={`alert-rearm-${a.id}`}
+          onClick={() => onRearm(a.id)}
+        >
+          {t('alerts.rearm')}
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="alert-row__btn"
+          data-testid={`alert-snooze-${a.id}`}
+          onClick={() => onSnooze(a.id)}
+        >
+          {t('alerts.snooze')}
+        </button>
+      )}
+      <button
+        type="button"
+        className="alert-row__btn"
+        data-testid={`alert-delete-${a.id}`}
+        aria-label={t('alerts.deleteAria', { price: alertPriceText(a.price) })}
+        onClick={() => onDelete(a.id)}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+interface AlertAddRowProps {
+  draft: string;
+  /** The typed level, or null while the draft is not a usable price. */
+  price: number | null;
+  /** The live price the placeholder names, or null. */
+  refPx: number | null;
+  addBlocked: boolean;
+  /** The reason the add row is blocked, or the last refused add; null when neither applies. */
+  status: string | null;
+  inputRef: RefObject<HTMLInputElement>;
+  onDraftChange: (value: string) => void;
+  onSubmit: () => void;
+}
+
+/** The create form: a level input, its add button, and the status line beneath. */
+function AlertAddRow({
+  draft,
+  price,
+  refPx,
+  addBlocked,
+  status,
+  inputRef,
+  onDraftChange,
+  onSubmit,
+}: AlertAddRowProps): JSX.Element {
+  const t = useT();
+  return (
+    <>
+      <div className="alerts-add">
+        <input
+          ref={inputRef}
+          className="alerts-add__input"
+          data-testid="alerts-add-input"
+          type="number"
+          step="any"
+          min="0"
+          disabled={addBlocked}
+          placeholder={`${t('alerts.levelPlaceholder')}${
+            refPx !== null ? ` ${t('alerts.midPlaceholder', { price: alertPriceText(refPx) })}` : ''
+          }`}
+          aria-label={t('alerts.newPriceLabel')}
+          value={draft}
+          onChange={(e) => onDraftChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onSubmit();
+          }}
+        />
+        <button
+          type="button"
+          className="alerts-add__go"
+          data-testid="alerts-add-go"
+          disabled={price === null || addBlocked}
+          onClick={onSubmit}
+        >
+          {t('alerts.add')}
+        </button>
+      </div>
+      {status !== null && (
+        <div className="alerts-pop__empty" role="status" data-testid="alerts-add-hint">
+          {status}
+        </div>
+      )}
+    </>
+  );
+}
+
+export function AlertsPopover({
+  alerts,
+  refPx,
+  group = '',
+  addBlockedReason = null,
+  onClose,
+  onCreate,
+  onDelete,
+  onSnooze,
+  onRearm,
+  onClearFired,
+  now,
+}: AlertsPopoverProps): JSX.Element {
+  const t = useT();
+  const singleKeys = useSingleKeyShortcuts();
+  // Clock times follow the Settings zone like every other clock on screen (the
+  // top bar, tape and crosshair); the zone hook re-renders this popover on change.
+  const zonePref = useTimeZone();
+  const exchangeZone = exchangeZoneFor(group);
+  const clockText = (ms: number): string =>
+    `${formatClock(ms, zonePref, exchangeZone)} ${zoneLabel(zonePref, exchangeZone, ms)}`;
+  const [draft, setDraft] = useState('');
+  /** Why the last add was refused (the level sits on the market), or null. */
+  const [hint, setHint] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const closeRef = useDialogFocus(onClose);
 
   const firedCount = alerts.filter((a) => a.triggered).length;
 
@@ -162,7 +310,7 @@ export function AlertsPopover({
       role="dialog"
       aria-modal="true"
       aria-label={t('alerts.dialogLabel')}
-      onKeyDown={onTrapKeyDown}
+      onKeyDown={(e) => trapTabKey(sectionRef.current, e)}
     >
       <header className="alerts-pop__head">
         <span className="alerts-pop__title">
@@ -197,107 +345,33 @@ export function AlertsPopover({
             {singleKeys ? t('alerts.emptyHint', { key: 'A' }) : t('alerts.emptyHintNoKey')}
           </div>
         ) : (
-          alerts.map((a) => {
-            const muted = mutedFor(a.snoozedUntil, now);
-            // Five honest states: a fired alert now waits for the
-            // hysteresis band; once price returns inside it the alert is
-            // RE-ARMED (has fired before, currently armed); a manual re-arm
-            // while price is still beyond shows the band it is waiting for.
-            const dir = a.above ? '↑' : '↓';
-            const state = a.triggered
-              ? t('alerts.state.fired', { time: a.triggeredAt !== null ? clockText(a.triggeredAt) : '—' })
-              : muted !== null
-                ? t('alerts.state.muted', { seconds: muted })
-                : a.rearmPx !== null
-                  ? t('alerts.state.rearming', { price: alertPriceText(a.rearmPx) })
-                  : a.triggeredAt !== null
-                    ? t('alerts.state.rearmed', { dir })
-                    : t('alerts.state.armed', { dir });
-            const stateCls = a.triggered
-              ? ' alert-row__state--fired'
-              : muted !== null
-                ? ' alert-row__state--muted'
-                : '';
-            const needsRearm = a.triggered || muted !== null;
-            return (
-              <div className="alert-row" key={a.id} data-testid="alert-row">
-                <span className="alert-row__px">
-                  {a.above ? '↑' : '↓'} {alertPriceText(a.price)}
-                </span>
-                <span className={`alert-row__state${stateCls}`} data-testid="alert-state">
-                  {state}
-                </span>
-                {needsRearm ? (
-                  <button
-                    type="button"
-                    className="alert-row__btn"
-                    data-testid={`alert-rearm-${a.id}`}
-                    onClick={() => onRearm(a.id)}
-                  >
-                    {t('alerts.rearm')}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="alert-row__btn"
-                    data-testid={`alert-snooze-${a.id}`}
-                    onClick={() => onSnooze(a.id)}
-                  >
-                    {t('alerts.snooze')}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="alert-row__btn"
-                  data-testid={`alert-delete-${a.id}`}
-                  aria-label={t('alerts.deleteAria', { price: alertPriceText(a.price) })}
-                  onClick={() => onDelete(a.id)}
-                >
-                  ✕
-                </button>
-              </div>
-            );
-          })
+          alerts.map((a) => (
+            <AlertRow
+              key={a.id}
+              alert={a}
+              now={now}
+              clockText={clockText}
+              onRearm={onRearm}
+              onSnooze={onSnooze}
+              onDelete={onDelete}
+            />
+          ))
         )}
       </div>
 
-      <div className="alerts-add">
-        <input
-          ref={inputRef}
-          className="alerts-add__input"
-          data-testid="alerts-add-input"
-          type="number"
-          step="any"
-          min="0"
-          disabled={addBlocked}
-          placeholder={`${t('alerts.levelPlaceholder')}${
-            refPx !== null ? ` ${t('alerts.midPlaceholder', { price: alertPriceText(refPx) })}` : ''
-          }`}
-          aria-label={t('alerts.newPriceLabel')}
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            setHint(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') submit();
-          }}
-        />
-        <button
-          type="button"
-          className="alerts-add__go"
-          data-testid="alerts-add-go"
-          disabled={price === null || addBlocked}
-          onClick={submit}
-        >
-          {t('alerts.add')}
-        </button>
-      </div>
-      {(addBlockedReason ?? hint) !== null && (
-        <div className="alerts-pop__empty" role="status" data-testid="alerts-add-hint">
-          {addBlockedReason ?? hint}
-        </div>
-      )}
+      <AlertAddRow
+        draft={draft}
+        price={price}
+        refPx={refPx}
+        addBlocked={addBlocked}
+        status={addBlockedReason ?? hint}
+        inputRef={inputRef}
+        onDraftChange={(value) => {
+          setDraft(value);
+          setHint(null);
+        }}
+        onSubmit={submit}
+      />
     </section>
   );
 }

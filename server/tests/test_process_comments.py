@@ -76,3 +76,15 @@ def test_no_process_identifiers_in_owned_test_comments(path: Path) -> None:
             if PROCESS_ID.search(line):
                 offenders.append(f"{tok.start[0] + offset}: {line.strip()}")
     assert not offenders, "process identifiers in test comments:\n" + "\n".join(offenders)
+
+
+PROBE_FORMS = ("R2 fallback", "see M2 for detail", "wave N", "wave-2 fix", "A1-12 thing", "GOAL 1 target")
+
+
+@pytest.mark.parametrize("probe", PROBE_FORMS)
+def test_the_server_rule_flags_the_bare_process_forms(probe: str) -> None:
+    assert PROCESS_ID.search(probe), f"the rule must flag {probe!r}"
+
+
+def test_the_server_rule_leaves_plain_prose_alone() -> None:
+    assert not PROCESS_ID.search("retry the subscribe after the socket settles")

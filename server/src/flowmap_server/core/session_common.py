@@ -71,6 +71,14 @@ _REC_DRAIN_TIMEOUT_S = 10.0
 # long before it force-kills the process (see app/src-tauri GRACEFUL_STOP).
 SHUTDOWN_FLUSH_DEADLINE_S = _REC_DRAIN_TIMEOUT_S + 1.0
 
+# Bound on uvicorn's connection and task drain, which runs before the lifespan
+# flush. Open sockets get their close in well under a second once the peer is
+# told to stop, so this only cuts a stuck request short. Past it uvicorn ends
+# what is still open and the flush starts. uvicorn pauses 0.1 s before this
+# bound, so the drain takes at most about 0.6 s; with the flush that keeps the
+# total inside the shell's 12 s grace (app/src-tauri GRACEFUL_STOP).
+SERVER_DRAIN_BOUND_S = 0.5
+
 # Bound on one overview step (a disk aggregate, a scalar part read or a batch
 # of RAM columns). The step runs on the session's single overview thread, which
 # cannot be interrupted, so past this the request is answered as unavailable

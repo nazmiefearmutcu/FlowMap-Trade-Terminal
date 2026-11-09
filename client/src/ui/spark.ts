@@ -48,7 +48,8 @@ export function sparkDirection(values: readonly number[]): number {
 /** Compact signed percent, e.g. +3.21% / −0.50%. */
 export function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return '—';
-  const sign = v > 0 ? '+' : v < 0 ? '−' : '';
+  // A value that rounds to 0.00 carries no sign: -0.001 reads 0.00%, never −0.00%.
+  const sign = Number(Math.abs(v).toFixed(2)) === 0 ? '' : v > 0 ? '+' : '−';
   return `${sign}${formatFixed(Math.abs(v), 2)}%`;
 }
 

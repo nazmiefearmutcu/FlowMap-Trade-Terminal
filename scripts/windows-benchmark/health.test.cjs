@@ -9,7 +9,7 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function actualDriverSampler(rows){
   let nowMs=0;
   const source=fs.readFileSync(path.join(__dirname,'driver.cjs'),'utf8');
-  const context={module:{exports:{}},process:{argv:['node','driver.cjs','config']},setTimeout,clearTimeout,
+  const context={module:{exports:{}},process:{argv:['node','driver.cjs','config'],env:{}},setTimeout,clearTimeout,
     testPage:{evaluate:async()=>({schema:2,timeOriginMs:100000,nowMs:nowMs+=250,frames:[],inputs:[]})},
     require(id){
       if(id==='node:fs')return {readFileSync:()=>JSON.stringify({output:'unused',playwright:'mock-playwright',manifest:{}}),
@@ -28,6 +28,18 @@ async function endpoint(handler, action){
   try {await action(ownedHealthUrl(`http://127.0.0.1:${server.address().port}`,server.address().port));}
   finally {for(const socket of sockets)socket.destroy();await new Promise(resolve=>server.close(resolve));}
 }
+
+test('health requests carry the caller headers, such as the desktop session token',async()=>{
+  const seen=[];
+  await endpoint((req,res)=>{seen.push(req.headers['x-flowmap-token']);res.setHeader('content-type','application/json');res.end('{"status":"ok"}');},async url=>{
+    const rows=[],health=healthCollector({url,headers:{'x-flowmap-token':'bench-token'},onObservation:row=>rows.push(row),onError:()=>{}});
+    health.request();
+    for(let i=0;i<300&&rows.length===0;i++)await sleep(10);
+    await health.stop();
+    assert.ok(rows.length>0,'an observation was recorded');
+    assert.equal(seen[0],'bench-token');
+  });
+});
 
 test('actual held HTTP health for 3.4 seconds leaves independent 4 Hz client and inputs running',async t=>{
   let active=0,peak=0,release,received;

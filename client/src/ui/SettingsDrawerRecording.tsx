@@ -31,13 +31,9 @@ export function parseRecordingSettings(value: unknown): RecordingSettings | null
   return { enabled: v.enabled, capGb: v.capGb, folder: v.folder, restarting: v.restarting };
 }
 
-interface ShellBridge {
-  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
-}
-
 /** Plain IPC to a shell command. Rejects outside the shell, so callers never guess. */
 function shellInvoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
-  const bridge = (window as unknown as { __TAURI_INTERNALS__?: Partial<ShellBridge> }).__TAURI_INTERNALS__;
+  const bridge = window.__TAURI_INTERNALS__;
   if (!bridge || typeof bridge.invoke !== 'function') return Promise.reject(new Error('no desktop shell'));
   return bridge.invoke(cmd, args);
 }

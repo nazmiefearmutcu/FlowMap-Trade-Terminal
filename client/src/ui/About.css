@@ -51,7 +51,7 @@
 
 .about__close:focus-visible,
 .about__action:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -156,7 +156,7 @@
 .about__link:focus-visible,
 .about__summary:focus-visible,
 .about__licence-text:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 

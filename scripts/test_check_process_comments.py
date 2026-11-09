@@ -98,7 +98,7 @@ class ServerParityTests(unittest.TestCase):
         r"\bgap\d-\d": ("gap2-13", True),
         r"\bcore-\d{2}\b": ("core-19", True),
         r"\bapi-\d{2}\b": ("api-02", True),
-        r"\bM\d( T\d+)?\b": ("M2 T10", True),  # bare M2 is SVG path data
+        r"\bM\d( T\d+)?\b": ("M2 T10", True),  # bare M2 counts unless it opens SVG path data
         r"\bT\d{1,2}\b": ("T7", True),  # T0 is time zero in code
         r"\bGOAL \d\b": ("GOAL 4", True),
         r"\bC\d\b": ("C4", True),
@@ -138,6 +138,14 @@ class ServerParityTests(unittest.TestCase):
             if flagged:
                 with self.subTest(form=form):
                     self.assertTrue(checker.PROCESS_ID.search(sample), f"{form} misses {sample!r}")
+
+    def test_bare_milestone_mentions_are_flagged(self):
+        self.assertTrue(checker.offenders_in("// see M2 for detail"))
+
+    def test_svg_path_data_is_not_flagged(self):
+        for sample in ['d="M2 3 L4 5"', 'const p = "M10,20"', 'd="M2.5 1"']:
+            with self.subTest(sample=sample):
+                self.assertIsNone(checker.PROCESS_ID.search(sample), sample)
 
     def test_client_exemptions_stay_exempt(self):
         for form, (sample, flagged) in self.SERVER_FORMS.items():

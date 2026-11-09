@@ -344,6 +344,10 @@ export interface MacroStressUpdate {
   yield_10y2y: number;
   stress_score: number;
   status: string;
+  /** Observation date (YYYY-MM-DD) per series. Absent from servers that predate it. */
+  as_of?: Record<string, string>;
+  /** "ok", or the reason, per series. Absent from servers that predate it. */
+  source_status?: Record<string, string>;
 }
 
 /** Any decodable message. Discriminated on `type`. */

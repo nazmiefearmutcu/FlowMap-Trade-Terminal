@@ -267,7 +267,6 @@ describe('shell keys', () => {
     'axis.autoOnNoKey',
     'axis.autoOffNoKey',
     'alerts.emptyHintNoKey',
-    'alerts.pressAHintNoKey',
     // bid and ask side letters on the BBO badge, localised so they never read as tape marks
     'overlay.bbo.bidSide',
     'overlay.bbo.askSide',

@@ -35,8 +35,10 @@ pub(crate) fn show_native_dialog(title: &str, message: &str) {
     }
 }
 
-#[cfg(target_os = "macos")]
-pub(crate) fn show_native_dialog(title: &str, message: &str) {
+/// The AppleScript that shows the error dialog. Pure, so the quoting is tested on every
+/// platform, not only on a Mac.
+#[cfg(any(test, target_os = "macos"))]
+fn applescript_dialog(title: &str, message: &str) -> String {
     // AppleScript string literals: escape backslashes and quotes, join lines with `return`.
     let quoted = message
         .split('\n')
@@ -44,10 +46,19 @@ pub(crate) fn show_native_dialog(title: &str, message: &str) {
         .collect::<Vec<_>>()
         .join(" & return & ");
     let title = title.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
+    format!(
         "display dialog {quoted} with title \"{title}\" with icon stop buttons {{\"OK\"}} default button \"OK\""
-    );
-    if let Err(err) = Command::new("osascript").arg("-e").arg(script).status() {
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn show_native_dialog(title: &str, message: &str) {
+    let script = applescript_dialog(title, message);
+    if let Err(err) = Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(script)
+        .status()
+    {
         shell_log(&format!("could not show the native dialog: {err}"));
     }
 }
@@ -141,6 +152,23 @@ mod tests {
                 "{tool} shows the whole message"
             );
         }
+    }
+
+    #[test]
+    fn the_applescript_quotes_the_message_and_joins_its_lines() {
+        assert_eq!(
+            applescript_dialog("FlowMap", "first\nsecond"),
+            "display dialog \"first\" & return & \"second\" with title \"FlowMap\" with icon stop buttons {\"OK\"} default button \"OK\""
+        );
+    }
+
+    #[test]
+    fn the_applescript_escapes_quotes_and_backslashes_in_the_message_and_title() {
+        let script = applescript_dialog("Fl\"ow", r#"say "hi" \ now"#);
+        assert!(
+            script.starts_with(r#"display dialog "say \"hi\" \\ now" with title "Fl\"ow""#),
+            "{script}"
+        );
     }
 
     #[test]

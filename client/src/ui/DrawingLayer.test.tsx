@@ -296,7 +296,7 @@ describe('select mode: hit + drag on the CONTAINER (layer stays pointer-transpar
 });
 
 describe('keyboard placement and the mode region', () => {
-  it('the layer is a tab stop only while a tool is armed or a drawing is selected', async () => {
+  it('the layer is a tab stop only while a tool is armed, a drawing is selected or drawings exist', async () => {
     await renderLayer();
     await frame();
     expect(wrapper.tabIndex).toBe(-1);
@@ -366,6 +366,113 @@ describe('keyboard placement and the mode region', () => {
     } finally {
       act(() => setLocale('en'));
     }
+  });
+});
+
+describe('keyboard selection of existing drawings', () => {
+  /** Draw two horizontal lines (price 5, then price 20); the second ends up selected. */
+  async function seedTwoLines(): Promise<[string, string]> {
+    await renderLayer();
+    await frame();
+    const st = useDrawingsStore.getState();
+    st.armTool('hline');
+    const first = st.addDraftPoint({ tNs: tAt(100), price: 5 })!;
+    st.armTool('hline');
+    const second = st.addDraftPoint({ tNs: tAt(100), price: 20 })!;
+    st.select(null);
+    await frame();
+    return [first.id, second.id];
+  }
+
+  /** A keydown aimed at the layer itself (the focused element), cancelable so the test can read preventDefault. */
+  function keyOnLayer(key: string, init: KeyboardEventInit = {}): KeyboardEvent {
+    const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
+    act(() => {
+      wrapper.dispatchEvent(ev);
+    });
+    return ev;
+  }
+
+  it('the layer is a tab stop while drawings exist, even with nothing selected', async () => {
+    await seedTwoLines();
+    expect(useDrawingsStore.getState().selectedId).toBeNull();
+    expect(wrapper.tabIndex).toBe(0);
+  });
+
+  it('Tab and Shift+Tab cycle the drawings, and leave the layer at either end', async () => {
+    const [first, second] = await seedTwoLines();
+    act(() => {
+      wrapper.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    expect(keyOnLayer('Tab').defaultPrevented).toBe(true);
+    expect(useDrawingsStore.getState().selectedId).toBe(first);
+    expect(keyOnLayer('Tab').defaultPrevented).toBe(true);
+    expect(useDrawingsStore.getState().selectedId).toBe(second);
+    // At the last drawing Tab is not consumed: focus moves on to the next control.
+    expect(keyOnLayer('Tab').defaultPrevented).toBe(false);
+    expect(useDrawingsStore.getState().selectedId).toBe(second);
+    expect(keyOnLayer('Tab', { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(useDrawingsStore.getState().selectedId).toBe(first);
+    expect(keyOnLayer('Tab', { shiftKey: true }).defaultPrevented).toBe(false);
+    expect(useDrawingsStore.getState().selectedId).toBe(first);
+  });
+
+  it('an arrow key nudges the selected drawing by 8 px as one undo step; Shift moves 40 px', async () => {
+    const [first] = await seedTwoLines();
+    act(() => {
+      wrapper.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    keyOnLayer('Tab');
+    const undoBefore = useDrawingsStore.getState().undoStack.length;
+    expect(keyOnLayer('ArrowUp').defaultPrevented).toBe(true);
+    // 8 px up on a 10 px-per-unit scale is +0.8 in price; the line keeps its time.
+    const moved = useDrawingsStore.getState().items.find((d) => d.id === first)!;
+    expect(moved.points[0].price).toBeCloseTo(5.8, 9);
+    expect(useDrawingsStore.getState().undoStack.length).toBe(undoBefore + 1);
+    keyOnLayer('ArrowRight', { shiftKey: true });
+    const coarse = useDrawingsStore.getState().items.find((d) => d.id === first)!;
+    expect(coarse.points[0].tNs).toBe(104_000_000_000n); // 40 px = 4 s
+    expect(coarse.points[0].price).toBeCloseTo(5.8, 9);
+  });
+
+  it('a nudge is written once per press, not per frame', async () => {
+    await seedTwoLines();
+    act(() => {
+      wrapper.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    keyOnLayer('Tab');
+    const undoBefore = useDrawingsStore.getState().undoStack.length;
+    keyOnLayer('ArrowDown');
+    keyOnLayer('ArrowDown');
+    expect(useDrawingsStore.getState().undoStack.length).toBe(undoBefore + 2);
+  });
+
+  it('Enter opens the text editor for a selected text label, and nothing else', async () => {
+    await renderLayer();
+    await frame();
+    const st = useDrawingsStore.getState();
+    st.armTool('text');
+    const label = st.addDraftPoint({ tNs: tAt(100), price: 5 })!;
+    st.setText(label.id, 'note');
+    st.select(label.id);
+    await frame();
+    expect(useDrawingsStore.getState().editingTextId).toBeNull();
+    keyOnLayer('Enter');
+    expect(useDrawingsStore.getState().editingTextId).toBe(label.id);
+  });
+
+  it('the mode region announces the focused selection with its position in the set', async () => {
+    const [, second] = await seedTwoLines();
+    const region = wrapper.querySelector('[data-testid="drawing-mode"]') as HTMLElement;
+    expect(region.textContent).toBe(''); // nothing announced until the layer has focus
+    act(() => {
+      wrapper.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    keyOnLayer('Tab');
+    keyOnLayer('Tab');
+    expect(useDrawingsStore.getState().selectedId).toBe(second);
+    expect(region.textContent).toContain('H-LINE');
+    expect(region.textContent).toContain('2 of 2');
   });
 });
 

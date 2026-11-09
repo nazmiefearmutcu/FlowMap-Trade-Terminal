@@ -2,8 +2,7 @@
  * Frame loop of the live renderer: the rAF scheduling and the dirty-only
  * presentation, the render-health surface (the render failure, the bounded
  * program-readiness retry and its hold), the scripted perf run and the per-frame
- * stats EMA. Renderer keeps the
- * public stubs and the constructor wiring.
+ * stats EMA. Renderer keeps the public stubs and the constructor wiring.
  */
 import type { BenchmarkMetrics } from '../benchmarkMetrics';
 import type { Camera } from '../camera';
@@ -238,142 +237,171 @@ export class FrameLoop {
     this.frameState.view = this.camera.toView();
   }
 
+  /**
+   * One rAF tick. Returns false when the tick is skipped (a lost context, a held
+   * or unready program): the caller then keeps the failure record as it is.
+   */
+  private renderFrame(ts: number): boolean {
+    // A lost context can't draw; wait for `restored` to rebuild GL.
+    if (this.gpu.glLost()) return false;
+    if (this.programHold) return false;
+    if (!this.programsReady()) return false;
+    this.drainDepthBatch();
+    this.sampleCadence(ts);
+
+    const perf = this.perf;
+    if (perf) this.stepPerfFrame(perf, ts);
+    this.followAndHistory(ts, perf);
+    this.drawIfDirty(perf);
+
+    if (perf && ts >= perf.deadline) {
+      this.perf = null;
+      perf.resolve({ deltas: perf.deltas, drawMs: perf.drawMs, frames: perf.drawMs.length });
+    }
+    return true;
+  }
+
+  /** Ingests a bounded batch of staged depth columns, time-boxed to about 4 ms. */
+  private drainDepthBatch(): void {
+    if (this.ingest.pendingDepth.length === 0) return;
+    const ingestStart = performance.now();
+    this.ingest.drainingDepth = true;
+    try {
+      for (let n = 0; n < 8 && this.ingest.pendingDepth.length > 0; n++) {
+        this.ingest.onDepthColumn(this.ingest.pendingDepth.shift()!);
+        if (performance.now() - ingestStart >= 4) break;
+      }
+    } finally {
+      this.ingest.drainingDepth = false;
+    }
+  }
+
+  /**
+   * Live stats: EMA the rAF cadence in place — no allocations, no GL calls.
+   * Deltas >1 s (a suspended tab) are skipped rather than folded in as a fake 1 fps.
+   */
+  private sampleCadence(ts: number): void {
+    if (this.statsLastRafTs > 0) {
+      const dt = ts - this.statsLastRafTs;
+      if (dt > 0 && dt < 1000) {
+        const sample = 1000 / dt;
+        this.statsFpsEma =
+          this.statsFpsEma > 0
+            ? this.statsFpsEma + STATS_EMA_ALPHA * (sample - this.statsFpsEma)
+            : sample;
+      }
+    }
+    this.statsLastRafTs = ts;
+  }
+
+  /** One scripted perf-run frame: the cadence sample, the camera op, and a forced redraw. */
+  private stepPerfFrame(perf: PerfRun, ts: number): void {
+    if (perf.lastTs > 0) perf.deltas.push(ts - perf.lastTs);
+    perf.lastTs = ts;
+    this.stepPerf(perf);
+    this.frameState.dirty = true; // force a redraw every frame while measuring
+  }
+
+  /**
+   * The per-frame camera work that runs before the draw: the price fit of bar
+   * ranges, the price and time follow glides, the overview and the scroll-back
+   * request for the visible range.
+   */
+  private followAndHistory(ts: number, perf: PerfRun | null): void {
+    // Consume changed bar prices once, before presenting the frame. Check
+    // the current camera policy here: a lock/pan after arrival owns its frame.
+    // Only the hybrid FIT policy depends on these bar ranges; linear depth
+    // fitting and the time-follow frame stay on their existing paths.
+    if (this.follow.barPriceFitPending && this.gpu.ring !== null && !this.ingest.awaitingSession) {
+      this.follow.barPriceFitPending = false;
+      if (perf === null && this.camera.followPrice === 'fit'
+        && this.axis.overlayPriceMap()?.scale?.kind === 'hybrid') {
+        this.follow.priceFitMemo = null;
+        if (this.host.applyPriceFitFrame()) this.follow.initialPriceFramed = true;
+      }
+    }
+
+    // Price auto-follow glide (O(1): a handful of scalars). No-op unless the
+    // camera is in 'track' mode with the live edge on screen.
+    this.follow.stepPriceFollow(ts);
+
+    // Eased live-edge scroll (O(1) scalars): the drawn view trails the logical
+    // follow frame by a decaying sub-column lag, so time-follow glides instead
+    // of jumping once per column. Re-dirties while the glide is in flight.
+    this.follow.stepLiveEdgeGlide(ts);
+
+    this.gpu.ensureOverview(ts);
+
+    // On frames where the view moved, ask the loader to ensure the visible
+    // range is populated. This guard is O(1) (visible-left vs resident-oldest) —
+    // never O(history) — so the perf gate stays green.
+    if (this.frameState.viewMoved && this.gpu.history !== null && this.gpu.ring !== null && this.frameState.view.colScale <= this.gpu.ring.capacityCols) {
+      this.frameState.viewMoved = false;
+      this.gpu.history.ensureVisible({
+        leftCol: Math.floor(this.frameState.view.colOffset),
+        span: this.frameState.view.colScale,
+        following: this.camera.followTime,
+        // Display LOD does not suppress history: every mip is generated from
+        // the same resident columns, including when the price axis is wide.
+        level: this.shading.currentLevel(false),
+      });
+    }
+  }
+
+  /** The heatmap pass, the overlays and the settle frames, when the frame is dirty. */
+  private drawIfDirty(perf: PerfRun | null): void {
+    if (!this.frameState.dirty || this.gpu.heatmap === null) return;
+    // Safety net: a splice batch whose page-end callback hasn't run yet
+    // (should not happen — onSpliced always fires) flushes before drawing.
+    this.gpu.spliceMips.flush(this.gpu.mips, this.gpu.ring);
+    // Refresh u_norm from the visible window before drawing (O(tiles),
+    // outside the measured draw cost; a no-op during the perf preload run).
+    this.shading.updateNormalization();
+    const t0 = performance.now();
+    this.gpu.heatmap.priceScale = this.axis.overlayPriceMap()?.scale ?? null;
+    const overview = this.gpu.activeOverview();
+    if (overview) overview.draw(this.frameState.view, this.gpu.heatmap);
+    else this.gpu.heatmap.draw(this.frameState.view);
+    // Overlays draw OVER the heatmap, O(visible). They are part of the
+    // frame the HUD reports: the PerfHud chip is the project's own
+    // regression sensor, and overlays are on by default — measuring only
+    // the heatmap pass understates the real draw cost. Skipped during a perf
+    // run (the gate measures the flushed heatmap pass alone) and when
+    // there is no epoch to map events/prices onto (perf preload). A throw
+    // here is surfaced once by the frame loop, like any other frame error.
+    if (perf === null) this.overlayLayer.drawOverlays();
+    // Live stats: EMA the FULL frame draw cost (no gl.finish — the cheap
+    // sample; the perf-run path below still measures the true flushed cost).
+    const drawCost = performance.now() - t0;
+    this.statsFrameMsEma =
+      this.statsFrameMsEma > 0
+        ? this.statsFrameMsEma + STATS_EMA_ALPHA * (drawCost - this.statsFrameMsEma)
+        : drawCost;
+    if (perf) {
+      // Flush the (software) GL pipeline so the sample is the true frame cost.
+      this.gpu.ctx.gl.finish();
+      perf.drawMs.push(performance.now() - t0);
+    }
+    this.frameState.dirty = false;
+    this.drawCountN++;
+    if ((this.gpu.ring?.residentRange()?.count ?? 0) > 0 && !this.ingest.awaitingSession) {
+      this.presentedSessionId = this.ingest.lastSessionId;
+    }
+    this.lastDrawEndTsN = performance.now();
+
+    // Keep redrawing until the viewport norm reaches its target so the
+    // contrast glides into a new regime (~0.3 s) instead of snapping.
+    // O(tiles)/frame for the handful of settle frames; a no-op once
+    // converged and in the perf preload path (no histogram data).
+    if (this.shading.normSettling()) this.frameState.dirty = true;
+  }
+
   private readonly frame = (ts: number): void => {
-      if (!this.running) return;
-      const benchmarkStart = this.host.benchmark ? performance.now() : 0;
-      const benchmarkDraws = this.drawCountN;
-      try {
-        // A lost context can't draw; wait for `restored` to rebuild GL.
-        if (this.gpu.glLost()) return;
-
-        if (this.programHold) return;
-        if (!this.programsReady()) return;
-        if (this.ingest.pendingDepth.length > 0) {
-          const ingestStart = performance.now();
-          this.ingest.drainingDepth = true;
-          try {
-            for (let n = 0; n < 8 && this.ingest.pendingDepth.length > 0; n++) {
-              this.ingest.onDepthColumn(this.ingest.pendingDepth.shift()!);
-              if (performance.now() - ingestStart >= 4) break;
-            }
-          } finally {
-            this.ingest.drainingDepth = false;
-          }
-        }
-
-        // Live stats: EMA the rAF cadence in place — no
-        // allocations, no GL calls. Deltas >1 s (a suspended tab) are skipped
-        // rather than folded in as a fake 1 fps.
-        if (this.statsLastRafTs > 0) {
-          const dt = ts - this.statsLastRafTs;
-          if (dt > 0 && dt < 1000) {
-            const sample = 1000 / dt;
-            this.statsFpsEma =
-              this.statsFpsEma > 0
-                ? this.statsFpsEma + STATS_EMA_ALPHA * (sample - this.statsFpsEma)
-                : sample;
-          }
-        }
-        this.statsLastRafTs = ts;
-
-        const perf = this.perf;
-      if (perf) {
-        if (perf.lastTs > 0) perf.deltas.push(ts - perf.lastTs);
-        perf.lastTs = ts;
-        this.stepPerf(perf);
-        this.frameState.dirty = true; // force a redraw every frame while measuring
-      }
-
-      // Consume changed bar prices once, before presenting the frame. Check
-      // the current camera policy here: a lock/pan after arrival owns its frame.
-      // Only the hybrid FIT policy depends on these bar ranges; linear depth
-      // fitting and the time-follow frame stay on their existing paths.
-      if (this.follow.barPriceFitPending && this.gpu.ring !== null && !this.ingest.awaitingSession) {
-        this.follow.barPriceFitPending = false;
-        if (perf === null && this.camera.followPrice === 'fit'
-          && this.axis.overlayPriceMap()?.scale?.kind === 'hybrid') {
-          this.follow.priceFitMemo = null;
-          if (this.host.applyPriceFitFrame()) this.follow.initialPriceFramed = true;
-        }
-      }
-
-      // Price auto-follow glide (O(1): a handful of scalars). No-op unless the
-      // camera is in 'track' mode with the live edge on screen.
-      this.follow.stepPriceFollow(ts);
-
-      // Eased live-edge scroll (O(1) scalars): the drawn view trails the logical
-      // follow frame by a decaying sub-column lag, so time-follow glides instead
-      // of jumping once per column. Re-dirties while the glide is in flight.
-      this.follow.stepLiveEdgeGlide(ts);
-
-      this.gpu.ensureOverview(ts);
-
-      // On frames where the view moved, ask the loader to ensure the visible
-      // range is populated. This guard is O(1) (visible-left vs resident-oldest) —
-      // never O(history) — so the perf gate stays green.
-      if (this.frameState.viewMoved && this.gpu.history !== null && this.gpu.ring !== null && this.frameState.view.colScale <= this.gpu.ring.capacityCols) {
-        this.frameState.viewMoved = false;
-        this.gpu.history.ensureVisible({
-          leftCol: Math.floor(this.frameState.view.colOffset),
-          span: this.frameState.view.colScale,
-          following: this.camera.followTime,
-          // Display LOD does not suppress history: every mip is generated from
-          // the same resident columns, including when the price axis is wide.
-          level: this.shading.currentLevel(false),
-        });
-      }
-
-      if (this.frameState.dirty && this.gpu.heatmap !== null) {
-        // Safety net: a splice batch whose page-end callback hasn't run yet
-        // (should not happen — onSpliced always fires) flushes before drawing.
-        this.gpu.spliceMips.flush(this.gpu.mips, this.gpu.ring);
-        // Refresh u_norm from the visible window before drawing (O(tiles),
-        // outside the measured draw cost; a no-op during the perf preload run).
-        this.shading.updateNormalization();
-        const t0 = performance.now();
-        this.gpu.heatmap.priceScale = this.axis.overlayPriceMap()?.scale ?? null;
-        const overview = this.gpu.activeOverview();
-        if (overview) overview.draw(this.frameState.view, this.gpu.heatmap);
-        else this.gpu.heatmap.draw(this.frameState.view);
-        // Overlays draw OVER the heatmap, O(visible). They are part of the
-        // frame the HUD reports: the PerfHud chip is the project's own
-        // regression sensor, and overlays are on by default — measuring only
-        // the heatmap pass understates the real draw cost. Skipped during a perf
-        // run (the gate measures the flushed heatmap pass alone) and when
-        // there is no epoch to map events/prices onto (perf preload). A throw
-        // here is surfaced once below, like any other frame error.
-        if (perf === null) this.overlayLayer.drawOverlays();
-        // Live stats: EMA the FULL frame draw cost (no gl.finish — the cheap
-        // sample; the perf-run path below still measures the true flushed cost).
-        const drawCost = performance.now() - t0;
-        this.statsFrameMsEma =
-          this.statsFrameMsEma > 0
-            ? this.statsFrameMsEma + STATS_EMA_ALPHA * (drawCost - this.statsFrameMsEma)
-            : drawCost;
-        if (perf) {
-          // Flush the (software) GL pipeline so the sample is the true frame cost.
-          this.gpu.ctx.gl.finish();
-          perf.drawMs.push(performance.now() - t0);
-        }
-        this.frameState.dirty = false;
-        this.drawCountN++;
-        if ((this.gpu.ring?.residentRange()?.count ?? 0) > 0 && !this.ingest.awaitingSession) {
-          this.presentedSessionId = this.ingest.lastSessionId;
-        }
-        this.lastDrawEndTsN = performance.now();
-
-        // Keep redrawing until the viewport norm reaches its target so the
-        // contrast glides into a new regime (~0.3 s) instead of snapping.
-        // O(tiles)/frame for the handful of settle frames; a no-op once
-        // converged and in the perf preload path (no histogram data).
-        if (this.shading.normSettling()) this.frameState.dirty = true;
-      }
-
-      if (perf && ts >= perf.deadline) {
-        this.perf = null;
-        perf.resolve({ deltas: perf.deltas, drawMs: perf.drawMs, frames: perf.drawMs.length });
-      }
-
+    if (!this.running) return;
+    const benchmarkStart = this.host.benchmark ? performance.now() : 0;
+    const benchmarkDraws = this.drawCountN;
+    try {
+      if (!this.renderFrame(ts)) return;
       // A clean frame re-arms the error surface: a NEW failure episode is
       // reported, a persistently broken context is not spammed every frame.
       this.frameErrored = false;

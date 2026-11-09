@@ -20,6 +20,7 @@
 
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 
+import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 import { useT } from '../i18n/useT';
 import { isTopOverlay, pushOverlay } from './overlayStack';
 import '../theme/shell.css';
@@ -87,6 +88,8 @@ export function closeOnboarding(): void {
 export interface OnboardStep {
   titleKey: string;
   bodyKey: string;
+  /** The body while single-key shortcuts are off: names no bare key that does nothing. */
+  noKeyBodyKey?: string;
   /** Extra disclosures shown under the body (simulated data, on-disk recording). */
   noteKeys?: readonly string[];
 }
@@ -100,9 +103,22 @@ export const ONBOARDING_STEPS: readonly OnboardStep[] = [
     // Both must be said before the user reads the heatmap as a real market.
     noteKeys: ['onboarding.step.connect.sim', 'onboarding.step.connect.record'],
   },
-  { titleKey: 'onboarding.step.mouse.title', bodyKey: 'onboarding.step.mouse.body' },
-  { titleKey: 'onboarding.step.shortcuts.title', bodyKey: 'onboarding.step.shortcuts.body' },
+  {
+    titleKey: 'onboarding.step.mouse.title',
+    bodyKey: 'onboarding.step.mouse.body',
+    noKeyBodyKey: 'onboarding.step.mouse.bodyNoKey',
+  },
+  {
+    titleKey: 'onboarding.step.shortcuts.title',
+    bodyKey: 'onboarding.step.shortcuts.body',
+    noKeyBodyKey: 'onboarding.step.shortcuts.bodyNoKey',
+  },
 ];
+
+/** The body key a step shows for the current single-key preference. */
+export function stepBodyKey(step: OnboardStep, singleKeys: boolean): string {
+  return singleKeys || step.noKeyBodyKey === undefined ? step.bodyKey : step.noKeyBodyKey;
+}
 
 const FOCUSABLE =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -115,6 +131,7 @@ export function OnboardingCard(): JSX.Element | null {
   const [step, setStep] = useState(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const headingId = useId();
+  const singleKeys = useSingleKeyShortcuts();
 
   // First run: show the tour automatically (nothing persisted yet).
   useEffect(() => {
@@ -217,7 +234,7 @@ export function OnboardingCard(): JSX.Element | null {
         </p>
         <h3 className="onboard__card-title">{t(stepKeys.titleKey)}</h3>
         <p className="onboard__body" data-testid="onboarding-body">
-          {t(stepKeys.bodyKey)}
+          {t(stepBodyKey(stepKeys, singleKeys))}
         </p>
         {stepKeys.noteKeys && stepKeys.noteKeys.length > 0 && (
           <ul className="onboard__notes" data-testid="onboarding-notes">

@@ -45,7 +45,7 @@ not resell it. The providers that a feed can use are the ones in the table above
 sources listed in the [security guide](SECURITY.md#where-it-connects). Crypto venue data comes from
 Binance, Bybit, Coinbase, Deribit and OKX (and CCXT venues); equity history and display quotes come from
 unofficial Yahoo Finance endpoints, and the keyless last price from an unofficial Google Finance page.
-The macro (FRED), dark-pool (FINRA), politics (House Stock Watcher), aviation (OpenSky Network), contract (USAspending) and job-board (Greenhouse) feed modules exist, but no producer runs in this build, so those sources are not contacted today. Each provider's terms of use apply to the data you view through FlowMap. Check them
+The macro (FRED), dark-pool (FINRA), politics (House Stock Watcher), aviation (OpenSky Network), contract (USAspending) and job-board (Greenhouse) feed modules, and the EDGAR and vocal-stress modules, exist, but no producer runs in this build, so those sources are not connected and not contacted today. Each provider's terms of use apply to the data you view through FlowMap. Check them
 before you rely on the data, redistribute a screenshot, or build on the same endpoints.
 
 Data can be delayed, incomplete or unavailable. Keyless sources can stop without notice. **FlowMap
@@ -134,8 +134,8 @@ Set environment variables before starting the service. Common settings are:
 | `FLOWMAP_DT_CRYPTO_NS` | `250000000`; crypto update cadence, in nanoseconds. Between 1 ms and 1 hour. |
 | `FLOWMAP_DT_EQUITY_KEYLESS_NS` | `10000000000`; keyless equity update cadence (10 s). Between 1 ms and 1 hour. |
 | `FLOWMAP_DT_EQUITY_KEYLESS_GRID_NS` | `1000000000`; keyless equity grid cadence (1 s). Between 1 ms and 1 hour. |
-| `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Optional equity market-data credentials; supply both. Read from your environment by a source run and passed through by the installed app. |
-| `FINNHUB_API_KEY` | Optional equity tape access. Read from your environment by a source run and passed through by the installed app. |
+| `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Optional equity market-data credentials; supply both, because one alone is ignored. A source run reads them from its environment. The installed app forwards them from the environment that launches it to its server (a fixed allowlist in `app/src-tauri/src/sidecar.rs`); the webview never receives them. |
+| `FINNHUB_API_KEY` | Optional equity tape access. A source run reads it from its environment. The installed app forwards it from the environment that launches it to its server; the webview never receives it. |
 | `FLOWMAP_SESSION_TOKEN` | Set by the desktop shell at each launch; when present, every request (except `/api/health` and CORS preflight) must send it in `X-FlowMap-Token`, and every WebSocket connection must offer it as the `flowmap.auth.<token>` subprotocol (on a WebSocket, the `token` query parameter is accepted for tools). Leave it unset for source runs. |
 
 Logs in the installed app go to the app data folder: `flowmap-server.log` (the server's output, moved to `flowmap-server.previous.log` at 20 MB) and `shell.log` (the shell's lifecycle messages, moved to `shell.previous.log` at 1 MB, at the next launch). The per-OS paths are in the [security guide](SECURITY.md#what-it-writes).
@@ -170,7 +170,7 @@ minimum-hardware qualification is NOT QUALIFIED.
 | Component | Minimum (estimate) |
 |---|---|
 | Windows | Windows 10 22H2 / 11 |
-| macOS | Configured floor: macOS 12.0. The computed minimum is in each macOS build's `macos-runtime-minimum-<triple>` workflow artifact, not in the release notes. Intel or Apple Silicon |
+| macOS | Configured floor: macOS 12.0. Each macOS build raises it to the newest macOS version its bundled Python runtime requires ([`app/scripts/macos-runtime-minimum.py`](app/scripts/macos-runtime-minimum.py)), so the effective minimum can be higher. Read it from that build's `macos-runtime-minimum-<triple>` workflow artifact. Intel or Apple Silicon |
 | Linux | Ubuntu 22.04 LTS (64-bit) |
 | Processor | Intel Core i3-10100 / AMD Ryzen 3 3100 |
 | Memory | 8 GB RAM |

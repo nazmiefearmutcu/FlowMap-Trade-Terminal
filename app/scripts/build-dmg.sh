@@ -31,7 +31,7 @@ VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".
   "$TAURI_DIR/tauri.conf.json" | head -1)"
 [[ -n "$VERSION" ]] || { echo "ERROR: no version in $TAURI_DIR/tauri.conf.json" >&2; exit 1; }
 
-# Arch-aware so the same script drives both the Apple-Silicon (macos-14) and
+# Arch-aware so the same script drives both the Apple-Silicon (macos-15) and
 # Intel (macos-15-intel) release runners as well as a local machine of either arch.
 case "$(uname -m)" in
   arm64)  TARGET_TRIPLE="aarch64-apple-darwin"; DMG_ARCH="aarch64" ;;

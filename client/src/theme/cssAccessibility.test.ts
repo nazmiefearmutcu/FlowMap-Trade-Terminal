@@ -25,6 +25,10 @@ const shellCss = read('shell.css');
 const deskCss = read('../ui/Desk.css');
 const marketStripCss = read('../ui/MarketStrip.css');
 const gateCss = read('../ui/ChartStartupGate.css');
+const crosshairCss = read('../ui/Crosshair.css');
+const indicatorsCss = read('../indicators/indicators.css');
+const crosshairTsx = read('../ui/Crosshair.tsx');
+const heatLegendTsx = read('../ui/HeatLegend.tsx');
 
 /** CSS with block comments removed, so prose never satisfies or breaks a rule. */
 function code(css: string): string {
@@ -243,6 +247,7 @@ describe('focus rings share one token (WCAG 2.4.7)', () => {
     ['ui/ChartStartupGate.css', gateCss],
     ['ui/IntelligenceDrawer.css', intelligenceCss],
     ['drawings/drawings.css', drawingsCss],
+    ['theme/shell.css', shellCss],
   ])('%s draws every focus ring in --focus, never in the accent', (_file, css) => {
     const accentRings = focusVisibleOutlines(css).filter(([, value]) => /var\(--accent\)/.test(value));
     expect(accentRings).toEqual([]);
@@ -272,5 +277,40 @@ describe('top bar zone label and off-state key rows are styled', () => {
   it('a bare-key row with the single-key switch off is dimmed and tagged in text', () => {
     expect(ruleBodies(appCss, '.keysheet__row.is-off .keysheet__keys').length).toBeGreaterThan(0);
     expect(ruleBodies(appCss, '.keysheet__off').length).toBeGreaterThan(0);
+  });
+});
+
+describe('the intelligence tab hint and caution tags use opaque theme ink', () => {
+  it('the tab hint is opaque text ink, not faded by opacity', () => {
+    const hint = ruleBodies(intelligenceCss, '.intel-tab__hint');
+    expect(hint.length).toBeGreaterThan(0);
+    for (const body of hint) expect(body).not.toMatch(/opacity/);
+    expect(hint.some((body) => /color:\s*var\(--text-3\)/.test(body))).toBe(true);
+  });
+
+  it('every caution class the components emit has a token-coloured rule', () => {
+    expect(crosshairTsx).toContain('crosshair__tag--caution');
+    expect(
+      ruleBodies(crosshairCss, '.crosshair__tag--caution').some((body) => /color:\s*var\(--chart-warn\)/.test(body)),
+    ).toBe(true);
+    expect(heatLegendTsx).toContain('heat-legend__tier--caution');
+    expect(
+      ruleBodies(appCss, '.heat-legend__tier--caution').some((body) => /color:\s*var\(--warn\)/.test(body)),
+    ).toBe(true);
+  });
+
+  it('the tape clock label is positioned against its own cell', () => {
+    expect(ruleBodies(appCss, '.tape__time').some((body) => /position:\s*relative/.test(body))).toBe(true);
+  });
+});
+
+describe('the indicator picker opened from Settings stays above the drawer scrim', () => {
+  it('lifts the picker above the scrim while a drawer is mounted', () => {
+    const scrimZ = Number(/z-index:\s*(\d+)/.exec(ruleBodies(appCss, '.drawer-scrim')[0] ?? '')?.[1]);
+    const pickerZ = Number(
+      /z-index:\s*(\d+)/.exec(ruleBodies(indicatorsCss, ':root:has(.drawer-scrim) .indi-picker').join(''))?.[1],
+    );
+    expect(Number.isFinite(scrimZ)).toBe(true);
+    expect(pickerZ).toBeGreaterThan(scrimZ);
   });
 });

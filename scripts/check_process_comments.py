@@ -38,7 +38,7 @@ PROCESS_ID = re.compile(
     r"|\b[Ss]urvey-?\d"
     r"|\b[Gg]ap\d*-\d+\b"
     r"|\b(?:gl|ovl|core|api|trade)-\d{2}\b"
-    r"|\bM\d+ T\d+\b"
+    r"|\bM\d(?: T\d+)?\b(?!\s*[-\d.,(])"
     r"|\bT[1-9]\d?\b"
     r"|\b[A-Z]\d-[A-Z]\d+\b"
     r"|\b[A-Z]\d-\d+\b"

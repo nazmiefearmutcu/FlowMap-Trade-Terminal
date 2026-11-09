@@ -12,6 +12,7 @@ import { setFlowMapTransport, useFlowMapStore } from './state/store';
 import type { SocketLike } from './net/connection';
 import { setLocale, t } from './i18n';
 import { markOnboarded, ONBOARDING_KEY } from './ui/OnboardingCard';
+import { setSingleKeyShortcutsEnabled } from './input/shortcutPrefs';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -55,6 +56,7 @@ afterEach(() => {
   useFlowMapStore.getState().disconnect();
   setFlowMapTransport({});
   window.localStorage.removeItem(ONBOARDING_KEY);
+  setSingleKeyShortcutsEnabled(true);
   setLocale('en');
 });
 
@@ -72,5 +74,14 @@ describe('App — chart canvas accessibility', () => {
     const help = container.ownerDocument.getElementById(describedBy!);
     expect(help?.textContent).toBe(t('chart.ariaHelp'));
     expect(help?.classList.contains('app-visually-hidden')).toBe(true);
+  });
+
+  it('drops the bare-key sentence from the keyboard reference while the single-key switch is off', () => {
+    setSingleKeyShortcutsEnabled(false);
+    const container = mountApp();
+    const canvas = container.querySelector<HTMLCanvasElement>('canvas#gl')!;
+    const help = container.ownerDocument.getElementById(canvas.getAttribute('aria-describedby')!);
+    expect(help?.textContent).toBe(t('chart.ariaHelpNoKey'));
+    expect(help?.textContent).not.toBe(t('chart.ariaHelp'));
   });
 });

@@ -4,9 +4,9 @@
  */
 
 import { useT } from '../i18n/useT';
-import { capabilityChipClass, capabilityChipTitle, capabilityChips, marketGroup, type VenueOption } from './symbols';
+import { capabilityChipClass, capabilityChipLabel, capabilityChipTitle, capabilityChips, marketGroup, type VenueOption } from './symbols';
 import { fmtPct, fmtPrice, sparkDirection, sparkPath } from './spark';
-import { capabilityChipLabel, groupText, venueText, type Row } from './SymbolSearchModel';
+import { groupText, venueText, type Row } from './SymbolSearchModel';
 
 interface SymbolRowProps {
   row: Row;

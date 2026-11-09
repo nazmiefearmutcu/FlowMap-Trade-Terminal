@@ -42,6 +42,13 @@ describe('fmtPct / fmtPrice', () => {
     expect(fmtPct(-0.5)).toBe('−0.50%');
     expect(fmtPct(null)).toBe('—');
   });
+  it('drops the sign when the value rounds to zero', () => {
+    expect(fmtPct(-0.001)).toBe('0.00%');
+    expect(fmtPct(0.004)).toBe('0.00%');
+    expect(fmtPct(-0.004)).toBe('0.00%');
+    expect(fmtPct(0)).toBe('0.00%');
+    expect(fmtPct(-0.01)).toBe('−0.01%');
+  });
   it('adapts price decimals to magnitude', () => {
     // Ungrouped everywhere: the same price reads the same on every panel.
     expect(fmtPrice(64000)).toBe('64000.00');

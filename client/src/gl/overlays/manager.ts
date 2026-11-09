@@ -37,7 +37,7 @@ import { Cvd } from './cvd';
 import { Vwap } from './vwap';
 import { VolBars, volumeStripHeight, VOLBAR_HEIGHT_FRAC } from './volbars';
 import { GexOverlay } from './gexLevels';
-import { TextLayer } from '../textLayer';
+import { DEFAULT_TEXT_SIZE, TextLayer } from '../textLayer';
 import type { HeatmapView } from '../heatmap';
 import { rowToPrice as scaleRowToPrice } from '../priceScale';
 import type { BarColumn, BBO, BookUpdate, Marker, Trade, GexLevelUpdate } from '../../proto/types';
@@ -408,9 +408,11 @@ export class OverlayManager {
     { drawW: 0, drawH: 0, cssW: 0, cssH: 0 }, null, null,
   );
   private readonly volumeDims: SurfaceDims = { drawW: 0, drawH: 0, cssW: 0, cssH: 0 };
+  // Honesty badges carry the data-provenance labels, so they use the chart's
+  // type floor (DEFAULT_TEXT_SIZE) rather than a smaller plate size.
   private readonly badgeOpts: Array<{ align: 'left' | 'right'; color: string; size: number; bg: string }> = [
-    { align: 'left', color: '', size: 9, bg: OVERLAY.badgeBg },
-    { align: 'left', color: '', size: 9, bg: OVERLAY.badgeBg },
+    { align: 'left', color: '', size: DEFAULT_TEXT_SIZE, bg: OVERLAY.badgeBg },
+    { align: 'left', color: '', size: DEFAULT_TEXT_SIZE, bg: OVERLAY.badgeBg },
   ];
 
   draw(ctx: OverlayDrawContext): void {

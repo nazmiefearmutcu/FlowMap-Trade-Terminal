@@ -154,7 +154,10 @@ describe('DOM price browsing and panel measurement', () => {
     });
     expect(middle()).toBe(inspected);
     click(container.querySelector('[data-testid="ladder-center"]')!);
-    expect(container.querySelector('[data-testid="ladder-lock"]')?.getAttribute('aria-pressed')).toBe('false');
+    // The lock's name (Follow / Locked) carries its state; it is not also a pressed toggle.
+    const lock = container.querySelector('[data-testid="ladder-lock"]');
+    expect(lock?.getAttribute('aria-pressed')).toBeNull();
+    expect(lock?.classList.contains('is-on')).toBe(false);
     expect(middle()).not.toBe(inspected);
   });
 

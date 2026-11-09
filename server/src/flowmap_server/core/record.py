@@ -181,7 +181,7 @@ def _decode_capability(raw: str | None) -> dict[str, object] | None:
     try:
         value = json.loads(raw)
     except ValueError:
-        return None
+        return None  # not JSON: there is no capability to report
     return value if isinstance(value, dict) else None
 
 
@@ -389,7 +389,7 @@ def _read_epoch_part(path: Path) -> pl.DataFrame | None:
     try:
         stat = path.stat()
     except OSError:
-        return None
+        return None  # the part was removed after it was listed
     key = (str(path), stat.st_size, stat.st_mtime_ns)
     with _epoch_file_lock:
         hit = _epoch_file_cache.get(key)
@@ -1043,7 +1043,7 @@ class Recorder:
         try:
             stat = path.stat()
         except OSError:
-            return None
+            return None  # the part was removed after it was listed
         stamp = (stat.st_size, stat.st_mtime_ns)
         with self._column_time_lock:
             cached = self._column_time_cache.get(path)

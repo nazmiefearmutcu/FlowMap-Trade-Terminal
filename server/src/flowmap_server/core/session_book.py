@@ -146,7 +146,8 @@ class BookMixin:
             "L2-snapshot",
         ):
             self._instant_book = wire.encode(self._grid.book_update(ev.ts_ns))
-            self._broadcast(self._instant_book, col=False)
+            # A full book state supersedes the one still queued for a slow client.
+            self._broadcast(self._instant_book, col=False, latest_key="instant-book")
 
     @staticmethod
     def _reanchor_ref(ev: BookState) -> float | None:

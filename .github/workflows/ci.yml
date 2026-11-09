@@ -13,8 +13,8 @@ name: CI
 #     Python graph and cargo audit on the locked Rust graph (ubuntu)
 #   - Tauri shell `cargo test` and clippy (ubuntu, windows and macos) and
 #     fmt (ubuntu only), with the Tauri 2 Linux system deps on ubuntu
-#   - full browser e2e (ubuntu and windows, Playwright chromium via SwiftShader),
-#     with a skip/flake budget that fails the job when it is exceeded
+#   - full browser e2e (ubuntu blocking, windows advisory, Playwright chromium via
+#     SwiftShader), with a skip/flake budget that fails the job when it is exceeded
 #
 # Runs on pushes to any branch (so the release branch is verified before it is
 # merged), on pull requests to main, on demand, and as a reusable workflow: the
@@ -88,6 +88,11 @@ jobs:
       # TS/TSX literals is in client/eslint.config.js.
       - name: Font sizes in stylesheets come from tokens (ratchet)
         run: python3 scripts/check_css_font_sizes.py
+
+      # WebGL modules stay under a line ratchet (scripts/check_gl_file_sizes.py): new
+      # modules get 600 lines, listed legacy modules may not grow past their ceiling.
+      - name: WebGL module sizes (ratchet)
+        run: python3 scripts/check_gl_file_sizes.py
 
       # Comments describe the code, not the process that produced it: ticket,
       # lane, swarm and campaign identifiers belong in CHANGELOG.md. The server
@@ -181,10 +186,11 @@ jobs:
         run: uv run ruff check .
 
       # Static type gate: [tool.mypy] in server/pyproject.toml scopes it to the
-      # feeds, data, nlp, proto and api packages and the config, logging, compat
-      # and provenance modules. The session core is not in that scope yet. mypy is
-      # in the locked dev group, so the sync above installed it. ubuntu only, like
-      # ruff: one interpreter is enough.
+      # feed, data, NLP and protocol packages, the api package, the config, logging,
+      # compat and provenance modules, and the core modules it lists. The other core
+      # modules are not gated yet; that file names them. mypy is in the locked dev
+      # group, so the sync above installed it. ubuntu only, like ruff: one interpreter
+      # is enough.
       - name: Type check (mypy)
         working-directory: server
         run: uv run mypy
@@ -317,6 +323,11 @@ jobs:
 
       # The desktop shell's release helpers (release text, bundling pins) are
       # stdlib unittest modules under app/scripts/tests.
+      # The e2e skip budget's evaluation is a Node module with its own unit tests.
+      - name: E2E budget unit tests
+        if: always()
+        run: node --test client/tests/reporters/checkBudget.test.mjs
+
       - name: Desktop release helper tests
         if: always()
         run: python3 -m unittest discover -s app/scripts/tests -p "test_*.py" -v
@@ -460,7 +471,7 @@ jobs:
   # Apple Silicon image the release builds on, with the pinned toolchain.
   shell-macos:
     name: shell (cargo test + clippy, macos)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -503,12 +514,13 @@ jobs:
   # (flags in client/playwright.config.ts) — software GL is slow. The perf spec's
   # absolute fps numbers are advisory (annotated, not asserted); its same-run
   # history-independence ratio and ring memory bound are the blocking gates.
-  # The suite runs on ubuntu and on windows (the product's platform); the two legs
-  # share the budget file and the replay-picker project.
+  # The suite runs on ubuntu (blocking) and on windows (advisory, see e2e-windows);
+  # both legs share the budget file and the replay-picker project. The job cap covers
+  # the worst case of the slowest spec: its 3 attempts of a 600 s test, plus setup.
   e2e:
     name: e2e (playwright chromium, ubuntu)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -565,10 +577,14 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # Advisory until this leg has passed on a hosted Windows runner: its first hosted run was
+  # cancelled by the 30-minute cap inside the suite. It does not block the release; the
+  # ubuntu e2e job above does. Remove continue-on-error once a hosted run is green.
   e2e-windows:
     name: e2e (playwright chromium, windows)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

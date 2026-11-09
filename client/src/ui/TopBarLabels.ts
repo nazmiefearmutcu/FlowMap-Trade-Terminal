@@ -8,7 +8,9 @@ type Translate = (key: string) => string;
 
 /**
  * The macro stress regime (`NORMAL` / `ELEVATED` / `SEVERE` / `UNKNOWN`) in the
- * active locale. An unrecognised token is shown as received rather than guessed at.
+ * active locale. `UNKNOWN` makes no claim, so it reads as the unavailable word
+ * (the same text a missing macro feed shows). An unrecognised token is shown as
+ * received rather than guessed at.
  */
 export function stressRegimeLabel(regime: string, t: Translate): string {
   switch (regime.toUpperCase()) {
@@ -19,7 +21,7 @@ export function stressRegimeLabel(regime: string, t: Translate): string {
     case 'SEVERE':
       return t('stress.regime.severe');
     case 'UNKNOWN':
-      return t('stress.regime.unknown');
+      return t('topbar.unavailable');
     default:
       return regime;
   }

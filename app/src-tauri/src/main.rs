@@ -374,14 +374,17 @@ fn set_recording_enabled(
     Ok(recording_settings_for(&paths, restarting))
 }
 
-/// The file manager command for the platform.
-fn folder_opener() -> &'static str {
+/// The file manager command for the platform. Windows and macOS ship theirs at a fixed
+/// system path, so a same-named program earlier on the search path cannot take its
+/// place. Linux distributions put `xdg-open` in different directories, so it is looked up.
+fn folder_opener() -> PathBuf {
     if cfg!(windows) {
-        "explorer"
+        let root = std::env::var_os("SYSTEMROOT").unwrap_or_else(|| "C:\\Windows".into());
+        PathBuf::from(root).join("explorer.exe")
     } else if cfg!(target_os = "macos") {
-        "open"
+        PathBuf::from("/usr/bin/open")
     } else {
-        "xdg-open"
+        PathBuf::from("xdg-open")
     }
 }
 
@@ -729,6 +732,19 @@ const BENCHMARK_IDENTIFIER: &str = "com.nazmiefearmutcu.flowmap.benchmark";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_folder_opener_is_a_system_path_where_the_system_ships_one() {
+        let opener = folder_opener();
+        if cfg!(windows) {
+            assert!(opener.is_absolute(), "explorer is taken from SYSTEMROOT");
+            assert!(opener.ends_with("explorer.exe"));
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(opener, Path::new("/usr/bin/open"));
+        } else {
+            assert_eq!(opener, Path::new("xdg-open"));
+        }
+    }
 
     #[cfg(unix)]
     #[test]

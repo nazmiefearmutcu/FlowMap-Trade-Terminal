@@ -136,6 +136,56 @@ describe('ReconnectBanner', () => {
   });
 });
 
+describe('ReconnectBanner subscribe timeout', () => {
+  it('offers a retry on a closed socket whose subscribe the server timed out', () => {
+    const retryNow = vi.fn();
+    useFlowMapStore.setState({ status: 'closed', refusal: { reason: 'subscribe_timeout' }, retryNow });
+    render();
+    const el = document.body.querySelector('[data-testid="refusal-banner"]')!;
+    expect(el.getAttribute('role')).toBe('alert');
+    expect(el.textContent).toContain('did not start this feed in time');
+    expect(el.textContent).not.toContain('subscribe_timeout');
+    const btn = document.body.querySelector('[data-testid="reconnect-retry"]')!;
+    act(() => {
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(retryNow).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the reconnect copy, not the refusal, while the retry is in flight', () => {
+    useFlowMapStore.setState({
+      status: 'reconnecting',
+      refusal: { reason: 'subscribe_timeout' },
+      reconnectAttempts: 1,
+    });
+    render();
+    expect(document.body.querySelector('[data-testid="refusal-banner"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="reconnect-banner"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-testid="reconnect-retry"]')).not.toBeNull();
+  });
+
+  it('shows nothing once the retried socket is live, although the refusal is still on the store', () => {
+    useFlowMapStore.setState({ status: 'live', refusal: { reason: 'subscribe_timeout' } });
+    render();
+    expect(document.body.querySelector('[data-testid="refusal-banner"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="reconnect-banner"]')).toBeNull();
+  });
+
+  it('renders nothing while the startup gate covers the stage', () => {
+    useFlowMapStore.setState({ status: 'reconnecting', reconnectAttempts: 1 });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    let root!: Root;
+    act(() => {
+      root = createRoot(container);
+      root.render(<ReconnectBanner covered />);
+    });
+    mounted.push({ container, root });
+    expect(container.querySelector('[data-testid="reconnect-banner"]')).toBeNull();
+    expect(container.querySelector('button')).toBeNull();
+  });
+});
+
 describe('ReconnectBanner terminal and escalated states', () => {
   it('shows a fatal protocol-mismatch alert with no retry control, even while not reconnecting', () => {
     useFlowMapStore.setState({ status: 'closed', protocolMismatch: { got: 9, expected: 3 } });

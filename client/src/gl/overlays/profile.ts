@@ -20,6 +20,7 @@ import { visibleColRange } from './coords';
 import { quoteDecimals } from './axisTicks';
 import { priceToRow, rowToPrice, type PriceScale } from '../priceScale';
 import { ViewWorker } from '../viewWorker';
+import type { ViewColumn } from '../viewWorkerEngine';
 import { systemClock, type GlClock } from '../clock';
 import { t } from '../../i18n';
 import { formatPrice } from '../../i18n/format';
@@ -223,6 +224,13 @@ export class Profile {
   /** Key and result of the last synchronous (within-budget) accumulation. */
   private syncKey = '';
   private syncResult: ProfileResult | null = null;
+  /** The in-thread window last seen, when it was first seen, and the window the sum was taken for. */
+  private syncViewKey = '';
+  private syncViewAt = 0;
+  private syncComputedView = '';
+  /** The data version the worker branch last saw, and when its last run started. */
+  private seenVersion = -1;
+  private lastRunAt = 0;
   calculationState: 'idle' | 'pending' | 'ready' | 'failed' = 'idle';
   private readonly clock: GlClock;
 
@@ -266,7 +274,8 @@ export class Profile {
     if (scale && colHi - colLo + 1 > this.opts.maxCols) {
       const key = JSON.stringify([colLo, colHi, rowLo, rowHi, scale]);
       const now = this.clock.now();
-      if (key !== this.viewKey) {
+      const viewMoved = key !== this.viewKey;
+      if (viewMoved) {
         // The view moved. A run in flight keeps its own captured window and is left
         // to finish: disposing it on every pan threw the work away and restarted it
         // each frame, so a moving view never got a profile. The new window is asked
@@ -285,6 +294,13 @@ export class Profile {
         this.budgetVersion = version;
         this.failures = 0;
       }
+      // Data arriving under a still view is a throttle, not a debounce: at most one
+      // run per settle period, so a live stream cannot restart the window copy on
+      // every frame and starve the result.
+      if (!viewMoved && version !== this.seenVersion && this.workerResult !== null) {
+        this.notBefore = Math.max(this.notBefore, this.lastRunAt + PROFILE_SETTLE_MS);
+      }
+      this.seenVersion = version;
       const stale = this.completedKey !== key || this.completedVersion !== version;
       if (stale && this.failures <= PROFILE_MAX_RETRIES && !this.worker?.busy) {
         if (now < this.notBefore) this.wake(frame.changed, this.notBefore);
@@ -293,7 +309,7 @@ export class Profile {
       if (!this.workerResult) {
         this.last = null;
         // Localised through the active locale: the badge is redrawn on every frame.
-        text.badge(gm.dims.cssW - 3, 18, this.calculationState === 'failed' ? t('gl.profileFailed') : t('gl.profilePending'), { align: 'right', color: OVERLAY.profile.css, size: 10 });
+        text.badge(gm.dims.cssW - 3, 18, this.calculationState === 'failed' ? t('gl.profileFailed') : t('gl.profilePending'), { align: 'right', color: OVERLAY.profile.css, size: 10 }); // size-budget: dense price tag
         return;
       }
       result = {
@@ -303,25 +319,48 @@ export class Profile {
     } else {
       // Within budget the sum runs on this thread. The result is reused while the
       // window, the frame version and the scale are unchanged: nothing
-      // in those inputs moved, so a rescan would return the same bins.
-      const syncKey = `${colLo}|${colHi}|${rowLo}|${rowHi}|${frame.dataVersion ?? 0}|${scale ? JSON.stringify(scale) : ''}`;
-      if (this.syncResult === null || syncKey !== this.syncKey) {
-        this.syncKey = syncKey;
-        this.syncResult = accumulateProfile(
-          colLo,
-          colHi,
-          rowLo,
-          rowHi,
-          frame.columnArrays,
-          scale !== undefined && scale.kind !== 'linear' ? (row) => gm.stepAtRow(row) : undefined,
-          this.scratch,
-          1,
-          scale && frame.columnScale ? { target: scale, source: frame.columnScale } : undefined,
-        );
+      // in those inputs moved, so a rescan would return the same bins. A view that
+      // moved away from the summed window keeps the last sum until it has been still
+      // for PROFILE_SETTLE_MS; without that hold a pan rescanned every visible column
+      // on every dirty frame.
+      const scaleKey = scale ? JSON.stringify(scale) : '';
+      const viewKey = `${colLo}|${colHi}|${rowLo}|${rowHi}|${scaleKey}`;
+      const version = frame.dataVersion ?? 0;
+      const syncKey = `${viewKey}|${version}`;
+      const now = this.clock.now();
+      if (viewKey !== this.syncViewKey) {
+        this.syncViewKey = viewKey;
+        this.syncViewAt = now;
       }
-      result = this.syncResult;
+      if (this.syncResult === null || syncKey !== this.syncKey) {
+        const moving = this.syncResult !== null && viewKey !== this.syncComputedView;
+        const due = moving ? this.syncViewAt + PROFILE_SETTLE_MS : now;
+        if (now < due) {
+          this.wake(frame.changed, due);
+        } else {
+          this.syncKey = syncKey;
+          this.syncComputedView = viewKey;
+          const sum = accumulateProfile(
+            colLo,
+            colHi,
+            rowLo,
+            rowHi,
+            frame.columnArrays,
+            scale !== undefined && scale.kind !== 'linear' ? (row) => gm.stepAtRow(row) : undefined,
+            this.scratch,
+            1,
+            scale && frame.columnScale ? { target: scale, source: frame.columnScale } : undefined,
+          );
+          // The scratch buffer is only ever the in-thread sum's; a worker result keeps its own bins.
+          this.scratch = sum.bins;
+          this.syncResult = sum;
+        }
+      }
+      // A null result is only possible before the first sum, which always runs above.
+      const sync = this.syncResult;
+      if (sync === null) return;
+      result = sync;
     }
-    this.scratch = result.bins;
     this.last = result;
     if (result.max <= 0) return;
 
@@ -355,7 +394,7 @@ export class Profile {
       text.badge(cssW - 3, y, `${prefix} ${formatPrice(price, decimals)}`, {
         align: 'right',
         color: OVERLAY.poc.css,
-        size: 10,
+        size: 10, // size-budget: dense price tag
       });
     }
   }
@@ -370,11 +409,20 @@ export class Profile {
     const worker = this.worker;
     const generation = this.generation;
     this.calculationState = 'pending';
+    this.lastRunAt = this.clock.now();
     const read = frame.columnArrays, nativeScale = frame.columnScale, changed = frame.changed;
+    // One record is reused for every window column: the worker copies each column
+    // and the in-thread engine reads it before the generator resumes, so nothing
+    // keeps a reference to it.
+    const slot: ViewColumn = { bid: new Float32Array(0), ask: null, scale };
     const columns = function* () {
       for (let c = colLo; c <= colHi; c++) {
         const arrays = read(c);
-        yield arrays ? { ...arrays, scale: nativeScale?.(c) ?? scale } : null;
+        if (arrays === null) { yield null; continue; }
+        slot.bid = arrays.bid;
+        slot.ask = arrays.ask;
+        slot.scale = nativeScale?.(c) ?? scale;
+        yield slot;
       }
     };
     void worker.run({ kind: 'profile', rowLo, rowHi, target: scale, normalizeWidths: scale.kind !== 'linear' }, columns()).then(value => {
@@ -426,8 +474,13 @@ export class Profile {
     this.completedVersion = -1;
     this.failures = 0;
     this.notBefore = 0;
+    this.seenVersion = -1;
+    this.lastRunAt = 0;
     this.syncKey = '';
     this.syncResult = null;
+    this.syncViewKey = '';
+    this.syncViewAt = 0;
+    this.syncComputedView = '';
     this.calculationState = 'idle';
     this.scratch = new Float64Array(0);
   }

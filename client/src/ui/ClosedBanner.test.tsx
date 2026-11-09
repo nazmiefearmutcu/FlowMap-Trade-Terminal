@@ -85,8 +85,8 @@ describe('ClosedBanner accessibility (single announcement of closed state)', () 
     expect(banner).not.toBeNull();
     expect(banner?.getAttribute('role')).toBe('status');
     // Stable label => the closed state announces once, not per-tick text.
-    // i18n pass (MIGRATION.md): the aria label moved onto the shared
-    // banner.closed key, whose EN text is the uppercase label.
+    // The aria label comes from the shared banner.closed key, whose EN text is
+    // the uppercase label.
     expect(banner?.getAttribute('aria-label')).toBe('MARKET CLOSED');
   });
 

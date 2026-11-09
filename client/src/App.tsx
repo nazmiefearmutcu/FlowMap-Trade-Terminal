@@ -24,6 +24,7 @@ import './ui/TopBar.css';
 import './watchlist/watchlist.css';
 
 import type { Renderer } from './gl/renderer';
+import { useT } from './i18n/useT';
 import { useTheme } from './theme';
 import { useIntelligenceStore } from './state/intelligenceStore';
 import { MarketStrip } from './ui/MarketStrip';
@@ -112,6 +113,7 @@ export function App() {
   // True while the server's market overview runs past its own deadline (Status.capability.overview_degraded).
   const overviewDegraded = useFlowMapStore((s) => s.capability?.overview_degraded === true);
 
+  const t = useT();
   // Theme: App re-renders only on an actual theme switch (useSyncExternalStore),
   // which is human-frequency.
   const { theme } = useTheme();
@@ -217,6 +219,7 @@ export function App() {
         }} />
 
       <main className="workspace">
+        <h1 className="app-visually-hidden">{t('app.heading')}</h1>
         <ChartStage
           rendererRef={rendererRef}
           canvasRef={canvasRef}

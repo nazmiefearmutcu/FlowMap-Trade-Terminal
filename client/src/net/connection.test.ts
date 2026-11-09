@@ -1810,6 +1810,14 @@ describe('Connection — failed subscribe (Status degraded + close 1011)', () =>
     expect(conn.status).toBe('closed');
   });
 
+  it('a subscribe_timeout 1011 is a transient stall: no refusal, the reconnect ladder runs', () => {
+    const { conn, sock, refusals, attempts } = liveWithStatus('subscribe_timeout');
+    sock.drop(1011);
+    expect(refusals).toEqual([]);
+    expect(attempts).toEqual([1]);
+    expect(conn.status).toBe('reconnecting');
+  });
+
   it('a 1011 with no pre-close Status keeps the reconnect ladder (transient wire death)', () => {
     const attempts: number[] = [];
     let sock: FakeWebSocket | undefined;

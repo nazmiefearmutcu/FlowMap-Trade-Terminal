@@ -412,6 +412,11 @@ function isJsonObject(v: unknown): v is JsonObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/** A JSON object whose every value is a string, or an optional field the server leaves absent. */
+function isOptionalStringRecord(v: unknown): v is Record<string, string> | undefined {
+  return v === undefined || (isJsonObject(v) && Object.values(v).every((x) => typeof x === 'string'));
+}
+
 /** A JSON number, or an optional field the server leaves null or absent. */
 function isOptionalNumber(v: unknown): v is number | null | undefined {
   return v === undefined || v === null || typeof v === 'number';
@@ -481,7 +486,9 @@ function isMacroStressBody(o: JsonObject): o is JsonObject & ColdBody<MacroStres
   return (
     typeof o.ts_ns === 'bigint' &&
     ['sofr', 'hy_spread', 'yield_10y2y', 'stress_score'].every((k) => typeof o[k] === 'number') &&
-    typeof o.status === 'string'
+    typeof o.status === 'string' &&
+    isOptionalStringRecord(o.as_of) &&
+    isOptionalStringRecord(o.source_status)
   );
 }
 

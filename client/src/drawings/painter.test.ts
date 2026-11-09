@@ -19,9 +19,10 @@ import {
   paintDrawing,
   paintDraft,
   paintLayer,
+  tagTextColor,
   type DrawProjection,
 } from './painter';
-import { DRAWING_INK_DEFAULT } from '../theme/drawInks';
+import { DRAWING_INK_DEFAULT, DRAWING_INK_SWATCHES } from '../theme/drawInks';
 import { DEFAULT_STYLE } from './types';
 import type { ChartPoint, Drawing } from './types';
 
@@ -135,6 +136,24 @@ describe('paintDrawing', () => {
     expect(ctx.fillText).toHaveBeenCalledWith('5', expect.any(Number), 50);
   });
 
+  it('the hline tag plate is the drawing ink, its text takes tagTextColor, and the font is the bundled mono stack', () => {
+    const ctx = stubCtx();
+    const plates: string[] = [];
+    const texts: string[] = [];
+    ctx.fillRect = vi.fn(() => {
+      plates.push(String(ctx.fillStyle));
+    });
+    ctx.fillText = vi.fn(() => {
+      texts.push(String(ctx.fillStyle));
+    });
+    const color = '#6B7280';
+    const d: Drawing = { id: 'h', tool: 'hline', createdAt: 0, points: [P(0n, 5)], style: { ...STYLE, color } };
+    paintDrawing(ctx, d, PROJ, { width: 800, height: 300 });
+    expect(plates).toEqual([color]);
+    expect(texts).toEqual([tagTextColor(color)]);
+    expect(ctx.font).toContain('JetBrains Mono');
+  });
+
   it('an hline tag reads at the grid precision when the paint opts carry it', () => {
     const ctx = stubCtx();
     const d: Drawing = { id: 'h', tool: 'hline', createdAt: 0, points: [P(0n, 5234.25)], style: { ...STYLE } };
@@ -206,6 +225,33 @@ describe('paintDrawing', () => {
     const ctx = stubCtx();
     paintDrawing(ctx, trend(), PROJ, { width: 800, height: 300, draft: true });
     expect(ctx.setLineDash).toHaveBeenCalledWith([4, 4]);
+  });
+});
+
+/** WCAG contrast ratio of two `#rrggbb` colours, measured independently of the painter. */
+function contrastOf(a: string, b: string): number {
+  const lum = (hex: string): number => {
+    const n = parseInt(hex.slice(1), 16);
+    const lin = (c: number): number => {
+      const v = c / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+describe('price-tag text contrast (WCAG AA, 4.5:1 at 10 px)', () => {
+  // The plate is the ink itself, so the text only has to clear the ink; every
+  // swatch, the default ink included, is checked here on every theme's behalf.
+  it.each([DRAWING_INK_DEFAULT, ...DRAWING_INK_SWATCHES])('%s tag text clears 4.5:1 on its ink plate', (ink) => {
+    const text = tagTextColor(ink);
+    expect(contrastOf(text, ink)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('a value that is not a six-digit hex falls back to dark text', () => {
+    expect(tagTextColor('rebeccapurple')).toBe('#000000');
   });
 });
 

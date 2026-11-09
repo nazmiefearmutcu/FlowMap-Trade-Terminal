@@ -39,6 +39,18 @@ def collect_versions(root=ROOT):
     }
 
 
+def changelog_problems(root, tag):
+    """The tagged version's CHANGELOG.md heading must carry a date, not 'Unreleased'."""
+    version = tag[1:]
+    text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = re.search(rf"(?m)^## \[{re.escape(version)}\][^\n]*$", text)
+    if heading is None:
+        return [f"CHANGELOG.md has no '## [{version}]' heading for tag {tag}"]
+    if "Unreleased" in heading.group(0):
+        return [f"CHANGELOG.md still reads {heading.group(0).strip()!r}; date the {version} section when the tag is cut"]
+    return []
+
+
 def problems(versions, tag=None):
     """Return a list of human-readable problems; empty when everything agrees."""
     if tag is not None:
@@ -61,10 +73,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         versions = collect_versions(args.root)
+        changelog = []
+        if args.tag is not None and TAG.fullmatch(args.tag) is not None:
+            changelog = changelog_problems(args.root, args.tag)
     except (OSError, ValueError, KeyError) as error:
         print(f"Version check failed: {error}", file=sys.stderr)
         return 1
-    found = problems(versions, args.tag)
+    found = problems(versions, args.tag) + changelog
     for message in found:
         print(message, file=sys.stderr)
     if found:

@@ -211,6 +211,11 @@ describe('IndicatorPicker — stacking', () => {
     expect(drawerZ).not.toBeNull();
     expect(Number(pickerZ![1])).toBeGreaterThan(Number(drawerZ![1]));
   });
+
+  it('the picker stylesheet sets its font sizes through the type tokens, not raw pixels', () => {
+    const css = readFileSync(resolve(here, '../indicators/indicators.css'), 'utf8');
+    expect(css).not.toMatch(/font-size:\s*\d*\.?\d+px/);
+  });
 });
 
 describe('IndicatorPicker — registry add/remove', () => {

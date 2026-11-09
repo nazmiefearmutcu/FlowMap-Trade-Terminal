@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 import logging
-import math
 import re
 import time
 from typing import Any
@@ -20,13 +19,10 @@ from typing import Any
 import aiohttp
 
 from flowmap_server import __version__
+from flowmap_server.feeds._numeric import finite_number
 
 log = logging.getLogger(__name__)
 _OPENSKY_API_URL = 'https://opensky-network.org/api/states/all'
-
-
-def _finite_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 class CorporateJetTracker:
@@ -87,7 +83,7 @@ class CorporateJetTracker:
                         if not isinstance(state, (list, tuple)) or len(state) < 10 or str(state[0]).lower() != icao:
                             continue
                         position_time, lon, lat = state[3], state[5], state[6]
-                        if (not all(_finite_number(value) for value in (position_time, lon, lat))
+                        if (not all(finite_number(value) for value in (position_time, lon, lat))
                                 or position_time <= 0 or not -180 <= lon <= 180 or not -90 <= lat <= 90):
                             continue
                         source_ns = int(Decimal(str(position_time)) * 1_000_000_000)
@@ -98,9 +94,9 @@ class CorporateJetTracker:
                             stale += 1
                             continue
                         produced = True
-                        altitude = state[7] if _finite_number(state[7]) else None
+                        altitude = state[7] if finite_number(state[7]) else None
                         on_ground = state[8] if isinstance(state[8], bool) else None
-                        velocity = state[9] if _finite_number(state[9]) and state[9] >= 0 else None
+                        velocity = state[9] if finite_number(state[9]) and state[9] >= 0 else None
                         events.append({
                             'ts_ns': source_ns, 'received_at_ns': received_at_ns,
                             'source': 'OpenSky ADS-B state vector',

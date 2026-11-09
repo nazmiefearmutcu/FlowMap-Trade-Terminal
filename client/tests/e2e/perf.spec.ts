@@ -3,7 +3,9 @@ import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+import { columnCacheFullPoolBytes } from '../../src/gl/columnCache';
 
 /**
  * Performance gates: the headline proof that the v1 1-fps bug is gone.
@@ -51,11 +53,20 @@ const REPORT_PATH = join(__dirname, '../../perf_report.json');
 // under-exercise the upload; 2048 keeps the number meaningful while staying
 // comfortably safe.) The measured gate covers the GPU ring only; the production
 // geometry is measured after the frame gates, at the end of the test.
+/** The renderer's own ring byte accounting, read in the page: gl/tileRing.ts needs the Vite runtime. */
+async function ringBytesFor(page: Page, capacityCols: number, rows: number): Promise<number> {
+  return page.evaluate(async ({ capacityCols, rows }) => {
+    // @ts-expect-error Vite module
+    const ring = await import('/src/gl/tileRing.ts') as { fullResRingBytes: (cols: number, rows: number) => number };
+    return ring.fullResRingBytes(capacityCols, rows);
+  }, { capacityCols, rows });
+}
+
 const PERF_ROWS = 2048;
 // Production geometry (session_manager.py: 4096 rows; renderer.ts: 6144 columns),
-// measured on the same ring code. The figure is the full-res RG32F ring only: the
-// mips and the CPU ColumnCache pages are not in it and need one combined CPU and
-// GPU budget.
+// measured on the same ring code. The gates sum the GPU ring and the CPU ColumnCache
+// pool. The SUM mip chain has no byte helper yet, so CLIENT_BUDGET_MB leaves headroom
+// for it.
 const PROD_ROWS = 4096;
 const PROD_COLS = 6144;
 const MIB = 1024 * 1024;
@@ -71,6 +82,9 @@ const ZOOM_MS = 2500;
 const FPS_ADVISORY_FLOOR = 30;
 const LATENCY_ADVISORY_MS = 32;
 const MEM_GATE_MB = 300;
+// Combined client budget at production geometry: GPU ring plus CPU pool (192 MiB each),
+// with headroom for the mip chain, which is not measured here yet.
+const CLIENT_BUDGET_MB = 512;
 // History-independence: 10k p10 frame cost ≤ this × 200 p10 (+ a small absolute
 // floor so sub-millisecond noise near zero can't trip the ratio). p10 is the
 // stall-free estimator the gate comment below explains.
@@ -196,6 +210,11 @@ test('perf gates: pan/zoom fps + history-independent frame cost @ 10k columns', 
   // p95 pan frame interval — the honest input→frame latency proxy on SwiftShader.
   const latencyP95 = pct(pan10k.deltas, 95);
   const memMB = geom10k.ringBytes / (1024 * 1024);
+  // The measured ring must be the byte count the renderer's accounting helper gives, and
+  // the CPU pool sized to the same ring columns must stay under the same gate.
+  expect(geom10k.ringBytes).toBe(await ringBytesFor(page, geom10k.capacityCols, PERF_ROWS));
+  const cpuPoolMB = columnCacheFullPoolBytes(geom10k.capacityCols, PERF_ROWS) / MIB;
+  expect(cpuPoolMB, `CPU column pool ${cpuPoolMB.toFixed(1)} MB at ${PERF_ROWS} rows`).toBeLessThanOrEqual(MEM_GATE_MB);
   const historyRatio = drawMs200P10 > 0 ? drawMs10kP10 / drawMs200P10 : 1;
 
   // Effective uncapped fps from raw draw cost (what the shader alone allows,
@@ -300,7 +319,11 @@ test('perf gates: pan/zoom fps + history-independent frame cost @ 10k columns', 
   const prod = await page.evaluate(
     (cfg) => (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer.preloadSynthetic(cfg.cols, cfg.rows),
     { cols: PROD_COLS, rows: PROD_ROWS },
-  ) as { ringBytes: number };
+  ) as { ringBytes: number; capacityCols: number };
   const prodMB = prod.ringBytes / MIB;
+  const prodCpuMB = columnCacheFullPoolBytes(PROD_COLS, PROD_ROWS) / MIB;
+  expect(prod.ringBytes).toBe(await ringBytesFor(page, prod.capacityCols, PROD_ROWS));
   expect(prodMB, `production full-res ring ${prodMB.toFixed(1)} MB at ${PROD_ROWS} rows`).toBeLessThanOrEqual(MEM_GATE_MB);
+  expect(prodCpuMB, `production CPU pool ${prodCpuMB.toFixed(1)} MB`).toBeLessThanOrEqual(MEM_GATE_MB);
+  expect(prodMB + prodCpuMB, `combined GPU ring + CPU pool ${(prodMB + prodCpuMB).toFixed(1)} MB; budget ${CLIENT_BUDGET_MB} MB`).toBeLessThanOrEqual(CLIENT_BUDGET_MB);
 });

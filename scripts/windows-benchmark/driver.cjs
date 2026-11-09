@@ -4,6 +4,9 @@ const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const { SAMPLE_RETRY_MS, HEALTH_CONTRACT, HEALTH_TIMEOUT_MS, ownedHealthUrl, healthCollector, drainIndependentSamplers, serializeBenchmarkJson, benchmarkPageSnapshot, historyCovered, finish, singleFlightSampler, enableProductionOverlays, productionGoLive, subscriptionAttached } = require('./driver-contract.cjs');
 const config = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+// Under the desktop shell the server takes the session token, and /api/health answers
+// only with stats and feeds when it is sent (x-flowmap-token).
+const healthHeaders = process.env.FLOWMAP_SESSION_TOKEN ? { 'x-flowmap-token': process.env.FLOWMAP_SESSION_TOKEN } : {};
 const { chromium } = require(config.playwright || path.resolve(__dirname, '../../client/node_modules/playwright'));
 const write = (name, value) => fs.writeFileSync(path.join(config.output, name), serializeBenchmarkJson(value, 2));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -42,7 +45,7 @@ const sampler=singleFlightSampler(sample,error=>result.errors.push('Client sampl
     page.on('pageerror', error => result.errors.push(error.message));
     await page.waitForFunction(() => window.__FLOWMAP_BENCHMARK__ === true && !!window.__flowmapLive, null, { timeout: 45_000 });
     const healthUrl=ownedHealthUrl(await page.evaluate(()=>window.__FLOWMAP_SERVER__),config.serverPort);
-    health=healthCollector({url:healthUrl,onObservation:row=>healthLines.write(serializeBenchmarkJson(row)+'\n'),
+    health=healthCollector({url:healthUrl,headers:healthHeaders,onObservation:row=>healthLines.write(serializeBenchmarkJson(row)+'\n'),
       onError:error=>result.errors.push('Health collector: '+(error.stack||String(error)))});
     result.healthCollection={schema:1,contract:HEALTH_CONTRACT,collectionId:health.collectionId,url:healthUrl,
       collectionStartMonoMs:health.collectionStartMonoMs,

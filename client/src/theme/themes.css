@@ -50,6 +50,7 @@
   --indi-c4: #5aa2e0;
   --indi-c5: #e8635f;
   --indi-c6: #67c96a;
+  /* fs-2xs, fs-xs and fs-sm are three semantic names that share the 11px floor. */
   --fs-2xs: 11px;
   --fs-xs: 11px;
   --fs-sm: 11px;
@@ -139,6 +140,7 @@
   --indi-c4: #1F5FA8;
   --indi-c5: #B3262E;
   --indi-c6: #2E6B2A;
+  /* fs-2xs, fs-xs and fs-sm are three semantic names that share the 11px floor. */
   --fs-2xs: 11px;
   --fs-xs: 11px;
   --fs-sm: 11px;
@@ -228,6 +230,7 @@
   --indi-c4: #1F5FA8;
   --indi-c5: #B3262E;
   --indi-c6: #2E6B2A;
+  /* fs-2xs, fs-xs and fs-sm are three semantic names that share the 11px floor. */
   --fs-2xs: 11px;
   --fs-xs: 11px;
   --fs-sm: 11px;
@@ -317,6 +320,7 @@
   --indi-c4: #5aa2e0;
   --indi-c5: #e8635f;
   --indi-c6: #67c96a;
+  /* fs-2xs, fs-xs and fs-sm are three semantic names that share the 11px floor. */
   --fs-2xs: 11px;
   --fs-xs: 11px;
   --fs-sm: 11px;
@@ -406,6 +410,7 @@
   --indi-c4: #5aa2e0;
   --indi-c5: #e8635f;
   --indi-c6: #67c96a;
+  /* fs-2xs, fs-xs and fs-sm are three semantic names that share the 11px floor. */
   --fs-2xs: 11px;
   --fs-xs: 11px;
   --fs-sm: 11px;
@@ -495,6 +500,7 @@
   --indi-c4: #1F4FA0;
   --indi-c5: #A33A10;
   --indi-c6: #3B6E1E;
+  /* fs-2xs, fs-xs and fs-sm are three semantic names that share the 11px floor. */
   --fs-2xs: 11px;
   --fs-xs: 11px;
   --fs-sm: 11px;
@@ -584,6 +590,7 @@
   --indi-c4: #5aa2e0;
   --indi-c5: #e8635f;
   --indi-c6: #67c96a;
+  /* fs-2xs, fs-xs and fs-sm are three semantic names that share the 11px floor. */
   --fs-2xs: 11px;
   --fs-xs: 11px;
   --fs-sm: 11px;

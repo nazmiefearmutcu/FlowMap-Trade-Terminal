@@ -54,8 +54,8 @@ interface CellSize {
 }
 
 /** Default cap on retained columns when nothing sizes the cache explicitly.
- * NOTE: the renderer sizes the cache to the WHOLE ring (renderer.ts
- * ringLayersFor) so the profile/crosshair see every resident column. The CPU
+ * NOTE: the renderer sizes the cache to the WHOLE ring (renderer.ts, via
+ * render/gpuLifecycle.ts ringLayersFor) so the profile/crosshair see every resident column. The CPU
  * footprint is PAGED (see {@link COLUMN_CACHE_PAGE_SLOTS}): only the pages the
  * session actually touches are ever allocated, so a fresh boot holds one or
  * two pages (MiBs), not the whole ring. */

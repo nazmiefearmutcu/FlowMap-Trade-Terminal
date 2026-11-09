@@ -70,14 +70,14 @@ import type {
   RendererStats,
 } from './rendererTypes';
 import { AxisMap } from './render/axisMap';
-import { OverlayLayer } from './render/overlayLayer';
-import { FollowPolicy } from './render/followPolicy';
-import { DepthIngest } from './render/depthIngest';
+import { OverlayLayer, type OverlayLayerHost } from './render/overlayLayer';
+import { FollowPolicy, type FollowHost } from './render/followPolicy';
+import { DepthIngest, type IngestHost } from './render/depthIngest';
 import { createFrameState, type FrameState } from './render/frameState';
-import { FrameLoop } from './render/frameLoop';
+import { FrameLoop, type FrameHost } from './render/frameLoop';
 import { Shading, type ShadingHost } from './render/shading';
-import { Viewport } from './render/viewport';
-import { TestHooks } from './render/testHooks';
+import { Viewport, type ViewportHost } from './render/viewport';
+import { TestHooks, type TestHooksHost } from './render/testHooks';
 import {
   GpuLifecycle,
   ringLayersFor,
@@ -97,14 +97,13 @@ interface RendererStore {
 /**
  * Full-res residency budget: 6144 recent columns = 24 tile layers ×
  * 256 cols. At RG32F (8 B/texel) one column is rows·8 B, so the ring is
- * 6144·rows·8 B — 96 MiB at 2048 rows, 192 MiB at the production
- * 4096-row grid, both ≤ the 300 MB GPU-memory gate. Older ranges are not
- * held full-res; scroll-back re-fetches them (net/history) and deep zoom-out
- * renders from the SUM-mips.
+ * 6144·rows·8 B: 96 MiB at 2048 rows and 192 MiB at the production 4096-row
+ * grid. With the row-only and SUM mips the GPU total is about 253 MiB at 4096
+ * rows. The CPU ColumnCache mirrors the same cells at Float32 (bid + ask,
+ * 8 B per cell); it is NOT part of that figure and is bounded by the same
+ * column budget. Older ranges are not held full-res: scroll-back re-fetches
+ * them (net/history) and deep zoom-out renders from the SUM-mips.
  */
-// Include the row-only and SUM mips: ~253 MiB total at 4096 rows. The CPU
-// ColumnCache mirrors the same cells at Float32 (bid + ask, 8 B per cell) and
-// is NOT part of this figure; it is bounded by the same column budget.
 const DEFAULT_CAPACITY_COLS = 6_144;
 const DEFAULT_COLUMN_PX = 3;
 const DEFAULT_MAX_VISIBLE = 512;
@@ -227,33 +226,11 @@ export class Renderer {
 
     // GL context, LUT and the ring/heatmap/mips lifecycle. The context is created
     // here, ahead of the CPU caches, which size themselves to its layer limit.
-    const gpuHost: GpuHost = {
-      store: this.store,
-      frameState: this.frameState,
-      camera: this.camera,
-      axis: this.axis,
-      columnCache: () => this.columnCache,
-      normalizer: () => this.normalizer,
-      overlays: () => this.overlays,
-      follow: () => this.follow,
-      configureHeatmap: heatmap => this.configureHeatmap(heatmap),
-      activeRamp: () => this.shading.activeRamp,
-      awaitingSession: () => this.ingest.awaitingSession,
-      perfRunning: () => this.frameLoop.perf !== null,
-      countUpload: () => this.frameLoop.countUpload(),
-      notifyViewChanged: () => this.notifyViewChanged(),
-      resize: () => this.viewport.resize(),
-      rebuildGL: () => this.recreateGL(),
-      spliceColumn: col => this.spliceColumn(col),
-      onFrameLost: () => this.frameLoop.onFrameLost(),
-      onFrameRestored: () => this.frameLoop.onFrameRestored(),
-      setRenderFailure: message => { this.frameLoop.renderFailure = message; },
-    };
     this.gpu = new GpuLifecycle(canvas, {
       // Dirty-only render loop: the lifecycle keeps the last frame between draws.
       requireColorBufferFloat: this.opts.requireColorBufferFloat,
       capacityColsTarget: this.opts.capacityColsTarget,
-    }, gpuHost);
+    }, this.gpuHost());
     if (this.benchmark) {
       for (const kind of ['wheel', 'pointermove', 'keydown']) window.addEventListener(kind, this.benchmarkInput, true);
     }
@@ -263,132 +240,23 @@ export class Renderer {
     // is sized to cover the WHOLE ring: a 2048-column cache under a 16 384-column
     // ring made the volume profile silently drop resident columns it could not
     // read (bars under-reported for any window wider than the cache).
-    const shadingHost: ShadingHost = {
-      store: this.store,
-      frameState: this.frameState,
-      axis: this.axis,
-      rawColumnScale: this.rawColumnScale,
-      columnCache: () => this.columnCache,
-      gl: () => this.ctx.gl,
-      lut: () => this.lut,
-      heatmap: () => this.heatmap,
-      ring: () => this.ring,
-      mips: () => this.mips,
-      overlays: () => this.overlays,
-      activeOverview: () => this.activeOverview(),
-      overviewSurface: () => this.gpu.overviewSurface,
-      dpr: () => this.dpr,
-      prefersReducedMotion: () => this.prefersReducedMotion(),
-      clearBackground: () => this.clearBackground(),
-    };
-    this.shading = new Shading(shadingHost,
-      ringLayersFor(this.opts.capacityColsTarget, this.gpu.ctx.caps.maxArrayTextureLayers) + 1);
-    this.columnCache = new ColumnCache({
-      capacity: ringLayersFor(this.opts.capacityColsTarget, this.gpu.ctx.caps.maxArrayTextureLayers) * COLS_PER_TILE,
-    });
+    const ringLayers = ringLayersFor(this.opts.capacityColsTarget, this.gpu.ctx.caps.maxArrayTextureLayers);
+    this.shading = new Shading(this.shadingHost(), ringLayers + 1);
+    this.columnCache = new ColumnCache({ capacity: ringLayers * COLS_PER_TILE });
 
     // Overlays: own GL batches + a 2D text layer sibling over the canvas.
-    this.overlayLayer = new OverlayLayer({
-      canvas,
-      store: this.store,
-      frameState: this.frameState,
-      axis: this.axis,
-      columnCache: () => this.columnCache,
-      normalizer: () => this.normalizer,
-      gl: () => this.ctx.gl,
-      ring: () => this.ring,
-      activeOverview: () => this.activeOverview(),
-      controller: () => this.controller,
-      dpr: () => this.dpr,
-      cssWidth: () => this.viewport.cssWidth,
-      cssHeight: () => this.viewport.cssHeight,
-      glLost: () => this.glLost(),
-    });
-
+    this.overlayLayer = new OverlayLayer(this.overlayLayerHost(canvas));
     // Price auto-follow + camera glide. Built before the first resize(), which refits the follow frame.
-    this.follow = new FollowPolicy({
-      camera: this.camera,
-      frameState: this.frameState,
-      axis: this.axis,
-      store: this.store,
-      columnPx: this.opts.columnPx,
-      maxVisibleCols: this.opts.maxVisibleCols,
-      ring: () => this.ring,
-      overlays: () => this.overlays,
-      activeOverview: () => this.activeOverview(),
-      overviewComplete: () => this.gpu.overviewComplete(),
-      extentLo: () => this.gpu.extents.lo!,
-      extentHi: () => this.gpu.extents.hi!,
-      extentSeq: () => this.gpu.extents.seq!,
-      cssWidth: () => this.viewport.cssWidth,
-      cssHeight: () => this.viewport.cssHeight,
-      perfRunning: () => this.frameLoop.perf !== null,
-      resetHistory: () => this.history?.reset(),
-      notifyViewChanged: () => this.notifyViewChanged(),
-      applyPriceFitFrame: () => this.applyPriceFitFrame(),
-    });
+    this.follow = new FollowPolicy(this.followHost());
     // Stream dispatch and column ingest: built after every module it writes into
     // and before the stream subscription below (see render/depthIngest.ts).
-    this.ingest = new DepthIngest({
-      store: this.store,
-      frameState: this.frameState,
-      gpu: this.gpu,
-      axis: this.axis,
-      follow: this.follow,
-      shading: this.shading,
-      overlayLayer: this.overlayLayer,
-      camera: this.camera,
-      columnCache: this.columnCache,
-      benchmark: this.benchmark,
-      capacityColsTarget: this.opts.capacityColsTarget,
-      updateView: () => this.updateView(),
-      forgetPresentedSession: () => this.frameLoop.forgetPresentedSession(),
-      countUpload: () => this.frameLoop.countUpload(),
-      programsReady: () => this.frameLoop.programsReadyForIngest(),
-    });
-
+    this.ingest = new DepthIngest(this.ingestHost());
     // Frame loop: rAF scheduling, render health, the perf run and the stats (see render/frameLoop.ts).
-    this.frameLoop = new FrameLoop({
-      benchmark: this.benchmark,
-      frameState: this.frameState,
-      camera: this.camera,
-      gpu: this.gpu,
-      ingest: this.ingest,
-      follow: this.follow,
-      shading: this.shading,
-      axis: this.axis,
-      overlayLayer: this.overlayLayer,
-      columnCache: this.columnCache,
-      applyPriceFitFrame: () => this.applyPriceFitFrame(),
-    });
+    this.frameLoop = new FrameLoop(this.frameLoopHost());
     // Canvas surface, DPR, gestures and the pointer mapping (see render/viewport.ts).
-    this.viewport = new Viewport({
-      canvas,
-      store: this.store,
-      frameState: this.frameState,
-      camera: this.camera,
-      gpu: this.gpu,
-      axis: this.axis,
-      shading: this.shading,
-      follow: this.follow,
-      columnCache: this.columnCache,
-      updateView: () => this.updateView(),
-    });
+    this.viewport = new Viewport(this.viewportHost(canvas));
     // Test and e2e hooks: built last, since they drive every module above (see render/testHooks.ts).
-    this.testHooks = new TestHooks({
-      canvas,
-      gpu: this.gpu,
-      camera: this.camera,
-      frameState: this.frameState,
-      axis: this.axis,
-      shading: this.shading,
-      columnCache: this.columnCache,
-      overlayLayer: this.overlayLayer,
-      ingest: this.ingest,
-      follow: this.follow,
-      frameLoop: this.frameLoop,
-      viewport: this.viewport,
-    });
+    this.testHooks = new TestHooks(this.testHooksHost(canvas));
 
     // Match the backing store to the CSS box, then paint the background once so
     // the pre-data canvas is the terminal near-black, not transparent garbage.
@@ -411,6 +279,175 @@ export class Renderer {
       this.frameLoop.renderFailure = err instanceof Error ? err.message : String(err);
     }
     this.frameLoop.start();
+  }
+
+  // --- construction wiring: the host objects each render module reads ----------
+  // Built after the modules they name are assigned. Every closure reads the
+  // live field when it runs, so a later reassignment is seen at use time.
+
+  /** What the GPU lifecycle reads from the renderer (see render/gpuLifecycle.ts). */
+  private gpuHost(): GpuHost {
+    return {
+      store: this.store,
+      frameState: this.frameState,
+      camera: this.camera,
+      axis: this.axis,
+      columnCache: () => this.columnCache,
+      normalizer: () => this.normalizer,
+      overlays: () => this.overlays,
+      follow: () => this.follow,
+      configureHeatmap: heatmap => this.configureHeatmap(heatmap),
+      activeRamp: () => this.shading.activeRamp,
+      awaitingSession: () => this.ingest.awaitingSession,
+      perfRunning: () => this.frameLoop.perf !== null,
+      countUpload: () => this.frameLoop.countUpload(),
+      notifyViewChanged: () => this.notifyViewChanged(),
+      resize: () => this.viewport.resize(),
+      rebuildGL: () => this.recreateGL(),
+      spliceColumn: col => this.spliceColumn(col),
+      onFrameLost: () => this.frameLoop.onFrameLost(),
+      onFrameRestored: () => this.frameLoop.onFrameRestored(),
+      setRenderFailure: message => { this.frameLoop.renderFailure = message; },
+    };
+  }
+
+  /** What the heatmap shading reads from the renderer (see render/shading.ts). */
+  private shadingHost(): ShadingHost {
+    return {
+      store: this.store,
+      frameState: this.frameState,
+      axis: this.axis,
+      rawColumnScale: this.rawColumnScale,
+      columnCache: () => this.columnCache,
+      gl: () => this.ctx.gl,
+      lut: () => this.lut,
+      heatmap: () => this.heatmap,
+      ring: () => this.ring,
+      mips: () => this.mips,
+      overlays: () => this.overlays,
+      activeOverview: () => this.activeOverview(),
+      overviewSurface: () => this.gpu.overviewSurface,
+      dpr: () => this.dpr,
+      prefersReducedMotion: () => this.prefersReducedMotion(),
+      clearBackground: () => this.clearBackground(),
+    };
+  }
+
+  /** What the overlay layer reads from the renderer (see render/overlayLayer.ts). */
+  private overlayLayerHost(canvas: HTMLCanvasElement): OverlayLayerHost {
+    return {
+      canvas,
+      store: this.store,
+      frameState: this.frameState,
+      axis: this.axis,
+      columnCache: () => this.columnCache,
+      normalizer: () => this.normalizer,
+      gl: () => this.ctx.gl,
+      ring: () => this.ring,
+      activeOverview: () => this.activeOverview(),
+      controller: () => this.controller,
+      dpr: () => this.dpr,
+      cssWidth: () => this.viewport.cssWidth,
+      cssHeight: () => this.viewport.cssHeight,
+      glLost: () => this.glLost(),
+    };
+  }
+
+  /** What the price auto-follow reads from the renderer (see render/followPolicy.ts). */
+  private followHost(): FollowHost {
+    return {
+      camera: this.camera,
+      frameState: this.frameState,
+      axis: this.axis,
+      store: this.store,
+      columnPx: this.opts.columnPx,
+      maxVisibleCols: this.opts.maxVisibleCols,
+      ring: () => this.ring,
+      overlays: () => this.overlays,
+      activeOverview: () => this.activeOverview(),
+      overviewComplete: () => this.gpu.overviewComplete(),
+      extentLo: () => this.gpu.extents.lo!,
+      extentHi: () => this.gpu.extents.hi!,
+      extentSeq: () => this.gpu.extents.seq!,
+      cssWidth: () => this.viewport.cssWidth,
+      cssHeight: () => this.viewport.cssHeight,
+      perfRunning: () => this.frameLoop.perf !== null,
+      resetHistory: () => this.history?.reset(),
+      notifyViewChanged: () => this.notifyViewChanged(),
+      applyPriceFitFrame: () => this.applyPriceFitFrame(),
+    };
+  }
+
+  /** What the depth ingest reads from the renderer (see render/depthIngest.ts). */
+  private ingestHost(): IngestHost {
+    return {
+      store: this.store,
+      frameState: this.frameState,
+      gpu: this.gpu,
+      axis: this.axis,
+      follow: this.follow,
+      shading: this.shading,
+      overlayLayer: this.overlayLayer,
+      camera: this.camera,
+      columnCache: this.columnCache,
+      benchmark: this.benchmark,
+      capacityColsTarget: this.opts.capacityColsTarget,
+      updateView: () => this.updateView(),
+      forgetPresentedSession: () => this.frameLoop.forgetPresentedSession(),
+      countUpload: () => this.frameLoop.countUpload(),
+      programsReady: () => this.frameLoop.programsReadyForIngest(),
+    };
+  }
+
+  /** What the frame loop reads from the renderer (see render/frameLoop.ts). */
+  private frameLoopHost(): FrameHost {
+    return {
+      benchmark: this.benchmark,
+      frameState: this.frameState,
+      camera: this.camera,
+      gpu: this.gpu,
+      ingest: this.ingest,
+      follow: this.follow,
+      shading: this.shading,
+      axis: this.axis,
+      overlayLayer: this.overlayLayer,
+      columnCache: this.columnCache,
+      applyPriceFitFrame: () => this.applyPriceFitFrame(),
+    };
+  }
+
+  /** What the viewport reads from the renderer (see render/viewport.ts). */
+  private viewportHost(canvas: HTMLCanvasElement): ViewportHost {
+    return {
+      canvas,
+      store: this.store,
+      frameState: this.frameState,
+      camera: this.camera,
+      gpu: this.gpu,
+      axis: this.axis,
+      shading: this.shading,
+      follow: this.follow,
+      columnCache: this.columnCache,
+      updateView: () => this.updateView(),
+    };
+  }
+
+  /** What the test and e2e hooks read from the renderer (see render/testHooks.ts). */
+  private testHooksHost(canvas: HTMLCanvasElement): TestHooksHost {
+    return {
+      canvas,
+      gpu: this.gpu,
+      camera: this.camera,
+      frameState: this.frameState,
+      axis: this.axis,
+      shading: this.shading,
+      columnCache: this.columnCache,
+      overlayLayer: this.overlayLayer,
+      ingest: this.ingest,
+      follow: this.follow,
+      frameLoop: this.frameLoop,
+      viewport: this.viewport,
+    };
   }
 
   /** Newest absolute col_seq appended (or -1 before any column). Diagnostics. */
@@ -555,6 +592,16 @@ export class Renderer {
    */
   syncGutters(dpr: number): boolean {
     return this.overlayLayer.syncGutters(dpr);
+  }
+
+  /**
+   * Price-axis heal for the App's price gutter: rebind the live gutter canvas,
+   * then re-match both gutter backing stores to their own boxes at the
+   * renderer's device-pixel ratio. True when a backing store changed size.
+   */
+  healPriceAxis(priceAxisCanvas: HTMLCanvasElement): boolean {
+    this.overlayLayer.attachOverlaySurfaces(priceAxisCanvas, this.overlayLayer.timeAxisCanvas());
+    return this.overlayLayer.syncGutters(this.dpr);
   }
 
   /** Toggle which overlays render (App visibility state). */

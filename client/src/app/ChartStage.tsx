@@ -1,7 +1,8 @@
-import { useCallback, useMemo, type Dispatch, type RefObject, type SetStateAction } from 'react';
+import { useCallback, useMemo, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 
 import type { Renderer } from '../gl/renderer';
 import type { StreamMode } from '../proto/types';
+import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 import { useT } from '../i18n/useT';
 import { ChartLegend } from '../ui/ChartLegend';
 import { ChartStartupGate } from '../ui/ChartStartupGate';
@@ -29,7 +30,7 @@ import { GlFallback } from './GlFallback';
 import type { EngineStatus } from './useEngineStatus';
 import type { FollowControls } from './useFollowControls';
 import type { GraphicsDiagnostics } from './useGraphicsDiagnostics';
-import { CHART_HELP_ID } from './workspaceScope';
+import { CHART_HELP_ID, chartHelpKey } from './workspaceScope';
 
 export interface ChartStageProps {
   rendererRef: { readonly current: Renderer | null };
@@ -92,6 +93,10 @@ export function ChartStage({
   // One stable reader of the renderer's time map for every overlay that needs
   // the candle/heatmap time base (IndicatorOverlayCanvas, DrawingLayer).
   const getTimeBase = useCallback(() => rendererRef.current?.timeline()?.timeBase ?? null, [rendererRef]);
+  const singleKeys = useSingleKeyShortcuts();
+  // The startup gate reports whether it covers the stage; the reconnect banner
+  // beneath it steps out of the focus order while it does.
+  const [startupCovering, setStartupCovering] = useState(false);
 
   return (
     <div className={`stage${settings.overlays.cvd ? ' stage--cvd' : ''}`}>
@@ -105,7 +110,7 @@ export function ChartStage({
           aria-label={t('chart.ariaLabel', { instrument: `${activeMarket}:${activeSymbol}` })}
           aria-describedby={CHART_HELP_ID}
         />
-        <span id={CHART_HELP_ID} className="app-visually-hidden">{t('chart.ariaHelp')}</span>
+        <span id={CHART_HELP_ID} className="app-visually-hidden">{t(chartHelpKey(singleKeys))}</span>
         {glFailure !== null && (
           <GlFallback failure={glFailure} onRetry={onRetryRenderer} copyState={graphics.copyState}
             onCopyDiagnostics={graphics.copyDiagnostics} />
@@ -127,7 +132,7 @@ export function ChartStage({
         <HeatLegend colormap={settings.colormap} channel={settings.depthChannel} />
         <PerfHud rendererRef={rendererRef} visible={settings.hudVisible} onToggle={onToggleHud} />
         <ClosedBanner />
-        <ReconnectBanner />
+        <ReconnectBanner covered={startupCovering} />
         <LiveControls rendererRef={rendererRef} onGoLive={onGoLive} onTrackPrice={onTrackPrice} mode={mode} />
         <DrawToolbar symbol={activeSymbol} />
         <IndicatorPicker />
@@ -146,7 +151,7 @@ export function ChartStage({
       <div className="stage__corner" aria-hidden="true" />
       <ChartStartupGate rendererRef={rendererRef} disabled={glFailure !== null || offlineHarness}
         onRetry={onRetryRenderer} onResubscribe={onSelectSymbol} onSearchSymbols={onSearchSymbols}
-        engineFailed={engine.sidecar?.state === 'failed'} />
+        engineFailed={engine.sidecar?.state === 'failed'} onCoverChange={setStartupCovering} />
     </div>
   );
 }

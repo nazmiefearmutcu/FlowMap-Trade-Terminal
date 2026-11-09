@@ -40,9 +40,10 @@ import {
 } from '../state/bookStore';
 import { useFlowMapStore } from '../state/store';
 import { useT } from '../i18n/useT';
+import { t as activeT } from '../i18n';
 import { exchangeZoneFor, formatClock, formatFixed, formatNumber, formatPrice, useTimeZone, zoneLabel, type TimeZonePref } from '../i18n/format';
 import { priceDecimals } from './DomLadder';
-import { marketGroup } from './symbols';
+import { capabilityChipLabel, marketGroup } from './symbols';
 import './TradingPanels.css';
 import './Tape.css';
 
@@ -52,11 +53,15 @@ const EMPTY_TAPE: readonly TapeTrade[] = Object.freeze([]);
 /** Minimum trades before the large-lot emphasis kicks in (avoid noise on cold start). */
 const LARGE_MIN_SAMPLES = 12;
 
-/** Honest tape-tier badge from the capability descriptor. */
-export function tapeBadge(capability: Record<string, unknown> | null): string {
-  const t = capability?.tape;
-  if (typeof t !== 'string') return 'TAPE';
-  return `TAPE ${t.toUpperCase()}`;
+/**
+ * Honest tape-tier badge from the capability descriptor, in the active locale. It
+ * uses the same wording as the top bar's chip (TAPE TICK / TAPE POLL / TAPE 10S in
+ * English, BANT TİK / BANT YOKLAMA in Turkish), so one tier reads one way everywhere.
+ */
+export function tapeBadge(capability: Record<string, unknown> | null, t: (key: string) => string = activeT): string {
+  const tape = capability?.tape;
+  if (typeof tape !== 'string') return t('chip.tape');
+  return capabilityChipLabel(`TAPE ${tape.toUpperCase()}`, t);
 }
 
 /**
@@ -224,27 +229,12 @@ export const TapeRow = memo(function TapeRow({
   );
 });
 
-export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element {
-  const capability = useFlowMapStore((s) => s.capability);
-  const epochs = useFlowMapStore((s) => s.epochs);
-  const gridEpoch = useFlowMapStore((s) => s.gridEpoch);
-  const sessionKey = useFlowMapStore(bookSessionKey);
-  const t = useT();
-  const zonePref = useTimeZone();
-  const subMarket = useFlowMapStore((s) => s.subscription?.market);
-  // Sim timestamps are SESSION-RELATIVE: no wall zone applies, so they stay UTC digits.
-  const sessionClock = (subMarket ?? 'sim') === 'sim';
-  const tapePref: TimeZonePref = sessionClock ? 'utc' : zonePref;
-  const tapeZone = exchangeZoneFor(marketGroup(subMarket ?? 'sim'));
-  // The zone abbreviation follows daylight saving, so it is re-read once a minute.
-  const [zoneNow, setZoneNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setZoneNow(Date.now()), 60_000);
-    return () => window.clearInterval(id);
-  }, []);
-  const zoneText = useMemo(() => zoneLabel(tapePref, tapeZone, zoneNow), [tapePref, tapeZone, zoneNow]);
+/**
+ * The tape's feed state: the live snapshot, the hover and explicit holds that
+ * freeze it, and the side and minimum filters. A session switch resets all of it.
+ */
+function useTapeFeed(sessionKey: string) {
   const [snap, setSnap] = useState<BookSnapshot>(() => getSnapshot());
-  const [collapsed, setCollapsed] = useState(false);
   // Hover-pause freezes the list so a row can be read; without a visible
   // indicator that read like a stuck feed, so the header says HELD.
   const [held, setHeld] = useState(false);
@@ -285,23 +275,70 @@ export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element
     [],
   );
 
+  const resume = (): void => {
+    pausedRef.current = false;
+    setHeld(false);
+    setSnap(getSnapshot());
+  };
   const onEnter = (): void => {
     pausedRef.current = true;
     setHeld(true);
   };
   const onLeave = (): void => {
     if (explicitHoldRef.current) return;
-    pausedRef.current = false;
-    setHeld(false);
-    setSnap(getSnapshot());
+    resume();
   };
-
+  /** Leaving a collapse or expand releases a hover hold, but never an explicit one. */
+  const resumeUnlessHeld = (): void => {
+    if (!explicitHoldRef.current) resume();
+  };
   const toggleHold = (): void => {
     const next = !held;
     explicitHoldRef.current = next;
     pausedRef.current = next;
     setHeld(next);
     if (!next) setSnap(getSnapshot());
+  };
+
+  return {
+    snap,
+    held,
+    sideFilter,
+    setSideFilter,
+    minimum,
+    setMinimum,
+    onEnter,
+    onLeave,
+    toggleHold,
+    resumeUnlessHeld,
+  };
+}
+
+export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element {
+  const capability = useFlowMapStore((s) => s.capability);
+  const epochs = useFlowMapStore((s) => s.epochs);
+  const gridEpoch = useFlowMapStore((s) => s.gridEpoch);
+  const sessionKey = useFlowMapStore(bookSessionKey);
+  const t = useT();
+  const zonePref = useTimeZone();
+  const subMarket = useFlowMapStore((s) => s.subscription?.market);
+  // Sim timestamps are SESSION-RELATIVE: no wall zone applies, so they stay UTC digits.
+  const sessionClock = (subMarket ?? 'sim') === 'sim';
+  const tapePref: TimeZonePref = sessionClock ? 'utc' : zonePref;
+  const tapeZone = exchangeZoneFor(marketGroup(subMarket ?? 'sim'));
+  // The zone abbreviation follows daylight saving, so it is re-read once a minute.
+  const [zoneNow, setZoneNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setZoneNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const zoneText = useMemo(() => zoneLabel(tapePref, tapeZone, zoneNow), [tapePref, tapeZone, zoneNow]);
+  const [collapsed, setCollapsed] = useState(false);
+  const feed = useTapeFeed(sessionKey);
+  const { snap, held, sideFilter, minimum } = feed;
+  const toggleCollapsed = (): void => {
+    setCollapsed((c) => !c);
+    feed.resumeUnlessHeld();
   };
 
   const source = snap.sessionKey === sessionKey ? snap.trades : EMPTY_TAPE;
@@ -318,7 +355,7 @@ export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element
   // Price precision from the active epoch's step when known.
   const params = epochs.get(gridEpoch ?? -1);
   const decimals = params ? priceDecimals(params.tick) : 2;
-  const badge = tapeBadge(capability);
+  const badge = tapeBadge(capability, t);
   // Screen-reader side words (the same words the side filter shows), translated once.
   const sideWords: Record<TapeSide, string> = {
     buy: t('tape.sideBuy'),
@@ -328,105 +365,184 @@ export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element
 
   return (
     <section className={`panel tape${collapsed ? ' is-collapsed' : ''}`} data-testid="tape">
-      <header className="panel__header">
-        <h2 className="panel__heading">
-          <button
-            type="button"
-            className="panel__collapse"
-            aria-expanded={!collapsed}
-            onClick={() => {
-              setCollapsed((c) => !c);
-              if (!explicitHoldRef.current) {
-                pausedRef.current = false;
-                setHeld(false);
-                setSnap(getSnapshot());
-              }
-            }}
-            data-testid="tape-collapse"
-          >
-            <span className="panel__chevron">{collapsed ? '▸' : '▾'}</span>
-            <span className="panel__title">{t('tape.title')}</span>
-          </button>
-        </h2>
-        <span className="panel__badge panel__badge--tape" data-testid="tape-badge">
-          {badge}
-        </span>
-        <span className="panel__badge tape__clock" data-testid={sessionClock ? 'tape-session' : 'tape-zone'}>
-          {sessionClock ? t('tape.sessionClock') : zoneText}
-        </span>
-        {held && (
-          <span className="panel__badge tape__held" data-testid="tape-held" title={t('tape.heldTitle')}>
-            {t('tape.held')}
-          </span>
-        )}
-        {bigActive && (
-          <span
-            className="panel__badge tape__big"
-            data-testid="tape-big"
-            title={t('tape.bigRows', { amount: formatNumber(bigTradeUsd) })}
-          >
-            {t('tape.big', { count: bigCount })}
-          </span>
-        )}
-        <button type="button" className="panel__lock tape__hold" aria-pressed={held}
-          onClick={toggleHold} data-testid="tape-hold">{held ? t('tape.resume') : t('tape.hold')}</button>
-      </header>
+      <TapeHeader
+        collapsed={collapsed}
+        onToggleCollapsed={toggleCollapsed}
+        badge={badge}
+        sessionClock={sessionClock}
+        zoneText={zoneText}
+        held={held}
+        bigActive={bigActive}
+        bigTradeUsd={bigTradeUsd}
+        bigCount={bigCount}
+        onToggleHold={feed.toggleHold}
+      />
       {!collapsed && (
         <>
-        <div className="tape__controls">
-          <label>{t('tape.side')}
-            <select aria-label={t('tape.sideAria')} value={sideFilter} data-testid="tape-side"
-              onChange={(e) => setSideFilter(e.target.value as TapeSideFilter)}>
-              <option value="all">{t('tape.sideAll')}</option><option value="buy">{t('tape.sideBuy')}</option>
-              <option value="sell">{t('tape.sideSell')}</option><option value="unknown">{t('tape.sideUnknown')}</option>
-            </select>
-          </label>
-          <label title={t('tape.minTitle')}>{t('tape.minLabel')}
-            <input aria-label={t('tape.minAria')} type="number" min="0" step="any"
-              placeholder="0" value={minimum} data-testid="tape-minimum"
-              onChange={(e) => setMinimum(e.target.value)} />
-          </label>
-          <span className="tape__count" data-testid="tape-count"
-            title={t('tape.countTitle', {
-              shown: formatNumber(trades.length),
-              matching: formatNumber(matched.length),
-              retained: formatNumber(source.length),
-            })}>{formatNumber(trades.length)}/{formatNumber(source.length)}</span>
-        </div>
-        <div
-          className="tape__body"
-          data-testid="tape-body"
-          role="region"
-          aria-label={t('tape.title')}
-          tabIndex={0}
-          onPointerEnter={onEnter}
-          onPointerLeave={onLeave}
-        >
-          {trades.length === 0 ? (
-            <div className="panel__empty">{source.length === 0 ? t('tape.waiting') : t('tape.noMatch')}</div>
-          ) : (
-            <div className="tape__rows">
-              {trades.map((trade, i) => {
-                const side = sideClass(trade.side);
-                return (
-                  <TapeRow
-                    key={keys[i]}
-                    trade={trade}
-                    side={side}
-                    large={trade.size >= threshold}
-                    big={isBigTrade(trade.price, trade.size, bigTradeUsd)}
-                    decimals={decimals}
-                    tapePref={tapePref}
-                    tapeZone={tapeZone}
-                    sideWord={sideWords[side]}
-                  />
-                );
-              })}
-            </div>
-          )}
-        </div>
+          <TapeControls
+            sideFilter={sideFilter}
+            onSideFilter={feed.setSideFilter}
+            minimum={minimum}
+            onMinimum={feed.setMinimum}
+            shown={trades.length}
+            matching={matched.length}
+            retained={source.length}
+          />
+          <div
+            className="tape__body"
+            data-testid="tape-body"
+            role="region"
+            aria-label={t('tape.title')}
+            tabIndex={0}
+            onPointerEnter={feed.onEnter}
+            onPointerLeave={feed.onLeave}
+          >
+            {trades.length === 0 ? (
+              <div className="panel__empty">{source.length === 0 ? t('tape.waiting') : t('tape.noMatch')}</div>
+            ) : (
+              <div className="tape__rows">
+                {trades.map((trade, i) => {
+                  const side = sideClass(trade.side);
+                  return (
+                    <TapeRow
+                      key={keys[i]}
+                      trade={trade}
+                      side={side}
+                      large={trade.size >= threshold}
+                      big={isBigTrade(trade.price, trade.size, bigTradeUsd)}
+                      decimals={decimals}
+                      tapePref={tapePref}
+                      tapeZone={tapeZone}
+                      sideWord={sideWords[side]}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </>
       )}
     </section>
+  );
+}
+
+interface TapeHeaderProps {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  badge: string;
+  /** The stream clock is session-relative (sim): the header says so instead of a zone. */
+  sessionClock: boolean;
+  zoneText: string;
+  held: boolean;
+  bigActive: boolean;
+  bigTradeUsd: number;
+  bigCount: number;
+  onToggleHold: () => void;
+}
+
+/** The tape's title row: collapse, the feed badge, the clock label and the held / big chips. */
+function TapeHeader({
+  collapsed,
+  onToggleCollapsed,
+  badge,
+  sessionClock,
+  zoneText,
+  held,
+  bigActive,
+  bigTradeUsd,
+  bigCount,
+  onToggleHold,
+}: TapeHeaderProps) {
+  const t = useT();
+  return (
+    <header className="panel__header">
+      <h2 className="panel__heading">
+        <button
+          type="button"
+          className="panel__collapse"
+          aria-expanded={!collapsed}
+          onClick={onToggleCollapsed}
+          data-testid="tape-collapse"
+        >
+          <span className="panel__chevron">{collapsed ? '▸' : '▾'}</span>
+          <span className="panel__title">{t('tape.title')}</span>
+        </button>
+      </h2>
+      <span className="panel__badge panel__badge--tape" data-testid="tape-badge">
+        {badge}
+      </span>
+      <span className="panel__badge tape__clock" data-testid={sessionClock ? 'tape-session' : 'tape-zone'}>
+        {sessionClock ? t('tape.sessionClock') : zoneText}
+      </span>
+      {held && (
+        <span className="panel__badge tape__held" data-testid="tape-held" title={t('tape.heldTitle')}>
+          {t('tape.held')}
+        </span>
+      )}
+      {bigActive && (
+        <span
+          className="panel__badge tape__big"
+          data-testid="tape-big"
+          title={t('tape.bigRows', { amount: formatNumber(bigTradeUsd) })}
+        >
+          {t('tape.big', { count: formatNumber(bigCount) })}
+        </span>
+      )}
+      {/* No aria-pressed: the name (Hold / Resume) already carries the state. */}
+      <button
+        type="button"
+        className="panel__lock tape__hold"
+        onClick={onToggleHold}
+        data-testid="tape-hold"
+      >
+        {held ? t('tape.resume') : t('tape.hold')}
+      </button>
+    </header>
+  );
+}
+
+interface TapeControlsProps {
+  sideFilter: TapeSideFilter;
+  onSideFilter: (filter: TapeSideFilter) => void;
+  minimum: string;
+  onMinimum: (value: string) => void;
+  /** Prints on screen, the prints that match the filter, and everything retained. */
+  shown: number;
+  matching: number;
+  retained: number;
+}
+
+/** The side and minimum-size filters, with the printed-count readout. */
+function TapeControls({
+  sideFilter,
+  onSideFilter,
+  minimum,
+  onMinimum,
+  shown,
+  matching,
+  retained,
+}: TapeControlsProps) {
+  const t = useT();
+  return (
+    <div className="tape__controls">
+      <label>{t('tape.side')}
+        <select aria-label={t('tape.sideAria')} value={sideFilter} data-testid="tape-side"
+          onChange={(e) => onSideFilter(e.target.value as TapeSideFilter)}>
+          <option value="all">{t('tape.sideAll')}</option><option value="buy">{t('tape.sideBuy')}</option>
+          <option value="sell">{t('tape.sideSell')}</option><option value="unknown">{t('tape.sideUnknown')}</option>
+        </select>
+      </label>
+      <label title={t('tape.minTitle')}>{t('tape.minLabel')}
+        <input aria-label={t('tape.minAria')} type="number" min="0" step="any"
+          placeholder="0" value={minimum} data-testid="tape-minimum"
+          onChange={(e) => onMinimum(e.target.value)} />
+      </label>
+      <span className="tape__count" data-testid="tape-count"
+        title={t('tape.countTitle', {
+          shown: formatNumber(shown),
+          matching: formatNumber(matching),
+          retained: formatNumber(retained),
+        })}>{formatNumber(shown)}/{formatNumber(retained)}</span>
+    </div>
   );
 }

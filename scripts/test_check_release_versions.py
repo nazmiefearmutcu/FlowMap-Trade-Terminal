@@ -35,6 +35,9 @@ class ReleaseVersionTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(REPO / name, target)
 
+        version = checker.collect_versions(self.root)["Tauri"]
+        (self.root / "CHANGELOG.md").write_text(f"## [{version}] — 2026-11-10" + chr(10), encoding="utf-8")
+
     def tearDown(self):
         self.temporary.cleanup()
 
@@ -86,6 +89,26 @@ class ReleaseVersionTests(unittest.TestCase):
         (self.root / "server/uv.lock").unlink()
         with redirect_stderr(io.StringIO()):
             self.assertEqual(checker.main(["--root", str(self.root)]), 1)
+
+    def test_tagged_changelog_heading_must_be_dated(self):
+        version = checker.collect_versions(self.root)["Tauri"]
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(f"## [{version}] — Unreleased" + chr(10), encoding="utf-8")
+        self.assertTrue(checker.changelog_problems(self.root, f"v{version}"))
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(checker.main(["--root", str(self.root), "--tag", f"v{version}"]), 1)
+        self.assertIn("Unreleased", err.getvalue())
+        changelog.write_text(f"## [{version}] — 2026-11-10" + chr(10), encoding="utf-8")
+        self.assertEqual(checker.changelog_problems(self.root, f"v{version}"), [])
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(checker.main(["--root", str(self.root), "--tag", f"v{version}"]), 0)
+
+    def test_tagged_version_without_changelog_heading_fails(self):
+        version = checker.collect_versions(self.root)["Tauri"]
+        (self.root / "CHANGELOG.md").write_text("## [0.0.1] — 2026-01-01" + chr(10), encoding="utf-8")
+        found = checker.changelog_problems(self.root, f"v{version}")
+        self.assertEqual(len(found), 1)
+        self.assertIn("no", found[0])
 
 
 if __name__ == "__main__":

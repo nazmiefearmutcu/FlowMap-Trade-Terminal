@@ -14,12 +14,12 @@
  */
 
 import {
-  priceDecimals,
   quoteDecimals,
   priceTickModel,
   timeLabelFormatter,
   timeTickModel,
 } from './axisTicks';
+import { priceDecimals } from '../numeric';
 import type { GridMap } from './coords';
 import type { LastClose } from './priceLine';
 import { formatClock, formatPrice, zoneLabel, type TimeZonePref } from '../../i18n/format';
@@ -305,7 +305,7 @@ export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | n
     align: 'right',
     bg: OVERLAY.pricePill.css,
     color: OVERLAY.pricePillText.css,
-    size: 10,
+    size: 10, // size-budget: dense price tag
     weight: 600,
     radius: 3,
   });

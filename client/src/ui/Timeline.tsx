@@ -1,42 +1,32 @@
 /**
  * Timeline minimap + replay transport (bottom strip).
  *
- * **Mode-gated, deliberately.** The transport used to render a play/pause button
- * plus a six-rung speed ladder plus a scrubber unconditionally, every one of
- * them `disabled` in LIVE — eight dead controls in the mode the user is in
- * almost all the time, which is exactly what made the tool read as confusing.
- * Now:
- *   - LIVE   → one state pill (FOLLOWING / SCROLLED BACK). The return-to-edge
- *              action lives in the chart's LiveControls chip, not here.
- *   - REPLAY → play/pause + ONE cycling speed button (the 1–100× ladder is
- *              unchanged as the DOMAIN, only its presentation collapses) + the
- *              seek scrubber + the time readout.
+ * **Mode-gated.** LIVE shows one state pill (FOLLOWING / SCROLLED BACK); the
+ * return-to-edge action lives in the chart's LiveControls chip, not here. REPLAY
+ * shows play/pause, ONE cycling speed button (the 1–100× ladder is the domain,
+ * collapsed to a single control in its presentation), the seek scrubber and the
+ * time readout.
  *
- * The pill replaces — rather than adds to — the old minimap LIVE/REPLAY label,
- * and is phrased about the CAMERA (FOLLOWING / SCROLLED BACK), because the top
- * bar's connection chip already owns feed health and a second widget saying
- * "LIVE" in a different sense would make the word meaningless.
+ * The pill is phrased about the CAMERA (FOLLOWING / SCROLLED BACK), because the top
+ * bar's connection chip already owns feed health, and a second widget saying "LIVE"
+ * in a different sense would make the word meaningless.
  *
- * Right: a minimap of the loaded session extent with the current viewport window
- * marked, and — in replay — a seek scrubber over it. The window follows drawn
+ * The strip shows a minimap of the loaded session extent with the current viewport
+ * window marked, and in replay a seek scrubber over it. The window follows drawn
  * view notifications through a cheap DOM writer. Extent, playhead and `following`
  * share a ≤4 Hz poll, keeping React and time mapping off the renderer's
  * high-frequency path.
  *
- * **One GO LIVE control.** The in-chart chip in LiveControls is the
- * single GO LIVE affordance; this strip no longer repeats it in the footer.
+ * **One GO LIVE control.** The in-chart chip in LiveControls is the single GO LIVE
+ * affordance; this strip does not repeat it in the footer.
  *
- * **Attach honesty.** The pill, time readout and controls
- * describe the CURRENT subscription only once it has actually ATTACHED — a
- * Hello for it has landed and the connection is live. Before that, every value
- * still belongs to the session whose frame is on screen (the previous live
- * chart). The old code claimed `REPLAY 1× PLAYING` and printed that dead
- * session's frozen span (`00:02:07.250 / 00:02:07.250`) for as long as the
- * server took to refuse — 1013 session-cap closes of a replay subscribe are
- * the measured repro. Now: pre-attach the pill says what is really happening
- * (`REPLAY CONNECTING…` / `REPLAY REFUSED` / `CONNECTING…`), the readout is
- * `—`, the controls that cannot reach a server are disabled, and a waiting
- * line with an indeterminate progress element carries the reason.
+ * **Attach honesty.** The pill, time readout and controls describe the CURRENT
+ * subscription only once it has ATTACHED: a Hello for it has landed and the
+ * connection is live. Before that, every value would still belong to the session
+ * whose frame is on screen, so the pill says what is really happening
+ * (`REPLAY CONNECTING…` / `REPLAY REFUSED` / `CONNECTING…`), the readout is `—`,
+ * the controls that cannot reach a server are disabled, and a waiting line with an
+ * indeterminate progress element carries the reason.
  */
 
 import type { RefObject } from 'react';
@@ -83,8 +73,8 @@ export function transportDisplay(
 interface TimelineProps {
   rendererRef: RefObject<Renderer | null>;
   /**
-   * Retained so the shell's call site stays valid. This strip no longer renders
-   * a GO LIVE button: LiveControls (in the chart) owns that action.
+   * Not rendered: GO LIVE is LiveControls' action in the chart. The prop stays only
+   * until the App call site stops passing it.
    */
   onGoLive?: () => void;
 }

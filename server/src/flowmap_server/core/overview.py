@@ -906,7 +906,7 @@ def _part_bounds(
         try:
             stat = path.stat()
         except OSError:
-            return None
+            return None  # the part was removed after it was listed
         stamp = (stat.st_size, stat.st_mtime_ns)
     with root._column_time_lock:
         cache = getattr(root, "_overview_part_bounds", None)

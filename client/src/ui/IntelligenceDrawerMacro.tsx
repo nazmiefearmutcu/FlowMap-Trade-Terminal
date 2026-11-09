@@ -1,6 +1,7 @@
 import { formatDateTime, formatFixed } from '../i18n/format';
-import { useT } from '../i18n/useT';
+import { type TFn, useT } from '../i18n/useT';
 import type { MacroStressData } from '../state/intelligenceStore';
+import { stressRegimeLabel } from './TopBarLabels';
 
 interface IntelMacroBarProps {
   macro: MacroStressData | null;
@@ -8,13 +9,13 @@ interface IntelMacroBarProps {
   demo: boolean;
 }
 
-/** The translation key of each stress regime the macro feed reports. */
-const REGIME_KEY: Record<MacroStressData['stressRegime'], string> = {
-  NORMAL: 'intel.regime.normal',
-  ELEVATED: 'intel.regime.elevated',
-  SEVERE: 'intel.regime.severe',
-  UNKNOWN: 'intel.regime.unknown',
-};
+/**
+ * The stress regime word in the active locale. UNKNOWN reads as unavailable, the
+ * same as a missing feed on the top bar.
+ */
+function regimeWord(regime: MacroStressData['stressRegime'], t: TFn): string {
+  return regime === 'UNKNOWN' ? t('topbar.unavailable') : stressRegimeLabel(regime, t);
+}
 
 /**
  * The macro liquidity footer of the research drawer: SOFR, the high-yield spread,
@@ -43,10 +44,10 @@ export function IntelMacroBar({ macro, demo }: IntelMacroBarProps): JSX.Element 
       </div>
       <div
         className={`macro-regime-badge is-${macro?.stressRegime.toLowerCase() ?? 'unavailable'}`}
-        title={macro ? macro.status : t('intel.macroNotConnected')}
+        title={macro ? undefined : t('intel.macroNotConnected')}
       >
         {demo ? `${t('intel.demoBadge')} · ` : ''}
-        {macro ? t('intel.stressRegime', { regime: t(REGIME_KEY[macro.stressRegime] ?? REGIME_KEY.UNKNOWN) }) : t('intel.macroNotConnected')}
+        {macro ? t('intel.stressRegime', { regime: regimeWord(macro.stressRegime, t) }) : t('intel.macroNotConnected')}
       </div>
       {macro && (
         <span className="macro-chip__lbl" data-testid="intel-macro-received">

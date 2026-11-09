@@ -19,8 +19,7 @@ import { useTheme } from '../theme';
 import { toggleIndicatorPicker } from './IndicatorPicker';
 import { openOnboarding } from './OnboardingCard';
 import { OverlayToggles } from './OverlayToggles';
-import { KEYSHEET } from './keysheet';
-import { isBareKeyRow } from './SettingsDrawerKeys';
+import { KeysheetRows } from './keysheetList';
 import {
   DEPTH_CHANNEL_HINT_KEY,
   DEPTH_CHANNEL_LABEL_KEY,
@@ -591,19 +590,8 @@ export function SettingsKeysSection(): JSX.Element {
         <span className="setting__hint">{t(singleKeys ? 'shortcuts.singleKeysHint' : 'shortcuts.singleKeysOffHint')}</span>
       </div>
       <div className="keysheet" data-testid="keysheet">
-        {KEYSHEET.map((entry) => {
-          // With the switch off a bare key does nothing, so its row says so.
-          const off = !singleKeys && isBareKeyRow(entry.keys);
-          return (
-            <div key={entry.keys} className={off ? 'keysheet__row is-off' : 'keysheet__row'} data-testid={off ? 'keysheet-row-off' : undefined}>
-              <kbd className="keysheet__keys">{entry.keys}</kbd>
-              <span className="keysheet__action">
-                {t(entry.actionKey)}
-                {off && <span className="keysheet__off"> ({t('shortcuts.keyOff')})</span>}
-              </span>
-            </div>
-          );
-        })}
+        {/* With the switch off a bare key does nothing, so its row is marked off, not hidden. */}
+        <KeysheetRows singleKeys={singleKeys} />
       </div>
     </>
   );

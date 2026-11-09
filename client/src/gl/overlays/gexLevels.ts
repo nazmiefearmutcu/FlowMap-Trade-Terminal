@@ -128,7 +128,7 @@ export class GexOverlay {
       text.badge(cssW - 4, level.labelY, `${level.label} ${formatPrice(level.price, decimals)}`, {
         align: 'right',
         color: level.colorCss,
-        size: 10,
+        size: 10, // size-budget: dense price tag
       });
     }
   }

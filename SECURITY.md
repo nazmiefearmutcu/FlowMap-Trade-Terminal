@@ -100,8 +100,9 @@ exception is `/api/health`, the liveness probe, which is exempt from the token (
    (WebSocket close 4401).
    `/api/health` and CORS preflight requests are exempt so that readiness probes work. Any page on a
    loopback origin can read `/api/health` through CORS, so a request without the token gets only the
-   status, the version, the wire protocol version and the uptime. The feed list, session identifiers,
-   statistics and configuration errors are returned only to requests that carry the token.
+   status, the version, the wire protocol version, the uptime and whether recording is enabled. The feed
+   list, session identifiers, active sessions, statistics and configuration errors are returned only to
+   requests that carry the token.
    Source runs and the browser dev server do not set a token; the check is then skipped and only
    the Host check applies.
 
@@ -171,8 +172,8 @@ and the launch warm-up decide which hosts are contacted.
 | Crypto history backfill | `api.binance.com`, `fapi.binance.com`, `dapi.binance.com` ([`core/backfill.py`](server/src/flowmap_server/core/backfill.py)) | On by default for the first subscribe; `FLOWMAP_BACKFILL_ENABLED=0` turns it off |
 | US equities, keyless last price | `www.google.com/finance` page scrape (default when no keyed source is configured) | Unofficial page scrape, used only by a subscribed keyless equity feed; display quotes use Yahoo. Its terms of use may not permit this use, and the maintainer has not confirmed them. Treat the price as informational |
 | US equities, keyless history and display quotes | `query1.finance.yahoo.com` / `query2.finance.yahoo.com` chart endpoint | Unofficial, undocumented endpoint with a generic `User-Agent`; history can stop without an error on screen. Watchlist, alert, equity-movers and warm-up quotes use it without a subscription |
-| US equities, optional upgrades | Alpaca (`ALPACA_API_KEY` + `ALPACA_API_SECRET`), Finnhub (`FINNHUB_API_KEY`) | **Market-data** credentials, read from your environment. A source run reads them from its shell. The installed app passes these three variables from your environment to its server (its shell passes a fixed list of variables, see [`sidecar.rs`](app/src-tauri/src/sidecar.rs)) |
-| Macro, dark pool, politics, aviation, contracts, headcount | `api.stlouisfed.org` (FRED), `cdn.finra.org`, the House Stock Watcher S3 bucket, `opensky-network.org`, `api.usaspending.gov`, `boards-api.greenhouse.io` | Public data sources. Their feed modules exist, but no producer is started in this build, so these hosts are not contacted today |
+| US equities, optional upgrades | Alpaca (`ALPACA_API_KEY` + `ALPACA_API_SECRET`), Finnhub (`FINNHUB_API_KEY`) | **Market-data** credentials, read from your environment. A source run reads them from its shell. The installed app forwards these three variables from the environment that launches it to its server, through the shell's fixed allowlist ([`sidecar.rs`](app/src-tauri/src/sidecar.rs)). Both Alpaca variables are needed as a pair, and the webview never receives them |
+| Macro, dark pool, politics, aviation, contracts, headcount | `api.stlouisfed.org` (FRED), `cdn.finra.org`, the House Stock Watcher S3 bucket, `opensky-network.org`, `api.usaspending.gov`, `boards-api.greenhouse.io` | Public data sources. Their feed modules exist, but no producer is started in this build, so these hosts are not contacted today. The EDGAR and vocal-stress modules are likewise not connected |
 | `sim:SIM-DEMO` feed | none | No network at all. Use it to watch what the app does before giving it a live source |
 
 The WebGL2 client loads **no** external origin: no CDN, no web fonts, no analytics. Its typefaces
@@ -206,6 +207,8 @@ Where FlowMap writes depends on how you run it.
 - `<data>/shell.log` — the shell's own lifecycle messages. When it has grown past 1 MB, the next launch moves it to `shell.previous.log`.
 - `<data>/flowmap.lock`, `<data>/native-info.json` and `<data>/webview-cache/` — the single-instance
   lock, the native shell's diagnostics, and the WebView's own cache.
+
+**Browser preferences.** The window keeps its own preferences in `localStorage`: the language (`flowmap.locale`), the clock time zone (`flowmap.timeZone`) and the single-key shortcut switch (`flowmap.singleKeyShortcuts`, set under Settings > Keyboard > *Single-key shortcuts*).
 
 **Run from source:** the server's own default is to record into `~/.flowmap/recordings/`
 (`FLOWMAP_RECORDING_ENABLED` defaults to `1`). The dev launchers `scripts/dev.sh` and

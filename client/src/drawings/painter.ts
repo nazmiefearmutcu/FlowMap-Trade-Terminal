@@ -231,9 +231,15 @@ export function paintHandle(
   }
 }
 
+/**
+ * The bundled mono stack (the --font-mono token and the axis text layer's stack), so
+ * labels match the rest of the window's type on every OS. Canvas cannot read a CSS
+ * variable, so the stack is spelled out here.
+ */
+const MONO_STACK = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 /** A label font for canvas text (mirrors the axis text style). */
-const LABEL_FONT = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-const TEXT_FONT = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const LABEL_FONT = `10px ${MONO_STACK}`;
+const TEXT_FONT = `12px ${MONO_STACK}`;
 /** Line box of the 12 px label: the vertical extent of its hit area. */
 const TEXT_LINE_PX = 14;
 /** Width estimate for a label no paint has measured yet (12 px monospace advance). */
@@ -259,9 +265,35 @@ function rememberLabelWidth(ctx: CanvasRenderingContext2D, id: string, text: str
 const TAG_PAD_X = 6;
 const TAG_H = 16;
 const TAG_MARGIN = 4;
-// A fixed dark plate behind the price tag: the heatmap pixels it sits over do not
-// follow the chrome theme, so a theme token would lose contrast on some themes.
-const TAG_BG = 'rgba(5, 7, 9, 0.85)';
+const TAG_TEXT_DARK = '#000000';
+const TAG_TEXT_LIGHT = '#FFFFFF';
+
+/** WCAG relative luminance of a `#rrggbb` ink; null for any other colour form. */
+function inkLuminance(color: string): number | null {
+  const m = /^#([0-9a-f]{6})$/i.exec(color);
+  if (m === null) return null;
+  const n = parseInt(m[1], 16);
+  const lin = (c: number): number => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+}
+
+/**
+ * Text colour for a price tag filled with the drawing's ink: pure black or white,
+ * whichever reads at more contrast. The tag plate is the ink itself, so it cannot
+ * depend on the theme ground, and the better of the two clears 4.5:1 (AA, 10 px
+ * text) for every ink: the two curves cross at luminance 0.18, where both reach
+ * 4.58:1.
+ */
+export function tagTextColor(ink: string): string {
+  const lum = inkLuminance(ink);
+  if (lum === null) return TAG_TEXT_DARK;
+  const toWhite = 1.05 / (lum + 0.05);
+  const toBlack = (lum + 0.05) / 0.05;
+  return toWhite > toBlack ? TAG_TEXT_LIGHT : TAG_TEXT_DARK;
+}
 
 export interface PaintOpts {
   /** CSS px extent of the drawing surface (for infinite lines + tags). */
@@ -327,13 +359,13 @@ export function paintDrawing(
       ctx.lineTo(width, y);
       ctx.stroke();
       // Right-edge price tag so the level is readable without tracing the line
-      // to the axis.
+      // to the axis. The plate is the drawing's ink, so the tag reads as the line.
       ctx.font = LABEL_FONT;
       const text = fmtPriceTag(d.points[0].price, opts.priceDecimals);
       const tagW = ctx.measureText(text).width + TAG_PAD_X * 2;
-      ctx.fillStyle = TAG_BG;
-      ctx.fillRect(width - TAG_MARGIN - tagW, y - TAG_H / 2, tagW, TAG_H);
       ctx.fillStyle = d.style.color;
+      ctx.fillRect(width - TAG_MARGIN - tagW, y - TAG_H / 2, tagW, TAG_H);
+      ctx.fillStyle = tagTextColor(d.style.color);
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.fillText(text, width - TAG_MARGIN - TAG_PAD_X, y);

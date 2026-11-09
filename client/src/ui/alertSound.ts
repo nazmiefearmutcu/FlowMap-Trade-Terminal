@@ -53,10 +53,9 @@ let gestureArmed = false;
 
 function audioCtor(): AudioContextCtor | null {
   if (typeof window === 'undefined') return null;
-  const w = window as unknown as {
-    AudioContext?: AudioContextCtor;
-    webkitAudioContext?: AudioContextCtor;
-  };
+  // WebKit's prefixed constructor is absent from the DOM typings; one typed view
+  // of the window adds it (no `unknown` hop).
+  const w = window as Window & typeof globalThis & { webkitAudioContext?: AudioContextCtor };
   return w.AudioContext ?? w.webkitAudioContext ?? null;
 }
 

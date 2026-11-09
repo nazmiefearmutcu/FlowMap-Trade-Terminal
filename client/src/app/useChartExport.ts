@@ -4,7 +4,7 @@ import type { Renderer } from '../gl/renderer';
 import { useT } from '../i18n/useT';
 import { useFlowMapStore } from '../state/store';
 import { getTheme } from '../theme';
-import { collectExportLayers, exportProvenanceNotes, runPngExport } from '../ui/exportPng';
+import { collectExportLayers, exportProvenanceNotes, exportRampVerdict, runPngExport } from '../ui/exportPng';
 import type { FlowMapSettings } from '../ui/settings';
 import { SIM_MARKET, SIM_SYMBOL } from './workspaceScope';
 
@@ -34,6 +34,8 @@ export function useChartExport(
   const exportPng = useCallback(() => {
     const { subscription: sub, capability } = useFlowMapStore.getState();
     const renderer = rendererRef.current;
+    // The same verdict the on-screen SYNTH chip and tier read, so the PNG cannot disagree.
+    const ramp = exportRampVerdict(capability);
     const filename = runPngExport(
       collectExportLayers(renderer, document),
       sub?.market ?? SIM_MARKET,
@@ -49,8 +51,8 @@ export function useChartExport(
           colormap: settingsRef.current.colormap,
           theme: getTheme(),
           channel: settingsRef.current.depthChannel,
-          synth: typeof capability?.depth === 'string' && capability.depth.startsWith('SYNTH'),
-          tier: typeof capability?.depth === 'string' ? capability.depth : undefined,
+          synth: ramp.synth,
+          tier: ramp.tier ?? undefined,
         },
       },
     );

@@ -485,6 +485,34 @@ describe('Renderer (fake GL harness)', () => {
     }
   });
 
+  it('healPriceAxis rebinds the price gutter and re-matches both gutters to their own boxes at the renderer DPR', () => {
+    const dpr0 = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: 2 });
+    try {
+      const { r } = makeRenderer();
+      const price = document.createElement('canvas');
+      const time = document.createElement('canvas');
+      const boxOf = (el: HTMLCanvasElement, w: number, h: number): void => {
+        Object.defineProperty(el, 'clientWidth', { value: w, configurable: true });
+        Object.defineProperty(el, 'clientHeight', { value: h, configurable: true });
+      };
+      boxOf(price, 61, 231);
+      boxOf(time, 352, 22);
+      r.attachOverlaySurfaces(null, time);
+      expect(price.width).toBe(300); // not yet attached: the heal owns its sizing
+
+      expect(r.healPriceAxis(price)).toBe(true);
+      expect([price.width, price.height]).toEqual([122, 462]);
+      expect([time.width, time.height]).toEqual([704, 44]);
+      expect(r.timeAxisCanvas()).toBe(time);
+
+      expect(r.healPriceAxis(price)).toBe(false); // converged: no change reported
+      r.dispose();
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, writable: true, value: dpr0 });
+    }
+  });
+
   it('manual price zoom is free while explicit fit frames the actual historical market', () => {
     const { r, store } = makeRenderer();
     const scale = makeHybrid({ mid: 85505, rows: 4096, coreRows: 2048, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;

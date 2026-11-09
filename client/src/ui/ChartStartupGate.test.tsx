@@ -159,6 +159,34 @@ it('offers retry-now while the connection reconnects, and names a failed engine 
   }
 });
 
+it('offers retry-now and says so when a subscribe timed out on a closed socket', () => {
+  const retryNow = vi.fn();
+  const original = useFlowMapStore.getState().retryNow;
+  useFlowMapStore.setState({ retryNow });
+  try {
+    act(() => useFlowMapStore.setState({ status: 'closed', feedState: 'closed', refusal: { reason: 'subscribe_timeout' } }));
+    frame(100);
+    expect(element.querySelector('strong')?.textContent).toBe('Disconnected from market data');
+    expect(element.textContent).toContain('did not start this feed in time');
+    expect(element.textContent).not.toContain('subscribe_timeout');
+    act(() => element.querySelector<HTMLButtonElement>('[data-testid="chart-startup-reconnect"]')?.click());
+    expect(retryNow).toHaveBeenCalledOnce();
+  } finally {
+    useFlowMapStore.setState({ retryNow: original, refusal: null });
+  }
+});
+
+it('reports to its host whether it covers the stage', () => {
+  const onCoverChange = vi.fn();
+  act(() => root.render(<ChartStartupGate rendererRef={rendererRef} onCoverChange={onCoverChange} />));
+  expect(onCoverChange).toHaveBeenLastCalledWith(true);
+  reveal();
+  expect(onCoverChange).toHaveBeenLastCalledWith(false);
+  act(() => useFlowMapStore.setState({ feedState: 'reconnecting', status: 'reconnecting' }));
+  frame(500);
+  expect(onCoverChange).toHaveBeenLastCalledWith(false);
+});
+
 it('hides the gate while disabled', () => {
   act(() => root.render(<ChartStartupGate rendererRef={rendererRef} disabled />));
   expect(element.querySelector('[role="status"]')).toBeNull();

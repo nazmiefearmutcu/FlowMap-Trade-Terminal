@@ -465,6 +465,15 @@ describe('TopBar i18n shell', () => {
     expect(ticker?.textContent).toContain('ELEVATED');
     expect(ticker?.textContent).not.toContain('UNAVAILABLE');
   });
+
+  it('shows an UNKNOWN stress regime as the unavailable word, with no raw server token', () => {
+    const { container } = render(topbar());
+    act(() => useIntelligenceStore.getState().ingestMacro({ type: MsgType.MACRO_STRESS, ts_ns: 1n, sofr: 5.32, hy_spread: 3.42, yield_10y2y: -0.18, stress_score: 0, status: 'UNKNOWN' }));
+    const badge = container.querySelector('.macro-ticker__badge');
+    expect(badge?.textContent).toBe(tFor('en', 'topbar.unavailable'));
+    expect(badge?.textContent).not.toContain('UNKNOWN');
+    expect(badge?.getAttribute('title')).toBeNull();
+  });
 });
 
 describe('TopBar SIM badge follows the server, not the market name', () => {

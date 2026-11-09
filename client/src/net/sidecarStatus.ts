@@ -176,7 +176,11 @@ export function listenSidecarStatus(onStatus: (status: SidecarStatus) => void): 
       if (disposed) void i.invoke('plugin:event|unlisten', { event: SIDECAR_STATUS_EVENT, eventId: id }).catch(() => {});
       else eventId = id;
     })
-    .catch(() => {});
+    .catch((err: unknown) => {
+      // Without the listener the connection's hold follows only the one-off read
+      // below, so a failed listen must be visible rather than silent.
+      console.warn('[flowmap] sidecar status listener failed to attach', err);
+    });
   return () => {
     disposed = true;
     if (eventId !== null) {

@@ -2,9 +2,13 @@
  * The palette's result list. One listbox shows one of four things: the venue list
  * while a venue is being picked, the loading, failed or empty state of a venue
  * listing, or the symbol rows (recent picks first, then the directory).
+ *
+ * Each section header names the run of options that follows it: the rows sit in a
+ * group labelled by that header, so a screen reader announces "Recent" or "All
+ * markets" with the rows it covers. The rows stay the listbox's only options.
  */
 
-import { Fragment, type RefObject } from 'react';
+import { useId, type ReactNode, type RefObject } from 'react';
 
 import { formatNumber } from '../i18n/format';
 import { useT } from '../i18n/useT';
@@ -36,6 +40,122 @@ export interface SymbolSearchResultsProps {
   onRetry: () => void;
 }
 
+/** A labelled run of options: the visible section header is the group's name. */
+function OptionGroup({ id, label, testId, children }: {
+  id: string;
+  label: string;
+  testId?: string;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <div role="group" aria-labelledby={id}>
+      <div className="sympal__section" id={id} data-testid={testId}>
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+interface VenueListingProps {
+  venueRows: readonly VenueOption[];
+  venueTotal: number;
+  venuesLoaded: boolean;
+  query: string;
+  active: number;
+  onHover: (idx: number) => void;
+  onChooseVenue: (market: string) => void;
+}
+
+/** The venue list, filtered by the palette's input while a venue is being picked. */
+function VenueListing({ venueRows, venueTotal, venuesLoaded, query, active, onHover, onChooseVenue }: VenueListingProps): JSX.Element {
+  const t = useT();
+  const headId = useId();
+  return (
+    <OptionGroup id={headId} label={t('search.venuesReachable', { count: formatNumber(venueTotal - 1) })}>
+      {venueRows.length === 0 ? (
+        <div className="sympal__empty">
+          {venuesLoaded ? t('search.noVenueMatch', { query }) : t('search.loadingVenues')}
+        </div>
+      ) : (
+        venueRows.map((venue, idx) => (
+          <VenueRow
+            key={venue.market}
+            venue={venue}
+            idx={idx}
+            active={idx === active}
+            onHover={onHover}
+            onChoose={onChooseVenue}
+          />
+        ))
+      )}
+    </OptionGroup>
+  );
+}
+
+interface SymbolRowsProps {
+  rows: readonly Row[];
+  recentCount: number;
+  scope: string;
+  scopeRowCount: number;
+  query: string;
+  active: number;
+  onHover: (idx: number) => void;
+  onCommit: (row: Row) => void;
+}
+
+/** The symbol rows, under the header that names what they are (none while searching). */
+function SymbolRows({ rows, recentCount, scope, scopeRowCount, query, active, onHover, onCommit }: SymbolRowsProps): JSX.Element {
+  const t = useT();
+  const headId = useId();
+  const rowsFrom = (from: number, to: number): JSX.Element[] =>
+    rows.slice(from, to).map((row, offset) => {
+      const idx = from + offset;
+      return (
+        <SymbolRow
+          key={`${row.entry.market}:${row.entry.symbol}`}
+          row={row}
+          idx={idx}
+          active={idx === active}
+          recent={idx < recentCount}
+          onHover={onHover}
+          onCommit={onCommit}
+        />
+      );
+    });
+  const emptyQuery = query.trim() === '';
+  if (recentCount > 0) {
+    // Recent picks first, then the rest of the directory.
+    return (
+      <>
+        <OptionGroup id={`${headId}-recent`} label={t('search.recent')} testId="recent-section">
+          {rowsFrom(0, recentCount)}
+        </OptionGroup>
+        {rows.length > recentCount && (
+          <OptionGroup id={`${headId}-all`} label={t('search.allMarkets')}>
+            {rowsFrom(recentCount, rows.length)}
+          </OptionGroup>
+        )}
+      </>
+    );
+  }
+  if (emptyQuery && scope !== ALL_VENUES) {
+    return (
+      <OptionGroup id={headId} label={t('search.scopeSection', { scope, count: formatNumber(scopeRowCount) })}>
+        {rowsFrom(0, rows.length)}
+      </OptionGroup>
+    );
+  }
+  if (emptyQuery && rows.length > 0) {
+    return (
+      <OptionGroup id={headId} label={t('search.allMarkets')}>
+        {rowsFrom(0, rows.length)}
+      </OptionGroup>
+    );
+  }
+  return <>{rowsFrom(0, rows.length)}</>;
+}
+
 /** The listbox body: venue list, listing state, empty state or symbol rows. */
 export function SymbolSearchResults(props: SymbolSearchResultsProps): JSX.Element {
   const t = useT();
@@ -52,25 +172,15 @@ export function SymbolSearchResults(props: SymbolSearchResultsProps): JSX.Elemen
       aria-label={pickingVenue ? t('search.venuesAria') : t('search.symbolsAria')}
     >
       {pickingVenue ? (
-        <>
-          <div className="sympal__section">{t('search.venuesReachable', { count: formatNumber(venueTotal - 1) })}</div>
-          {venueRows.length === 0 ? (
-            <div className="sympal__empty">
-              {venuesLoaded ? t('search.noVenueMatch', { query }) : t('search.loadingVenues')}
-            </div>
-          ) : (
-            venueRows.map((venue, idx) => (
-              <VenueRow
-                key={venue.market}
-                venue={venue}
-                idx={idx}
-                active={idx === active}
-                onHover={onHover}
-                onChoose={onChooseVenue}
-              />
-            ))
-          )}
-        </>
+        <VenueListing
+          venueRows={venueRows}
+          venueTotal={venueTotal}
+          venuesLoaded={venuesLoaded}
+          query={query}
+          active={active}
+          onHover={onHover}
+          onChooseVenue={onChooseVenue}
+        />
       ) : scopeState === 'loading' ? (
         // The opt-in slow path: a venue's FIRST listing is a live REST round trip.
         // Say which venue and that seconds are expected. An unexplained empty list
@@ -104,36 +214,16 @@ export function SymbolSearchResults(props: SymbolSearchResultsProps): JSX.Elemen
           )}
         </div>
       ) : (
-        <>
-          {query.trim() === '' && scope !== ALL_VENUES && (
-            <div className="sympal__section">{t('search.scopeSection', { scope, count: formatNumber(scopeRowCount) })}</div>
-          )}
-          {query.trim() === '' && scope === ALL_VENUES && recentCount === 0 && rows.length > 0 && (
-            <div className="sympal__section">{t('search.allMarkets')}</div>
-          )}
-          {rows.map((row, idx) => (
-            // Section headers ride INSIDE the map so they scroll with their rows:
-            // Recent first, then All markets.
-            <Fragment key={`${row.entry.market}:${row.entry.symbol}`}>
-              {idx === 0 && recentCount > 0 && (
-                <div className="sympal__section" data-testid="recent-section">
-                  {t('search.recent')}
-                </div>
-              )}
-              {idx === recentCount && recentCount > 0 && (
-                <div className="sympal__section">{t('search.allMarkets')}</div>
-              )}
-              <SymbolRow
-                row={row}
-                idx={idx}
-                active={idx === active}
-                recent={idx < recentCount}
-                onHover={onHover}
-                onCommit={onCommit}
-              />
-            </Fragment>
-          ))}
-        </>
+        <SymbolRows
+          rows={rows}
+          recentCount={recentCount}
+          scope={scope}
+          scopeRowCount={scopeRowCount}
+          query={query}
+          active={active}
+          onHover={onHover}
+          onCommit={onCommit}
+        />
       )}
     </div>
   );

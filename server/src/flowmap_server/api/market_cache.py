@@ -43,16 +43,12 @@ import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from zoneinfo import ZoneInfo
 
 import msgspec
 from crocodile.core.schema.records import OHLCV
 from crocodile.core.scheduler.calendar import USMarketCalendar
 
-from flowmap_server.feeds._yahoo import UnknownSymbolError, YahooUnavailableError
-
-# US equity sessions are dated in Eastern time, whatever the host's zone is.
-_MARKET_TZ = ZoneInfo("America/New_York")
+from flowmap_server.feeds._yahoo import UnknownSymbolError, YahooUnavailableError, session_reference_close
 
 __all__ = [
     "QuoteData",
@@ -549,10 +545,12 @@ async def _bounded_quote_sweep(
 
 
 async def default_movers_fn(market: str, limit: int, *, quote_fn: QuoteFn | None = None) -> list[QuoteData]:
-    """Production movers seam: rank a bounded candidate set by 24 h %change.
+    """Production movers seam: rank a bounded candidate set by %change.
 
-    Crypto: the curated shortlist. Equity: a bounded head of the curated ticker
-    list (a full-list Yahoo sweep per refresh would be far too many calls).
+    The change is over 24 h for crypto and since the previous regular session
+    close for equity (see ``daily_change_pct``). Crypto: the curated shortlist.
+    Equity: a bounded head of the curated ticker list (a full-list Yahoo sweep
+    per refresh would be far too many calls).
     """
     from flowmap_server.data.universe import CRYPTO_SYMBOLS, EQUITY_TICKERS
 
@@ -588,7 +586,10 @@ async def default_movers_fn(market: str, limit: int, *, quote_fn: QuoteFn | None
 async def _safe_quote(fetch: Callable[[str], Awaitable[QuoteData]], symbol: str) -> QuoteData | None:
     try:
         return await fetch(symbol)
-    except Exception:
+    except Exception as exc:
+        # Best effort: a failing symbol shortens the movers list, it never fails
+        # the sweep. The reason is logged so a broken feed is not silent.
+        logger.warning("movers quote for %s dropped: %s", symbol, type(exc).__name__)
         return None
 
 
@@ -626,31 +627,17 @@ def _bar_ts_ns(bar: OHLCV) -> int:
 def daily_change_pct(bars: Sequence[OHLCV]) -> tuple[float, float | None] | None:
     """Last close and its percent change against the previous regular session.
 
-    The base is the last close before the newest bar's New York calendar date,
-    which is the previous session's close. When the window holds no earlier
-    session, the base is the first close of the newest session. The change is
-    None when the base is not positive. Returns None when there are no usable
-    closes at all.
+    The base is the previous session's close, as ``session_reference_close``
+    defines it (New York dating). When the window holds no earlier session, the
+    base is the first close of the newest session. The change is None when the
+    base is not positive. Returns None when there are no usable closes at all.
     """
-    rows = sorted(
-        (
-            (
-                _bar_ts_ns(b),
-                datetime.datetime.fromtimestamp(_bar_ts_ns(b) / 1e9, tz=_MARKET_TZ).date(),
-                float(b.close),
-            )
-            for b in bars
-            if b.close is not None
-        ),
-        key=lambda row: row[0],
-    )
-    if not rows:
+    usable = sorted((b for b in bars if b.close is not None), key=_bar_ts_ns)
+    if not usable:
         return None
-    _, session, price = rows[-1]
-    base = next((close for _, day, close in reversed(rows) if day < session), None)
-    if base is None:
-        base = next(close for _, day, close in rows if day == session)
-    if base <= 0:
+    price = float(usable[-1].close)
+    base = session_reference_close(usable)
+    if base is None or base <= 0:
         return price, None
     return price, (price - base) / base * 100.0
 

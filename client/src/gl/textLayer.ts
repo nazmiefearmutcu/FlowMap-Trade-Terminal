@@ -15,7 +15,8 @@
 
 import { OVERLAY } from './overlays/palette';
 
-const FONT_STACK = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+/** The bundled mono face first, so canvas labels match on every OS (see theme/fonts.css). Exported for the drawing tags. */
+export const FONT_STACK = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
 /** Default font size (CSS px) for {@link TextLayer.text} — exported so callers
  *  (e.g. the price axis) can name the standard size instead of re-declaring the

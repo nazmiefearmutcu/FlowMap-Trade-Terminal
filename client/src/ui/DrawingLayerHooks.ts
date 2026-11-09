@@ -1,7 +1,8 @@
 /**
  * The drawing layer's behaviour, split out of the component: the per-frame
  * paint loop, the select-mode gestures on the chart container, the layer's
- * scoped keyboard bindings, and the arrow-key placement cursor. The component
+ * scoped keyboard bindings, the arrow-key placement cursor, and the keyboard
+ * selection and nudging of existing drawings. The component
  * keeps its React state and the armed-placement pointer handlers.
  *
  * Every piece shares one {@link LayerRefs} bundle. Its refs are created once per
@@ -365,6 +366,63 @@ export function useDrawingShortcuts(refs: LayerRefs, focused: boolean): void {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [focused, refs]);
+}
+
+/** Keyboard nudge of the selected drawing, in CSS px per arrow press (Shift = coarse). */
+const NUDGE_PX = 8;
+const NUDGE_COARSE_PX = 40;
+const NUDGE_DIR: Readonly<Record<string, { readonly x: number; readonly y: number }>> = {
+  ArrowLeft: { x: -1, y: 0 },
+  ArrowRight: { x: 1, y: 0 },
+  ArrowUp: { x: 0, y: -1 },
+  ArrowDown: { x: 0, y: 1 },
+};
+
+/**
+ * Keyboard selection and editing of EXISTING drawings, while no tool is armed and
+ * the layer itself has focus. Tab and Shift+Tab cycle through the drawings, and
+ * leave the layer at either end as any other control does. Arrow keys nudge the
+ * selected drawing (Shift = 40 px), and Enter opens the text editor for a selected
+ * text label. Delete, Escape and undo stay with {@link useDrawingShortcuts}.
+ */
+export function handleSelectionKey(refs: LayerRefs, e: ReactKeyboardEvent<HTMLDivElement>): void {
+  if (e.target !== e.currentTarget || e.metaKey || e.ctrlKey || e.altKey) return;
+  const ds = useDrawingsStore.getState();
+  if (ds.tool !== null) return; // an armed tool owns the arrow keys (placement)
+  const items = ds.items;
+  if (e.key === 'Tab') {
+    if (items.length === 0) return;
+    const i = items.findIndex((d) => d.id === ds.selectedId);
+    const step = e.shiftKey ? -1 : 1;
+    if (i >= 0 && (step > 0 ? i === items.length - 1 : i === 0)) return; // leave the layer
+    e.preventDefault();
+    const next = i >= 0 ? i + step : (step > 0 ? 0 : items.length - 1);
+    ds.select(items[next].id);
+    return;
+  }
+  const sel = items.find((d) => d.id === ds.selectedId);
+  if (sel === undefined) return;
+  if (e.key === 'Enter') {
+    if (sel.tool !== 'text') return;
+    e.preventDefault();
+    ds.editText(sel.id);
+    return;
+  }
+  const dir = NUDGE_DIR[e.key];
+  const proj = refs.proj.current;
+  if (dir === undefined || proj === null) return;
+  const px = e.shiftKey ? NUDGE_COARSE_PX : NUDGE_PX;
+  const anchor = sel.points[0];
+  const tNs = proj.tNsAt(proj.xAt(anchor.tNs) + dir.x * px);
+  const price = proj.priceAt(proj.yAt(anchor.price) + dir.y * px);
+  if (tNs === null || price === null || !Number.isFinite(price)) return;
+  e.preventDefault();
+  const dtNs = tNs - anchor.tNs;
+  const dPrice = price - anchor.price;
+  if (dtNs === 0n && dPrice === 0) return;
+  ds.pushUndo(); // one undo step per key press
+  ds.moveBy(sel.id, dtNs, dPrice);
+  flushDrawingsPersist(); // the press's one write
 }
 
 /**

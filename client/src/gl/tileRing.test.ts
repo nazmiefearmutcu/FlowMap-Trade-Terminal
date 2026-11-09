@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { columnCacheFullPoolBytes } from './columnCache';
 import { FULLRES_BYTES_PER_TEXEL, fullResRingBytes, Residency, TileRing } from './tileRing';
 import { makeFakeGL } from './mockGL';
 
@@ -16,6 +17,12 @@ describe('fullResRingBytes (GPU memory budget)', () => {
 
   it('gives the perf-gate geometry: 10240 columns at 2048 rows is 160 MiB', () => {
     expect(fullResRingBytes(10_240, 2048) / MiB).toBe(160);
+  });
+
+  it('pairs the GPU ring with the CPU column cache at production geometry: 384 MiB before mips', () => {
+    const cpu = columnCacheFullPoolBytes(6144, 4096);
+    expect(cpu / MiB).toBe(192);
+    expect((fullResRingBytes(6144, 4096) + cpu) / MiB).toBe(384);
   });
 });
 

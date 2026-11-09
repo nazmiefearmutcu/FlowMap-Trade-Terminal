@@ -65,12 +65,6 @@ export function priceTicks(
   return priceTickModel(pLo, pHi, targetCount, minStep).ticks;
 }
 
-/** Decimal places implied by a price step (so labels don't show noise digits). */
-export function priceDecimals(step: number): number {
-  if (!(step > 0)) return 2;
-  return Math.min(8, Math.max(0, Math.ceil(-Math.log10(step))));
-}
-
 /** Exact quote precision comes from the venue tick, including ticks such as
  *  0.25 and sub-nanounit coins. Storage bucket width is never quote precision. */
 export function quoteDecimals(tick: number): number {

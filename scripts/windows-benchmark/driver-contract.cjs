@@ -6,7 +6,7 @@ function ownedHealthUrl(base, port) {
     throw new Error('Health target does not match the owned literal loopback server port');
   return base + '/api/health';
 }
-function healthCollector({url, onObservation, onError, timeoutMs=HEALTH_TIMEOUT_MS,
+function healthCollector({url, onObservation, onError, timeoutMs=HEALTH_TIMEOUT_MS, headers={},
     clock=()=>require('node:perf_hooks').performance.now(),
     origin=require('node:perf_hooks').performance.timeOrigin,
     collectionId=require('node:crypto').randomUUID()}) {
@@ -34,7 +34,7 @@ function healthCollector({url, onObservation, onError, timeoutMs=HEALTH_TIMEOUT_
       };
       timer=setTimeout(()=>{row.timedOut=true;request?.destroy(new Error('Health request timed out'));done(new Error('Health request timed out'));},timeoutMs);
       try {
-        request=http.get(url,{agent:false,headers:{'Cache-Control':'no-cache, no-store','Connection':'close'}},response=>{
+        request=http.get(url,{agent:false,headers:{...headers,'Cache-Control':'no-cache, no-store','Connection':'close'}},response=>{
           row.statusCode=response.statusCode;
           response.setEncoding('utf8');
           response.on('data',chunk=>{if(!settled)row.responseBody+=chunk;});

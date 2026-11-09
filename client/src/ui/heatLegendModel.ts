@@ -4,7 +4,7 @@ import { resolveAppearance, stopsGradient } from '../theme/appearance';
 import type { ThemeId, ChartStop } from '../theme/registry';
 import type { DepthChannelMode } from './settings';
 import { honestDepthTier } from '../gl/depthTier';
-import { depthTier } from './DomLadder';
+import { depthTier } from './DomLadderTier';
 import { MODE_SYNTH_PROFILE } from '../proto/types';
 import { t } from '../i18n';
 export interface LegendInput {

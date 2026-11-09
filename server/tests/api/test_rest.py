@@ -107,9 +107,7 @@ async def test_health_withholds_operational_detail_without_the_token(app, monkey
             authorized = (await c.get("/api/health", headers={"x-flowmap-token": token})).json()
     finally:
         manager._sessions = {}
-    assert set(anonymous) == {
-        "status", "version", "protocol_version", "uptime_s", "recording_enabled",
-    }
+    assert set(anonymous) == {"status", "version", "protocol_version", "uptime_s"}
     assert anonymous["status"] == "ok"
     assert authorized["active_sessions"] == 1
     assert authorized["feeds"][0]["session_id"] == "sim:SIM-DEMO:live:abc123def456"

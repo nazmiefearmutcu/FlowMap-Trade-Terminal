@@ -451,6 +451,17 @@ describe('robustness — malformed input throws WireError', () => {
       expect(decode(coldJsonFrame(MsgType.MACRO_STRESS, macro)).msg).toMatchObject({ type: MsgType.MACRO_STRESS, status: 'calm' });
     });
 
+    it('carries the per-series observation dates and source status of a MacroStress, and omits them from an older server', () => {
+      const dated = { ...macro, as_of: { sofr: '2026-11-06', hy_spread: '2026-11-07' }, source_status: { sofr: 'ok', yield_10y2y: 'stale' } };
+      expect(decode(coldJsonFrame(MsgType.MACRO_STRESS, dated)).msg).toMatchObject({
+        type: MsgType.MACRO_STRESS,
+        as_of: { sofr: '2026-11-06', hy_spread: '2026-11-07' },
+        source_status: { sofr: 'ok', yield_10y2y: 'stale' },
+      });
+      const older = decode(coldJsonFrame(MsgType.MACRO_STRESS, macro)).msg as { as_of?: unknown };
+      expect(older.as_of).toBeUndefined();
+    });
+
     it('fills an absent Marker price or size and an absent Status next_open_ts with null', () => {
       const bare = { ts_ns: 1_000, kind: 'gap', text: '' };
       expect(decode(coldJsonFrame(MsgType.MARKER, bare)).msg).toMatchObject({ type: MsgType.MARKER, price: null, size: null });
@@ -472,6 +483,7 @@ describe('robustness — malformed input throws WireError', () => {
       ['a Marker whose ts_ns is a string', MsgType.MARKER, { ...marker, ts_ns: '1000' }],
       ['a MarketIntelligence without a headline', MsgType.MARKET_INTELLIGENCE, { ...intel, headline: undefined }],
       ['a MacroStress whose score is a string', MsgType.MACRO_STRESS, { ...macro, stress_score: '0.4' }],
+      ['a MacroStress whose as_of holds a number', MsgType.MACRO_STRESS, { ...macro, as_of: { sofr: 20261106 } }],
     ])('rejects %s as a malformed payload', (_label, msgType, value) => {
       expect(() => decode(coldJsonFrame(msgType, value))).toThrow(WireError);
       expect(() => decode(coldJsonFrame(msgType, value))).toThrow(/field shape/);

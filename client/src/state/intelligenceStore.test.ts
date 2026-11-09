@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MsgType, type GexLevelUpdate, type MacroStressUpdate, type MarketIntelligence } from '../proto/types';
-import { DEMO_INTELLIGENCE, useIntelligenceStore } from './intelligenceStore';
+import { DEMO_INTELLIGENCE, intelKindKey, useIntelligenceStore } from './intelligenceStore';
 
 const gex: GexLevelUpdate = {
   type: MsgType.GEX_UPDATE, symbol: 'NVDA', spot_price: 130, net_gex: -12_000,
@@ -59,6 +59,33 @@ describe('institutional data availability', () => {
   ])('maps received status %s to %s without guessing from the score', (status, stressRegime) => {
     useIntelligenceStore.getState().ingestMacro({ ...macro, status });
     expect(useIntelligenceStore.getState().macro).toMatchObject({ status, stressRegime });
+  });
+
+  it('keeps the per-series observation dates of a macro update and drops values that are not dates', () => {
+    useIntelligenceStore.getState().ingestMacro({
+      ...macro, as_of: { sofr: '2026-11-06', hy_spread: 'yesterday' }, source_status: { sofr: 'ok', yield_10y2y: 'stale' },
+    });
+    expect(useIntelligenceStore.getState().macro).toMatchObject({
+      asOf: { sofr: '2026-11-06' },
+      sourceStatus: { sofr: 'ok', yield_10y2y: 'stale' },
+    });
+    useIntelligenceStore.getState().ingestMacro(macro);
+    expect(useIntelligenceStore.getState().macro?.asOf).toBeUndefined();
+  });
+
+  it('keeps the parsed structured fields of a received card and never a parse of plain text', () => {
+    const store = useIntelligenceStore.getState();
+    store.ingestIntel(intel({ kind: 'capitol', detail: JSON.stringify({ politician: 'Supplied name', type: 'Sale' }) }));
+    store.ingestIntel(intel({ kind: 'capitol', detail: 'Plain text' }));
+    const [plain, structured] = useIntelligenceStore.getState().events;
+    expect(structured.fields).toEqual({ politician: 'Supplied name', type: 'Sale' });
+    expect(plain.fields).toEqual({});
+  });
+
+  it('names only the kinds this build has copy for', () => {
+    expect(intelKindKey('capitol')).toBe('intel.kind.capitol');
+    expect(intelKindKey('defense_contract')).toBe('intel.kind.defense_contract');
+    expect(intelKindKey('new-kind')).toBeNull();
   });
 
   it('accepts reported zero macro rates while rejecting malformed and nonfinite updates', () => {

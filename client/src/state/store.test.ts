@@ -38,6 +38,20 @@ function coldFrameBytes(msgType: number, value: unknown): Uint8Array {
   return out;
 }
 
+/** A HistoryResponse header with no columns, markers or trades (24-byte payload). */
+function emptyHistoryRespBytes(reqId: number): Uint8Array {
+  const payload = new Uint8Array(24);
+  new DataView(payload.buffer).setUint32(0, reqId, true);
+  const out = new Uint8Array(8 + payload.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint8(0, MsgType.HISTORY_RESP);
+  dv.setUint8(1, PROTO_VER);
+  dv.setUint16(2, 0, true);
+  dv.setUint32(4, payload.length, true);
+  out.set(payload, 8);
+  return out;
+}
+
 const GOLDEN_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'tests', 'golden');
 
 function goldenU8(name: string): Uint8Array {
@@ -933,6 +947,41 @@ describe('FlowMap store — recording degraded flag (Status capability)', () => 
     sock.deliver(status({ overview_degraded: true }));
     store.getState().connectAndSubscribe('crypto', 'ETHUSDT');
     expect(store.getState().overviewDegraded).toBe(false);
+  });
+
+  it('rejects an empty overview page answered while overview_degraded, so the stall is not memoized as history end', async () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    const sock = sockets[0];
+    sock.open();
+    sock.deliver(goldenU8('cold_hello'));
+    sock.deliver(
+      coldFrameBytes(MsgType.STATUS, {
+        feed_state: 'live',
+        capability: { overview_degraded: true },
+        latency_ms: 0,
+        clock_skew_ms: 0,
+        next_open_ts: null,
+      }),
+    );
+    const pending = store.getState().requestHistory(0x7fff_ffff_ffff_ffffn, 4, { start_col: 0, end_col: 3, stride: 1 });
+    const reqId = (sentMsg(sock.sent[sock.sent.length - 1]) as { req_id: number }).req_id;
+    sock.deliver(emptyHistoryRespBytes(reqId));
+    await expect(pending).rejects.toThrow(/overview_degraded/);
+  });
+
+  it('resolves an empty overview page once the server stops reporting overview_degraded', async () => {
+    installFakeTransport(NO_TIMERS);
+    const store = useFlowMapStore;
+    store.getState().connectAndSubscribe('crypto', 'BTCUSDT');
+    const sock = sockets[0];
+    sock.open();
+    sock.deliver(goldenU8('cold_hello'));
+    const pending = store.getState().requestHistory(0x7fff_ffff_ffff_ffffn, 4, { start_col: 0, end_col: 3, stride: 1 });
+    const reqId = (sentMsg(sock.sent[sock.sent.length - 1]) as { req_id: number }).req_id;
+    sock.deliver(emptyHistoryRespBytes(reqId));
+    await expect(pending).resolves.toMatchObject({ depth_cols: [] });
   });
 });
 

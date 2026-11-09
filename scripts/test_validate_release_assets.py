@@ -258,6 +258,8 @@ class ReleaseAssetsTests(unittest.TestCase):
         workflow = (source / ".github/workflows/release.yml").read_text(encoding="utf-8")
         script = workflow_run(workflow, "Require all eight installers before publishing")
         script += workflow_run(workflow, "Publish the release")
+        # The workflow refuses a bare-CR manifest before any checksum tool reads it.
+        manifest_guard = workflow_run(workflow, "Refuse a checksum manifest that ends in a bare carriage return")
         contents = b"offline checksum record fixture\n"
         digest = hashlib.sha256(contents).hexdigest()
         text = "".join(f"{digest}  {name}\n" for name in (*INSTALLERS, *RELEASE_FILES))
@@ -293,7 +295,7 @@ class ReleaseAssetsTests(unittest.TestCase):
                            "TAG": "v1.5.1", "GITHUB_REPOSITORY": "offline/fixture",
                            "GH_TOKEN": "offline-record-fixture-token"}
                     checksum = subprocess.run(
-                        [str(shell), "--noprofile", "--norc", "-c", "sha256sum -c SHA256SUMS"],
+                        [str(shell), "--noprofile", "--norc", "-c", manifest_guard + "sha256sum -c SHA256SUMS"],
                         cwd=root, env=env, capture_output=True, text=True, timeout=30,
                     )
                     result = subprocess.run(

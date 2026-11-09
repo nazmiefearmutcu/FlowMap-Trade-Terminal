@@ -149,11 +149,9 @@ class DefenseContractsListener:
                 amount = None
             desc = str(item.get("Description") or "").strip()
             agency = str(item.get("Awarding Agency") or "").strip()
-            headline = f"{matched_sym} contract award"
-            if amount is not None:
-                headline += f" ${amount:,.0f}"
-            if agency:
-                headline += f" by {agency}"
+            # No English prose on the wire: the client builds the heading from
+            # kind, symbol, amount_usd and the structured detail, in its locale.
+            headline = ""
             detail = json.dumps({
                 "award_id": item.get("Award ID") or None,
                 "recipient": recipient,

@@ -53,7 +53,12 @@ export const COLS_PER_TILE = 256;
 /** GPU bytes per texel of a full-res tile: RG32F, 2 channels × 4 bytes. */
 export const FULLRES_BYTES_PER_TEXEL = 8;
 
-/** GPU bytes of a full-res ring of `capacityCols` columns at `rows` rows (RG32F). */
+/**
+ * GPU bytes of a full-res ring of `capacityCols` columns at `rows` rows (RG32F).
+ * This is the GPU share of the client memory budget. The CPU share is the column
+ * cache with the same columns and rows (`columnCacheFullPoolBytes`); the SUM mips
+ * have no byte budget yet. The combined GPU + CPU figure is pinned by a test.
+ */
 export function fullResRingBytes(capacityCols: number, rows: number): number {
   return capacityCols * rows * FULLRES_BYTES_PER_TEXEL;
 }

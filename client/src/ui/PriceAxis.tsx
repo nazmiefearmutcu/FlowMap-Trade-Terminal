@@ -54,35 +54,14 @@ const CHIP_KEY: Record<PriceFollow, string> = {
 };
 
 /**
- * Heal surface. `overlays` is TS-private on the Renderer, so this is a
- * STANDALONE structural view (casting) rather than an intersection — a
- * `Renderer & { overlays }` intersection collapses to `never` (private member
- * in one constituent, public in the other). `syncGutters` is the manager's
- * public re-match primitive; it stays optional so the heal degrades to a
- * rebind + redirty on a build without it.
- */
-type AxisHealView = {
-  attachOverlaySurfaces: (price: HTMLCanvasElement | null, time: HTMLCanvasElement | null) => void;
-  /**
-   * The DPR the renderer last sized its backing stores with.
-   * Optional: a build without the getter degrades to the live window ratio.
-   */
-  readonly dpr?: number;
-  overlays?: {
-    readonly timeAxis?: { readonly canvas: HTMLCanvasElement } | null;
-    syncGutters?: (dpr: number) => boolean;
-  } | null;
-};
-
-/**
  * The device-pixel ratio the gutter bitmap must match. Reads the renderer's
  * cached ratio so the axis sizes its canvas with the SAME ratio the chart
  * uses; a window-ratio read can disagree after a monitor move until the
  * renderer's next resize.
  */
-function gutterDpr(r: AxisHealView): number {
-  const cached = r.dpr;
-  if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) return cached;
+function gutterDpr(r: Renderer): number {
+  const cached = r.devicePixelRatio;
+  if (Number.isFinite(cached) && cached > 0) return cached;
   return window.devicePixelRatio || 1;
 }
 
@@ -116,9 +95,9 @@ export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxi
    * lands on the right grid even before the next data-driven frame.
    */
   const healAxis = useCallback((): void => {
-    const r = rendererRef.current as AxisHealView | null;
+    const r = rendererRef.current;
     const c = canvasRef.current;
-    if (r === null || c === null || typeof r.attachOverlaySurfaces !== 'function') return;
+    if (r === null || c === null) return;
     const box = boxRef.current?.size();
     const cw = box?.width ?? 0;
     const ch = box?.height ?? 0;
@@ -134,9 +113,8 @@ export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxi
     // redirty through the public attach API, then re-size the 2D backing store
     // immediately (requestAnimationFrame may be starved under CPU load; the
     // bitmap fix must not wait for it).
-    const timeCanvas = r.overlays?.timeAxis?.canvas ?? null;
-    r.attachOverlaySurfaces(c, timeCanvas);
-    r.overlays?.syncGutters?.(dpr);
+    r.attachOverlaySurfaces(c, r.timeAxisCanvas());
+    r.syncGutters(dpr);
   }, [canvasRef, rendererRef]);
 
   // Callback ref: React hands us the element on mount AND on any replacement,

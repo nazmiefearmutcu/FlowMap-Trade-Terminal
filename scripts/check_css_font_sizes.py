@@ -26,7 +26,6 @@ PX_FONT_SIZE = re.compile(r"(?<![\w-])font-size\s*:\s*\d*\.?\d+px\b", re.IGNOREC
 
 # Budgets at the time the gate was set (relative to the repository root).
 BUDGETS = {
-    "client/src/indicators/indicators.css": 2,
 }
 
 

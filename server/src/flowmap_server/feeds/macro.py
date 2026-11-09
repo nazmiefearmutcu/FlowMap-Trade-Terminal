@@ -24,13 +24,14 @@ import asyncio
 from datetime import UTC, date, datetime
 import logging
 import math
-from typing import Any, TypeGuard
+from typing import Any
 
 import aiohttp
 import numpy as np
 
 from flowmap_server import __version__
 from flowmap_server.data.warehouse import DuckWarehouse
+from flowmap_server.feeds._numeric import finite_number
 from flowmap_server.feeds.warehouse_share import shared_warehouse
 
 log = logging.getLogger(__name__)
@@ -49,13 +50,9 @@ _METHOD = {
 }
 
 
-def _finite_number(value: object) -> TypeGuard[float | int]:
-    return isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value)
-
-
 def _finite_float(value: object) -> float:
     """The value as a float, or NaN when it is not a finite number (callers check first)."""
-    return float(value) if _finite_number(value) else math.nan
+    return float(value) if finite_number(value) else math.nan
 
 
 class MacroStressPoller:
@@ -150,9 +147,12 @@ class MacroStressPoller:
             "BAMLH0A0HYM2": hy_val,
             "T10Y2Y": t10y2y_val,
         }
-        missing = [name for name, value in observations.items() if not _finite_number(value)]
+        missing = [name for name, value in observations.items() if not finite_number(value)]
         reasons = {name: self._failure_reasons.get(name, "fred_unreachable") for name in missing}
         series_dates = {name: self._observation_dates.get(name) for name in _SERIES}
+        # Per series: "ok", or the reason it has no reading. The wire carries this map as
+        # MacroStressUpdate.source_status.
+        source_status = {name: reasons.get(name, "ok") for name in _SERIES}
         if missing:
             return {
                 "date": None,
@@ -162,6 +162,7 @@ class MacroStressPoller:
                 "missing_series": missing,
                 "unavailable_reason": _summary_reason(reasons),
                 "series_dates": series_dates,
+                "source_status": source_status,
                 "stale": None,
                 "sofr": None,
                 "hy_spread_pct": None,
@@ -212,6 +213,7 @@ class MacroStressPoller:
             "missing_series": [],
             "unavailable_reason": None,
             "series_dates": series_dates,
+            "source_status": source_status,
             "stale": stale,
             "persisted": persisted,
             "sofr": sofr,

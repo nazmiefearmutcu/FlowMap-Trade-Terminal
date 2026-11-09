@@ -32,21 +32,34 @@ export function collectTests(report) {
   return tests;
 }
 
-/** Return { skipped, flaky, failures } lists plus a verdict. */
+/** The budget key of a test: its full title, qualified by its Playwright project. */
+export function testKey(test) {
+  return test.project ? `${test.title} [${test.project}]` : test.title;
+}
+
+/**
+ * Compare the run with the committed budget. Skips are a set comparison: every
+ * skipped test must be named in budget.expectedSkipped, so a new skip fails the job
+ * even when the total stays the same. Budget entries that no longer skip are
+ * returned as `stale` so the list can be pruned. Flaky tests keep a count budget.
+ */
 export function evaluate(report, budget) {
   const tests = collectTests(report);
   const skipped = tests.filter((test) => test.status === 'skipped');
   const flaky = tests.filter((test) => test.status === 'flaky');
-  const maxSkipped = Number.isInteger(budget.maxSkipped) ? budget.maxSkipped : 0;
+  const expected = new Set(Array.isArray(budget.expectedSkipped) ? budget.expectedSkipped : []);
+  const skippedKeys = new Set(skipped.map(testKey));
+  const unexpected = skipped.filter((test) => !expected.has(testKey(test)));
+  const stale = [...expected].filter((key) => !skippedKeys.has(key)).sort();
   const maxFlaky = Number.isInteger(budget.maxFlaky) ? budget.maxFlaky : 0;
   const problems = [];
-  if (skipped.length > maxSkipped) {
-    problems.push(`skipped e2e tests ${skipped.length} exceed the budget of ${maxSkipped}`);
+  for (const test of unexpected) {
+    problems.push(`skipped e2e test is not named in the budget: ${testKey(test)}`);
   }
   if (flaky.length > maxFlaky) {
     problems.push(`flaky e2e tests ${flaky.length} exceed the budget of ${maxFlaky}`);
   }
-  return { tests, skipped, flaky, problems };
+  return { tests, skipped, flaky, unexpected, stale, problems };
 }
 
 function main(argv) {
@@ -57,10 +70,11 @@ function main(argv) {
   }
   const report = JSON.parse(readFileSync(resultsPath, 'utf-8'));
   const budget = JSON.parse(readFileSync(budgetPath, 'utf-8'));
-  const { tests, skipped, flaky, problems } = evaluate(report, budget);
+  const { tests, skipped, flaky, stale, problems } = evaluate(report, budget);
   console.log(`e2e outcomes: ${tests.length} tests, ${skipped.length} skipped, ${flaky.length} flaky`);
-  for (const test of skipped) console.log(`  skipped: ${test.title}${test.project ? ` [${test.project}]` : ''}`);
+  for (const test of skipped) console.log(`  skipped: ${testKey(test)}`);
   for (const test of flaky) console.log(`  flaky (${test.attempts} attempts): ${test.title}`);
+  for (const key of stale) console.log(`  budget entry no longer skipped (remove it): ${key}`);
   if (problems.length > 0) {
     for (const problem of problems) console.error(`e2e budget exceeded: ${problem}`);
     console.error(`Adjust client/tests/reporters/e2e-budget.json only with a reviewed reason.`);

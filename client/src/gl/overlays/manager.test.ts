@@ -385,6 +385,27 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     expect(badges).not.toContain(t('gl.badgeVwapReconstructed'));
   });
 
+  it('draws the provenance badges at the chart type floor (11 px or larger)', () => {
+    const badges: Array<{ text: string; size: number | undefined }> = [];
+    const text = internals().text as unknown as {
+      badge: (x: number, y: number, s: string, opts?: { size?: number }) => void;
+    };
+    text.badge = (_x, _y, s, opts) => {
+      badges.push({ text: s, size: opts?.size });
+    };
+
+    const reconciled = drawCtx();
+    reconciled.capability = { history: 'reconstructed' };
+    manager.draw(reconciled);
+    const keyless = drawCtx();
+    keyless.capability = { vwap: 'approx', history: 'reconstructed' };
+    manager.draw(keyless);
+
+    const provenance = badges.filter(b => b.text === t('gl.badgeVwapApprox') || b.text === t('gl.badgeVwapReconstructed'));
+    expect(provenance.length).toBeGreaterThan(0);
+    for (const badge of provenance) expect(badge.size).toBeGreaterThanOrEqual(11);
+  });
+
   // --- Born-blank gutters must re-match without a window resize -------
 
   /** Give a jsdom canvas a real layout box (clientWidth/Height are 0 there). */

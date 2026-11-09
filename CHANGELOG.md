@@ -7,7 +7,7 @@ Unreleased work sits on top of the newest listed commit.
 
 ## [Unreleased]
 
-## [1.6.0] — Unreleased
+## [1.6.0] — 2026-11-10
 
 Release notes: [docs/release-notes-1.6.0.md](docs/release-notes-1.6.0.md).
 
@@ -78,8 +78,8 @@ Hardening and release-quality pass: security, release pipeline, tests, tooling a
 
 ### Changed
 
-- New drawings start in teal `#2a8f7e` (was `#33d6c4`). The six toolbar swatches are darker hues: paper white and
-  amber are replaced by grey and ochre, so every ink keeps at least 3:1 contrast against light chart grounds.
+- New drawings start in teal `#2a8f7e` (was `#33d6c4`). The six toolbar swatches are darker hues (teal, blue, violet,
+  green, amber and grey, see `client/src/theme/drawInks.ts`), so every ink keeps at least 3:1 contrast against light chart grounds.
 - Candles and indicators restart after each reconnect, so a history gap is never bridged with stale bars.
 - The WebSocket session token moves from the socket URL to a subprotocol, `flowmap.auth.<token>`. The
   browser client no longer puts it in the URL. The server accepts the subprotocol, never echoes it, and
@@ -115,7 +115,7 @@ Hardening and release-quality pass: security, release pipeline, tests, tooling a
   read and must be moved by hand.
 - `scripts/dev.sh`, `scripts/dev-unix.sh` and `scripts/dev-windows.ps1` stop the whole process
   tree on exit, refuse to start over a server they did not start, and restore the console
-  code page. `scripts/dev-windows.ps1 -Port` is refused: the script runs the server on port 8720 only.
+  code page. `scripts/dev-windows.ps1 -Port` is refused for any port other than 8720, the documented dev server port. The dev client's proxy target is `FLOWMAP_DEV_SERVER_PORT`, then `FLOWMAP_PORT`, then 8720 (`client/vite.config.ts`).
 - The webview CSP is stricter: fonts come from the app only (no `data:` fonts), and media, frames,
   plugins and form submissions are blocked. Loopback connections still allow any `127.0.0.1` port,
   because the sidecar's port is chosen at each launch; the session token and Host check guard it.
@@ -123,6 +123,10 @@ Hardening and release-quality pass: security, release pipeline, tests, tooling a
   and focus code is linted in CI, not only compiled.
 - The root `.gitignore` covers `.flowmap_data/`, `*.duckdb`, `*.duckdb.wal` and alternate Cargo target
   folders (`app/src-tauri/target-*/`).
+- A `SIM` chip shows only on the simulated feed. A keyless-equity replay reads `SYNTH` with `RECORDED DENSITY` and no `SIM`.
+- Symbol search ignores diacritics and treats dotted and dotless `i` as one letter, so Turkish names match their plain spelling.
+- While the desktop sidecar is failed, the window holds socket and REST calls until a retry brings it back, so the session token is not sent to a port the sidecar no longer owns.
+- Server dependencies are upgraded. `pip-audit` reports no known vulnerabilities for the locked set, and the CI dependency-audit job runs npm audit, pip-audit and cargo audit.
 
 ### Fixed
 
@@ -150,6 +154,7 @@ Hardening and release-quality pass: security, release pipeline, tests, tooling a
 - The FLOW, GOV, DOCS, GEO and MACRO intelligence panels are not fed in this build. No server
   producer runs for them, so the drawer lists their sources as "Not connected, hidden". Earlier
   entries that describe these panels as shipped refer to the feed code, not to a live feed.
+- The macro, capitol (politics), dark-pool, defense-contracts, EDGAR and vocal-stress sources are not connected in this build.
 - Maximum time zoom no longer resets the time window or the manual price scale.
 - Price-axis gestures leave the time window unchanged. Late history loads respect manual navigation.
 - Time zoom-out now allows twice the available history span, without increasing the history cache.

@@ -10,13 +10,16 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { setLocale } from '../i18n';
+import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import {
   ONBOARDING_KEY,
+  ONBOARDING_STEPS,
   OnboardingCard,
   closeOnboarding,
   hasSeenOnboarding,
   markOnboarded,
   openOnboarding,
+  stepBodyKey,
 } from './OnboardingCard';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -57,6 +60,36 @@ afterEach(() => {
   closeOnboarding();
   localStorage.clear();
   setLocale('en');
+  setSingleKeyShortcutsEnabled(true);
+});
+
+describe('switch-aware step copy', () => {
+  it('names the bare keys on the mouse step only while single-key shortcuts are on', () => {
+    const mouse = ONBOARDING_STEPS[1];
+    expect(stepBodyKey(mouse, true)).toBe('onboarding.step.mouse.body');
+    expect(stepBodyKey(mouse, false)).toBe('onboarding.step.mouse.bodyNoKey');
+    const connect = ONBOARDING_STEPS[0];
+    expect(stepBodyKey(connect, false)).toBe(connect.bodyKey);
+  });
+
+  it('renders the no-key body when the switch is off, and the bare-key body when it is on', () => {
+    setSingleKeyShortcutsEnabled(false);
+    const container = render();
+    act(() => (container.querySelector('[data-testid="onboarding-next"]') as HTMLButtonElement).click());
+    const body = container.querySelector('[data-testid="onboarding-body"]')!.textContent ?? '';
+    expect(body).toContain('Shift with the up or down arrow zooms price');
+    expect(body).not.toContain('+ / − zoom price');
+    act(() => (container.querySelector('[data-testid="onboarding-next"]') as HTMLButtonElement).click());
+    const shortcuts = container.querySelector('[data-testid="onboarding-body"]')!.textContent ?? '';
+    expect(shortcuts).toContain('Turn them on under Settings, Keyboard');
+    expect(shortcuts).not.toContain('Press ? anytime');
+  });
+
+  it('keeps the bare-key copy while the switch is on', () => {
+    const container = render();
+    act(() => (container.querySelector('[data-testid="onboarding-next"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[data-testid="onboarding-body"]')!.textContent).toContain('+ / − zoom price');
+  });
 });
 
 describe('first run', () => {
@@ -68,6 +101,7 @@ describe('first run', () => {
     expect(notes!.textContent).toContain('synthetic');
     expect(notes!.textContent).toContain('20 GB');
     expect(notes!.textContent).toContain('app-data folder');
+    expect(notes!.textContent).toContain('Settings, Data');
   });
 
   it('opens automatically when the tour was never acknowledged', () => {

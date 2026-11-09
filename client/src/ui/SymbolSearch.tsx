@@ -10,7 +10,7 @@
  *   (GET /api/movers), never delaying or moving a selectable symbol.
  * - Typing fuzzy-ranks the FULL curated universe (GET /api/universe, fetched once
  *   and matched locally, so it is instant and not a per-keystroke server round
- *   trip) — the substring-only server filter is no longer the ranking.
+ *   trip); the server's substring filter is not the ranking.
  * - The active row drives a live preview panel (price / % change / sparkline /
  *   honest capability chips) via GET /api/quote.
  * - Clicking the backdrop, pressing Escape, or selecting a row closes it;
@@ -36,9 +36,10 @@
  * venue reads `L2-SNAPSHOT` rather than borrowing a native feed's `L2`. A symbol
  * whose quote provider is unreachable shows "data unavailable".
  *
- * The parts live beside this file: data hooks in SymbolSearchHooks.ts, pure
- * helpers in SymbolSearchModel.ts, rows in SymbolSearchRows.tsx, the result list
- * in SymbolSearchResults.tsx, the preview in SymbolSearchPreview.tsx and the open
+ * The parts live beside this file: data hooks in SymbolSearchHooks.ts, the state
+ * hooks (rows, venue scope, keyboard, copy) in SymbolSearchState.ts, pure helpers
+ * in SymbolSearchModel.ts, rows in SymbolSearchRows.tsx, the result list in
+ * SymbolSearchResults.tsx, the preview in SymbolSearchPreview.tsx and the open
  * dialog, with its scope bar, in SymbolSearchPalette.tsx.
  */
 
@@ -47,27 +48,25 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
-  useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
 } from 'react';
 import { useT } from '../i18n/useT';
-import { formatNumber } from '../i18n/format';
 import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 
-import { ALL_VENUES, fuzzyRank, rankVenueOptions, venueOptions, type VenueOption } from './symbols';
 import { loadRecents, pushRecent, type RecentPick } from './recents';
 import { safeLocalStorage } from '../state/safeStorage';
 import { pushOverlay } from './overlayStack';
-import { useMoversWarmup, usePreviewQuotes, usePreviewWarmup, useScopeListing, useUniverse, useVenueCatalog, useWarmSymbols } from './SymbolSearchHooks';
-import { searchChord, venueText, type Row } from './SymbolSearchModel';
+import { useMoversWarmup, usePreviewQuotes, usePreviewWarmup, useUniverse, useWarmSymbols } from './SymbolSearchHooks';
+import { searchChord, type Row } from './SymbolSearchModel';
+import { paletteCopy, paletteKeyDown, scopeLabelText, useHighlightPreview, useSymbolRows, useVenueScope } from './SymbolSearchState';
 import { SymbolSearchPalette } from './SymbolSearchPalette';
 
 export interface SymbolSearchHandle {
   /** Open the palette (bound to the `/` and ⌘K/Ctrl-K global shortcuts). */
   open: () => void;
-  /** Back-compat alias used by the older `/`-focus wiring. */
+  /** Alias of `open`, for callers that focus the palette by name. */
   focus: () => void;
 }
 
@@ -75,6 +74,37 @@ interface SymbolSearchProps {
   /** The currently subscribed `market:symbol` (shown on the trigger). */
   current: string;
   onSelect: (market: string, symbol: string) => void;
+}
+
+/** The trigger in the top bar: the current symbol and the chord that opens the palette. */
+function SymbolSearchTrigger({ triggerRef, current, singleKeys, onOpen }: {
+  triggerRef: RefObject<HTMLButtonElement>;
+  current: string;
+  singleKeys: boolean;
+  onOpen: () => void;
+}): JSX.Element {
+  const t = useT();
+  return (
+    <button
+      type="button"
+      ref={triggerRef}
+      className="symsearch__trigger"
+      data-testid="symbol-search-trigger"
+      onClick={onOpen}
+      aria-label={t('search.openAria')}
+      title={singleKeys
+        ? t('search.openTitle', { chord: searchChord() })
+        : t('search.openTitleNoSlash', { chord: searchChord() })}
+    >
+      <span className="symsearch__icon" aria-hidden="true">
+        ⌕
+      </span>
+      <span className="symsearch__current">{current}</span>
+      <span className="symsearch__kbd" aria-hidden="true">
+        {searchChord()}
+      </span>
+    </button>
+  );
 }
 
 export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
@@ -96,20 +126,20 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
     const [recents, setRecents] = useState<RecentPick[]>(() => loadRecents(safeLocalStorage()));
     const universe = useUniverse(open);
     useWarmSymbols(current, recents, universe, previewQuotes);
-    // Venue scope: `all` = the bundled directory (instant), else a market string
-    // enumerated live. `venues === null` means /api/venues has not answered yet.
-    const venues = useVenueCatalog(open);
-    const [scope, setScope] = useState<string>(ALL_VENUES);
-    const [pickingVenue, setPickingVenue] = useState(false);
-    // Bumped on every venue pick (even a re-pick of the CURRENT scope) and by the
-    // retry control, so a failed listing is re-issuable without first switching
-    // away to another venue and back — `scope` alone would be a no-op dep there.
-    const [scopeAttempt, setScopeAttempt] = useState(0);
-    const { scopeRows, scopeState, forgetScope } = useScopeListing(open, scope, scopeAttempt);
-    useMoversWarmup(previewQuotes);
     const inputRef = useRef<HTMLInputElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
+    const venue = useVenueScope({ open, query, setQuery, setActive, inputRef });
+    const { pickingVenue, setPickingVenue, chooseVenue } = venue;
+    useMoversWarmup(previewQuotes);
+    const { rows, recentCount } = useSymbolRows({
+      scope: venue.scope, query, scopeRows: venue.scopeRows, universe, recents, previewQuotes, quoteRevision,
+    });
+    const count = pickingVenue ? venue.venueRows.length : rows.length;
+    const active = count ? Math.min(activeState, count - 1) : 0;
+    const activeRow = pickingVenue ? undefined : rows[active];
+    const activeVenue = pickingVenue ? venue.venueRows[active] : undefined;
+    const activeKey = useHighlightPreview({ open, pickingVenue, rows, active, activeRow, previewQuotes });
 
     const doOpen = useCallback(() => {
       setOpen(true);
@@ -118,7 +148,7 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
       // The venue LIST closes, but the chosen SCOPE persists across opens — a
       // trader working one venue should not re-pick it every ⌘K.
       setPickingVenue(false);
-    }, []);
+    }, [setPickingVenue]);
 
     useImperativeHandle(ref, () => ({ open: doOpen, focus: doOpen }), [doOpen]);
 
@@ -127,94 +157,6 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
       const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
       return () => window.clearTimeout(timer);
     }, [open]);
-
-    // The visible rows. Scoped to a venue: that venue's own listing, browsable on
-    // an empty query. Scoped to `all`: recent picks + the COMPLETE directory on
-    // an empty query, deduped. Movers only fill quote columns, keeping keyboard
-    // targets stable while either provider is slow or unavailable.
-    // Memoized: a quote landing bumps `quoteRevision` and rebuilds the rows; an
-    // unrelated render, such as a keystroke-free highlight move, reuses them.
-    const rows = useMemo<Row[]>(() => {
-      // The preview cache is read in place, so the revision is what tells this memo a quote changed.
-      void quoteRevision;
-      if (scope !== ALL_VENUES) {
-        return fuzzyRank(scopeRows ?? [], query, 120).map((entry) => ({
-          entry,
-          quote: previewQuotes.get(`${entry.market}:${entry.symbol}`),
-        }));
-      }
-      if (query.trim() === '') {
-        const entriesByKey = new Map(universe.map((entry) => [`${entry.market}:${entry.symbol}`, entry]));
-        const recentKeys = new Set(recents.map((r) => `${r.market}:${r.symbol}`));
-        const recentRows: Row[] = recents.map((r) => ({
-          entry: entriesByKey.get(`${r.market}:${r.symbol}`) ?? { market: r.market, symbol: r.symbol, capability: {} },
-          quote: previewQuotes.get(`${r.market}:${r.symbol}`),
-        }));
-        const directoryRows = universe
-          .filter((entry) => !recentKeys.has(`${entry.market}:${entry.symbol}`))
-          .map((entry) => ({ entry, quote: previewQuotes.get(`${entry.market}:${entry.symbol}`) }));
-        return [...recentRows, ...directoryRows];
-      }
-      return fuzzyRank(universe, query, 60).map((entry) => ({
-        entry,
-        quote: previewQuotes.get(`${entry.market}:${entry.symbol}`),
-      }));
-    }, [scope, scopeRows, query, universe, recents, previewQuotes, quoteRevision]);
-
-    // How many LEADING rows are the Recent section (0 unless the empty-query
-    // bundled-directory view) — the render uses it to place section headers.
-    const recentCount = useMemo(
-      () => (scope === ALL_VENUES && query.trim() === '' ? recents.length : 0),
-      [scope, query, recents.length],
-    );
-
-    // The venue list reuses the SAME input as its filter, so the palette stays one
-    // box with two modes rather than growing a second search field.
-    const allVenues = useMemo(() => venueOptions(venues ?? []), [venues]);
-    const venueRows = useMemo<VenueOption[]>(
-      () => (pickingVenue ? rankVenueOptions(allVenues, query) : []),
-      [pickingVenue, allVenues, query],
-    );
-    const scopeOption = useMemo(
-      () => allVenues.find((v) => v.market === scope),
-      [allVenues, scope],
-    );
-
-    const count = pickingVenue ? venueRows.length : rows.length;
-    const active = count ? Math.min(activeState, count - 1) : 0;
-    const activeRow = pickingVenue ? undefined : rows[active];
-    const activeVenue = pickingVenue ? venueRows[active] : undefined;
-
-    // The stable identity of the highlighted row. `rows` is rebuilt whenever the
-    // movers or the universe resolves, so a row OBJECT changes identity on every
-    // such recompute — an effect keyed on it would abort the in-flight quote every
-    // time. The preview follows `market:symbol`; the latest row is read through a ref.
-    const activeKey = !pickingVenue && activeRow
-      ? `${activeRow.entry.market}:${activeRow.entry.symbol}`
-      : null;
-    const activeRowRef = useRef<Row | undefined>(activeRow);
-    activeRowRef.current = activeRow;
-
-    // A cached preview is read during render, so selection never waits for an
-    // effect, debounce, or HTTP response. Missing/stale data refreshes through
-    // the bounded queue; moving away leaves useful requests alive in the cache.
-    useEffect(() => {
-      if (!open || !activeKey) return;
-      const row = activeRowRef.current;
-      if (row) previewQuotes.request(row.entry.market, row.entry.symbol, true);
-    }, [open, activeKey, previewQuotes]);
-
-    // The rows inside the highlight's prefetch window. The effect is keyed on their
-    // identities (`visibleKey`), not on `rows`: a quote landing rebuilds `rows` and
-    // must not re-issue every preview request.
-    const visibleRows = rows.slice(Math.max(0, active - 1), active + 4);
-    const visibleKey = visibleRows.map((row) => `${row.entry.market}:${row.entry.symbol}`).join('\n');
-    const visibleRowsRef = useRef<Row[]>(visibleRows);
-    visibleRowsRef.current = visibleRows;
-    useEffect(() => {
-      if (!open || pickingVenue) return;
-      for (const row of visibleRowsRef.current) previewQuotes.request(row.entry.market, row.entry.symbol);
-    }, [open, pickingVenue, visibleKey, previewQuotes]);
 
     const close = useCallback(() => {
       setOpen(false);
@@ -233,14 +175,7 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
         onSelect(row.entry.market, row.entry.symbol);
         // Record the pick as a recent (localStorage, max 5, deduped, MRU first)
         // so the next empty-query open surfaces it above the directory.
-        setRecents(
-          pushRecent(
-            safeLocalStorage(),
-            row.entry.market,
-            row.entry.symbol,
-            recents,
-          ),
-        );
+        setRecents(pushRecent(safeLocalStorage(), row.entry.market, row.entry.symbol, recents));
         // Route through close() so selecting restores focus to the trigger too —
         // otherwise the portal unmounts the focused input and focus drops to
         // <body>, losing a keyboard/screen-reader user's place.
@@ -249,69 +184,9 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
       [onSelect, close, recents],
     );
 
-    /** Adopt a venue scope and drop back to the symbol list. */
-    const chooseVenue = useCallback((market: string) => {
-      setScope(market);
-      // Count the pick itself, not just a CHANGE of scope: re-picking the venue
-      // you are already scoped to is the natural "try that again" gesture after a
-      // failed listing, and keying the effect on `scope` alone would ignore it.
-      setScopeAttempt((n) => n + 1);
-      setPickingVenue(false);
-      setQuery('');
-      setActive(0);
-      inputRef.current?.focus();
-    }, []);
-
-    /** Open or close the venue list, keeping the input focused. */
-    const togglePicker = useCallback(() => {
-      setPickingVenue((v) => !v);
-      setQuery('');
-      inputRef.current?.focus();
-    }, []);
-
-    /** Re-issue the current venue's listing (the failure state's retry). */
-    const retryScope = useCallback(() => {
-      // A retry must reach the network, not the remembered (possibly outage-era) answer.
-      forgetScope(scope);
-      setScopeAttempt((n) => n + 1);
-      inputRef.current?.focus();
-    }, [scope, forgetScope]);
-
-    const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
-      const last = count - 1;
-      // Base navigation on the CLAMPED `active`, not a stale raw index.
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (count) setActive(active >= last ? 0 : active + 1);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (count) setActive(active <= 0 ? last : active - 1);
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        if (pickingVenue) {
-          if (activeVenue) chooseVenue(activeVenue.market);
-        } else {
-          commit(rows[active]);
-        }
-      } else if (e.key === 'Home') {
-        // Jump to the first row (the list is short, but scanning it is not).
-        e.preventDefault();
-        if (count) setActive(0);
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        if (count) setActive(last);
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        // Escape out of the venue list first — one keystroke should not throw
-        // away the whole palette just because a sub-list is open.
-        if (pickingVenue) {
-          setPickingVenue(false);
-          setQuery('');
-        } else {
-          close();
-        }
-      }
-    };
+    const onKeyDown = paletteKeyDown({
+      count, active, setActive, pickingVenue, setPickingVenue, setQuery, rows, activeVenue, chooseVenue, commit, close,
+    });
 
     // Reset the highlight to the top whenever the query or the mode changes.
     // Shrinking result sets are handled by the render-time clamp on `active`, not
@@ -324,57 +199,22 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
     }, [active, open]);
 
     const shownPreview = activeKey ? previewQuotes.get(activeKey) : undefined;
-    const scopeLabel = scopeOption ? venueText(t, scopeOption) : scope;
-    const scopeDepth = scopeOption?.depth ? scopeOption.depth.toUpperCase() : '';
-    const placeholder = pickingVenue
-      ? t('search.placeholderVenue')
-      : scope === ALL_VENUES
-        ? t('search.placeholderAll')
-        : t('search.placeholderScope', { scope });
-
-    /** The honest one-liner for the current scope, beside the venue button. */
-    const scopeNote = pickingVenue
-      ? venues === null
-        ? t('search.readingVenues')
-        : t('search.venuesOf', { count: formatNumber(venueRows.length), total: formatNumber(allVenues.length) })
-      : scope === ALL_VENUES
-        ? previewWarmup && previewWarmup.total > 0
-          ? t(previewWarmup.warming ? 'search.symbolsPreparing' : 'search.symbolsPreviewsReady', {
-            count: formatNumber(universe.length),
-            ready: formatNumber(previewWarmup.ready),
-            total: formatNumber(previewWarmup.total),
-          })
-          : t('search.symbolsPricesSeparate', { count: formatNumber(universe.length) })
-        : scopeState === 'loading'
-          ? t('search.listing')
-          : scopeState === 'failed'
-            ? t('search.listingFailed')
-            : scopeState === 'empty'
-              ? t('search.noListing')
-              : t('search.symbolCount', { count: formatNumber(scopeRows?.length ?? 0) });
+    const { placeholder, scopeNote } = paletteCopy(t, {
+      pickingVenue,
+      venuesLoaded: venue.venues !== null,
+      venueRowCount: venue.venueRows.length,
+      venueTotal: venue.allVenues.length,
+      scope: venue.scope,
+      scopeState: venue.scopeState,
+      scopeRowCount: venue.scopeRows?.length ?? 0,
+      universeCount: universe.length,
+      previewWarmup,
+    });
+    const scopeDepth = venue.scopeOption?.depth ? venue.scopeOption.depth.toUpperCase() : '';
 
     return (
       <>
-        <button
-          type="button"
-          ref={triggerRef}
-          className="symsearch__trigger"
-          data-testid="symbol-search-trigger"
-          onClick={doOpen}
-          aria-label={t('search.openAria')}
-          title={singleKeys
-            ? t('search.openTitle', { chord: searchChord() })
-            : t('search.openTitleNoSlash', { chord: searchChord() })}
-        >
-          <span className="symsearch__icon" aria-hidden="true">
-            ⌕
-          </span>
-          <span className="symsearch__current">{current}</span>
-          <span className="symsearch__kbd" aria-hidden="true">
-            {searchChord()}
-          </span>
-        </button>
-
+        <SymbolSearchTrigger triggerRef={triggerRef} current={current} singleKeys={singleKeys} onOpen={doOpen} />
         {open && (
           <SymbolSearchPalette
             query={query}
@@ -388,21 +228,21 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
             onHover={setActive}
             onClose={close}
             pickingVenue={pickingVenue}
-            onTogglePicker={togglePicker}
-            scope={scope}
-            scopeLabel={scopeLabel}
+            onTogglePicker={venue.togglePicker}
+            scope={venue.scope}
+            scopeLabel={scopeLabelText(t, venue.scopeOption, venue.scope)}
             scopeDepth={scopeDepth}
             scopeNote={scopeNote}
-            venuesLoaded={venues !== null}
-            venueRows={venueRows}
-            venueTotal={allVenues.length}
+            venuesLoaded={venue.venues !== null}
+            venueRows={venue.venueRows}
+            venueTotal={venue.allVenues.length}
             onChooseVenue={chooseVenue}
             rows={rows}
             recentCount={recentCount}
-            scopeState={scopeState}
-            scopeRowCount={scopeRows?.length ?? 0}
+            scopeState={venue.scopeState}
+            scopeRowCount={venue.scopeRows?.length ?? 0}
             onCommit={commit}
-            onRetry={retryScope}
+            onRetry={venue.retryScope}
             activeVenue={activeVenue}
             activeRow={activeRow}
             shownPreview={shownPreview}

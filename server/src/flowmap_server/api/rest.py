@@ -111,10 +111,10 @@ async def health(request: Request) -> dict[str, object]:
     """Liveness, plus the operational snapshot for an authorized caller.
 
     Without the session token the answer is liveness only: ``status``,
-    ``version``, ``protocol_version``, ``uptime_s`` and ``recording_enabled``
-    (the one flag the browser reads before it can explain an empty replay
-    list). Any loopback-origin page can reach this route, so per-session
-    symbols, session ids, stats and config errors are withheld from it.
+    ``version``, ``protocol_version`` and ``uptime_s``. Any loopback-origin page
+    can reach this route, so everything else is withheld from it: the feed
+    rows, session ids, stats, config errors, ``recording_enabled`` and
+    ``active_sessions``.
 
     With the token, the body is the full operational snapshot (v3): one row
     per ACTIVE session with its feed kind and live/degraded state, and, when
@@ -135,7 +135,6 @@ async def health(request: Request) -> dict[str, object]:
             "version": __version__,
             "protocol_version": wire.PROTO_VER,
             "uptime_s": round(uptime_s, 3),
-            "recording_enabled": recording_enabled,
         }
     manager = getattr(request.app.state, "manager", None)
     feeds: list[dict[str, str]] = []

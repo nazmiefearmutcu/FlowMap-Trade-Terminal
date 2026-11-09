@@ -9,9 +9,15 @@
  * the connection's own reconnect path. `role="status"` + `aria-live="polite"`
  * so the transition into (and out of) the state is announced.
  *
- * Two terminal states replace it, with `role="alert"` and no retry control:
- * a wire-version mismatch (the connection parks) and a subscription the server
- * refused for good. Retrying cannot fix either, so the banner says so.
+ * Terminal states replace it, with `role="alert"`: a wire-version mismatch (the
+ * connection parks) and a subscription the server refused for good. Retrying
+ * cannot fix either, so the banner says so and offers no retry control. The one
+ * exception is a subscribe the server timed out: that is transient, so the
+ * banner offers the retry while the socket stays closed.
+ *
+ * While the chart startup gate covers the stage (`covered`), the banner renders
+ * nothing: the gate carries the same retry action, and a retry button under an
+ * opaque layer would be a focus stop the user cannot see.
  */
 
 import { t } from '../i18n';
@@ -21,6 +27,14 @@ import { useFlowMapStore } from '../state/store';
 
 /** Attempts after which the banner says the reconnect is failing, not merely retrying. */
 export const ESCALATE_AFTER_ATTEMPTS = 8;
+
+/** The refusal reason the server sends when its subscribe deadline fires (ws.py). */
+export const SUBSCRIBE_TIMEOUT_REFUSAL = 'subscribe_timeout';
+
+export interface ReconnectBannerProps {
+  /** The chart startup gate covers the stage; the gate offers the retry instead. */
+  covered?: boolean;
+}
 
 /**
  * Short human text for how the last socket closed. Pure — unit-tested. An
@@ -52,7 +66,7 @@ export function closeReasonText(close: CloseInfo | null): string {
   }
 }
 
-export function ReconnectBanner(): JSX.Element | null {
+export function ReconnectBanner({ covered = false }: ReconnectBannerProps): JSX.Element | null {
   useT(); // re-render on locale change
   const status = useFlowMapStore((s) => s.status);
   const subscription = useFlowMapStore((s) => s.subscription);
@@ -61,8 +75,9 @@ export function ReconnectBanner(): JSX.Element | null {
   const retryNow = useFlowMapStore((s) => s.retryNow);
   const protocolMismatch = useFlowMapStore((s) => s.protocolMismatch);
   const refusal = useFlowMapStore((s) => s.refusal);
+  if (covered) return null;
   // Terminal states come first: retrying cannot fix a wire-version mismatch or
-  // a refused subscription, so neither shows the retry control or reconnect copy.
+  // a refused subscription, so neither shows the reconnect copy.
   if (protocolMismatch) {
     return (
       <div className="reconnect-banner reconnect-banner--fatal" role="alert" data-testid="protocol-mismatch-banner">
@@ -72,12 +87,28 @@ export function ReconnectBanner(): JSX.Element | null {
       </div>
     );
   }
-  if (refusal) {
+  // A timed-out subscribe is transient: a fresh subscribe usually succeeds. The
+  // refusal stays on the store after a retry, so it shows only while the socket
+  // is closed; a retry in flight shows the reconnect copy, and a live socket
+  // shows nothing.
+  const timedOut = refusal?.reason === SUBSCRIBE_TIMEOUT_REFUSAL;
+  if (refusal && (!timedOut || status === 'closed')) {
     // The server's refusal reason is a protocol token, never user copy, so the
     // banner states the refusal and the way out without repeating the token.
     return (
       <div className="reconnect-banner reconnect-banner--fatal" role="alert" data-testid="refusal-banner">
-        <span className="reconnect-banner__text">{t('banner.refused')}</span>
+        <span className="reconnect-banner__text">{t(timedOut ? 'banner.subscribeTimeout' : 'banner.refused')}</span>
+        {timedOut && (
+          <button
+            type="button"
+            className="reconnect-banner__retry"
+            onClick={retryNow}
+            data-testid="reconnect-retry"
+            title={t('banner.retryNowHint')}
+          >
+            {t('banner.retryNow')}
+          </button>
+        )}
       </div>
     );
   }

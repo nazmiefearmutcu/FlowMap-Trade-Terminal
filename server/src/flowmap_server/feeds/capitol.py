@@ -151,9 +151,9 @@ class CapitolTradesWatcher:
             party = str(item.get("party") or "").strip()
             state = str(item.get("state") or "").strip()
 
-            headline = f"🏛️ {rep or 'Representative unavailable'} {ttype.upper() or 'TRANSACTION'}: {ticker}"
-            if amount_str:
-                headline += f" ({amount_str})"
+            # No English prose on the wire: the client builds the heading from
+            # kind, symbol and the structured detail (politician, type, amount_range).
+            headline = ""
             detail = json.dumps({
                 "politician": rep or None,
                 "chamber": "House",

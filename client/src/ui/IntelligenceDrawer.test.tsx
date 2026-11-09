@@ -230,8 +230,24 @@ describe('IntelligenceDrawer', () => {
     try {
       const { container } = render(<IntelligenceDrawer activeSymbol="NVDA" onClose={vi.fn()} />);
       const badge = container.querySelector('.macro-regime-badge')?.textContent ?? '';
-      expect(badge).toContain('YÜKSEK STRES (SEZGİSEL)');
+      expect(badge).toContain('YÜKSELMİŞ STRES (SEZGİSEL)');
       expect(badge).not.toContain('ELEVATED');
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('shows an UNKNOWN stress regime as unavailable, never as the raw token', () => {
+    const store = useIntelligenceStore.getState();
+    store.setActiveTab('FLOW');
+    store.ingestMacro({ type: MsgType.MACRO_STRESS, ts_ns: 1n, sofr: 5.32, hy_spread: 3.42, yield_10y2y: -0.18, stress_score: 0.4, status: 'SOMETHING_NEW' });
+    setLocale('tr');
+    try {
+      const { container } = render(<IntelligenceDrawer activeSymbol="NVDA" onClose={vi.fn()} />);
+      const badge = container.querySelector('.macro-regime-badge');
+      expect(badge?.textContent).toContain(t('topbar.unavailable'));
+      expect(badge?.textContent).not.toContain('UNKNOWN');
+      expect(badge?.getAttribute('title')).toBeNull();
     } finally {
       setLocale('en');
     }
@@ -265,8 +281,10 @@ describe('IntelligenceDrawer', () => {
     const { container } = render(<IntelligenceDrawer activeSymbol="NVDA" onClose={vi.fn()} />);
     const received = container.querySelector('[data-testid="intel-received-events"]');
     expect(received?.textContent).toContain('unknown_kind');
-    expect(received?.textContent).toContain('Plain source detail');
+    expect(received?.textContent).toContain('Received headline');
     expect(received?.textContent).toContain('Received source');
+    // The raw detail is never printed: unknown kinds show their token and headline only.
+    expect(received?.textContent).not.toContain('Plain source detail');
     expect(container.textContent).not.toContain('Chief Financial Officer');
     expect(container.querySelector('.intel-card--diff')).toBeNull();
   });

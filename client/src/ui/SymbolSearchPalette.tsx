@@ -8,10 +8,10 @@ import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useT } from '../i18n/useT';
-import { trapFocusKeyDown, capabilityChipLabel, type Row, type ScopeState } from './SymbolSearchModel';
+import { trapFocusKeyDown, type Row, type ScopeState } from './SymbolSearchModel';
 import { PreviewPane } from './SymbolSearchPreview';
 import { SymbolSearchResults } from './SymbolSearchResults';
-import { capabilityChipClass, capabilityChipTitle, type VenueOption } from './symbols';
+import { capabilityChipClass, capabilityChipLabel, capabilityChipTitle, type VenueOption } from './symbols';
 import type { PreviewQuote } from './previewQuotes';
 
 export interface SymbolSearchPaletteProps {

@@ -104,21 +104,39 @@ export interface MacroStressData {
   /** Preserve the received status instead of inferring a normal regime. */
   status?: string;
   stressScore?: number;
+  /** Observation date (YYYY-MM-DD) per series: the day each reading was taken, not fetched. */
+  asOf?: Readonly<Record<string, string>>;
+  /** "ok", or the reason a series has no reading, per series. */
+  sourceStatus?: Readonly<Record<string, string>>;
   updatedAt: number;
 }
 
 export type IntelTab = 'DOCS' | 'GOV' | 'FLOW' | 'GEO';
 
-/** The wire record is retained even when no supported structured detail exists. */
+/**
+ * The wire record is retained even when no supported structured detail exists.
+ * `headline` and `detail` are the server's own text and are a fallback only: a
+ * card is composed from `kind`, `symbol`, `amountUsd` and `fields` through t().
+ */
 export interface IntelligenceEvent {
   id: string;
   symbol: string;
   kind: string;
   headline: string;
   detail: string;
+  /** The structured fields of `detail` (a JSON object), or empty for plain text. */
+  fields: Readonly<Record<string, unknown>>;
   source: string;
   tsNs: bigint;
   amountUsd?: number;
+}
+
+/** Kinds the client has copy for. Any other kind token is shown as-is, never translated. */
+const INTEL_KINDS: ReadonlySet<string> = new Set(['capitol', 'defense_contract', 'clinical', 'sec_diff', 'jet_flight']);
+
+/** The i18n key naming an intelligence kind, or null when this build has no copy for the kind. */
+export function intelKindKey(kind: string): string | null {
+  return INTEL_KINDS.has(kind) ? `intel.kind.${kind}` : null;
 }
 
 export interface IntelligenceState {
@@ -495,7 +513,99 @@ function detailObject(detail: string): Record<string, unknown> {
   }
 }
 
+const OBSERVATION_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The per-series observation dates that are real calendar-style dates; anything else is dropped. */
+function observationDates(dates: Record<string, string>): Record<string, string> {
+  const kept: Record<string, string> = {};
+  for (const [series, date] of Object.entries(dates)) {
+    if (OBSERVATION_DATE.test(date)) kept[series] = date;
+  }
+  return kept;
+}
+
+type IntelSet = (partial: Partial<IntelligenceState> | ((state: IntelligenceState) => Partial<IntelligenceState>)) => void;
+
 let nextEventId = 0;
+
+/** Fold one received market-intelligence record into the store (kind-specific lists and the event feed). */
+function receiveIntel(set: IntelSet, intel: MarketIntelligence): void {
+  if (!intel || !text(intel.symbol) || !text(intel.kind) || typeof intel.headline !== 'string' ||
+    typeof intel.detail !== 'string' || typeof intel.source !== 'string' ||
+    typeof intel.ts_ns !== 'bigint' || intel.ts_ns < 0n ||
+    (intel.amount_usd != null && (!finite(intel.amount_usd) || intel.amount_usd < 0))) return;
+  const symbol = intel.symbol.trim().toUpperCase();
+  const id = `received-${intel.ts_ns}-${++nextEventId}`;
+  const payload = detailObject(intel.detail);
+  const event: IntelligenceEvent = {
+    id, symbol, kind: intel.kind, headline: intel.headline, detail: intel.detail, fields: payload,
+    source: intel.source, tsNs: intel.ts_ns,
+    ...(finite(intel.amount_usd) ? { amountUsd: intel.amount_usd } : {}),
+  };
+  set((s) => ({ events: [event, ...s.events].slice(0, 100) }));
+  if (intel.kind === 'sec_diff') {
+    set((s) => ({
+      secDiffs: [
+        {
+          id, symbol,
+          filingType: text(payload.filing_type),
+          filedDate: text(payload.filed_date),
+          title: text(payload.title) ?? intel.headline,
+          addedLines: strings(payload.added_lines),
+          removedLines: strings(payload.removed_lines),
+          criticalTriggers: strings(payload.critical_triggers),
+        },
+        ...s.secDiffs,
+      ].slice(0, 30),
+    }));
+  } else if (intel.kind === 'defense_contract') {
+    set((s) => ({
+      contracts: [
+        {
+          id, symbol,
+          awardId: text(payload.award_id),
+          recipient: text(payload.recipient),
+          agency: text(payload.agency),
+          amount: event.amountUsd,
+          date: text(payload.date),
+          description: text(payload.description) ?? intel.headline,
+        },
+        ...s.contracts,
+      ].slice(0, 30),
+    }));
+  } else if (intel.kind === 'capitol') {
+    set((s) => ({
+      capitolTrades: [
+        {
+          id, symbol,
+          politician: text(payload.politician),
+          chamber: payload.chamber === 'Senate' ? 'Senate' as const : payload.chamber === 'House' ? 'House' as const : undefined,
+          transactionType: payload.type === 'Sale' ? 'Sale' as const : payload.type === 'Purchase' ? 'Purchase' as const : undefined,
+          amountRange: text(payload.amount_range),
+          committee: text(payload.committee),
+          date: text(payload.date),
+        },
+        ...s.capitolTrades,
+      ].slice(0, 30),
+    }));
+  } else if (intel.kind === 'jet_flight') {
+    set((s) => ({
+      corporateJets: [
+        {
+          id, symbol,
+          tailNumber: text(payload.tail_number),
+          icao24: text(payload.icao24),
+          origin: text(payload.origin),
+          destination: text(payload.destination),
+          hubName: text(payload.hub_name),
+          isMaHub: typeof payload.is_ma_hub === 'boolean' ? payload.is_ma_hub : undefined,
+          date: text(payload.date),
+        },
+        ...s.corporateJets,
+      ].slice(0, 30),
+    }));
+  }
+}
 
 export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   drawerOpen: false,
@@ -563,89 +673,14 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
               : status === 'NORMAL' || status === 'NORMAL_LIQUIDITY' ? 'NORMAL' : 'UNKNOWN',
         status: update.status,
         stressScore: update.stress_score,
+        ...(update.as_of ? { asOf: observationDates(update.as_of) } : {}),
+        ...(update.source_status ? { sourceStatus: { ...update.source_status } } : {}),
         updatedAt: Date.now(),
       },
     });
   },
 
-  ingestIntel: (intel) => {
-    if (!intel || !text(intel.symbol) || !text(intel.kind) || typeof intel.headline !== 'string' ||
-      typeof intel.detail !== 'string' || typeof intel.source !== 'string' ||
-      typeof intel.ts_ns !== 'bigint' || intel.ts_ns < 0n ||
-      (intel.amount_usd != null && (!finite(intel.amount_usd) || intel.amount_usd < 0))) return;
-    const symbol = intel.symbol.trim().toUpperCase();
-    const id = `received-${intel.ts_ns}-${++nextEventId}`;
-    const payload = detailObject(intel.detail);
-    const event: IntelligenceEvent = {
-      id, symbol, kind: intel.kind, headline: intel.headline, detail: intel.detail,
-      source: intel.source, tsNs: intel.ts_ns,
-      ...(finite(intel.amount_usd) ? { amountUsd: intel.amount_usd } : {}),
-    };
-    set((s) => ({ events: [event, ...s.events].slice(0, 100) }));
-    if (intel.kind === 'sec_diff') {
-      set((s) => ({
-        secDiffs: [
-          {
-            id, symbol,
-            filingType: text(payload.filing_type),
-            filedDate: text(payload.filed_date),
-            title: text(payload.title) ?? intel.headline,
-            addedLines: strings(payload.added_lines),
-            removedLines: strings(payload.removed_lines),
-            criticalTriggers: strings(payload.critical_triggers),
-          },
-          ...s.secDiffs,
-        ].slice(0, 30),
-      }));
-    } else if (intel.kind === 'defense_contract') {
-      set((s) => ({
-        contracts: [
-          {
-            id, symbol,
-            awardId: text(payload.award_id),
-            recipient: text(payload.recipient),
-            agency: text(payload.agency),
-            amount: event.amountUsd,
-            date: text(payload.date),
-            description: text(payload.description) ?? intel.headline,
-          },
-          ...s.contracts,
-        ].slice(0, 30),
-      }));
-    } else if (intel.kind === 'capitol') {
-      set((s) => ({
-        capitolTrades: [
-          {
-            id, symbol,
-            politician: text(payload.politician),
-            chamber: payload.chamber === 'Senate' ? 'Senate' as const : payload.chamber === 'House' ? 'House' as const : undefined,
-            transactionType: payload.type === 'Sale' ? 'Sale' as const : payload.type === 'Purchase' ? 'Purchase' as const : undefined,
-            amountRange: text(payload.amount_range),
-            committee: text(payload.committee),
-            date: text(payload.date),
-          },
-          ...s.capitolTrades,
-        ].slice(0, 30),
-      }));
-    } else if (intel.kind === 'jet_flight') {
-      set((s) => ({
-        corporateJets: [
-          {
-            id, symbol,
-            tailNumber: text(payload.tail_number),
-            icao24: text(payload.icao24),
-            origin: text(payload.origin),
-            destination: text(payload.destination),
-            hubName: text(payload.hub_name),
-            isMaHub: typeof payload.is_ma_hub === 'boolean' ? payload.is_ma_hub : undefined,
-            date: text(payload.date),
-          },
-          ...s.corporateJets,
-        ].slice(0, 30),
-      }));
-    }
-  },
-
+  ingestIntel: (intel) => receiveIntel(set, intel),
   handleStreamMsg: (msg: StreamMsg) => {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === MsgType.GEX_UPDATE) {

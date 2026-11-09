@@ -1,10 +1,9 @@
 /**
  * PNG snapshot export (top bar) — Bookmap-class composition.
  *
- * The old export was the raw GL bitmap only —
- * no price line, no axes, no last-price pill, no legend, no honesty badges, so
- * a shared artifact carried neither a price/time reference nor its fidelity
- * caveats. This module now composes the PNG from ALL the exportable layers:
+ * The export composes the PNG from ALL the exportable layers, so a shared image
+ * carries its price/time reference and its fidelity caveats, not the raw GL bitmap
+ * alone:
  *
  *   GL heat canvas  +  over-heatmap 2D ink (price line / gridlines / badges)
  *   + price gutter  +  time gutter  +  price-family legend chip

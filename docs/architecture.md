@@ -9,7 +9,7 @@ FlowMap is three processes (or two, when you run from source without the desktop
    `window.__FLOWMAP_SESSION_TOKEN__` into the webview, and applies the webview CSP from
    `app/src-tauri/tauri.conf.json`. It stops the sidecar on quit: it closes the sidecar's stdin
    (the server exits through its normal path, flushing its recorder, because the shell sets
-   `FLOWMAP_EXIT_ON_STDIN_EOF=1`), sends SIGTERM on Unix, and kills it after 12 s. If the shell
+   `FLOWMAP_EXIT_ON_STDIN_EOF=1`), sends SIGTERM on Unix, and kills it after 12 s (the server's 11 s shutdown flush budget plus 1 s). If the shell
    crashes, the sidecar stops too: a parent-death signal on Linux, the same stdin EOF on macOS, and a
    kill-on-close Job Object on Windows. See [app/README.md](../app/README.md).
 2. **Client** (`client/`) — React 18 + TypeScript + WebGL2. In dev, vite serves it on `:5173`;
@@ -49,7 +49,7 @@ with a specific crypto venue enumerates that venue live, behind a cache. The tab
 
 | Route | Purpose | Source |
 |---|---|---|
-| `GET /api/health` | Liveness probe, exempt from the session token: `status`, `version`, `protocol_version` and `uptime_s`. The operational snapshot (recording enabled, active sessions with feed kind and live/degraded state, `stats` and `config_error`) is returned only with the token (see below) | `api/rest.py` |
+| `GET /api/health` | Liveness probe, exempt from the session token: `status`, `version`, `protocol_version`, `uptime_s` and `recording_enabled`. The operational snapshot (active sessions with feed kind and live/degraded state, `stats` and `config_error`) is returned only with the token (see below) | `api/rest.py` |
 | `GET /api/symbols` | Merged symbol directory, filtered by `?q=` substring | `api/rest.py` |
 | `GET /api/venues` | Subscribable venue list | `api/discovery.py` |
 | `GET /api/universe` | Full bundled universe (same source as `/api/symbols`) | `api/discovery.py` |
@@ -275,3 +275,15 @@ servicing pings and live columns. Parquet flushes are small, hourly, and atomic-
 On the client, the renderer is a single WebGL2 canvas driven by one `requestAnimationFrame`
 loop; decoded columns are uploaded once as textures with SUM-mips, so pan/zoom is a uniform
 update and its cost does not grow with history depth.
+
+## Client memory budget
+
+The client holds recent depth in three stores. Each size follows from the grid geometry and the column target, not from how long the session has run.
+
+| Store | Where | Size |
+|---|---|---|
+| Full-resolution ring | GPU, an `RG32F` texture array (`client/src/gl/tileRing.ts`) | `capacity × rows × 8` bytes. The capacity is `ringLayersFor(target, layers) × 256` columns (`client/src/gl/render/gpuLifecycle.ts`). The target defaults to 6144 columns, 24 layers (`DEFAULT_CAPACITY_COLS` in `client/src/gl/renderer.ts`), and the device's array-layer limit can lower it |
+| SUM mip chains | GPU, extra levels beside the ring (`client/src/gl/mips.ts`) | The 4×4 SUM chain adds 1/16 of the ring at level 1 and 1/256 at level 2. The row-only chain adds 1/4 of the ring |
+| CPU column cache | JavaScript heap, `Float32Array` pages (`client/src/gl/columnCache.ts`) | Sized to the ring's column capacity. Pages of 256 slots, allocated on the first write that touches them. A fully resident pool is `ceil(slots / 256) × 256 × rows × 8` bytes |
+
+As an example, the default 6144 columns with the 4096-row production grid give a 192 MiB ring (6144 × 4096 × 8 bytes) and a fully resident CPU pool of the same size. At 2048 rows both are 96 MiB. The mip chains come on top of the ring. The Playwright performance spec bounds ring memory at 300 MB (see [development.md](development.md)). When the target or the row count changes, recompute these figures from the formulas above.

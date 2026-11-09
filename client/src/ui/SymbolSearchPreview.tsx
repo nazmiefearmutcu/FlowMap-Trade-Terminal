@@ -7,9 +7,9 @@
 import { formatDateTime } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import type { PreviewQuote } from './previewQuotes';
-import { capabilityChipClass, capabilityChipTitle, capabilityChips, marketGroup, ALL_VENUES, type VenueOption } from './symbols';
+import { capabilityChipClass, capabilityChipLabel, capabilityChipTitle, capabilityChips, marketGroup, ALL_VENUES, type VenueOption } from './symbols';
 import { fmtPct, fmtPrice, sparkDirection, sparkPath } from './spark';
-import { capabilityChipLabel, groupText, venueText, type Row } from './SymbolSearchModel';
+import { groupText, venueText, type Row } from './SymbolSearchModel';
 
 interface PreviewPaneProps {
   pickingVenue: boolean;

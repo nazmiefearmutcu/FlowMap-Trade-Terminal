@@ -9,7 +9,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { sidecarFetch } from '../net/serverBase';
 import { safeLocalStorage } from '../state/safeStorage';
 import type { PreviewQuote } from './previewQuotes';
-import { ALL_VENUES, type SymbolEntry, type Translate } from './symbols';
+import { ALL_VENUES, type SymbolEntry } from './symbols';
 
 /** Translation keys for the venue group chips (crypto / equity / sim / all). */
 const GROUP_KEY: Record<string, string> = {
@@ -28,27 +28,6 @@ export function groupText(t: (key: string) => string, group: string): string {
 /** The "all venues" scope is the one venue whose label is not a market id. */
 export function venueText(t: (key: string) => string, venue: { market: string; label: string }): string {
   return venue.market === ALL_VENUES ? t('search.allMarkets') : venue.label;
-}
-
-/** Visible chip text for the English tokens that have a Turkish reading. */
-const CHIP_LABEL_KEY: Record<string, string> = {
-  'RECORDED DENSITY': 'chip.recordedDensity',
-  'SIDE INFERRED': 'chip.sideInferred',
-  'SIDE NA': 'chip.sideNone',
-  'TAPE POLL': 'chip.tapePoll',
-  'N/A': 'chip.none',
-  UNKNOWN: 'chip.unknown',
-};
-
-/**
- * The text a capability chip shows. The English token is the chip's React key and
- * its CSS class; only the visible words are translated, so a Turkish session does
- * not read "RECORDED DENSITY" or "SIDE INFERRED" in English. Tokens without a
- * translation (L2, L1, SYNTH, SIM, ...) show as they are.
- */
-export function capabilityChipLabel(chip: string, t: Translate): string {
-  const key = CHIP_LABEL_KEY[chip];
-  return key === undefined ? chip : t(key);
 }
 
 /** Live venue enumeration is uncapped-ish; the server clamps `limit` at 1000. */

@@ -163,18 +163,22 @@ describe('PriceAxis chip', () => {
   // --- Born-blank gutter self-heal (no window resize) -----------------
 
   interface HealRenderer extends FakeRenderer {
+    devicePixelRatio: number;
     attachOverlaySurfaces: ReturnType<typeof vi.fn>;
-    overlays: {
-      timeAxis: { canvas: HTMLCanvasElement };
-      syncGutters: ReturnType<typeof vi.fn>;
-    };
+    timeCanvas: HTMLCanvasElement;
+    timeAxisCanvas: () => HTMLCanvasElement;
+    syncGutters: ReturnType<typeof vi.fn>;
   }
 
-  function healRenderer(): HealRenderer {
+  function healRenderer(devicePixelRatio = 1): HealRenderer {
+    const timeCanvas = document.createElement('canvas');
     return {
       ...fakeRenderer('fit'),
+      devicePixelRatio,
       attachOverlaySurfaces: vi.fn(),
-      overlays: { timeAxis: { canvas: document.createElement('canvas') }, syncGutters: vi.fn() },
+      timeCanvas,
+      timeAxisCanvas: () => timeCanvas,
+      syncGutters: vi.fn(),
     };
   }
 
@@ -196,12 +200,12 @@ describe('PriceAxis chip', () => {
 
     poll();
 
-    expect(r.attachOverlaySurfaces).toHaveBeenCalledWith(canvas, r.overlays.timeAxis.canvas);
-    expect(r.overlays.syncGutters).toHaveBeenCalledWith(1);
+    expect(r.attachOverlaySurfaces).toHaveBeenCalledWith(canvas, r.timeCanvas);
+    expect(r.syncGutters).toHaveBeenCalledWith(1);
   });
 
   it('sizes the gutter with the renderer cached DPR, not the window ratio', () => {
-    const r = { ...healRenderer(), dpr: 2 };
+    const r = healRenderer(2);
     const { container } = render(
       <PriceAxis canvasRef={{ current: null }} rendererRef={{ current: r as unknown as Renderer }} />,
     );
@@ -214,7 +218,7 @@ describe('PriceAxis chip', () => {
 
     poll();
 
-    expect(r.overlays.syncGutters).toHaveBeenCalledWith(2);
+    expect(r.syncGutters).toHaveBeenCalledWith(2);
   });
 
   it('names the auto-scale button with its visible mode word', () => {
@@ -237,7 +241,7 @@ describe('PriceAxis chip', () => {
     poll();
 
     expect(r.attachOverlaySurfaces).not.toHaveBeenCalled();
-    expect(r.overlays.syncGutters).not.toHaveBeenCalled();
+    expect(r.syncGutters).not.toHaveBeenCalled();
   });
 });
 

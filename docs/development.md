@@ -166,8 +166,8 @@ Prerequisites and behavior (from `client/playwright.config.ts`):
   The blocking checks are the console-error check, the real-input check, the history-independence ratio of
   draw cost (the 10k-column p10 draw at most 2.0 times the 200-column p10, plus 1.5 ms) and the 300 MB ring
   memory bound.
-- The replay transport's positive path needs a recording, which the default e2e server does not
-  make, so that spec is one of the counted skips.
+- The replay transport's positive path needs a recording. The `replay` Playwright project starts its own
+  recording-enabled server against a temporary data folder and runs that spec; the default project skips it.
 - vite is pinned to `--host 127.0.0.1` (vite otherwise binds `[::1]` only, which the IPv4
   readiness URL cannot reach).
 - Headless WebGL2 works: Chromium is launched with ANGLE→SwiftShader

@@ -60,7 +60,7 @@ Before opening a PR, please confirm:
   any stylesheet you touch.
 - [ ] **TypeScript clean.** `npx tsc -b` in `client/` reports no errors.
 - [ ] **The honest-data rule holds.** Never render, badge, or replay data that the feed did not
-  actually deliver: capability badges (`L2`/`L1`/`SYNTH`, `TAPE TICK`/`TAPE POLL`) must reflect
+  actually deliver: capability badges (`L2`/`L2-SNAPSHOT`/`L1`/`SYNTH`, `TAPE TICK`/`TAPE POLL`) must reflect
   what the active stream provides; synthetic depth stays in its own ramp with its own badge;
   a replay that would show a stale or missing recording is refused, not faked. If your change
   touches this, say so explicitly in the PR description.
@@ -72,9 +72,10 @@ Before opening a PR, please confirm:
   security-adjacent).
 - [ ] **No new binary assets** in a PR that doesn't explicitly need them.
 
-CI runs lint, both test suites and the full Playwright e2e suite (`.github/workflows/ci.yml`) on every
-push and on every PR to `main`, including changes that touch only Markdown or `docs/`; the
-release-tooling job checks the documentation links.
+CI runs lint, both test suites and the full Playwright e2e suite on Ubuntu and on Windows
+(`.github/workflows/ci.yml`, jobs `e2e` and `e2e-windows`) on every push and on every PR to
+`main`, including changes that touch only Markdown or `docs/`; the release-tooling job checks
+the documentation links.
 A maintainer will ask for rebases rather than merge commits if the branch has drifted.
 
 ## Reporting bugs and vulnerabilities

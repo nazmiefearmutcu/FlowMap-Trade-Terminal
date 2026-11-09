@@ -70,9 +70,10 @@
   background: var(--bg-2);
 }
 
+/* Opaque ink, not opacity: a faded hint fell below AA on the light grounds. */
 .intel-tab__hint {
   font-size: var(--fs-2xs);
-  opacity: 0.75;
+  color: var(--text-3);
   margin-top: 1px;
 }
 

@@ -210,6 +210,35 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "$DRAFT" != "true" ]', ensure)
         self.assertLess(ensure.index("--json isDraft"), ensure.index("gh release edit"))
 
+    def test_both_triggers_queue_against_the_same_release(self):
+        # A tag push gives github.ref "refs/tags/vX.Y.Z" and a manual re-release gives
+        # inputs.tag "vX.Y.Z", so only the tag name in the group makes them queue together.
+        concurrency = RELEASE.split("concurrency:", 1)[1].split("jobs:", 1)[0]
+        self.assertIn("group: release-${{ github.event.inputs.tag || github.ref_name }}", concurrency)
+        self.assertNotIn("github.ref }}", concurrency)
+
+    def test_publish_rechecks_draft_state_before_any_write(self):
+        publish = job_block(RELEASE, "publish")
+        guard = publish.index("Refuse to overwrite a release published during this run")
+        self.assertLess(guard, publish.index("Ensure a draft release exists"))
+        self.assertLess(guard, publish.index("Upload installers and SHA256SUMS"))
+        self.assertLess(guard, publish.index("Remove stale FlowMap assets"))
+
+    def test_manifest_with_a_bare_final_carriage_return_is_refused_before_checksum_tools(self):
+        publish = job_block(RELEASE, "publish")
+        self.assertLess(
+            publish.index("Refuse a checksum manifest that ends in a bare carriage return"),
+            publish.index("Verify the uploaded bytes against SHA256SUMS"),
+        )
+
+    def test_the_about_build_commit_is_read_from_the_checkout(self):
+        self.assertIn("VITE_BUILD_COMMIT=$(git rev-parse HEAD)", job_block(RELEASE, "build"))
+
+    def test_apple_silicon_leg_uses_a_current_image(self):
+        build = job_block(RELEASE, "build")
+        self.assertIn("os: macos-15", build)
+        self.assertNotIn("- os: macos-14", build)
+
     def test_version_fields_are_checked_by_the_shared_script(self):
         self.assertIn("scripts/check_release_versions.py", RELEASE)
         self.assertIn("scripts/check_release_versions.py", CI)
@@ -257,6 +286,27 @@ class CiWorkflowTests(unittest.TestCase):
     def test_e2e_enforces_the_skip_and_flake_budget(self):
         self.assertIn("checkBudget.mjs", job_block(CI, "e2e"))
         self.assertTrue((ROOT / "client/tests/reporters/e2e-budget.json").is_file())
+
+    def test_gl_module_size_ratchet_runs_in_the_client_job(self):
+        self.assertIn("scripts/check_gl_file_sizes.py", job_block(CI, "client"))
+
+    def test_skip_budget_unit_tests_run_in_ci(self):
+        self.assertIn("client/tests/reporters/checkBudget.test.mjs", job_block(CI, "release-tooling"))
+
+    def test_windows_e2e_is_advisory_until_it_passes_on_hosted_runners(self):
+        windows = job_block(CI, "e2e-windows")
+        self.assertIn("continue-on-error: true", windows)
+        self.assertIn("timeout-minutes: 60", windows)
+        self.assertNotIn("continue-on-error", job_block(CI, "e2e"))
+
+    def test_ubuntu_e2e_stays_blocking_with_a_cap_above_the_retry_budget(self):
+        ubuntu = job_block(CI, "e2e")
+        self.assertIn("timeout-minutes: 60", ubuntu)
+        self.assertNotIn("continue-on-error", ubuntu)
+
+    def test_macos_shell_uses_a_current_image(self):
+        self.assertIn("runs-on: macos-15", job_block(CI, "shell-macos"))
+        self.assertNotIn("macos-14", CI)
 
     def test_documentation_only_changes_still_run_ci(self):
         # A doc-only push or PR must reach the link check, so no trigger may skip paths.

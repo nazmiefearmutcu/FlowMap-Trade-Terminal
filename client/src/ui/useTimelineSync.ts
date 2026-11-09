@@ -8,7 +8,7 @@
  * not re-render the strip.
  */
 
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type MutableRefObject, type RefObject } from 'react';
 
 import type { Renderer } from '../gl/renderer';
 import { useFlowMapStore } from '../state/store';
@@ -47,82 +47,19 @@ export interface TimelineSync {
 }
 
 /**
- * Drives the minimap for one renderer. `seek` is the store action the scrubber
- * sends; the hook owns the drag gate so the poll does not fight the thumb.
+ * Paints the drawn window (the viewport on the minimap) straight to the DOM from the
+ * renderer's view notifications, and runs the coarse refresh on the same poll.
+ * Returns the ref the window element mounts on.
+ *
+ * Ref assignment does not render React: the existing poll also owns renderer
+ * attachment. Hot notifications only paint scalar drawn-window geometry.
  */
-export function useTimelineSync(
+function useDrawnWindowPainter(
   rendererRef: RefObject<Renderer | null>,
-  isReplay: boolean,
-  seek: (targetNs: bigint) => void,
-): TimelineSync {
-  const [geom, setGeom] = useState<MinimapGeom>(EMPTY_GEOM);
-  const [scrub, setScrub] = useState(0);
-  // Camera follow state, from the SAME poll as the extent (a plain boolean getter).
-  const [following, setFollowing] = useState(true);
-  const geomRef = useRef<MinimapGeom>(EMPTY_GEOM);
-  const draggingRef = useRef(false); // true while the user actively scrubs
-  const seekTimerRef = useRef<number | null>(null); // trailing-throttle handle
-  const pendingFracRef = useRef(0); // latest scrub fraction awaiting a seek
+  refreshRef: MutableRefObject<() => void>,
+): RefObject<HTMLDivElement> {
   const windowRef = useRef<HTMLDivElement>(null);
 
-  // Coarse refresh owns time mapping, playhead and labels. The drawn window's
-  // left/width are owned only by the DOM writer below, never by React styles.
-  const refresh = useCallback((): void => {
-    const r = rendererRef.current;
-    const tl = r?.timeline();
-    const state = useFlowMapStore.getState();
-    const replay: ReplayPlayback | null = state.subscription?.mode === 'replay' ? state.replayPlayback : null;
-    if (r) setFollowing((f) => (f === r.following ? f : r.following));
-    if (!tl) {
-      if (geomRef.current !== EMPTY_GEOM) {
-        geomRef.current = EMPTY_GEOM;
-        setGeom(EMPTY_GEOM);
-      }
-      return;
-    }
-    const span = Math.max(1, tl.newestSeq - tl.oldestSeq);
-    const leftPct = clamp01((tl.viewStartCol - tl.oldestSeq) / span) * 100;
-    const rightPct = clamp01((tl.viewEndCol - tl.oldestSeq) / span) * 100;
-    let extent: TimeExtent | null = null;
-    let toNs: ((col: number) => bigint) | null = null;
-    if (tl.timeBase) {
-      const { anchorSeq, anchorT0Ns, dtNs } = tl.timeBase;
-      toNs = (col: number): bigint =>
-        r?.timestampAtColumn?.(col) ?? anchorT0Ns + BigInt(Math.round((col - anchorSeq) * dtNs));
-      extent = { startNs: toNs(tl.oldestSeq), endNs: toNs(tl.newestSeq) };
-    }
-    if (state.subscription?.mode === 'replay') extent = replay ? { startNs: replay.startNs, endNs: replay.endNs } : null;
-    // Advance the playhead: map the newest column to ns and drive the scrubber
-    // from its fraction of the session extent — unless the user is scrubbing.
-    // Also self-corrects a stale thumb across session/symbol switches.
-    if (extent && toNs && !draggingRef.current) {
-      const f = fractionOfExtent(replay?.positionNs ?? toNs(tl.newestSeq), extent);
-      const nv = Math.round(f * SCRUB_STEPS);
-      setScrub((prev) => (prev === nv ? prev : nv));
-    }
-    const next: MinimapGeom = {
-      leftPct,
-      widthPct: Math.max(0.6, rightPct - leftPct),
-      extent,
-    };
-    const prev = geomRef.current;
-    // Skip a re-render unless something moved perceptibly.
-    if (
-      Math.abs(prev.leftPct - next.leftPct) > 0.3 ||
-      Math.abs(prev.widthPct - next.widthPct) > 0.3 ||
-      (prev.extent === null) !== (next.extent === null) ||
-      prev.extent?.startNs !== next.extent?.startNs || prev.extent?.endNs !== next.extent?.endNs
-    ) {
-      geomRef.current = next;
-      setGeom(next);
-    }
-  }, [rendererRef]);
-
-  const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
-
-  // Ref assignment does not render React: the existing poll also owns renderer
-  // attachment. Hot notifications only paint scalar drawn-window geometry.
   useEffect(() => {
     let boundRenderer: Renderer | null = null;
     let unsubscribe: (() => void) | null = null;
@@ -188,7 +125,85 @@ export function useTimelineSync(
       unsubscribe = null;
       boundRenderer = null;
     };
+  }, [rendererRef, refreshRef]);
+
+  return windowRef;
+}
+
+/**
+ * Drives the minimap for one renderer. `seek` is the store action the scrubber
+ * sends; the hook owns the drag gate so the poll does not fight the thumb.
+ */
+export function useTimelineSync(
+  rendererRef: RefObject<Renderer | null>,
+  isReplay: boolean,
+  seek: (targetNs: bigint) => void,
+): TimelineSync {
+  const [geom, setGeom] = useState<MinimapGeom>(EMPTY_GEOM);
+  const [scrub, setScrub] = useState(0);
+  // Camera follow state, from the SAME poll as the extent (a plain boolean getter).
+  const [following, setFollowing] = useState(true);
+  const geomRef = useRef<MinimapGeom>(EMPTY_GEOM);
+  const draggingRef = useRef(false); // true while the user actively scrubs
+  const seekTimerRef = useRef<number | null>(null); // trailing-throttle handle
+  const pendingFracRef = useRef(0); // latest scrub fraction awaiting a seek
+
+  // Coarse refresh owns time mapping, playhead and labels. The drawn window's
+  // left/width are owned only by the DOM writer below, never by React styles.
+  const refresh = useCallback((): void => {
+    const r = rendererRef.current;
+    const tl = r?.timeline();
+    const state = useFlowMapStore.getState();
+    const replay: ReplayPlayback | null = state.subscription?.mode === 'replay' ? state.replayPlayback : null;
+    if (r) setFollowing((f) => (f === r.following ? f : r.following));
+    if (!tl) {
+      if (geomRef.current !== EMPTY_GEOM) {
+        geomRef.current = EMPTY_GEOM;
+        setGeom(EMPTY_GEOM);
+      }
+      return;
+    }
+    const span = Math.max(1, tl.newestSeq - tl.oldestSeq);
+    const leftPct = clamp01((tl.viewStartCol - tl.oldestSeq) / span) * 100;
+    const rightPct = clamp01((tl.viewEndCol - tl.oldestSeq) / span) * 100;
+    let extent: TimeExtent | null = null;
+    let toNs: ((col: number) => bigint) | null = null;
+    if (tl.timeBase) {
+      const { anchorSeq, anchorT0Ns, dtNs } = tl.timeBase;
+      toNs = (col: number): bigint =>
+        r?.timestampAtColumn?.(col) ?? anchorT0Ns + BigInt(Math.round((col - anchorSeq) * dtNs));
+      extent = { startNs: toNs(tl.oldestSeq), endNs: toNs(tl.newestSeq) };
+    }
+    if (state.subscription?.mode === 'replay') extent = replay ? { startNs: replay.startNs, endNs: replay.endNs } : null;
+    // Advance the playhead: map the newest column to ns and drive the scrubber
+    // from its fraction of the session extent — unless the user is scrubbing.
+    // Also self-corrects a stale thumb across session/symbol switches.
+    if (extent && toNs && !draggingRef.current) {
+      const f = fractionOfExtent(replay?.positionNs ?? toNs(tl.newestSeq), extent);
+      const nv = Math.round(f * SCRUB_STEPS);
+      setScrub((prev) => (prev === nv ? prev : nv));
+    }
+    const next: MinimapGeom = {
+      leftPct,
+      widthPct: Math.max(0.6, rightPct - leftPct),
+      extent,
+    };
+    const prev = geomRef.current;
+    // Skip a re-render unless something moved perceptibly.
+    if (
+      Math.abs(prev.leftPct - next.leftPct) > 0.3 ||
+      Math.abs(prev.widthPct - next.widthPct) > 0.3 ||
+      (prev.extent === null) !== (next.extent === null) ||
+      prev.extent?.startNs !== next.extent?.startNs || prev.extent?.endNs !== next.extent?.endNs
+    ) {
+      geomRef.current = next;
+      setGeom(next);
+    }
   }, [rendererRef]);
+
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const windowRef = useDrawnWindowPainter(rendererRef, refreshRef);
 
   // Reset the scrub gate on a mode switch, and drop any pending throttled seek.
   // Keyed on `isReplay` — NOT `[]` — because Timeline never unmounts (App renders

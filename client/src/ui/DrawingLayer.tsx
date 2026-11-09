@@ -31,7 +31,11 @@
  *   - Delete / Backspace  remove the SELECTED drawing (only while the layer
  *                         has focus or a drawing is selected);
  *   - Ctrl/Cmd+Z          undo; Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y redo (same
- *                         scope guard).
+ *                         scope guard);
+ *   - Tab / Shift+Tab     (no tool armed, layer focused) cycle the drawings,
+ *                         and leave the layer at either end;
+ *   - arrow keys          nudge the selected drawing (Shift = 40 px); Enter
+ *                         opens the text editor of a selected text label.
  * App may register `D` (toolbar toggle) in input/keys.ts via
  * `toggleDrawToolbar()` from drawings/store — DrawToolbar already self-
  * listens, so do NOT bind it in both places.
@@ -55,6 +59,7 @@ import {
   createLayerRefs,
   dataAtOf,
   handlePlacementKey,
+  handleSelectionKey,
   localXYOf,
   useDrawingShortcuts,
   usePaintLoop,
@@ -110,6 +115,10 @@ export function DrawingLayer({
   const draftLen = useDrawingsStore((s) => s.draftPoints.length);
   const editingTextId = useDrawingsStore((s) => s.editingTextId);
   const selectedId = useDrawingsStore((s) => s.selectedId);
+  const itemCount = useDrawingsStore((s) => s.items.length);
+  // Position of the selected drawing (1-based) and its tool, for the focus announcement.
+  const selIndex = useDrawingsStore((s) => s.items.findIndex((d) => d.id === s.selectedId));
+  const selTool = useDrawingsStore((s) => s.items.find((d) => d.id === s.selectedId)?.tool ?? null);
   const [focused, setFocused] = useState(false);
 
   // A placement refused at the per-symbol limit says so once per try.
@@ -217,9 +226,9 @@ export function DrawingLayer({
       ref={refs.wrapper}
       className={cls}
       data-testid="drawing-layer"
-      // A tab stop only while it has something to act on (a tool armed or a
-      // drawing selected); an idle layer is no longer an invisible focus trap.
-      tabIndex={armed || selectedId !== null ? 0 : -1}
+      // A tab stop only while it has something to act on (a tool armed, a drawing
+      // selected or drawings to cycle through); an empty idle layer is no focus trap.
+      tabIndex={armed || selectedId !== null || itemCount > 0 ? 0 : -1}
       role="application"
       aria-label={t('drawings.layerAria')}
       onFocus={() => setFocused(true)}
@@ -229,7 +238,10 @@ export function DrawingLayer({
       onPointerUp={finishPlacement}
       onPointerCancel={finishPlacement}
       onDoubleClick={onDoubleClick}
-      onKeyDown={(e) => handlePlacementKey(refs, e)}
+      onKeyDown={(e) => {
+        handlePlacementKey(refs, e);
+        handleSelectionKey(refs, e);
+      }}
     >
       <canvas ref={refs.canvas} className="draw-layer__canvas" />
       {editing !== null && <DrawingTextEditor editing={editing} editorRef={refs.editor} />}
@@ -242,14 +254,20 @@ export function DrawingLayer({
         role="status"
         aria-live="polite"
       >
-        {tool === null
-          ? ''
-          : t('drawings.mode.line', {
+        {tool !== null
+          ? t('drawings.mode.line', {
               tool: t(TOOL_LABEL_KEY[tool]),
               place: t('drawings.mode.place'),
               second: draftLen > 0 ? t('drawings.mode.second') : '',
               keys: t('drawings.mode.keys'),
-            })}
+            })
+          : focused && selTool !== null
+            ? t('drawings.select.announce', {
+                tool: t(TOOL_LABEL_KEY[selTool]),
+                index: selIndex + 1,
+                count: itemCount,
+              })
+            : ''}
       </div>
     </div>
   );

@@ -5,8 +5,9 @@
   its session.
 - A symbol the provider says does not exist (``UnknownSymbolError``, a
   ``ValueError`` subclass) is a terminal refusal with the same reason, so the
-  client parks instead of retrying.
-- Only those two cases carry ``invalid_symbol``. Every other refusal, including
+  client parks instead of retrying. So is a crypto symbol its venue table does
+  not list (``UnlistedSymbolError``).
+- Only those three cases carry ``invalid_symbol``. Every other refusal, including
   a generic ``ValueError``, keeps an empty capability.
 """
 
@@ -15,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from flowmap_server.api import ws as ws_mod
+from flowmap_server.data.venues import UnlistedSymbolError
 from flowmap_server.feeds._yahoo import UnknownSymbolError
 from flowmap_server.proto import events, wire
 
@@ -107,6 +109,17 @@ async def test_unknown_symbol_from_the_provider_is_a_terminal_invalid_symbol_ref
     conn = ws_mod._Connection(ws, FakeManager(error=UnknownSymbolError("Yahoo has no ticker 'NOPE'")))
 
     assert not await conn._subscribe(_sub("NOPE"))
+    assert ws.closed == (ws_mod._CLOSE_UNSUPPORTED, None)
+    [status] = _statuses(ws)
+    assert status.capability == {"reason": "invalid_symbol"}
+
+
+async def test_unlisted_crypto_symbol_is_a_terminal_invalid_symbol_refusal():
+    ws = FakeWS()
+    error = UnlistedSymbolError("'FOOBAR' is not listed on 'binance'")
+    conn = ws_mod._Connection(ws, FakeManager(error=error))
+
+    assert not await conn._subscribe(_sub("FOOBAR"))
     assert ws.closed == (ws_mod._CLOSE_UNSUPPORTED, None)
     [status] = _statuses(ws)
     assert status.capability == {"reason": "invalid_symbol"}

@@ -39,7 +39,7 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Callable, MutableMapping
+from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
 import msgspec
@@ -53,6 +53,7 @@ from flowmap_server.core.session import (
     SessionLimitError,
     SessionManager,
 )
+from flowmap_server.data.venues import UnlistedSymbolError
 from flowmap_server.feeds._yahoo import UnknownSymbolError
 from flowmap_server.proto import events, wire
 
@@ -194,6 +195,23 @@ async def _reject(ws: WebSocket, feed_state: events.FeedState, code: int, reason
         await ws.close(code=code, reason=reason)
     except Exception:  # already closed by the peer or the transport
         pass
+
+
+async def _settle(work: Awaitable[None]) -> None:
+    """Await ``work`` to completion even while the awaiting task is cancelled.
+
+    The work runs as its own task, so a cancellation of the caller cannot cut a
+    teardown short. Cancellations that land while waiting are absorbed: the
+    caller is leaving anyway and returns once the work is done. A failure inside
+    the work still propagates.
+    """
+    task = asyncio.ensure_future(work)
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            continue  # absorbed on purpose: the work is not cancelled, so keep waiting
+    task.result()
 
 
 class _Connection:
@@ -353,6 +371,14 @@ class _Connection:
     # -- lifecycle -------------------------------------------------------------
 
     async def run(self) -> None:
+        """Serve the socket until it closes, then release everything it holds.
+
+        Returns normally on every end: a peer close, a refusal, or the endpoint
+        being cancelled while the socket is open (the server stopping it). The
+        release always runs to completion, so the session is never left attached
+        by an interrupted teardown, and the endpoint never ends with a
+        CancelledError that the transport has to re-raise.
+        """
         tasks = (
             asyncio.create_task(self._flush_loop(), name="ws-flush"),
             asyncio.create_task(self._ping_loop(), name="ws-ping"),
@@ -360,19 +386,24 @@ class _Connection:
         try:
             await self._receive_loop()
         except WebSocketDisconnect:
-            pass
+            pass  # the peer closed the socket: the normal end of the loop
+        except asyncio.CancelledError:
+            logger.debug("ws endpoint cancelled: releasing the connection")
         finally:
-            self._closed = True
-            self._invalidate_history()
-            for t in tasks:
-                t.cancel()
-            # Retrieve cancellations AND any send-vs-close race the loops
-            # lost after our close(): swallowed here, never leaked.
-            await asyncio.gather(*tasks, return_exceptions=True)
-            try:
-                await self._cancel_subscribe()
-            finally:
-                await self._drop_session()
+            await _settle(self._release(tasks))
+
+    async def _release(self, tasks: tuple[asyncio.Task[None], ...]) -> None:
+        self._closed = True
+        self._invalidate_history()
+        for t in tasks:
+            t.cancel()
+        # Retrieve cancellations AND any send-vs-close race the loops
+        # lost after our close(): swallowed here, never leaked.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await self._cancel_subscribe()
+        finally:
+            await self._drop_session()
 
     async def _cancel_subscribe(self) -> None:
         """Stop the in-flight Subscribe, if any, and forget its deferred frames.
@@ -501,7 +532,7 @@ class _Connection:
                     return
                 await asyncio.wait_for(self._ws.send_bytes(frame), SEND_TIMEOUT_S)
         except asyncio.CancelledError:
-            return
+            return  # torn down while the reply was pending: nothing left to deliver
         except Exception:
             logger.warning("history response failed; connection kept", exc_info=True)
         finally:
@@ -719,8 +750,10 @@ class _Connection:
             # as such: a retry cannot cure it, so the client parks on
             # reason=invalid_symbol instead of reconnecting. Any other
             # ValueError keeps the unreasoned refusal it always had. The refusal
-            # contract is a Status frame + close, never a silent no-op.
-            reason = REASON_INVALID_SYMBOL if isinstance(exc, UnknownSymbolError) else None
+            # contract is a Status frame + close, never a silent no-op. A crypto
+            # venue's table that does not list the symbol is the same answer.
+            unknown = (UnknownSymbolError, UnlistedSymbolError)
+            reason = REASON_INVALID_SYMBOL if isinstance(exc, unknown) else None
             logger.warning(
                 "refused subscribe: rejected input (%r:%r: %r) -> 1003",
                 sub.market, sub.symbol, exc,

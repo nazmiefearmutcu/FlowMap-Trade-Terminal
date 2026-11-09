@@ -8,6 +8,7 @@ says so below.
 | [user-guide.md](user-guide.md) | Current | Using the app: install, first run, heatmap, replay, drawings, chart style, intelligence drawer, shortcuts |
 | [architecture.md](architecture.md) | Current | Processes, HTTP routes, WebSocket and wire protocol, session token and origin policy |
 | [development.md](development.md) | Current | Dev environment, tests, CI and release workflows, repository layout |
+| [i18n-migration.md](i18n-migration.md) | Developer notes | Rules for UI strings, the English and Turkish tables, and number, price and time formatting |
 | [release-notes-1.6.0.md](release-notes-1.6.0.md) | Current release | Release notes for 1.6.0 |
 | [release-notes-1.5.1.md](release-notes-1.5.1.md) | Past release | Release notes for 1.5.1 |
 | [release-notes-1.5.0.md](release-notes-1.5.0.md) | Past release | Release notes for 1.5.0 |

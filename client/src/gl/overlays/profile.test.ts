@@ -3,6 +3,7 @@ import { GridMap } from './coords';
 import type { OverlayFrame } from './frame';
 import { accumulateProfile, Profile } from './profile';
 import { makeHybrid, priceToRow, rowToPrice, type PriceScale } from '../priceScale';
+import { createManualClock } from '../clock';
 import { setLocale } from '../../i18n';
 
 describe('profile badge text follows the active locale', () => {
@@ -131,5 +132,70 @@ describe('profile physical price intervals', () => {
       undefined, undefined, 1, { target, source: () => old });
     expect(result.bins.reduce((sum, value) => sum + value, 0)).toBeCloseTo(50, 6);
     expect(result.bins[target.dnRows + 1024]).toBeGreaterThan(0);
+  });
+});
+
+describe('profile pan cost', () => {
+  const scale: PriceScale = { kind: 'linear', rows: 8, p0: 0, step: 1 };
+  const dims = { cssW: 1000, cssH: 600, drawW: 1000, drawH: 600 };
+
+  it('keeps the last in-thread sum while the view moves, and sums the settled window once', () => {
+    const clock = createManualClock(1000);
+    const changed = vi.fn();
+    const columnArrays = vi.fn(() => ({ bid: new Float32Array(8).fill(1), ask: null }));
+    const frameAt = (colOffset: number): OverlayFrame => {
+      const gm = new GridMap({ colOffset, colScale: 3, rowOffset: 0, rowScale: 8 }, dims, null, { p0: 0, step: 1, scale });
+      return { gm, resident: { oldest: 0, newest: 9 }, dataVersion: 1, changed, columnArrays,
+        solid: { begin: () => {}, addRect: () => {}, flush: () => {} }, text: { badge: () => {} },
+      } as unknown as OverlayFrame;
+    };
+    const profile = new Profile({}, clock);
+    profile.draw(frameAt(0));
+    const settledReads = columnArrays.mock.calls.length;
+    expect(settledReads).toBeGreaterThan(0);
+
+    clock.advance(10);
+    profile.draw(frameAt(1)); // the view moves one column
+    profile.draw(frameAt(1)); // still moving
+    expect(columnArrays.mock.calls.length).toBe(settledReads);
+    expect(profile.last).not.toBeNull();
+
+    clock.advance(140); // inside the settle period
+    profile.draw(frameAt(1));
+    expect(columnArrays.mock.calls.length).toBe(settledReads);
+
+    clock.advance(10); // the view has been still for PROFILE_SETTLE_MS
+    expect(changed).toHaveBeenCalled();
+    profile.draw(frameAt(1));
+    expect(columnArrays.mock.calls.length).toBeGreaterThan(settledReads);
+    profile.dispose();
+  });
+
+  it('never writes an in-thread sum into a worker result that is still held', async () => {
+    const clock = createManualClock(1000);
+    const bid = new Float32Array(8); bid[3] = 9;
+    const frameAt = (values: Float32Array): OverlayFrame => {
+      const gm = new GridMap({ colOffset: 0, colScale: 3, rowOffset: 0, rowScale: 8 }, dims, null, { p0: 0, step: 1, scale });
+      return { gm, resident: { oldest: 0, newest: 9 }, dataVersion: 1, changed: () => {},
+        columnArrays: () => ({ bid: values, ask: null }),
+        solid: { begin: () => {}, addRect: () => {}, flush: () => {} }, text: { badge: () => {} },
+      } as unknown as OverlayFrame;
+    };
+    const profile = new Profile({ maxCols: 2 }, clock);
+    // Four columns exceed maxCols, so the sum runs off the render thread.
+    profile.draw(frameAt(bid));
+    await vi.waitFor(() => {
+      profile.draw(frameAt(bid));
+      expect(profile.calculationState).toBe('ready');
+    });
+    const held = (profile as unknown as { workerResult: { bins: Float64Array } }).workerResult.bins;
+    const shown = Array.from(held);
+
+    // The window now fits the budget, so the sum runs in-thread into its own buffer.
+    profile.setOptions({ maxCols: 1024 });
+    profile.draw(frameAt(new Float32Array(8).fill(2)));
+    expect(profile.last?.max).toBe(8);
+    expect(Array.from(held)).toEqual(shown);
+    profile.dispose();
   });
 });

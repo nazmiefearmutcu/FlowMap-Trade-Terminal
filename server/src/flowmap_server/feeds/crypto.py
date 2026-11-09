@@ -277,13 +277,15 @@ def _harden_rest_ssl(conn: Connector) -> None:
     reconnect cycle, so a one-shot seed would not survive). No-op when
     certifi is unavailable.
     """
-    try:
-        import ssl
+    import ssl
 
+    try:
         import certifi
 
         ctx = ssl.create_default_context(cafile=certifi.where())
-    except Exception:  # pragma: no cover — keep stock behavior without certifi
+    except (ImportError, OSError, ssl.SSLError) as exc:  # pragma: no cover
+        # Keep the stock trust store: the snapshot may still fail, but the trade stream runs.
+        logger.debug("crypto bridge: certifi CA bundle unavailable, using stock TLS: %s", exc)
         return
 
     orig_http_get = conn.http_get

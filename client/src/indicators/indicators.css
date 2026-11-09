@@ -85,7 +85,7 @@
   border: none;
   background: none;
   color: var(--chart-ink-dim, #93a1b4);
-  font-size: 14px;
+  font-size: var(--fs-lg, 13px);
   line-height: 1;
   padding: 2px 6px;
   border-radius: var(--r-1, 3px);
@@ -181,7 +181,7 @@
 .indi-row__add:hover,
 .indi-row__remove:hover {
   color: var(--chart-ink, #e6edf3);
-  border-color: var(--chart-accent, #33d6c4);
+  border-color: var(--chart-accent);
 }
 .indi-row__add:disabled {
   opacity: 0.45;
@@ -200,7 +200,7 @@
 /* Note under a param row when the store moved the paired field. */
 .indi-hint {
   flex-basis: 100%;
-  font-size: 11px;
+  font-size: var(--fs-sm, 11px);
   opacity: 0.85;
 }
 
@@ -223,7 +223,7 @@
   padding: 2px 4px;
 }
 .indi-param input:focus-visible {
-  outline: 1px solid var(--chart-accent, #33d6c4);
+  outline: 1px solid var(--chart-accent);
   outline-offset: 0;
 }
 
