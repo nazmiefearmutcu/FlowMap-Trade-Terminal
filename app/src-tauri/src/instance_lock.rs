@@ -187,7 +187,20 @@ mod tests {
             "the sentinel must not be deleted on release"
         );
         assert_eq!(lock_holder_pid(&dir), Some(std::process::id()));
-        let again = acquire_instance_lock(&dir).expect("lock is free after release");
+        // On unix the lock belongs to the open file description. Another test thread
+        // that spawns a child process at this moment hands the child a duplicate of
+        // it between fork and exec, so the lock can stay held for an instant after
+        // the release. Wait for that duplicate to close before judging the result.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let again = loop {
+            match acquire_instance_lock(&dir) {
+                Ok(guard) => break guard,
+                Err(LockError::AlreadyRunning) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(other) => panic!("lock is free after release: {other:?}"),
+            }
+        };
         again.release();
         let _ = std::fs::remove_dir_all(&dir);
     }
