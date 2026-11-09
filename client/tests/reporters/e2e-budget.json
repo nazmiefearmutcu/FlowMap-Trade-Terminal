@@ -1,5 +1,12 @@
 {
-  "_comment": "Skip and flake budget enforced by checkBudget.mjs in the CI e2e job. maxSkipped = the 7 known skip sites (smooth-zoom x4 conditional on EXT_color_buffer_float/SUM mips, gl4 lost-context x1, chart-reconstructed x2). The replay transport test runs unconditionally in the replay project, with its own recording-enabled stack. Any new skip fails the job until this file is changed with a reason. maxFlaky allows tests that pass on a CI retry; lower it as flakes are fixed.",
-  "maxSkipped": 7,
+  "_comment": "Skip and flake budget enforced by checkBudget.mjs in the CI e2e job. expectedSkipped names every test that may skip, each for a condition of the machine it runs on: chart-reconstructed needs the venue network (hosted runners get HTTP 451), smooth-zoom needs EXT_color_buffer_float and SUM mips, and the gl4 lost-context test needs WEBGL_lose_context. A skipped test that is not named here fails the job. maxFlaky allows tests that pass on a CI retry; lower it as flakes are fixed.",
+  "expectedSkipped": [
+    "chart-reconstructed.spec.ts > BTC native: reconstructed history maps real candle times (network-dependent) [chromium]",
+    "gl4.spec.ts > context loss preserves follow-OFF intent and the renderer recovers (?spy) [chromium]",
+    "smooth-zoom.spec.ts > row-only path (rpp 3.05, cpp 0.25) keeps the time-axis stripe structure [chromium]",
+    "smooth-zoom.spec.ts > vertical default (rpp 3.05, row-mip path): the rowMipSoft triple widens the level boundary [chromium]",
+    "smooth-zoom.spec.ts > vertical rpp 2.2 (in-one-notch zone): the row-mip engages and softens the boundary [chromium]",
+    "smooth-zoom.spec.ts > vertical rpp 6.1 multi-tap footprint: per-tap softening (zoom-out zone a) [chromium]"
+  ],
   "maxFlaky": 2
 }

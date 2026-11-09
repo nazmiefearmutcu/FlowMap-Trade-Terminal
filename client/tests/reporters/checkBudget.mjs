@@ -3,7 +3,7 @@
 //   node tests/reporters/checkBudget.mjs <results.json> <budget.json>
 //
 // <results.json> is Playwright's JSON reporter output (PLAYWRIGHT_JSON_OUTPUT_NAME).
-// <budget.json> is committed next to this script: { "maxSkipped": n, "maxFlaky": n }.
+// <budget.json> is committed next to this script: { "expectedSkipped": [names], "maxFlaky": n }.
 // A skipped test is only acceptable when the budget names it; the count is the
 // gate, and every skipped and flaky title is printed so the set is reviewable.
 // Unexpected failures already fail `playwright test` itself.
