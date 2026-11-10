@@ -20,10 +20,10 @@ DROP = ("pyarrow", "zlib-ng", "aiohttp-fast-zlib")
 
 # name -> (locked version, pinned version, sha256 of every PyPI file for the pinned
 # version). The digests are the ones PyPI publishes for cryptography 46.0.3; uv.lock
-# records only the locked 49.0.0, so the pin is verified by these values instead.
+# records only the locked 50.0.0, so the pin is verified by these values instead.
 REPIN = {
     "cryptography": (
-        "49.0.0",
+        "50.0.0",
         "46.0.3",
         (
             "00a5e7e87938e5ff9ff5447ab086a5706a957137e6e433841e9d24f38a065217",

@@ -231,7 +231,7 @@ Because the exported lock is a complete closure, this leg installs with
 build if any requirement line lacks a hash. The
 import gate in step 5 of `bundle-python.sh` is what proves the resulting tree is
 sound; it is told which module to skip rather than being weakened. If a dropped
-name leaves the lock, or `cryptography`'s locked version moves off 49.0.0, the
+name leaves the lock, or `cryptography`'s locked version moves off 50.0.0, the
 build **fails** rather than silently shipping something the table above no
 longer describes.
 

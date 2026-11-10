@@ -43,7 +43,7 @@ def win_arm64_export() -> str:
         hashed("pyarrow==25.0.0", digest("c"), digest("d")),
         hashed("zlib-ng==1.0.0", digest("e")),
         hashed("aiohttp-fast-zlib==0.3.0", digest("f")),
-        hashed("cryptography==49.0.0", digest("b")),
+        hashed("cryptography==50.0.0", digest("b")),
         hashed("numpy==2.0.0", digest("g")),
     )
 
@@ -120,7 +120,7 @@ class RequirementsPinsTest(unittest.TestCase):
         pins.apply_win_arm64(path)
         text = path.read_text(encoding="utf-8")
         self.assertIn("cryptography==46.0.3 \\", text)
-        self.assertNotIn("cryptography==49.0.0", text)
+        self.assertNotIn("cryptography==50.0.0", text)
         crypto = next(
             block for block in blocks(text) if block[0].startswith("cryptography==")
         )
@@ -144,11 +144,11 @@ class RequirementsPinsTest(unittest.TestCase):
         pins.check_hashes(path)
 
     def test_win_arm64_refuses_an_unexpected_cryptography_version(self):
-        text = win_arm64_export().replace("cryptography==49.0.0", "cryptography==48.0.1")
+        text = win_arm64_export().replace("cryptography==50.0.0", "cryptography==48.0.1")
         path = self.write(text)
         with self.assertRaises(SystemExit) as failure:
             pins.apply_win_arm64(path)
-        self.assertIn("expects cryptography==49.0.0", str(failure.exception))
+        self.assertIn("expects cryptography==50.0.0", str(failure.exception))
 
     def test_win_arm64_fails_when_an_excluded_package_is_gone(self):
         text = win_arm64_export().replace("pyarrow==25.0.0", "pyarrow-stub==1.0.0")

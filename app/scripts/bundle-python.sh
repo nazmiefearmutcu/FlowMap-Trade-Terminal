@@ -264,14 +264,14 @@ if [[ "$TRIPLE" == "aarch64-pc-windows-msvc" ]]; then
   "$PY" "$REPO_ROOT/app/scripts/requirements_pins.py" win-arm64 "$(native_path "$REQS")"
   # The export is already a complete, pinned closure, so resolution adds nothing
   # — and here it would actively undo the exceptions above (pip would re-pull
-  # pyarrow and cryptography==49.0.0 to satisfy crocodile's and ccxt's metadata).
+  # pyarrow and cryptography==50.0.0 to satisfy crocodile's and ccxt's metadata).
   # The import check in step 5 is what proves the resulting tree is sound.
   # Keep the import gate honest: it must stop asserting what this target
   # deliberately does not ship, and assert everything else exactly as before.
   export FLOWMAP_SKIP_IMPORTS="pyarrow"
 fi
 
-# NOTE for the macOS Intel leg: ccxt pins `cryptography==49.0.0` exactly, and
+# NOTE for the macOS Intel leg: the lock holds `cryptography==50.0.0`, and
 # that release publishes only a `macosx_11_0_arm64` macOS wheel — no x86_64, no
 # universal2 (48.0.1 was the last with one). So on x86_64-apple-darwin pip
 # builds cryptography from sdist. Link Homebrew's OpenSSL statically so the
