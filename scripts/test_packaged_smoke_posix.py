@@ -62,6 +62,20 @@ class ExecutableTests(unittest.TestCase):
             (macos / "flowmap").write_text("")
             self.assertEqual(smoke.find_executable_in(macos).name, "flowmap")
 
+    def test_the_deb_package_name_comes_from_the_control_field(self):
+        self.assertEqual(smoke.deb_package_name("flow-map\n"), "flow-map")
+        for bad in ("", "\n", "two words\n"):
+            with self.subTest(output=bad), self.assertRaises(smoke.SmokeError):
+                smoke.deb_package_name(bad)
+
+    def test_the_scratch_folder_path_contains_no_symlink(self):
+        scratch = smoke.scratch_dir()
+        try:
+            self.assertEqual(scratch, scratch.resolve())
+            self.assertFalse(any(parent.is_symlink() for parent in [scratch, *scratch.parents]))
+        finally:
+            scratch.rmdir()
+
     def test_an_empty_bundle_folder_is_a_smoke_failure(self):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(SmokeError):

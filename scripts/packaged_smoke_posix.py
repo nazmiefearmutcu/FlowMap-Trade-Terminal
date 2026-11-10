@@ -103,12 +103,23 @@ class Install:
         self.cleanup = cleanup
 
 
+def deb_package_name(control_field_output):
+    """The package name from `dpkg-deb -f <deb> Package` output; a SmokeError when empty."""
+    name = control_field_output.strip()
+    if not name or any(ch.isspace() for ch in name):
+        raise SmokeError(f"the .deb does not name its package: {control_field_output!r}")
+    return name
+
+
 def install_deb(installer, timeout, scratch):
+    # The package is named by the bundler (from the product name), not after the
+    # binary, so the uninstall reads the name from the .deb it installed.
+    package = deb_package_name(run_checked(["dpkg-deb", "-f", str(installer), "Package"], timeout).stdout)
     run_checked(["sudo", "apt-get", "install", "-y", "--no-install-recommends", str(installer)], timeout)
     found = shutil.which(BINARY_NAME)
     if found is None:
         raise SmokeError(f"the {BINARY_NAME} binary is not on PATH after the .deb install")
-    return Install(Path(found), lambda: run_checked(["sudo", "apt-get", "remove", "-y", BINARY_NAME], timeout))
+    return Install(Path(found), lambda: run_checked(["sudo", "apt-get", "remove", "-y", package], timeout))
 
 
 def install_appimage(installer, timeout, scratch):
@@ -185,10 +196,22 @@ def check_shell(process, shell_log, offset, timeout):
         raise SmokeError(f"a request without the session token got {status}, expected 401")
 
 
+def scratch_dir():
+    """A fresh working folder whose path contains no symlink.
+
+    The shell refuses to resolve its own location when an ancestor of the
+    executable is a symlink (Tauri's guard on macOS), and it then cannot find the
+    bundled runtime. macOS temp folders live under /var, a symlink to /private/var,
+    so the path is resolved before anything is copied into it.
+    """
+    return Path(tempfile.mkdtemp(prefix="flowmap-smoke-")).resolve()
+
+
 def smoke(installer, timeout):
     shell_log = app_data_dir(platform_for(installer), os.environ, Path.home()) / "shell.log"
-    scratch = Path(tempfile.mkdtemp(prefix="flowmap-smoke-"))
+    scratch = scratch_dir()
     staged = None
+    failed = False
     try:
         staged = install(installer, timeout, scratch)
         offset = shell_log.stat().st_size if shell_log.is_file() else 0
@@ -201,10 +224,20 @@ def smoke(installer, timeout):
             stop_shell(process)
         if not wait_until(lambda: not leftover_sidecars(list_processes()), 30):
             raise SmokeError(f"sidecar processes survived the shell: {leftover_sidecars(list_processes())}")
+    except BaseException:
+        failed = True
+        raise
     finally:
-        if staged is not None:
-            staged.cleanup()
-        shutil.rmtree(scratch, ignore_errors=True)
+        try:
+            if staged is not None:
+                staged.cleanup()
+        except SmokeError as error:
+            # A failed uninstall must not replace the check that failed first.
+            if not failed:
+                raise
+            print(f"packaged_smoke_posix: cleanup also failed: {error}", file=sys.stderr)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 def main(argv=None):
