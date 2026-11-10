@@ -398,7 +398,8 @@ class PerTargetNoticesTests(unittest.TestCase):
 
     def test_the_committed_allow_list_is_present(self):
         self.assertTrue(notices.UNKNOWN_ALLOWLIST.is_file())
-        self.assertEqual(notices.load_unknown_allowlist(notices.UNKNOWN_ALLOWLIST), set())
+        # Every entry is an exact name@version with a reviewed reason in the file.
+        self.assertEqual(notices.load_unknown_allowlist(notices.UNKNOWN_ALLOWLIST), {"peewee@4.2.5"})
 
 
 if __name__ == "__main__":

@@ -4,3 +4,4 @@
 #
 # One exact name@version per line, followed by the reason for accepting it, after a
 # "#". Remove an entry when the package is upgraded or the licence is confirmed.
+peewee@4.2.5  # MIT: the wheel declares no licence field but ships licenses/LICENSE, which is the MIT text (Copyright (c) 2010 Charles Leifer)
