@@ -252,6 +252,8 @@ test('deep scroll-back: LRU residency + history backfill + context-loss recovery
 
   // --- Baseline: a full ring follows live without further history requests. --
   // A warm SIM-DEMO session may need one startup page before its ring fills.
+  await page.waitForFunction(() => !(window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive
+    .renderer.historyStats().inFlight, undefined, { timeout: 60_000 });
   const baseline = await page.evaluate(() => {
     const r = (window as unknown as { __flowmapLive: LooseProbe }).__flowmapLive.renderer;
     return {

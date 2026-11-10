@@ -67,6 +67,11 @@ async function bootLive(page: Page): Promise<string[]> {
   return consoleErrors;
 }
 
+// One test may spend up to 120 s in the boot waits and 90 s in each settleTimeFrame
+// poll on a slow software renderer; the budget covers them so a condition wait is
+// never cut short by the test timeout.
+const AXIS_TEST_BUDGET_MS = 360_000;
+
 /**
  * Wait until the auto-follow TIME frame stops widening.
  *
@@ -101,7 +106,7 @@ async function settleTimeFrame(page: Page): Promise<void> {
 }
 
 test('price gutter scales price like TradingView, and never touches time', async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(AXIS_TEST_BUDGET_MS);
   const consoleErrors = await bootLive(page);
 
   const box = await page.locator(GUTTER).boundingBox();
@@ -191,7 +196,7 @@ test('price gutter scales price like TradingView, and never touches time', async
 });
 
 test('maximum time zoom stays wide while price gutter and keyboard gestures keep their own axes', async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(AXIS_TEST_BUDGET_MS);
   const errors = await bootLive(page);
   const gutter = (await page.locator(GUTTER).boundingBox())!;
   const canvas = (await page.locator('canvas#gl').boundingBox())!;
@@ -244,7 +249,7 @@ test('maximum time zoom stays wide while price gutter and keyboard gestures keep
 });
 
 test('a horizontal canvas drag detaches TIME but keeps price tracking', async ({ page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(AXIS_TEST_BUDGET_MS);
   await bootLive(page);
 
   const box = await page.locator('canvas#gl').boundingBox();

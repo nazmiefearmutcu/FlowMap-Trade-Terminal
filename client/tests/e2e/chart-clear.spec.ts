@@ -91,7 +91,7 @@ test('removing the last indicator clears .indi-canvas', async ({ page }) => {
 test('overlays off (Price last) and Axes off clear the 2D text + gutters', async ({
   page,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   const consoleErrors: string[] = [];
   page.on('console', (m) => {
     if (m.type() === 'error') consoleErrors.push(m.text());
@@ -133,7 +133,7 @@ test('overlays off (Price last) and Axes off clear the 2D text + gutters', async
   await expect(price).toHaveAttribute('aria-pressed', 'false');
 
   // The text layer must fall to genuine zero — not the historical ~130k ghost.
-  await expect.poll(() => ink(page, INK_SELECTORS.text), { timeout: 10_000 }).toBe(0);
+  await expect.poll(() => ink(page, INK_SELECTORS.text), { timeout: 30_000 }).toBe(0);
 
   // Sanity: the GL heatmap keeps rendering (ink was a 2D-layer leak, not a freeze).
   const thermal = await page.evaluate(() => {
