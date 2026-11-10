@@ -154,11 +154,56 @@ def install(installer, timeout, scratch):
     raise SmokeError(f"no installer handling for {installer.name}")
 
 
+def shell_children(ps_listing, launcher_pid):
+    """PIDs of the shell processes started by a launcher, from `ps -axo pid=,ppid=,args=`.
+
+    An AppImage is launched through its runtime, which extracts the image and runs
+    the shell as its child. The runtime does not pass SIGTERM on, so the signal has
+    to go to that child. The sidecar server is also a child of the shell itself and
+    is never a target: the shell must stop it.
+    """
+    rows = []
+    for line in ps_listing.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+            rows.append((int(fields[0]), int(fields[1]), fields[2]))
+    # Every descendant of the launcher: the runtime may run the shell through AppRun.
+    family = {launcher_pid}
+    grew = True
+    while grew:
+        grew = False
+        for pid, parent, _ in rows:
+            if parent in family and pid not in family:
+                family.add(pid)
+                grew = True
+    # Only the shell binary: a directly launched shell has the sidecar and the web
+    # view helpers below it, and none of those is a signal target.
+    return sorted(
+        pid for pid, _, args in rows
+        if pid in family and pid != launcher_pid and SIDECAR_MARKER not in args
+        and Path(args.split()[0]).name == BINARY_NAME
+    )
+
+
+def list_process_tree():
+    completed = subprocess.run(["ps", "-axo", "pid=,ppid=,args="], capture_output=True, text=True, timeout=60)
+    return completed.stdout
+
+
 def stop_shell(process):
     """Close the shell the way a user does (SIGTERM) and require it to exit."""
     if process.poll() is not None:
         return
-    process.send_signal(signal.SIGTERM)
+    children = shell_children(list_process_tree(), process.pid)
+    if children:
+        # Launched through a wrapper (the AppImage runtime): signal the shell it runs.
+        for pid in children:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    else:
+        process.send_signal(signal.SIGTERM)
     try:
         process.wait(timeout=60)
     except subprocess.TimeoutExpired:

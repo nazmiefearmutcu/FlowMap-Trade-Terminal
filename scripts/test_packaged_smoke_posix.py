@@ -53,6 +53,34 @@ class LeftoverSidecarTests(unittest.TestCase):
     def test_lines_without_a_numeric_pid_are_ignored(self):
         self.assertEqual(smoke.leftover_sidecars("header flowmap_server\n"), [])
 
+    def test_an_appimage_runtime_names_the_shell_it_runs_as_the_signal_target(self):
+        listing = (
+            "  200     1 /tmp/FlowMap.AppImage\n"
+            "  201   200 /tmp/appimage_extracted_x/usr/bin/flowmap\n"
+            "  202   201 /tmp/appimage_extracted_x/usr/lib/FlowMap/pyruntime/bin/python3.13 -m flowmap_server\n"
+        )
+        self.assertEqual(smoke.shell_children(listing, 200), [201])
+
+    def test_a_shell_started_through_apprun_is_found_below_the_runtime(self):
+        listing = (
+            "  400     1 /tmp/FlowMap.AppImage\n"
+            "  401   400 /tmp/appimage_extracted_x/AppRun\n"
+            "  402   401 /tmp/appimage_extracted_x/usr/bin/flowmap\n"
+            "  403   402 /tmp/appimage_extracted_x/usr/lib/FlowMap/pyruntime/bin/python3.13 -m flowmap_server\n"
+        )
+        self.assertEqual(smoke.shell_children(listing, 400), [402])
+
+    def test_a_directly_launched_shell_has_no_wrapper_child_to_signal(self):
+        # Its children are the sidecar, which the shell itself must stop, and the
+        # web view's helper processes.
+        listing = (
+            "  300     1 /usr/bin/flowmap\n"
+            "  301   300 /usr/lib/FlowMap/pyruntime/bin/python3.13 -m flowmap_server\n"
+            "  302     1 /usr/bin/Xvfb :99\n"
+            "  303   300 /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitWebProcess 7 20\n"
+        )
+        self.assertEqual(smoke.shell_children(listing, 300), [])
+
 
 class ExecutableTests(unittest.TestCase):
     def test_the_shell_binary_is_preferred_inside_the_bundle(self):
