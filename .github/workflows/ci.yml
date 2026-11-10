@@ -577,11 +577,15 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-  # Advisory until this leg has passed on a hosted Windows runner: its first hosted run was
-  # cancelled by the 30-minute cap inside the suite. It does not block the release; the
-  # ubuntu e2e job above does. Remove continue-on-error once a hosted run is green.
+  # Advisory and on demand only: on hosted Windows runners this leg has reached its cap
+  # every time (30 minutes once, 60 minutes twice) without finishing, while the same suite
+  # passes on a Windows workstation and on the ubuntu leg. It runs from "Run workflow"
+  # (workflow_dispatch) so it can be investigated without holding every push and the
+  # release gate for an hour. The ubuntu e2e job above is the blocking one. Remove the
+  # condition and continue-on-error once a hosted run is green.
   e2e-windows:
     name: e2e (playwright chromium, windows)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 60
     continue-on-error: true

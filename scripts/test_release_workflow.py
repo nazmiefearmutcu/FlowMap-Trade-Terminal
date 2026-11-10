@@ -297,6 +297,8 @@ class CiWorkflowTests(unittest.TestCase):
         windows = job_block(CI, "e2e-windows")
         self.assertIn("continue-on-error: true", windows)
         self.assertIn("timeout-minutes: 60", windows)
+        # On demand only until then: it must not hold pushes or the release gate.
+        self.assertIn("if: github.event_name == 'workflow_dispatch'", windows)
         self.assertNotIn("continue-on-error", job_block(CI, "e2e"))
 
     def test_ubuntu_e2e_stays_blocking_with_a_cap_above_the_retry_budget(self):

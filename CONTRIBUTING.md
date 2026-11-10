@@ -72,10 +72,11 @@ Before opening a PR, please confirm:
   security-adjacent).
 - [ ] **No new binary assets** in a PR that doesn't explicitly need them.
 
-CI runs lint, both test suites and the full Playwright e2e suite on Ubuntu and on Windows
-(`.github/workflows/ci.yml`, jobs `e2e` and `e2e-windows`) on every push and on every PR to
-`main`, including changes that touch only Markdown or `docs/`; the release-tooling job checks
-the documentation links.
+CI runs lint, both test suites and the full Playwright e2e suite on Ubuntu
+(`.github/workflows/ci.yml`, job `e2e`) on every push and on every PR to `main`, including
+changes that touch only Markdown or `docs/`; the release-tooling job checks the
+documentation links. The Windows e2e leg (`e2e-windows`) is advisory and runs on demand
+only, because it does not finish on hosted Windows runners yet.
 A maintainer will ask for rebases rather than merge commits if the branch has drifted.
 
 ## Reporting bugs and vulnerabilities
