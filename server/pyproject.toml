@@ -17,7 +17,7 @@ dependencies = [
   # a transitive that the engine one day drops must not silently break us.
   "aiohttp>=3.9",
   "certifi",
-  "msgspec>=0.18",
+  "msgspec>=0.22.0",
   "numpy>=1.26",
   "polars>=1.0",
   "fastapi>=0.111",
