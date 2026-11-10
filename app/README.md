@@ -171,9 +171,9 @@ they need must be on `PATH`: Node and npm, `uv` (step 2 exports the locked
 requirements with `uv export`), and Rust 1.89 or newer with the Tauri CLI version
 that CI and `Cargo.lock` pin: `cargo install tauri-cli --version 2.11.5 --locked`.
 
-`cargo tauri build` runs `beforeBuildCommand` (`npm --prefix ../../client run
-build`), so the client is always rebuilt and never a stale `client/dist` is
-packaged. Step 2 is still required: the Windows and Linux configs declare
+`cargo tauri build` runs `beforeBuildCommand` (`npm --prefix ../client run
+build`; Tauri runs it from `app/`, the parent of `src-tauri`), so the client is
+always rebuilt and never a stale `client/dist` is packaged. Step 2 is still required: the Windows and Linux configs declare
 `resources/pyruntime/`, and `cargo check`/`cargo test` need that directory to
 exist. Icons need no separate step.
 

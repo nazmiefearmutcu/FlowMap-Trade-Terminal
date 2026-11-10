@@ -5,7 +5,7 @@
   "identifier": "com.nazmiefearmutcu.flowmap",
   "build": {
     "frontendDist": "../../client/dist",
-    "beforeBuildCommand": "npm --prefix ../../client run build"
+    "beforeBuildCommand": "npm --prefix ../client run build"
   },
   "app": {
     "windows": [],
