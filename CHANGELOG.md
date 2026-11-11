@@ -7,6 +7,24 @@ Unreleased work sits on top of the newest listed commit.
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-11-12
+
+Release notes: [docs/release-notes-1.6.1.md](docs/release-notes-1.6.1.md).
+
+### Fixed
+
+- Windows setup program (`-setup.exe`): an upgrade left the Python runtime of the previous version in
+  the program folder next to the new one, so two versions of a package could sit side by side (for
+  example `flowmap_server` 1.5.1 and 1.6.0). The installer now removes the old `pyruntime` folder
+  before it copies the new one (`app/src-tauri/windows/hooks.nsi`). It first makes sure FlowMap is not
+  running, because a running app holds runtime files open. Recordings, logs and settings are in the
+  app-data folder and are not touched. The MSI was not affected.
+
+### Changed
+
+- Release smoke test on Windows (`scripts/packaged_smoke_windows.py`): the NSIS installer is run a
+  second time over a planted leftover of an older runtime, and the leftover must be gone.
+
 ## [1.6.0] — 2026-11-10
 
 Release notes: [docs/release-notes-1.6.0.md](docs/release-notes-1.6.0.md).
@@ -538,7 +556,8 @@ changelog; see the
 [releases page](https://github.com/nazmiefearmutcu/flowmap/releases) for
 notes and assets.
 
-[Unreleased]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/nazmiefearmutcu/flowmap/releases/tag/v1.5.0

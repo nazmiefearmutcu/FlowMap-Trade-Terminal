@@ -2,7 +2,9 @@
 
 Run by release.yml on each Windows leg, against the installer that leg built:
 
-1. install it silently (MSI with msiexec, NSIS with /S);
+1. install it silently (MSI with msiexec, NSIS with /S). The NSIS installer is
+   then run a second time over a planted leftover of an older runtime, and the
+   leftover must be gone: an upgrade may not keep files of the previous version;
 2. launch the installed flowmap.exe and read the sidecar port from shell.log;
 3. require GET /api/health to answer 200 with status ok (the server is live);
 4. require the loopback guards of the packaged server: a foreign Host header is
@@ -141,6 +143,28 @@ def list_processes():
     return normalize_process_listing(completed.stdout)
 
 
+def stale_runtime_marker(root):
+    """A file only an older runtime would have: the metadata of a package the
+    current build does not ship. An upgrade must remove it."""
+    return root / "pyruntime" / "Lib" / "site-packages" / "flowmap_stale-0.0.0.dist-info" / "METADATA"
+
+
+def is_upgradable_in_place(installer):
+    """NSIS writes over the installed folder. The MSI removes the old product itself."""
+    return installer.suffix.lower() == ".exe"
+
+
+def check_upgrade_removes_old_runtime(installer, root, timeout):
+    marker = stale_runtime_marker(root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("Name: flowmap-stale\nVersion: 0.0.0\n", encoding="utf-8")
+    install(installer, timeout)
+    if marker.parent.exists():
+        raise SmokeError(f"the upgrade kept a file of the old runtime: {marker}")
+    if not (root / EXE_NAME).is_file():
+        raise SmokeError(f"{EXE_NAME} is missing after the upgrade install")
+
+
 def install(installer, timeout):
     if installer.suffix.lower() == ".msi":
         command = ["msiexec", "/i", str(installer), "/qn", "/norestart"]
@@ -164,6 +188,8 @@ def smoke(installer, timeout):
     shell_log = app_data / "shell.log"
     install(installer, timeout)
     root = find_install_root(install_roots(os.environ))
+    if is_upgradable_in_place(installer):
+        check_upgrade_removes_old_runtime(installer, root, timeout)
     exe = root / EXE_NAME
     offset = shell_log.stat().st_size if shell_log.is_file() else 0
     process = subprocess.Popen([str(exe)], cwd=str(root))

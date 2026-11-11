@@ -1,6 +1,6 @@
 [package]
 name = "flowmap"
-version = "1.6.0"
+version = "1.6.1"
 description = "FlowMap — dual-market order-flow terminal"
 authors = ["nazmiefearmutcu"]
 license = "Apache-2.0"

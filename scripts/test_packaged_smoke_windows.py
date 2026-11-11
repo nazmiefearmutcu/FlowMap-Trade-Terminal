@@ -108,6 +108,30 @@ class LeftoverTests(unittest.TestCase):
         self.assertEqual(smoke.leftover_sidecars(processes, self.ROOT), [])
 
 
+class UpgradeTests(unittest.TestCase):
+    HOOKS = Path(__file__).resolve().parents[1] / "app" / "src-tauri" / "windows" / "hooks.nsi"
+
+    def test_the_stale_marker_sits_inside_the_installed_runtime(self):
+        root = Path("C:/Program Files/FlowMap")
+        marker = smoke.stale_runtime_marker(root)
+        self.assertEqual(marker.relative_to(root).parts[:3], ("pyruntime", "Lib", "site-packages"))
+        self.assertTrue(marker.parent.name.endswith(".dist-info"))
+
+    def test_only_the_nsis_installer_is_checked_for_an_in_place_upgrade(self):
+        self.assertTrue(smoke.is_upgradable_in_place(Path("FlowMap_1.6.1_x64-setup.exe")))
+        self.assertFalse(smoke.is_upgradable_in_place(Path("FlowMap_1.6.1_x64_en-US.msi")))
+
+    def test_the_installer_removes_the_old_runtime_before_it_copies_the_new_one(self):
+        text = self.HOOKS.read_text(encoding="utf-8-sig")
+        hook = text.split("!macro NSIS_HOOK_PREINSTALL", 1)[1].split("!macroend", 1)[0]
+        self.assertIn('RMDir /r "$INSTDIR\\pyruntime"', hook)
+        # A running app holds runtime files open, so the check comes first.
+        self.assertLess(hook.index("CheckIfAppIsRunning"), hook.index("RMDir /r"))
+
+    def test_the_uninstall_prompt_hook_is_still_defined(self):
+        self.assertIn("!macro NSIS_HOOK_POSTUNINSTALL", self.HOOKS.read_text(encoding="utf-8-sig"))
+
+
 class ProcessListingTests(unittest.TestCase):
     def test_an_empty_listing_is_no_processes(self):
         self.assertEqual(smoke.normalize_process_listing(""), [])
