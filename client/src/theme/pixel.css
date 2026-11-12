@@ -1,0 +1,135 @@
+/*
+ * Pixel interface style.
+ *
+ * Settings > Display > Interface style = Pixel stamps `data-ui-style="pixel"` on
+ * the root element (theme/uiStyle.ts). The chart then draws blocks, and this sheet
+ * moves the rest of the window to the same language.
+ *
+ * It changes FORM only. Every colour still comes from the active theme's tokens,
+ * so the style works with each theme and keeps that theme's contrast.
+ *
+ *   - corners are square, at every size;
+ *   - depth is a hard two-step offset, never a blurred shadow;
+ *   - surfaces are flat fills; the two bars carry a 4px checker instead of a wash;
+ *   - labels and prose are set in Pixelify Sans, a bundled pixel face; figures
+ *     keep the monospace face so columns of numbers stay aligned. Neither is
+ *     smoothed;
+ *   - a pressed control moves into its own shadow, and state changes step.
+ *
+ * The selector carries `html` so it outranks the per-theme `:root[data-theme]`
+ * blocks whatever the import order.
+ */
+
+/* The two marks share one slot; the active style shows one of them. */
+.wordmark {
+  display: block;
+  width: auto;
+  overflow: visible;
+}
+.wordmark--pixel {
+  display: none;
+}
+
+html:root[data-ui-style='pixel'] {
+  --r-1: 0;
+  --r-2: 0;
+  --r-3: 0;
+  --r-dialog: 0;
+  --font-ui: 'Pixelify Sans', var(--font-mono);
+  --px: 2px;
+  --px-edge: var(--line-2);
+  --shadow-pop: var(--px) var(--px) 0 0 var(--px-edge);
+  --shadow-drop: calc(var(--px) * 2) calc(var(--px) * 2) 0 0 var(--px-edge);
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+}
+
+/* Square everything, including pills, dots, switches and scrollbar thumbs that set
+   their own radius. */
+html:root[data-ui-style='pixel'] *,
+html:root[data-ui-style='pixel'] *::before,
+html:root[data-ui-style='pixel'] *::after {
+  border-radius: 0 !important;
+  transition-timing-function: steps(2, end) !important;
+}
+html:root[data-ui-style='pixel'] ::-webkit-scrollbar-thumb {
+  border-radius: 0;
+}
+
+/* --- Wordmark: the pixel mark replaces the script one. --- */
+html:root[data-ui-style='pixel'] .wordmark--script {
+  display: none;
+}
+html:root[data-ui-style='pixel'] .wordmark--pixel {
+  display: block;
+  shape-rendering: crispEdges;
+}
+.wordmark__heat {
+  fill: var(--accent);
+}
+
+/* --- Bars: flat fill, 4px checker, a solid two-pixel edge. --- */
+html:root[data-ui-style='pixel'] .topbar,
+html:root[data-ui-style='pixel'] .timeline {
+  background-color: var(--bg-1);
+  background-image: conic-gradient(
+    color-mix(in srgb, var(--line) 45%, transparent) 25%,
+    transparent 0 50%,
+    color-mix(in srgb, var(--line) 45%, transparent) 0 75%,
+    transparent 0
+  );
+  background-size: 4px 4px;
+}
+html:root[data-ui-style='pixel'] .topbar {
+  border-bottom: var(--px) solid var(--px-edge);
+}
+html:root[data-ui-style='pixel'] .timeline {
+  border-top: var(--px) solid var(--px-edge);
+}
+html:root[data-ui-style='pixel'] .topbar::after {
+  display: none;
+}
+
+/* --- Controls: a hard offset shadow; a press moves the control into it. --- */
+html:root[data-ui-style='pixel'] .tbtn,
+html:root[data-ui-style='pixel'] .symsearch__trigger,
+html:root[data-ui-style='pixel'] .modeseg,
+html:root[data-ui-style='pixel'] .transport__play,
+html:root[data-ui-style='pixel'] .speed-cycle,
+html:root[data-ui-style='pixel'] .segrow,
+html:root[data-ui-style='pixel'] .venue {
+  box-shadow: var(--px) var(--px) 0 0 var(--px-edge);
+}
+html:root[data-ui-style='pixel'] .tbtn:active,
+html:root[data-ui-style='pixel'] .symsearch__trigger:active,
+html:root[data-ui-style='pixel'] .transport__play:active,
+html:root[data-ui-style='pixel'] .speed-cycle:active {
+  transform: translate(var(--px), var(--px));
+  box-shadow: none;
+}
+
+/* --- Floating surfaces: one hard step of depth, no blur. --- */
+html:root[data-ui-style='pixel'] [role='dialog'],
+html:root[data-ui-style='pixel'] [role='menu'],
+html:root[data-ui-style='pixel'] [role='listbox'],
+html:root[data-ui-style='pixel'] [role='tooltip'] {
+  box-shadow: var(--shadow-drop);
+  backdrop-filter: none;
+}
+
+/* --- Version label: the build stamp reads as a small plate. --- */
+html:root[data-ui-style='pixel'] .timeline__version {
+  padding: 2px 4px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--px-edge);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:root[data-ui-style='pixel'] .tbtn:active,
+  html:root[data-ui-style='pixel'] .symsearch__trigger:active,
+  html:root[data-ui-style='pixel'] .transport__play:active,
+  html:root[data-ui-style='pixel'] .speed-cycle:active {
+    transform: none;
+  }
+}

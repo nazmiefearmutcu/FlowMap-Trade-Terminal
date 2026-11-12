@@ -1,6 +1,6 @@
 [project]
 name = "flowmap-server"
-version = "1.6.1"
+version = "1.6.2"
 requires-python = ">=3.13"
 # Supported installer: uv, using the committed uv.lock (it pins the crocodile
 # engine by sha256). The floors below are minimums, not ceilings: a plain pip

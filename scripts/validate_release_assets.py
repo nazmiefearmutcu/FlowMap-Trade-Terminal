@@ -19,7 +19,7 @@ CHECKSUM_LINE = re.compile(r"[0-9a-fA-F]{64} [ *](.+)")
 # NOTICE, and the SIL OFL texts of the bundled fonts.
 RELEASE_FILES = (
     "THIRD-PARTY-NOTICES.txt", "LICENSE", "NOTICE",
-    "LICENSE-inter.txt", "LICENSE-jetbrains-mono.txt",
+    "LICENSE-inter.txt", "LICENSE-jetbrains-mono.txt", "LICENSE-pixelify-sans.txt",
 )
 
 

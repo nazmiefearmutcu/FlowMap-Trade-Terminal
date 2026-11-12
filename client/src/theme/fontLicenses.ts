@@ -8,6 +8,7 @@
  */
 import interLicense from '../assets/fonts/LICENSE-inter.txt?raw';
 import jetbrainsMonoLicense from '../assets/fonts/LICENSE-jetbrains-mono.txt?raw';
+import pixelifySansLicense from '../assets/fonts/LICENSE-pixelify-sans.txt?raw';
 
 export interface FontLicense {
   /** CSS family name the font is registered under in fonts.css. */
@@ -21,4 +22,5 @@ export interface FontLicense {
 export const FONT_LICENSES: readonly FontLicense[] = [
   { family: 'Inter', license: 'SIL Open Font License 1.1', text: interLicense },
   { family: 'JetBrains Mono', license: 'SIL Open Font License 1.1', text: jetbrainsMonoLicense },
+  { family: 'Pixelify Sans', license: 'SIL Open Font License 1.1', text: pixelifySansLicense },
 ];

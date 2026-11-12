@@ -120,7 +120,7 @@ when that stamp and the config disagree. Bumping a release means editing
 `flowmap_server/__init__.py`, `client/package.json`(+`.lock`), then rerunning
 `make-bg.py`.
 
-**Current state:** the committed DMG artwork is stamped `1.6.1`
+**Current state:** the committed DMG artwork is stamped `1.6.2`
 (`app/icons/dmg/RENDERED_VERSION`), the same version as `tauri.conf.json`, so
 `scripts/check_dmg_art.py` passes. `make-bg.py` sets its text in the JetBrains Mono
 files the app ships (`client/src/assets/fonts`), so a render needs only Python with

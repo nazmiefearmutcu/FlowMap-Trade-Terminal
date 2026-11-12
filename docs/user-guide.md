@@ -289,7 +289,7 @@ exactly the column data the server delivered.
   blue ask) and `contrast` (true-black, maximum-contrast ink). First launch
   follows your OS light/dark preference; your explicit choice persists. Canvas
   overlays (grid, axes, markers) follow the theme, not just the chrome.
-- **Chart style** — Settings → *Display* → *Chart style* chooses **Normal** (smooth, the default) or **Pixel**.
+- **Interface style** — Settings → *Display* → *Interface style* chooses **Normal** (smooth, the default) or **Pixel**. Pixel changes the whole window as well as the chart: square controls, hard shadows, the Pixelify Sans face and the pixel FlowMap mark, in the colours of the active theme.
   Pixel draws the heatmap as blocks with seven intensity levels, colored by the active theme and
   colormap, so every theme still applies. In Pixel mode the last-price line is stepped and trade
   bubbles are squares. The change applies at once, and PNG export uses the style on screen.

@@ -12,7 +12,7 @@ FlowMap Trade Terminal is a desktop application for studying liquidity and order
 - Adds trade bubbles, best bid and offer, VWAP, cumulative volume delta, volume profile, and feed-gap markers.
 - Provides symbol search, watchlists, drawings, technical indicators, and local price alerts.
 - Records sessions to Parquet and replays the recorded data with seeking, pause, and speed controls. Recording is on by default in the installed app; turn it off under Settings > Data, or set `"enabled": false` in `recording.json` in the app data folder before launch (see [SECURITY.md](SECURITY.md#what-it-writes)). From source, `FLOWMAP_RECORDING_ENABLED=0` turns it off. The default soft limit is 20 GB; the oldest recording parts are removed as it is exceeded, except the `*-epochs-*` parts, which are kept.
-- Offers two chart styles in Settings > Display: *Normal*, the smooth heatmap (default), and *Pixel*, which draws blocks in the theme colours.
+- Offers two interface styles in Settings > Display: *Normal*, the smooth heatmap and rounded window (default), and *Pixel*, which turns the whole app to pixel art in the theme colours.
 - Exports chart images and finalized depth columns as CSV or JSON.
 - Runs in a Tauri desktop shell or as a local browser client. The interface supports English and Turkish, themes, and keyboard controls. Settings > Keyboard can turn off the single-key shortcuts; Ctrl and Cmd chords and the arrow keys keep working. Its typefaces are bundled, so the client loads nothing from the web. Settings > About and legal shows the version, the licence and the data-source attribution.
 

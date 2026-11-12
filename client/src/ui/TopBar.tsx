@@ -20,6 +20,7 @@ import { useFlowMapStore } from '../state/store';
 import { useIntelligenceStore } from '../state/intelligenceStore';
 import { FEED_KEY } from './MarketStrip';
 import { SymbolSearch, type SymbolSearchHandle } from './SymbolSearch';
+import { PixelWordmark } from './PixelWordmark';
 import { Wordmark } from './Wordmark';
 import { capabilityChips, marketGroup } from './symbols';
 import {
@@ -104,7 +105,9 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
   return (
     <header className="topbar">
       <span className="topbar__brand">
-        <Wordmark height={24} />
+        {/* theme/pixel.css shows one of the two, by the interface style. */}
+        <Wordmark height={24} className="wordmark wordmark--script" />
+        <PixelWordmark height={14} className="wordmark wordmark--pixel" />
       </span>
 
       <SymbolSearch ref={searchRef} current={`${market}:${symbol}`} onSelect={onSelectSymbol} />
@@ -192,7 +195,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         aria-haspopup="dialog"
       >
         {/* Force text (monochrome) presentation of the gear via U+FE0E, not the color emoji. */}
-        <span aria-hidden="true">{'⚙︎'}</span> {t('topbar.settingsLabel')}
+        <span aria-hidden="true">{'⚙︎'}</span> <span className="tbtn__label">{t('topbar.settingsLabel')}</span>
       </button>
     </header>
   );

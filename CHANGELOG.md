@@ -7,6 +7,27 @@ Unreleased work sits on top of the newest listed commit.
 
 ## [Unreleased]
 
+## [1.6.2] — 2026-11-12
+
+Release notes: [docs/release-notes-1.6.2.md](docs/release-notes-1.6.2.md).
+
+### Added
+
+- Version label. The bottom-left corner of the window shows the installed version (for example `v1.6.2`).
+- Pixel interface style. Settings > Display > *Interface style* (previously *Chart style*) = *Pixel* now
+  changes the whole window, not only the chart: square corners, hard offset shadows in place of blurred
+  ones, flat bars with a 4px checker, Pixelify Sans (SIL OFL 1.1, bundled) for labels with the monospace face kept for figures, and a pixel
+  FlowMap wordmark. Colours
+  still come from the active theme, so it works with every theme (`client/src/theme/pixel.css`).
+
+### Fixed
+
+- Top bar on narrow windows. The bar needed about 1620 px, and below that width the right-hand controls
+  (mode, status, clock, PNG, Rail, Research, Settings) were pushed off-window. The bar now wraps whenever its
+  items do not fit, and drops secondary items step by step first (macro ticker, extra capability chips,
+  search hint, wordmark, the Settings word, the SIM chip, the clock zone), so it stays on one row down to
+  the 900 px minimum window width.
+
 ## [1.6.1] — 2026-11-12
 
 Release notes: [docs/release-notes-1.6.1.md](docs/release-notes-1.6.1.md).
@@ -556,7 +577,8 @@ changelog; see the
 [releases page](https://github.com/nazmiefearmutcu/flowmap/releases) for
 notes and assets.
 
-[Unreleased]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.6.2...HEAD
+[1.6.2]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/nazmiefearmutcu/flowmap/compare/v1.5.0...v1.5.1
