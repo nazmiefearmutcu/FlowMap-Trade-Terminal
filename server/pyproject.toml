@@ -15,7 +15,7 @@ dependencies = [
   # Imported directly by first-party code (the certifi-hardened REST sessions in
   # feeds/crypto.py, core/backfill.py and feeds/equity.py), not just inherited:
   # a transitive that the engine one day drops must not silently break us.
-  "aiohttp>=3.9",
+  "aiohttp>=3.14.5",
   "certifi",
   "msgspec>=0.18",
   "numpy>=1.26",
