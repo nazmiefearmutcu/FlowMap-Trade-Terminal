@@ -109,7 +109,7 @@ jobs:
             echo "do_release=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.resolve.outputs.tag && format('refs/tags/{0}', steps.resolve.outputs.tag) || github.sha }}
           persist-credentials: false
@@ -218,7 +218,7 @@ jobs:
         # is what bundle-python.sh is written for.
         shell: bash
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.tag && format('refs/tags/{0}', needs.prepare.outputs.tag) || github.sha }}
           persist-credentials: false
@@ -587,7 +587,7 @@ jobs:
       # download-artifact reads this run's own artifacts.
       actions: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ format('refs/tags/{0}', needs.prepare.outputs.tag) }}
           persist-credentials: false
