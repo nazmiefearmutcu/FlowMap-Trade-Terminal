@@ -144,6 +144,18 @@ describe('fetchMarketMap', () => {
     await expect(fetchMarketMap('us')).rejects.toThrow(/502/);
   });
 
+  it('replaces a non-JSON success body with the generic message, not the parser text', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>maintenance</html>', { status: 200 })));
+
+    const failure = await fetchMarketMap('us').then(
+      () => null,
+      (err: unknown) => err as Error,
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure?.message).toBe('The market map could not be loaded.');
+  });
+
   it('propagates an abort', async () => {
     const controller = new AbortController();
     vi.stubGlobal(

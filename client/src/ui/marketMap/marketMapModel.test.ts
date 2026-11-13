@@ -4,11 +4,14 @@ import type { MapItem } from './marketMapApi';
 import {
   CLAMP_PERCENT,
   DEFAULT_PERIOD,
+  FILL_SHARES,
   PERIODS,
   changeLevel,
+  fillShare,
   formatChange,
   formatCompact,
   labelFor,
+  tileInk,
   tileTone,
   toGroups,
 } from './marketMapModel';
@@ -133,6 +136,33 @@ describe('formatChange', () => {
     expect(formatChange(1.23)).toBe('+1.2%');
     expect(formatChange(-3.44)).toBe('\u22123.4%');
     expect(formatChange(0)).toBe('0.0%');
+  });
+
+  it('shows no sign for a change that rounds to zero, on either side', () => {
+    expect(formatChange(0.04)).toBe('0.0%');
+    expect(formatChange(-0.04)).toBe('0.0%');
+  });
+});
+
+describe('tile ink and fill cap', () => {
+  it('keeps the main text below the on-fill threshold and switches at it', () => {
+    expect(tileInk(0)).toBe('normal');
+    expect(tileInk(0.4)).toBe('normal');
+    expect(tileInk(0.6)).toBe('on-fill');
+    expect(tileInk(1)).toBe('on-fill');
+  });
+
+  it('gives each strength step its fill share, and none to a flat or unknown tile', () => {
+    expect(fillShare(0)).toBe(0);
+    expect(fillShare(0.2)).toBe(FILL_SHARES[0]);
+    expect(fillShare(0.4)).toBe(FILL_SHARES[1]);
+    expect(fillShare(0.6)).toBe(FILL_SHARES[2]);
+    expect(fillShare(0.8)).toBe(FILL_SHARES[3]);
+    expect(fillShare(1)).toBe(FILL_SHARES[4]);
+  });
+
+  it('never lets a stronger step mix in less colour than a weaker one', () => {
+    for (let i = 1; i < FILL_SHARES.length; i++) expect(FILL_SHARES[i]).toBeGreaterThanOrEqual(FILL_SHARES[i - 1]);
   });
 });
 

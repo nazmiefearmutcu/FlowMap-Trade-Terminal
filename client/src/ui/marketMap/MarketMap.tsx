@@ -9,21 +9,32 @@
  * requests stop when it closes.
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 
 import { exchangeZoneFor, formatClock, formatPrice, useTimeZone } from '../../i18n/format';
 import { useT, type TFn } from '../../i18n/useT';
 import { isTopOverlay, pushOverlay } from '../overlayStack';
 import { fetchMarketMap, type MapItem, type MapMarket, type MarketMapData } from './marketMapApi';
+import { tileCardPosition, pointerCardPosition, type Point } from './marketMapCard';
 import {
   CLAMP_PERCENT,
   DEFAULT_PERIOD,
   PERIODS,
   changeLevel,
+  fillShare,
   formatChange,
   formatCompact,
   labelFor,
+  tileInk,
   tileTone,
   toGroups,
 } from './marketMapModel';
@@ -41,23 +52,23 @@ export interface MarketMapProps {
 const REFRESH_MS = 60_000;
 /** Height of a sector's name strip, when the map has more than one sector. */
 const GROUP_HEADER_PX = 18;
-/** Gap between a tile and its detail card. */
-const CARD_GAP_PX = 8;
-/** Width and height the detail card is laid out in, for flipping it inside the body. */
-const CARD_W_PX = 220;
-const CARD_H_PX = 132;
 /** Stepped colours shown in the legend, from most negative to most positive. */
 const LEGEND_LEVELS = [-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1];
 const MARKETS: readonly MapMarket[] = ['us', 'crypto'];
 
 interface MarketState {
   data: MarketMapData | null;
-  /** The reason the last request failed, or null. */
+  /** The reason the last request failed, or null. Shown only while there is no data. */
   error: string | null;
-  loading: boolean;
 }
 
-const EMPTY_STATE: MarketState = { data: null, error: null, loading: false };
+const EMPTY_STATE: MarketState = { data: null, error: null };
+
+/** The tile under the pointer or keyboard focus. `pointer` is null for keyboard focus. */
+interface Hover {
+  symbol: string;
+  pointer: Point | null;
+}
 
 /** A tile's rectangle in body coordinates, rounded to whole pixels on both edges. */
 function boxStyle(rect: Rect): CSSProperties {
@@ -71,9 +82,9 @@ function boxStyle(rect: Rect): CSSProperties {
   };
 }
 
-/** A custom property the tile and legend CSS reads, typed for React. */
-function strengthStyle(rect: Rect, strength: number): CSSProperties {
-  return { ...boxStyle(rect), '--strength': strength } as CSSProperties;
+/** A tile's box and the share of colour its fill mixes in, which the stylesheet reads. */
+function tileStyle(rect: Rect, strength: number): CSSProperties {
+  return { ...boxStyle(rect), '--fill-share': fillShare(strength) } as CSSProperties;
 }
 
 /** Decimals for a price: two from one unit up, four below, so a cheap coin still shows movement. */
@@ -106,17 +117,19 @@ function detailRows(item: MapItem, period: string, t: TFn): DetailRow[] {
   return rows;
 }
 
-/** Where the detail card sits beside a tile, flipped and clamped to stay inside the body. */
-function cardPosition(rect: Rect, bounds: { w: number; h: number }): CSSProperties {
-  let left = rect.x + rect.w + CARD_GAP_PX;
-  if (left + CARD_W_PX > bounds.w) left = rect.x - CARD_W_PX - CARD_GAP_PX;
-  left = Math.min(Math.max(0, left), Math.max(0, bounds.w - CARD_W_PX));
-  const top = Math.min(Math.max(0, rect.y), Math.max(0, bounds.h - CARD_H_PX));
-  return { left: Math.round(left), top: Math.round(top) };
+/** The elements Tab can reach inside `root`, in document order. */
+function tabbableWithin(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]')].filter(
+    (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled,
+  );
 }
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isAbortError(err: unknown): boolean {
+  return (err as { name?: string } | null)?.name === 'AbortError';
 }
 
 export function MarketMap({ open, onClose, onOpenChart }: MarketMapProps): JSX.Element | null {
@@ -138,7 +151,7 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   const [states, setStates] = useState<Record<MapMarket, MarketState>>({ us: EMPTY_STATE, crypto: EMPTY_STATE });
   const [reloadKey, setReloadKey] = useState(0);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const [hovered, setHovered] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<Hover | null>(null);
 
   const period = periods[market];
   const state = states[market];
@@ -166,18 +179,20 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   }, []);
 
   // Fetch the visible tab when it changes and on each refresh. Changing the tab or
-  // closing aborts the request in flight.
+  // closing aborts the request in flight; an aborted request writes nothing.
   useEffect(() => {
     const controller = new AbortController();
-    setStates((prev) => ({ ...prev, [market]: { ...prev[market], loading: true, error: null } }));
+    setStates((prev) =>
+      prev[market].error === null ? prev : { ...prev, [market]: { ...prev[market], error: null } },
+    );
     fetchMarketMap(market, controller.signal).then(
-      (next) => setStates((prev) => ({ ...prev, [market]: { data: next, error: null, loading: false } })),
+      (next) => {
+        if (controller.signal.aborted) return;
+        setStates((prev) => ({ ...prev, [market]: { data: next, error: null } }));
+      },
       (err: unknown) => {
-        if (controller.signal.aborted) {
-          setStates((prev) => ({ ...prev, [market]: { ...prev[market], loading: false } }));
-          return;
-        }
-        setStates((prev) => ({ ...prev, [market]: { ...prev[market], loading: false, error: messageOf(err) } }));
+        if (controller.signal.aborted || isAbortError(err)) return;
+        setStates((prev) => ({ ...prev, [market]: { ...prev[market], error: messageOf(err) } }));
       },
     );
     return () => controller.abort();
@@ -231,12 +246,13 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
     tabRefs.current[next]?.focus();
   };
 
-  // Tab and Shift+Tab stay inside the dialog while it is open.
+  // Tab and Shift+Tab stay inside the dialog while it is open, on the elements
+  // Tab can actually reach (the inactive tab is skipped).
   const onTrapKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (e.key !== 'Tab') return;
     const panel = panelRef.current;
     if (!panel) return;
-    const focusable = panel.querySelectorAll<HTMLElement>('button, [href], [tabindex]:not([tabindex="-1"])');
+    const focusable = tabbableWithin(panel);
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
@@ -246,17 +262,23 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
         e.preventDefault();
         last.focus();
       }
-    } else if (active === last) {
+    } else if (active === last || !panel.contains(active)) {
       e.preventDefault();
       first.focus();
     }
   };
 
+  /** The pointer's position inside the body, which the detail card is placed from. */
+  const bodyPoint = (e: MouseEvent<HTMLElement>): Point => {
+    const box = bodyRef.current?.getBoundingClientRect();
+    return { x: e.clientX - (box?.left ?? 0), y: e.clientY - (box?.top ?? 0) };
+  };
+
   const groupLabel = (name: string): string => (name === 'Other' ? t('marketMap.group.other') : name);
   const clamp = CLAMP_PERCENT[period];
-  const hoveredItem = hovered === null ? undefined : itemsBySymbol.get(hovered);
-  const hoveredRect = hovered === null ? undefined : rectsBySymbol.get(hovered);
-  const showStale = data !== null && (data.stale || state.error !== null);
+  const hoveredItem = hovered === null ? undefined : itemsBySymbol.get(hovered.symbol);
+  const hoveredRect = hovered === null ? undefined : rectsBySymbol.get(hovered.symbol);
+  const showStale = data !== null && data.stale;
 
   let body: JSX.Element;
   if (data === null && state.error !== null) {
@@ -303,12 +325,14 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
                 className: 'market-map__tile',
                 'data-testid': 'market-map-tile',
                 'data-side': tone.side,
-                style: strengthStyle(tile.rect, tone.strength),
+                'data-ink': tileInk(tone.strength),
+                style: tileStyle(tile.rect, tone.strength),
                 'aria-label': label,
-                onMouseEnter: () => setHovered(item.symbol),
-                onMouseLeave: () => setHovered((h) => (h === item.symbol ? null : h)),
-                onFocus: () => setHovered(item.symbol),
-                onBlur: () => setHovered((h) => (h === item.symbol ? null : h)),
+                onMouseEnter: (e: MouseEvent<HTMLElement>) => setHovered({ symbol: item.symbol, pointer: bodyPoint(e) }),
+                onMouseMove: (e: MouseEvent<HTMLElement>) => setHovered({ symbol: item.symbol, pointer: bodyPoint(e) }),
+                onMouseLeave: () => setHovered((h) => (h?.symbol === item.symbol ? null : h)),
+                onFocus: () => setHovered((h) => (h?.symbol === item.symbol ? h : { symbol: item.symbol, pointer: null })),
+                onBlur: () => setHovered((h) => (h?.symbol === item.symbol ? null : h)),
               };
               if (item.chart === null) {
                 return (
@@ -334,11 +358,15 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
             })}
           </div>
         ))}
-        {hoveredItem && hoveredRect && (
+        {hoveredItem && hovered && (hovered.pointer !== null || hoveredRect !== undefined) && (
           <div
             className="market-map__card"
             aria-hidden="true"
-            style={cardPosition(hoveredRect, size)}
+            style={
+              hovered.pointer !== null
+                ? pointerCardPosition(hovered.pointer, size)
+                : tileCardPosition(hoveredRect as Rect, size)
+            }
           >
             <div className="market-map__card-name">{hoveredItem.name}</div>
             <div className="market-map__card-symbol">{hoveredItem.symbol}</div>
@@ -425,7 +453,7 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
                     key={level}
                     className="market-map__swatch"
                     data-side={tone.side}
-                    style={{ '--strength': tone.strength } as CSSProperties}
+                    style={{ '--fill-share': fillShare(tone.strength) } as CSSProperties}
                   />
                 );
               })}

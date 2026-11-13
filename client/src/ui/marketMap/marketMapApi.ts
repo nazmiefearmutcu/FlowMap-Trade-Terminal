@@ -90,6 +90,9 @@ function errorReason(raw: unknown): string | null {
   return typeof message === 'string' && message !== '' ? message : null;
 }
 
+/** The message shown when the server gives no usable reason. */
+export const LOAD_FAILED_MESSAGE = 'The market map could not be loaded.';
+
 /**
  * Loads one market's map. Rejects with the server's reason on a non-2xx status,
  * and with the abort reason when `signal` aborts.
@@ -103,7 +106,14 @@ export async function fetchMarketMap(market: MapMarket, signal?: AbortSignal): P
     } catch {
       body = null;
     }
-    throw new Error(errorReason(body) ?? `The market map request failed (HTTP ${response.status}).`);
+    throw new Error(errorReason(body) ?? `${LOAD_FAILED_MESSAGE} (HTTP ${response.status})`);
   }
-  return parseResponse(await response.json(), market);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    // A success status with a body that is not JSON (an HTML error page, say) is still a failure.
+    throw new Error(LOAD_FAILED_MESSAGE);
+  }
+  return parseResponse(body, market);
 }

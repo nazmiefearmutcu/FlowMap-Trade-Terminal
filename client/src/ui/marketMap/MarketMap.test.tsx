@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setLocale } from '../../i18n';
 import { fetchMarketMap, type MarketMapData, type MapItem } from './marketMapApi';
+import { FILL_SHARES } from './marketMapModel';
 import { MarketMap } from './MarketMap';
 
 vi.mock('./marketMapApi', async (importOriginal) => {
@@ -197,16 +198,16 @@ describe('MarketMap', () => {
     const group = document.querySelector('[role="group"][aria-label="Change over"]');
     expect(group).not.toBeNull();
 
-    const btcStrength = () => tileFor('BTC').style.getPropertyValue('--strength');
+    const btcShare = () => tileFor('BTC').style.getPropertyValue('--fill-share');
     const btcSide = () => tileFor('BTC').getAttribute('data-side');
-    // 24 h: +4% of a 10% clamp is 0.4 of the full colour.
+    // 24 h: +4% of a 10% clamp is 0.4 of the full colour, the 0.4 step, which mixes 0.35.
     expect(btcSide()).toBe('up');
-    expect(btcStrength()).toBe('0.4');
+    expect(btcShare()).toBe(String(FILL_SHARES[1]));
 
-    // 7 days: -6% of a 20% clamp is 0.3, which rounds up to the 0.4 step.
+    // 7 days: -6% of a 20% clamp is 0.3, which rounds up to the same 0.4 step.
     clickEl(group!.querySelectorAll('button')[2] as HTMLElement); // 7 days
     expect(btcSide()).toBe('down');
-    expect(btcStrength()).toBe('0.4');
+    expect(btcShare()).toBe(String(FILL_SHARES[1]));
   });
 
   it('opens the chart and closes when a tile with a chart is activated', async () => {
@@ -292,6 +293,112 @@ describe('MarketMap', () => {
       vi.advanceTimersByTime(120_000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps Tab inside the dialog and never lands on the inactive tab', async () => {
+    renderMap({ open: true });
+    await flush();
+    clickEl(tab('crypto'));
+    await flush();
+
+    // The last reachable control is the BTC tile; Tab from it must wrap to the active tab.
+    act(() => {
+      tileFor('BTC').focus();
+    });
+    act(() => {
+      dialog()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+
+    expect(document.activeElement).toBe(tab('crypto'));
+    expect(document.activeElement).not.toBe(tab('us'));
+  });
+
+  it('shows no notice when a refresh fails while data is on screen', async () => {
+    vi.useFakeTimers();
+    renderMap({ open: true });
+    await flush();
+    fetchMock.mockRejectedValueOnce(new Error('network down'));
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await flush();
+
+    expect(tiles().length).toBeGreaterThan(0);
+    expect(document.body.textContent).not.toContain('Could not refresh');
+    expect(document.body.textContent).not.toContain('network down');
+  });
+
+  it('writes nothing when the map closes while a request is in flight', async () => {
+    let fail!: (err: Error) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<MarketMapData>((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    const { setOpen } = renderMap({ open: true });
+    setOpen(false);
+    await act(async () => {
+      fail(new Error('late failure'));
+    });
+
+    setOpen(true);
+    await flush();
+
+    expect(document.body.textContent).not.toContain('late failure');
+    expect(tiles().length).toBeGreaterThan(0);
+  });
+
+  it('does not put the first tab late answer on the second tab', async () => {
+    let answerUs!: (value: MarketMapData) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<MarketMapData>((resolve) => {
+          answerUs = resolve;
+        }),
+    );
+    renderMap({ open: true });
+    clickEl(tab('crypto'));
+    await flush();
+    expect(tileFor('BTC')).toBeTruthy();
+
+    await act(async () => {
+      answerUs(usData);
+    });
+    await flush();
+
+    expect(tiles().some((el) => el.getAttribute('aria-label')?.includes('(NVDA)'))).toBe(false);
+    expect(tileFor('BTC')).toBeTruthy();
+  });
+
+  it('never shows an abort to the user', async () => {
+    fetchMock.mockImplementationOnce(
+      (_market, signal) =>
+        new Promise<MarketMapData>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }),
+    );
+    renderMap({ open: true });
+    clickEl(tab('crypto'));
+    await flush();
+
+    expect(document.body.textContent).not.toContain('could not be loaded');
+    expect(tileFor('BTC')).toBeTruthy();
+  });
+
+  it('places the detail card just off the pointer when hovering', async () => {
+    renderMap({ open: true });
+    await flush();
+
+    act(() => {
+      tileFor('NVDA').dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: 100, clientY: 60 }));
+    });
+
+    const card = document.querySelector<HTMLElement>('.market-map__card');
+    expect(card).not.toBeNull();
+    expect(card!.style.left).toBe('114px');
+    expect(card!.style.top).toBe('74px');
   });
 
   it('does not fetch again after close', async () => {

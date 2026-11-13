@@ -149,22 +149,28 @@
   margin-top: 4px;
 }
 
-/* A tile's fill: the up or down token mixed over the neutral surface by the
-   strength. The strength stops at 0.85 so the text never sits on the pure colour. */
+/* A tile's fill: the up or down token mixed over the neutral surface by the share
+   the component sets as `--fill-share` (see marketMapModel FILL_SHARES). Flat and
+   unknown tiles have a share of 0, so they keep the neutral surface. */
 .market-map__tile,
 .market-map__swatch {
-  --fill-level: min(var(--strength, 0), 0.85);
   background: var(--bg-2);
 }
 
 .market-map__tile[data-side='up'],
 .market-map__swatch[data-side='up'] {
-  background: color-mix(in srgb, var(--accent) calc(var(--fill-level) * 100%), var(--bg-2));
+  background: color-mix(in srgb, var(--accent) calc(var(--fill-share) * 100%), var(--bg-2));
 }
 
 .market-map__tile[data-side='down'],
 .market-map__swatch[data-side='down'] {
-  background: color-mix(in srgb, var(--sell) calc(var(--fill-level) * 100%), var(--bg-2));
+  background: color-mix(in srgb, var(--sell) calc(var(--fill-share) * 100%), var(--bg-2));
+}
+
+/* Tile ink: the main text on the neutral surface, and the page background on a
+   strong fill. The model picks which (tileInk), so the pair always passes 4.5:1. */
+.market-map__tile[data-ink='on-fill'] {
+  color: var(--bg);
 }
 
 .market-map__tile {

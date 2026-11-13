@@ -64,6 +64,34 @@ export function tileTone(level: number | null): TileTone {
   return { side: level > 0 ? 'up' : 'down', strength: step / STEPS };
 }
 
+/**
+ * The share of the up or down colour each strength step mixes into a tile fill,
+ * for the steps 0.2, 0.4, 0.6, 0.8 and 1. The steps are chosen together with the
+ * ink rule below so that every theme's tile text reaches 4.5:1 (see
+ * theme/marketMapContrast.test.ts). A plain linear share cannot do that: fills
+ * of middling lightness fall where neither ink reads, so the share jumps at the
+ * ink switch. Each tile reads this through `--fill-share`.
+ */
+export const FILL_SHARES: readonly number[] = [0.3, 0.35, 0.8, 0.85, 0.9];
+
+/** From this strength up, tile text switches to the page background colour. */
+export const INK_ON_FILL_STRENGTH = 0.6;
+
+/** Which ink a tile's text uses: the theme's main text, or the page background on a strong fill. */
+export type TileInk = 'normal' | 'on-fill';
+
+/** The ink for a tile strength. Flat and unknown tiles (strength 0) keep the main text. */
+export function tileInk(strength: number): TileInk {
+  return strength >= INK_ON_FILL_STRENGTH ? 'on-fill' : 'normal';
+}
+
+/** The share of the colour a tile fill mixes in: 0 for flat and unknown, else its step's share. */
+export function fillShare(strength: number): number {
+  if (!(strength > 0)) return 0;
+  const step = Math.min(FILL_SHARES.length, Math.max(1, Math.round(strength * FILL_SHARES.length)));
+  return FILL_SHARES[step - 1];
+}
+
 /** One treemap group per sector; each item is a tile sized by its market value. */
 export function toGroups(items: readonly MapItem[]): TreemapGroup[] {
   const byGroup = new Map<string, { id: string; items: TreemapItem[] }>();
@@ -88,9 +116,9 @@ export function labelFor(rect: Rect): 'none' | 'symbol' | 'symbol+change' {
 /** A percent change with a sign, one decimal and a real minus sign: `+1.2%`, `−3.4%`. */
 export function formatChange(percent: number): string {
   const magnitude = formatFixed(Math.abs(percent), 1);
-  if (percent < 0 && Number(magnitude.replace(',', '.')) !== 0) return `\u2212${magnitude}%`;
-  if (percent > 0) return `+${magnitude}%`;
-  return `${magnitude}%`;
+  // A change that rounds to zero carries no sign on either side.
+  if (Number(magnitude.replace(',', '.')) === 0) return `${magnitude}%`;
+  return percent < 0 ? `\u2212${magnitude}%` : `+${magnitude}%`;
 }
 
 const COMPACT_TIERS: readonly (readonly [number, string])[] = [
