@@ -14,7 +14,6 @@ from concurrent.futures import ThreadPoolExecutor
 import msgspec
 
 from flowmap_server.core.backfill import (
-    DEFAULT_BACKFILL_STRETCH,
     BackfillFn,
 )
 from flowmap_server.core.grid import Grid
@@ -77,7 +76,6 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
         wall_clock: Clock = time.time_ns,
         backfill_fn: BackfillFn | None = None,
         backfill_max_cols: int = 0,
-        backfill_stretch: int = DEFAULT_BACKFILL_STRETCH,
         stats: SessionStats | None = None,
         rec_flush_interval_s: float = 10.0,
         retention_min_interval_s: float = 60.0,
@@ -107,7 +105,6 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
             retention_min_interval_s=retention_min_interval_s,
             backfill_fn=backfill_fn,
             backfill_max_cols=backfill_max_cols,
-            backfill_stretch=backfill_stretch,
         )
 
         self._clients: set[ClientTx] = set()
@@ -149,7 +146,6 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
         retention_min_interval_s: float,
         backfill_fn: BackfillFn | None,
         backfill_max_cols: int,
-        backfill_stretch: int,
     ) -> None:
         """Recording, overview, replay-tail and boot/backfill state (see __init__)."""
         # Recording (module docstring): the root opens the per-symbol writer
@@ -231,15 +227,12 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
         self._boot_done = False
         self._start_lock = asyncio.Lock()
 
-        # First-launch history backfill: a cold subscribe seeds the ring
-        # with reconstructed candle history so the client's eager requestHistory
-        # returns real data. Runs in _boot only when no Parquet tail rehydrated.
-        # When it seeds columns the session badges Hello/Status capability with
-        # ``history: 'reconstructed'`` (candle volume-at-price, not resting L2).
+        # First-launch history backfill: a cold subscribe seeds the ring with
+        # price history from candles, so the client's eager requestHistory
+        # returns real prices. Runs in _boot only when no Parquet tail
+        # rehydrated. The seeded ring carries price, volume and CVD but no depth.
         self._backfill_fn = backfill_fn
         self._backfill_max_cols = backfill_max_cols
-        self._backfill_stretch = backfill_stretch
-        self._history_reconstructed = False
         # A keyless equity feed replays its provider warmup on every attach.
         # A preloaded tail already owns those timestamps; never append the
         # same session again after it with increasing seq and decreasing time.

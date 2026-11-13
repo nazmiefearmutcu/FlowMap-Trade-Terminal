@@ -367,7 +367,6 @@ class SessionManager:
             # a live candle backfill.
             backfill_fn=self._backfill_fn if sub.mode == "live" else None,
             backfill_max_cols=self._cfg.backfill_max_cols if self._cfg.backfill_enabled else 0,
-            backfill_stretch=self._cfg.backfill_stretch,
             stats=self.stats,
             rec_flush_interval_s=self._cfg.rec_flush_interval_s,
             retention_min_interval_s=self._cfg.retention_min_interval_s,

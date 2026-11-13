@@ -1,16 +1,17 @@
-"""First-launch history backfill tests — canned candles, NO network.
+"""First-launch price history tests — canned candles, NO network.
 
 Covers the two layers:
 
 1. ``columns_from_candles`` — the pure candle -> FinalizedColumn conversion:
-   contiguity/monotonicity that ``Grid.preload`` requires, an epoch frame
-   centered so densities land (and live continues in-epoch), the two-sided
-   volume-at-price split, a reconstructed CVD from the crypto taker split,
-   float16-bounded density, and a real ``Grid.preload`` round-trip.
+   one column per candle, contiguity/monotonicity that ``Grid.preload``
+   requires, an epoch frame centered on the last close, zero depth on every
+   column, bars carrying OHLC, the taker split as CVD, and a real
+   ``Grid.preload`` round-trip. On a banded grid the history leaves the band
+   frame to the first live mid, and live books continue after it.
 2. ``Session`` wiring — a cold subscribe seeds the ring through the injectable
-   ``backfill_fn`` seam, the first snapshot carries the reconstructed columns +
-   a gap marker, and Hello badges ``history: 'reconstructed'``; a missing seam
-   or a failing fetch degrades cleanly to a cold start.
+   ``backfill_fn`` seam, the first snapshot carries a gap marker, and the
+   capability carries no history badge; a missing seam or a failing fetch
+   degrades cleanly to a cold start; a keyless equity feed never fetches.
 """
 
 from __future__ import annotations
@@ -21,17 +22,11 @@ import numpy as np
 import pytest
 
 from flowmap_server.config import Config
-from flowmap_server.core.backfill import (
-    BACKFILL_DENSITY_GAIN,
-    BAND_WEIGHT_FLOOR,
-    DEFAULT_BACKFILL_STRETCH,
-    DENSITY_SAFETY_MAX,
-    Candle,
-    _band_weights,
-    columns_from_candles,
-)
+from flowmap_server.core.backfill import Candle, columns_from_candles
 from flowmap_server.core.grid import Grid, GridCfg
 from flowmap_server.core.session import ClientTx, Session, SessionManager
+from flowmap_server.core.session_manager import BANDS
+from flowmap_server.feeds.equity import EquityFeed
 from flowmap_server.proto import wire
 from flowmap_server.proto.events import (
     MODE_L2,
@@ -43,12 +38,7 @@ from flowmap_server.proto.events import (
 
 DT = 250_000_000  # 250 ms
 _MINUTE = 60 * 10**9
-
-
-@pytest.fixture(autouse=True)
-def _shape_env_default(monkeypatch):
-    """Tests run with the shaping gate at its shipped default unless they opt in."""
-    monkeypatch.delenv("FLOWMAP_BACKFILL_SHAPE", raising=False)
+BANDED = ("wide", "full", "deep")
 
 
 def _cfg(rows: int = 256, ring_columns: int = 1024) -> GridCfg:
@@ -60,6 +50,27 @@ def _cfg(rows: int = 256, ring_columns: int = 1024) -> GridCfg:
         rows=rows,
         ring_columns=ring_columns,
         mode=MODE_L2,
+    )
+
+
+def _banded_cfg(band: str, ring_columns: int = 1024) -> GridCfg:
+    """A grid built the way the session manager builds a price-band grid."""
+    spec = BANDS[band]
+    assert spec is not None
+    rows = spec.rows or 2048
+    tick = 0.05
+    return GridCfg(
+        tick=tick,
+        tick_multiple=1,
+        dt_ns=DT,
+        p0=100.0 - rows * tick / 2.0,
+        rows=rows,
+        ring_columns=ring_columns,
+        mode=MODE_L2,
+        band_up=spec.up,
+        band_down=spec.down,
+        band_hybrid=spec.hybrid,
+        core_rows=spec.core_rows,
     )
 
 
@@ -84,12 +95,19 @@ def _candles(n: int, *, base_price: float = 100.0, with_split: bool = True) -> l
     return out
 
 
+def _book(mid: float, step: float, n: int = 5):
+    """A book with ``n`` levels per side, ``step`` apart, around ``mid``."""
+    offsets = step * np.arange(1, n + 1)
+    sz = np.full(n, 100.0)
+    return mid - offsets, sz, mid + offsets, sz
+
+
 # --- 1. columns_from_candles ---------------------------------------------------
 
 
 def test_columns_contiguous_and_monotonic():
     cfg = _cfg()
-    result = columns_from_candles(_candles(8), cfg, stretch=1)
+    result = columns_from_candles(_candles(8), cfg)
     assert result is not None
     cols, epoch = result
     assert len(cols) == 8
@@ -99,7 +117,7 @@ def test_columns_contiguous_and_monotonic():
     for a, b in zip(cols, cols[1:]):
         assert b.t0_ns > a.t0_ns
     assert all(c.t0_ns % DT == 0 for c in cols)
-    # rows match cfg; density is float16 and finite/bounded.
+    # rows match cfg; density is float16 and finite.
     f16_max = float(np.finfo(np.float16).max)
     for c in cols:
         assert len(c.bid) == cfg.rows and len(c.ask) == cfg.rows
@@ -117,161 +135,64 @@ def test_columns_contiguous_and_monotonic():
     assert abs(epoch.p0 - (ref - cfg.rows * cfg.tick / 2.0)) <= cfg.tick
 
 
-def _band_rows(cd: Candle, epoch, cfg: GridCfg) -> tuple[int, int, int]:
-    """Mirror of the converter's row math: (lo_r, hi_r, close_r)."""
-    step = cfg.tick * cfg.tick_multiple
-    lo_r = int(round((min(cd.l, cd.h) - epoch.p0) / step))
-    hi_r = int(round((max(cd.l, cd.h) - epoch.p0) / step))
-    lo_r, hi_r = max(lo_r, 0), min(hi_r, cfg.rows - 1)
-    close_r = int(round((cd.c - epoch.p0) / step))
-    return lo_r, hi_r, close_r
-
-
-def _combined_peak(cols) -> float:
-    return max(
-        max(float(c.bid.astype(np.float64).max()), float(c.ask.astype(np.float64).max()))
-        for c in cols
-    )
-
-
-def test_density_bounded_peak_and_two_sided_split():
+def test_one_column_per_candle():
     cfg = _cfg()
-    candles = _candles(6)
-    cols, epoch = columns_from_candles(candles, cfg)
-    combined_peak = _combined_peak(cols)
-    # TRUE size units scaled by the documented display gain (no old fixed-1000
-    # inflation). Shape-aware: the erode band's peak row carries
-    # volume x max(_band_weights), then rides the SAME scale x gain pipeline;
-    # these candles stay far below DENSITY_SAFETY_MAX, so scale == 1 here.
-    expected = (
-        max(
-            float(cd.volume) * float(_band_weights(*_band_rows(cd, epoch, cfg)).max())
-            for cd in candles
-        )
-        * BACKFILL_DENSITY_GAIN
-    )
-    assert 0.5 * expected < combined_peak < 2.0 * expected
-    assert combined_peak == pytest.approx(expected, rel=0.005)  # f16 cast only
-    # split at the candle close leaves mass on BOTH channels for a ranged candle.
-    assert any(float(c.ask.astype(np.float64).max()) > 0.0 for c in cols)
-    assert any(float(c.bid.astype(np.float64).max()) > 0.0 for c in cols)
+    for n in (1, 5, 40):
+        cols, _ = columns_from_candles(_candles(n), cfg)
+        assert len(cols) == n
+        assert [c.col_seq for c in cols] == list(range(n))
+        assert [c.bar.col_seq for c in cols] == list(range(n))
 
 
-def test_band_weights_exact_profile_floor_and_monotone_erosion():
-    # Symmetric 5-row band with the close at the centre: hand-computable weights
-    # (kernel [0, .5, 1, .5, 0], floor .15 -> unnormalized sum 2.45).
-    w = _band_weights(100, 104, 102)
-    assert w.shape == (5,)
-    assert w.sum() == pytest.approx(1.0, rel=0, abs=1e-12)
-    assert w == pytest.approx(
-        [0.15 / 2.45, 0.575 / 2.45, 1.0 / 2.45, 0.575 / 2.45, 0.15 / 2.45],
-        rel=1e-12,
-    )
-    peak = int(np.argmax(w))
-    assert peak == 2  # profile peak row == close row
-    # erosion monotone away from the peak (rising to it, falling after it);
-    # the floor keeps every in-band row strictly positive.
-    assert np.all(np.diff(w[: peak + 1]) >= 0.0)
-    assert np.all(np.diff(w[peak:]) <= 0.0)
-    assert (w > 0.0).all()
-    assert w.min() == pytest.approx(BAND_WEIGHT_FLOOR / 2.45, rel=1e-12)
-    # asymmetric band: the peak index tracks the close row (index = row - lo_r).
-    assert int(np.argmax(_band_weights(100, 110, 104))) == 104 - 100
-    # close outside the band clamps to the nearest edge; single row == mass 1.
-    assert int(np.argmax(_band_weights(100, 104, 200))) == 104 - 100
-    assert _band_weights(105, 105, 100) == pytest.approx([1.0], rel=1e-12)
-
-
-def test_erode_profile_peaks_at_close_row():
+def test_every_column_has_zero_depth_even_for_large_volume():
     cfg = _cfg()
-    candles = [Candle(t0_ns=0, o=100.0, h=101.0, l=99.0, c=100.0, volume=100.0)]
-    cols, epoch = columns_from_candles(candles, cfg, stretch=1)
-    _, _, close_r = _band_rows(candles[0], epoch, cfg)
-    combined = cols[0].bid.astype(np.float64) + cols[0].ask.astype(np.float64)
-    assert int(np.argmax(combined)) == close_r
-    # mass lands on both channels: the close row is bid, rows above it ask.
-    assert combined[close_r] > 0.0
-    assert combined[:close_r].sum() > 0.0
-    assert combined[close_r + 1 :].sum() > 0.0
+    candles = [
+        Candle(t0_ns=i * _MINUTE, o=100.0, h=101.0, l=99.0, c=100.0, volume=1e9)
+        for i in range(6)
+    ]
+    cols, _ = columns_from_candles(candles, cfg)
+    assert len(cols) == 6
+    for c in cols:
+        assert len(c.bid) == cfg.rows and len(c.ask) == cfg.rows
+        assert not c.bid.any()
+        assert not c.ask.any()
 
 
-def test_erode_mass_preserved_before_gain_scale(monkeypatch):
-    # The converter casts to float16 for the ring; patch that cast so the raw
-    # float64 band masses are directly observable — this asserts the shaping's
-    # mass preservation (volume x sum(w) == volume), not the storage format.
-    monkeypatch.setattr(np, "float16", np.float64)
+def test_absurd_volume_candle_has_no_density_and_no_overflow():
     cfg = _cfg()
-    candles = [Candle(t0_ns=0, o=100.0, h=101.0, l=99.0, c=100.0, volume=100.0)]
-    cols, _ = columns_from_candles(candles, cfg, stretch=1)
-    total = float(cols[0].bid.astype(np.float64).sum() + cols[0].ask.astype(np.float64).sum())
-    # scale == 1 on these small volumes; divide the display gain back out.
-    assert total / BACKFILL_DENSITY_GAIN == pytest.approx(100.0, rel=1e-6)
-
-
-def test_flat_env_restores_legacy_flat_fill_exactly(monkeypatch):
-    cfg = _cfg()
-    candles = _candles(6)
-    shaped, _ = columns_from_candles(candles, cfg)
-    monkeypatch.setenv("FLOWMAP_BACKFILL_SHAPE", "flat")
-    flat, _ = columns_from_candles(candles, cfg)
-    # Legacy formula: volume / band-row-count on every in-band row. The densest
-    # candle is the last (volume 105 over a 5-row band) -> 21 per row x gain;
-    # 21 x 12 = 252 is exactly representable in float16, so this pins the old
-    # BYTES, not a tolerance band.
-    assert _combined_peak(flat) == 21.0 * BACKFILL_DENSITY_GAIN
-    assert _combined_peak(shaped) > _combined_peak(flat)
-    # unknown/unset values fall back to erode (shipped default).
-    monkeypatch.setenv("FLOWMAP_BACKFILL_SHAPE", "bogus")
-    again, _ = columns_from_candles(candles, cfg)
-    assert np.array_equal(again[-1].bid, shaped[-1].bid)
-    assert np.array_equal(again[-1].ask, shaped[-1].ask)
-
-
-def test_pathological_doji_is_scaled_below_f16_max():
-    cfg = _cfg()
-    # h == l == c == a single row and an absurd volume: the whole volume lands
-    # in one row, so the safety scale must pull it below f16's finite max.
+    # h == l == c with an absurd volume: a price-only column carries no size,
+    # so nothing can overflow the float16 ring.
     candles = [Candle(t0_ns=0, o=100.0, h=100.0, l=100.0, c=100.0, volume=1e9)]
     cols, _ = columns_from_candles(candles, cfg)
-    peak = max(float(c.bid.astype(np.float64).max()) for c in cols)
-    assert peak <= DENSITY_SAFETY_MAX
-    assert np.isfinite(cols[0].bid.astype(np.float64)).all()
+    assert len(cols) == 1
+    assert not cols[0].bid.any() and not cols[0].ask.any()
+    assert cols[0].bar.c == 100.0
 
 
-def test_stretch_repeats_each_candle_as_a_contiguous_band():
-    """Default layout: each candle becomes a run of columns whose t0s span the
-    candle's minute on the dt grid, so history paints as a CONTINUOUS band (the
-    density repeats; one bar per candle keyed to the group's first column)."""
+@pytest.mark.parametrize("band", BANDED)
+def test_banded_grid_now_gets_price_history(band):
+    cfg = _banded_cfg(band)
+    candles = _candles(4)
+    result = columns_from_candles(candles, cfg)
+    assert result is not None
+    cols, epoch = result
+    assert len(cols) == 4
+    assert [c.col_seq for c in cols] == list(range(4))
+    assert all(not c.bid.any() and not c.ask.any() for c in cols)
+    assert epoch.rows == cfg.rows and epoch.dt_ns == cfg.dt_ns
+
+
+def test_bars_carry_ohlc_and_taker_split_as_cvd():
     cfg = _cfg()
-    cols, _ = columns_from_candles(_candles(4), cfg, stretch=4)
-    assert len(cols) == 16
-    assert [c.col_seq for c in cols] == list(range(16))
-    for a, b in zip(cols, cols[1:]):
-        assert b.t0_ns > a.t0_ns
-    assert all(c.t0_ns % DT == 0 for c in cols)
-    for g in range(4):
-        group = cols[g * 4 : (g + 1) * 4]
-        base = group[0]
-        for c in group:
-            assert np.array_equal(c.bid, base.bid) and np.array_equal(c.ask, base.ask)
-            assert c.bar.col_seq == base.col_seq  # one bar per candle (dedupes client-side)
-        # t0 spans the minute in equal dt-aligned steps (15 s each at stretch 4).
-        assert [c.t0_ns - base.t0_ns for c in group] == [0, 60 * DT, 120 * DT, 180 * DT]
-    assert [cols[i].bar.col_seq for i in range(0, 16, 4)] == [0, 4, 8, 12]
-    # Shipped default (stretch 16 on a 1 m candle) -> 3.75 s column steps: the
-    # exact delta the reconstructed-history e2e pin
-    # tolerates as >= dt and < 60 s.
-    cols16, _ = columns_from_candles(_candles(2), cfg, stretch=DEFAULT_BACKFILL_STRETCH)
-    assert len(cols16) == 32
-    assert cols16[1].t0_ns - cols16[0].t0_ns == 15 * DT  # 3_750_000_000 ns
-
-
-def test_reconstructed_cvd_from_taker_split():
-    cfg = _cfg()
-    cols, _ = columns_from_candles(_candles(4, with_split=True), cfg, stretch=1)
+    cols, _ = columns_from_candles(_candles(4, with_split=True), cfg)
     # buy 60 / sell 40 per candle -> cvd rises by 20 each column.
     assert [round(c.bar.cvd_cum, 6) for c in cols] == [20.0, 40.0, 60.0, 80.0]
     assert all(c.bar.vol_buy == 60.0 and c.bar.vol_sell == 40.0 for c in cols)
+    candles = _candles(4, with_split=True)
+    assert [c.bar.o for c in cols] == [cd.o for cd in candles]
+    assert [c.bar.h for c in cols] == [cd.h for cd in candles]
+    assert [c.bar.l for c in cols] == [cd.l for cd in candles]
+    assert [c.bar.c for c in cols] == [cd.c for cd in candles]
 
 
 def test_equity_no_split_leaves_cvd_flat():
@@ -285,7 +206,7 @@ def test_equity_no_split_leaves_cvd_flat():
 
 def test_preload_roundtrip_accepts_backfill_columns():
     cfg = _cfg()
-    cols, epoch = columns_from_candles(_candles(10), cfg, stretch=1)
+    cols, epoch = columns_from_candles(_candles(10), cfg)
     grid = Grid(cfg)
     grid.preload(cols, [epoch])  # must not raise: contiguity contract honored
     served = grid.history(2**62, 100)
@@ -298,12 +219,83 @@ def test_preload_roundtrip_accepts_backfill_columns():
     assert grid.current_epoch_params().epoch == 0
 
 
-def test_banded_grid_declines_backfill():
-    cfg = GridCfg(
-        tick=0.5, tick_multiple=1, dt_ns=DT, p0=0.0, rows=256, ring_columns=512,
-        mode=MODE_L2, band_up=0.5, band_down=0.5,
+@pytest.mark.parametrize("band", BANDED)
+def test_banded_history_leaves_the_band_frame_to_the_first_live_mid(band):
+    cfg = _banded_cfg(band)
+    candles = _candles(6)
+    cols, epoch = columns_from_candles(candles, cfg)
+    mid = 101.0
+
+    seeded = Grid(cfg)
+    seeded.preload(cols, [epoch], band_frame_final=False)
+    fresh = Grid(cfg)
+
+    got = seeded.maybe_reanchor(mid)
+    want = fresh.maybe_reanchor(mid)
+    assert got is not None and want is not None
+    assert (got.tick, got.tick_multiple, got.p0, got.scale_kind) == (
+        want.tick,
+        want.tick_multiple,
+        want.p0,
+        want.scale_kind,
     )
-    assert columns_from_candles(_candles(4), cfg) is None
+
+
+def test_linear_banded_history_with_default_frame_does_not_reanchor():
+    cfg = _banded_cfg("wide")
+    candles = _candles(6)
+    cols, epoch = columns_from_candles(candles, cfg)
+    grid = Grid(cfg)
+    grid.preload(cols, [epoch])  # band_frame_final=True: a rehydrated recording
+    assert grid.maybe_reanchor(candles[-1].c) is None
+
+
+@pytest.mark.parametrize("band", BANDED)
+def test_live_books_after_banded_history_continue_seq_with_depth(band):
+    cfg = _banded_cfg(band)
+    candles = _candles(6)
+    cols, epoch = columns_from_candles(candles, cfg)
+    grid = Grid(cfg)
+    grid.preload(cols, [epoch], band_frame_final=False)
+    mid = candles[-1].c
+    assert grid.maybe_reanchor(mid) is not None  # the first live mid builds the band
+
+    bids, sz, asks, _ = _book(mid, cfg.tick)
+    t_live = cols[-1].t0_ns + 4 * DT
+    assert grid.on_book(t_live, bids, sz, asks, sz) == []
+    live = grid.on_book(t_live + 2 * DT, bids, sz, asks, sz)
+    assert live
+    n = len(cols)
+    assert [c.col_seq for c in live] == list(range(n, n + len(live)))
+    assert any(
+        float(c.bid.astype(np.float64).max()) > 0.0 or float(c.ask.astype(np.float64).max()) > 0.0
+        for c in live
+    )
+
+    served = grid.history(2**62, 1000)
+    history = served[:n]
+    assert [c.col_seq for c in history] == list(range(n))
+    assert [c.bar.c for c in history] == [cd.c for cd in candles]
+    assert history[-1].bar.cvd_cum == pytest.approx(20.0 * n)
+
+
+def test_same_slot_candles_both_kept_with_forced_t0():
+    """Two candles snapping onto one dt slot are BOTH kept (one column per
+    candle): the later candle is forced onto ``prev_t0 + dt`` so the col_seq/t0
+    sequence stays strictly increasing for ``Grid.preload`` — nothing is
+    silently dropped."""
+    cs = [
+        Candle(t0_ns=0, o=100.0, h=101.0, l=99.0, c=100.0, volume=10.0),
+        Candle(t0_ns=DT // 2, o=100.0, h=101.0, l=99.0, c=100.5, volume=5.0),
+    ]
+    out = columns_from_candles(cs, _cfg())
+    assert out is not None
+    cols, _epoch = out
+    assert [c.t0_ns for c in cols] == [0, DT]
+    assert [c.col_seq for c in cols] == [0, 1]
+    # The forced slot still carries the second candle's real data.
+    assert cols[1].bar.c == 100.5
+    assert cols[1].bar.vwap_den_cum == 15.0
 
 
 def test_empty_and_nonfinite_candles_return_none():
@@ -330,6 +322,19 @@ class _IdleFeed:
             yield None
 
 
+class _SpyRecorder:
+    """Records the name of every recorder call the session makes."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __getattr__(self, name: str):
+        def spy(*args, **kwargs) -> None:
+            self.calls.append(name)
+
+        return spy
+
+
 def _decode(buf: bytes) -> list:
     out, off = [], 0
     while off < len(buf):
@@ -342,6 +347,15 @@ def _flatten(frames: list[bytes]) -> list:
     return [m for f in frames for m in _decode(f)]
 
 
+def _drain(client: ClientTx) -> list[bytes]:
+    out: list[bytes] = []
+    while True:
+        frames = client.drain(1 << 30)
+        if not frames:
+            return out
+        out.extend(frames)
+
+
 def _backfill_fn(candles):
     async def fn(market, symbol, *, max_cols, now_ns):
         assert max_cols > 0
@@ -350,7 +364,7 @@ def _backfill_fn(candles):
     return fn
 
 
-async def test_session_backfill_seeds_ring_and_badges_history():
+async def test_session_backfill_seeds_ring_and_marks_the_gap():
     grid = Grid(_cfg())
     feed = _IdleFeed("binance-spot", "BTCUSDT", {"depth": "L2", "cvd": "exchange"})
     sess = Session(
@@ -359,21 +373,78 @@ async def test_session_backfill_seeds_ring_and_badges_history():
     )
     await sess.start()
     try:
-        client = ClientTx()
-        frames = sess.attach(client)
-        flat = _flatten(frames)
+        flat = _flatten(sess.attach(ClientTx()))
         hello = flat[0]
         assert isinstance(hello, Hello)
-        # honesty badge: reconstructed history flagged in capability.
-        assert hello.capability.get("history") == "reconstructed"
-        # the reconstructed columns are in the snapshot.
+        # price history carries no depth, so the capability has no history badge.
+        assert "history" not in hello.capability
+        # the history columns are in the snapshot.
         assert sum(isinstance(m, DepthColumn) for m in flat) > 0
-        # a gap marker separates the reconstructed tail from live.
-        assert any(isinstance(m, Marker) and m.kind == "gap" for m in flat)
-        # grid ring actually holds the full stretched reconstruction.
-        assert len(grid.history(2**62, 500)) == 12 * DEFAULT_BACKFILL_STRETCH
+        # a gap marker separates the price history from live.
+        gaps = [m for m in flat if isinstance(m, Marker) and m.kind == "gap"]
+        assert gaps and gaps[0].text.startswith("backfill: price history ends")
+        # the ring holds one column per candle.
+        assert len(grid.history(2**62, 500)) == 12
     finally:
         sess.teardown_now()
+
+
+@pytest.mark.parametrize("band", BANDED)
+async def test_session_backfill_seeds_a_banded_grid(band):
+    grid = Grid(_banded_cfg(band))
+    feed = _IdleFeed("binance-spot", "BTCUSDT", {"depth": "L2", "cvd": "exchange"})
+    sess = Session(
+        "bf-band", feed=feed, grid=grid,
+        backfill_fn=_backfill_fn(_candles(12)), backfill_max_cols=12,
+    )
+    await sess.start()
+    try:
+        flat = _flatten(sess.attach(ClientTx()))
+        assert "history" not in flat[0].capability
+        assert any(isinstance(m, Marker) and m.kind == "gap" for m in flat)
+        assert len(grid.history(2**62, 500)) == 12
+    finally:
+        sess.teardown_now()
+
+
+async def test_seeded_history_is_not_recorded():
+    feed = _IdleFeed("binance-spot", "BTCUSDT", {"depth": "L2"})
+    sess = Session(
+        "bf-rec", feed=feed, grid=Grid(_cfg()),
+        backfill_fn=_backfill_fn(_candles(5)), backfill_max_cols=5,
+    )
+    spy = _SpyRecorder()
+    sess._rec = spy
+    await sess._run_backfill()
+    assert len(sess._grid.history(2**62, 100)) == 5
+    # Only the gap marker reaches the recorder; the history columns do not.
+    assert spy.calls == ["record_marker"]
+
+
+async def test_keyless_equity_session_never_calls_backfill():
+    calls: list[object] = []
+
+    async def fetch(*args, **kwargs):
+        calls.append(args)
+        return _candles(5)
+
+    async def no_bars() -> list:
+        return []
+
+    async def no_sleep(_s: float) -> None:
+        return None
+
+    feed = EquityFeed(
+        "AAPL", Config(), now_ns_fn=lambda: 0, bars_fn=no_bars, sleep_fn=no_sleep
+    )
+    assert feed.tier == "keyless"
+    sess = Session(
+        "eq-no-bf", feed=feed, grid=Grid(_cfg()),
+        backfill_fn=fetch, backfill_max_cols=512,
+    )
+    await sess._run_backfill()
+    assert calls == []
+    assert sess._grid.history(2**62, 100) == []
 
 
 async def test_session_without_backfill_is_unchanged():
@@ -420,37 +491,9 @@ async def test_manager_threads_backfill_for_live_only():
     client = ClientTx()
     sess = await mgr.subscribe(sub, client)
     try:
-        # backfill ran (history badge present or ring seeded).
-        hello = _flatten([f for f in _drain(client)])[0]
+        hello = _flatten(_drain(client))[0]
         assert isinstance(hello, Hello)
-        assert hello.capability.get("history") == "reconstructed"
+        assert "history" not in hello.capability
+        assert len(sess._grid.history(2**62, 100)) == 9
     finally:
         sess.teardown_now()
-
-
-def _drain(client: ClientTx) -> list[bytes]:
-    out: list[bytes] = []
-    while True:
-        frames = client.drain(1 << 30)
-        if not frames:
-            return out
-        out.extend(frames)
-
-
-def test_same_slot_candles_both_kept_with_forced_t0():
-    """Two candles snapping onto one dt slot are BOTH kept (one column per
-    candle, per the module doc): the later candle is forced onto
-    ``prev_t0 + dt`` so the col_seq/t0 sequence stays strictly increasing for
-    ``Grid.preload`` — nothing is silently dropped."""
-    cs = [
-        Candle(t0_ns=0, o=100.0, h=101.0, l=99.0, c=100.0, volume=10.0),
-        Candle(t0_ns=DT // 2, o=100.0, h=101.0, l=99.0, c=100.5, volume=5.0),
-    ]
-    out = columns_from_candles(cs, _cfg(), stretch=1)
-    assert out is not None
-    cols, _epoch = out
-    assert [c.t0_ns for c in cols] == [0, DT]
-    assert [c.col_seq for c in cols] == [0, 1]
-    # The forced slot still carries the second candle's real data.
-    assert cols[1].bar.c == 100.5
-    assert cols[1].bar.vwap_den_cum == 15.0

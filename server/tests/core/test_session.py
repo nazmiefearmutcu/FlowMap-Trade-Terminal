@@ -1127,29 +1127,36 @@ async def test_closed_equity_exposes_historical_price_and_last_partial_without_t
     assert sess._feed_state == "closed"
 
 
-async def test_preloaded_equity_history_is_not_replayed_backwards_by_feed_warmup():
+async def test_keyless_equity_warmup_supplies_history_once_without_backfill():
     from flowmap_server.core.backfill import Candle
 
     friday = _eq_et_ns(2026, 7, 17, 15, 57)
     candles = [Candle(friday + i * 60 * 10**9, 100 + i, 100 + i, 100 + i, 100 + i, 10) for i in range(3)]
+    calls: list[object] = []
 
     async def backfill(*args, **kwargs):
+        calls.append(args)
         return candles
 
     feed = _closed_equity_feed(100.0)
     feed._bars_fn = lambda: _equity_bars_for_candles(candles)
-    sess = Session("eq-preloaded", feed=feed, grid=Grid(GridCfg(
+    sess = Session("eq-warmup", feed=feed, grid=Grid(GridCfg(
         tick=.01, tick_multiple=1, dt_ns=10**9, p0=90, rows=2048,
         ring_columns=4096, mode=MODE_L1_BAND,
     )), backfill_fn=backfill, backfill_max_cols=512)
     await sess._boot()
-    before = sess._grid.history(2**63 - 1, 4096)
+    assert calls == []  # a keyless feed supplies its own price history
     await sess._consume()
     after = sess._grid.history(2**63 - 1, 4096)
-    assert [(col.col_seq, col.t0_ns, col.bar.c) for col in after] == [
-        (col.col_seq, col.t0_ns, col.bar.c) for col in before
-    ]
-    assert sess._grid.current_partial() is None
+    t0s = [col.t0_ns for col in after]
+    assert t0s == sorted(set(t0s))  # each warmup bar lands once, in time order
+    closes: list[float] = []
+    for col in after:
+        if not closes or closes[-1] != col.bar.c:
+            closes.append(col.bar.c)
+    assert closes == [100.0, 101.0]  # the last minute is still forming
+    partial = sess._grid.current_partial()
+    assert partial is not None and partial.t0_ns > t0s[-1]
 
 
 async def _equity_bars_for_candles(candles):
@@ -1489,18 +1496,27 @@ async def test_crypto_inside_quote_uses_raw_prices_when_depth_rows_are_grouped()
     assert quote.bid_sz == 1.25 and quote.ask_sz == 2.5
 
 
-async def test_deep_boot_does_not_fetch_candle_backfill_it_cannot_display():
+async def test_deep_boot_seeds_candle_history_on_the_deep_band():
     from types import SimpleNamespace
-    called = False
+
+    from flowmap_server.core.backfill import Candle
+
+    candles = [
+        Candle(t0_ns=i * 60 * 10**9, o=100.0, h=101.0, l=99.0, c=100.0 + i, volume=10.0)
+        for i in range(3)
+    ]
+    calls: list[object] = []
+
     async def fetch(*args, **kwargs):
-        nonlocal called
-        called = True
-        return []
+        calls.append(args)
+        return candles
+
     feed = SimpleNamespace(market="binance-spot", symbol="BTCUSDT", capability={"depth": "L2"})
     grid = SessionManager(Config(recording_enabled=False, ring_columns=8), timer=FakeTimer())._grid_for(feed, "deep")
-    sess = Session("deep-fast-boot", feed=feed, grid=grid, backfill_fn=fetch, backfill_max_cols=512)
+    sess = Session("deep-boot", feed=feed, grid=grid, backfill_fn=fetch, backfill_max_cols=512)
     await sess._run_backfill()
-    assert not called
+    assert len(calls) == 1
+    assert [col.bar.c for col in grid.history(2**63 - 1, 8)] == [100.0, 101.0, 102.0]
 
 
 # ---------------------------------------------------------------------------

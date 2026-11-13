@@ -308,7 +308,7 @@ def test_backfill_bins_reconstructed_history_in_the_adapted_frame() -> None:
         )
         for i in range(3)
     ]
-    result = columns_from_candles(candles, grid.cfg, stretch=1)
+    result = columns_from_candles(candles, grid.cfg)
     assert result is not None
     columns, epoch = result
     assert epoch.tick == pytest.approx(1e-6)
@@ -335,7 +335,7 @@ def test_backfill_leaves_non_adaptive_grids_byte_identical() -> None:
             volume=1.0,
         )
     ]
-    result = columns_from_candles(candles, grid.cfg, stretch=1)
+    result = columns_from_candles(candles, grid.cfg)
     assert result is not None
     _, epoch = result
     assert epoch.tick == grid.cfg.tick == 0.5

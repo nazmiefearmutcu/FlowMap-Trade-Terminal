@@ -303,35 +303,35 @@ class Grid:
 
     # -- rehydration ---------------------------------------
 
-    def preload(self, columns: list[FinalizedColumn], epochs: list[EpochParams]) -> None:
-        """Seed the ring from a recorded tail.
+    def preload(
+        self,
+        columns: list[FinalizedColumn],
+        epochs: list[EpochParams],
+        *,
+        band_frame_final: bool = True,
+    ) -> None:
+        """Seed the ring from a recorded tail or from price history.
 
-        Only valid on a *virgin* grid — before any :meth:`on_book` or
-        :meth:`on_trade` has anchored time (raises ``RuntimeError``
-        otherwise). Restores:
-
-        - the ring contents (densities, t0, epoch, col_seq, bars),
-        - the col_seq counter (``columns[-1].col_seq + 1`` is the next seq),
-        - the epoch params table, the current epoch and its ``p0`` frame,
-        - bar continuity (``prev_close`` and the session-cumulative
-          cvd/vwap accumulators continue from the tail's last bar).
+        Only valid on a *virgin* grid, before any :meth:`on_book` or
+        :meth:`on_trade` has anchored time (``RuntimeError`` otherwise). Restores
+        the ring (densities, t0, epoch, col_seq, bars), the col_seq counter, the
+        epoch table with the current epoch's ``p0`` frame, and bar continuity
+        (``prev_close`` and the cumulative cvd/vwap sums).
 
         ``columns`` must be chronological with strictly increasing
-        ``col_seq``/``t0_ns`` (what :meth:`Recorder.load_tail` returns) and
-        ``epochs`` must cover every epoch they reference; every epoch must
-        match this grid's ``(dt_ns, rows)`` and carry either the nominal
-        ``tick`` or the NEWEST epoch's tick (an ``auto_tick`` grid records the
-        adapted one — e.g. DOGE 1e-6). A tail whose tick is still too coarse
-        for its own recorded price (a pre-fix DOGE recording at $0.50) is
-        rejected too: the caller cold-starts and the backfill re-bins the
-        history in a usable frame instead of perpetuating the collapse.
-        ``ValueError`` otherwise.
+        ``col_seq``/``t0_ns`` and ``epochs`` must cover every epoch they
+        reference. Every epoch must match this grid's ``(dt_ns, rows)`` and carry
+        the nominal ``tick`` or the NEWEST epoch's (an ``auto_tick`` grid records
+        the adapted one, e.g. DOGE 1e-6). A tail whose tick is too coarse for its
+        own recorded price is rejected, so the caller cold-starts in a usable
+        frame. ``ValueError`` otherwise.
 
-        Live columns then continue at ``col_seq = columns[-1].col_seq + 1``
-        with wall-anchored ``t0`` — the seq<->t0 affinity intentionally
-        breaks across the restart gap (there was no data; the session emits
-        a ``Marker{kind=gap}`` there). The ring stays seq-contiguous, which
-        is what :meth:`history` and the snapshot path rely on.
+        ``band_frame_final=False`` (columns with no depth) leaves a banded grid
+        unanchored: the first live mid builds its band as after a cold start.
+
+        Live columns continue at ``columns[-1].col_seq + 1`` with wall-anchored
+        ``t0``: seq<->t0 affinity breaks across the gap (the session marks it)
+        and the ring stays seq-contiguous, which :meth:`history` relies on.
         """
         if self._cur_idx is not None or self._count != 0:
             raise RuntimeError("preload is only valid before any on_book/on_trade")
@@ -434,7 +434,7 @@ class Grid:
         # The restored frame freezes the tick; each historical column keeps
         # its own epoch map when the live core subsequently rolls.
         self._tick_anchored = True
-        if self._banded:
+        if self._banded and band_frame_final:
             self._band_anchored = True
             self._anchor_mid = self._p0 + (self._cfg.rows * self._step) / 2.0
         # Rebuild the row<->price map from the tail's epoch, not the __init__

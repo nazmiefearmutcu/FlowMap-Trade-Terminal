@@ -140,23 +140,16 @@ class Config(msgspec.Struct, frozen=True):
     dt_equity_keyless_ns: int = 10 * 10**9
     dt_equity_keyless_grid_ns: int = 10**9
     max_rows: int = 4096
-    # First-launch history backfill (reconstructed candle history so the
-    # client's eager requestHistory returns real data instead of a cold ring).
-    # ``backfill_max_cols`` bounds the span: at most this many candle-columns are
-    # fetched and seeded before the first snapshot. Kept modest (not
-    # ``ring_columns`` = 32768, which at 1 m candles would be ~22 days of REST
-    # paging and blow past Yahoo's 7-day 1 m window) — 512 aligns with the
+    # First-launch price history (candles, so the client's eager
+    # requestHistory returns real prices instead of a cold ring).
+    # ``backfill_max_cols`` bounds the span: at most this many candles are
+    # fetched and seeded before the first snapshot, one column each. Kept modest
+    # (not ``ring_columns`` = 32768, which at 1 m candles would be ~22 days of
+    # REST paging and blow past Yahoo's 7-day 1 m window) — 512 aligns with the
     # snapshot depth (SNAPSHOT_COLS) and bounds REST cost to a handful of pages.
-    # Reconstructed density is candle volume-at-price, NOT resting-book L2, so
-    # the session badges it ``history: 'reconstructed'`` (see core/session.py).
+    # The seeded columns carry price, volume and CVD, and no depth.
     backfill_enabled: bool = True
     backfill_max_cols: int = 512
-    # Depth columns emitted per reconstructed candle (FLOWMAP_BACKFILL_STRETCH,
-    # default 16, range 1..240). The candle's density band is repeated across
-    # this many consecutive columns with t0s spread over the candle's span, so
-    # scroll-back history paints as a continuous field instead of one thin bar
-    # per minute. 1 restores the legacy one-column-per-candle layout.
-    backfill_stretch: int = 16
     # Levels per side kept when a crypto book is emitted (see feeds/crypto.py
     # BOOK_TOP_N). The cap exists so one array build cannot blow up on a venue
     # that streams a very deep book; it is NOT a fidelity choice, and it is the
@@ -267,9 +260,6 @@ class Config(msgspec.Struct, frozen=True):
             backfill_enabled=_bool_env(env, "FLOWMAP_BACKFILL_ENABLED", "1"),
             backfill_max_cols=_int_in_range(
                 env, "FLOWMAP_BACKFILL_MAX_COLS", "512", *_BACKFILL_MAX_COLS_RANGE
-            ),
-            backfill_stretch=_int_in_range(
-                env, "FLOWMAP_BACKFILL_STRETCH", "16", 1, 240
             ),
             rec_flush_interval_s=_float_in_range(
                 env, "FLOWMAP_FLUSH_INTERVAL_S", "10.0", *_REC_FLUSH_INTERVAL_S_RANGE

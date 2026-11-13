@@ -202,19 +202,18 @@ class BootMixin:
                     client.offer(frame, col_msg=False, protected=True)
 
     async def _run_backfill(self) -> None:
-        """Seed the ring with reconstructed candle history.
+        """Seed the ring with price history from before this session was watching.
 
         Behind the injectable ``backfill_fn`` seam (pytest feeds canned candles;
-        no network). Any failure degrades cleanly to cold start. Reconstructed
-        columns are seeded but NOT recorded — only live columns persist to
-        Parquet. On success, marks the session so Hello/Status advertise
-        ``history: 'reconstructed'`` and emits a gap Marker to live.
+        no network). Any failure degrades cleanly to cold start. The seeded
+        columns carry price, volume and CVD and no depth, on every price band,
+        and are NOT recorded — only live columns persist to Parquet. On success
+        a gap Marker separates the history from live.
         """
         if self._backfill_fn is None or self._backfill_max_cols <= 0:
             return
-        # Banded geometry cannot consume candle backfill (converter contract).
-        # Avoid blocking the first live quote on a network fetch we discard.
-        if self._grid.cfg.band_up is not None or self._grid.cfg.band_down is not None:
+        # A keyless equity feed supplies the last session's price history itself.
+        if isinstance(self._feed, EquityFeed) and self._feed.tier == "keyless":
             return
         try:
             candles = await self._backfill_fn(
@@ -235,11 +234,13 @@ class BootMixin:
         if not candles:
             return
         try:
-            result = columns_from_candles(candles, self._grid.cfg, stretch=self._backfill_stretch)
+            result = columns_from_candles(candles, self._grid.cfg)
             if result is None:
                 return
             columns, epoch = result
-            self._grid.preload(columns, [epoch])
+            # The history frame is centred on a candle close and holds no depth:
+            # a banded grid still builds its band from the first live mid.
+            self._grid.preload(columns, [epoch], band_frame_final=False)
         except Exception:
             logger.warning(
                 "backfill conversion/preload failed; cold start for session %s",
@@ -247,24 +248,21 @@ class BootMixin:
                 exc_info=True,
             )
             return
-        self._history_reconstructed = True
         dt = self._grid.cfg.dt_ns
         end_ns = columns[-1].t0_ns + dt
-        if isinstance(self._feed, EquityFeed) and self._feed.tier == "keyless":
-            self._equity_warmup_before_ns = end_ns
         gap = events.Marker(
             ts_ns=end_ns - 1,
             kind="gap",
             text=(
-                f"backfill: reconstructed history ends {end_ns}, live resumes ~{self._wall_clock()}"
+                f"backfill: price history ends {end_ns}, live resumes ~{self._wall_clock()}"
             ),
         )
         self._markers.append(gap)
-        # Record the gap marker (live provenance) but NOT the reconstructed
-        # columns — only genuine live columns should persist for rehydration.
+        # Record the gap marker (live provenance) but NOT the history columns —
+        # only genuine live columns should persist for rehydration.
         self._record(lambda r: r.record_marker(gap))
         logger.info(
-            "session %s backfilled %d reconstructed columns (t0 %d..%d)",
+            "session %s backfilled %d price-history columns (t0 %d..%d)",
             self.session_id,
             len(columns),
             columns[0].t0_ns,
@@ -272,11 +270,9 @@ class BootMixin:
         )
 
     def _capability(self) -> dict[str, object]:
-        """Feed capability, plus server-level badges: ``history:
-        'reconstructed'`` when the ring was seeded from candle backfill, and
-        ``replay: True`` — this build serves the replay engine, and the client
-        gates its Replay toggle on that flag
-        independent of the mode it is currently subscribed to.
+        """Feed capability, plus server-level badges: ``replay: True`` — this
+        build serves the replay engine, and the client gates its Replay toggle
+        on that flag independent of the mode it is currently subscribed to.
 
         Always returns a fresh dict (never the feed's own object): the badges
         must not leak back into the feed descriptor."""
@@ -284,8 +280,6 @@ class BootMixin:
         cap["replay"] = True
         if isinstance(self._feed, ReplayFeed):
             cap["playback"] = self._feed.playback()
-        if self._history_reconstructed:
-            cap["history"] = "reconstructed"
         if self._recorder_root is not None:
             cap["retention"] = dict(self._recorder_root.retention_status)
         if self._recording_wedged:

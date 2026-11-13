@@ -1,19 +1,19 @@
-"""First-launch history backfill: candles -> reconstructed grid columns.
+"""First-launch price history: candles -> grid columns with no depth.
 
 Data plane. On a COLD subscribe (no Parquet tail to rehydrate) the
 grid ring is empty, so the client's eager ``requestHistory`` after the first
 snapshot returns nothing. This module fetches a bounded span of candles for the
 symbol and converts them into :class:`~flowmap_server.core.grid.FinalizedColumn`
-objects that :meth:`Grid.preload` accepts, so the ring actually holds recent
+objects that :meth:`Grid.preload` accepts, so the ring holds recent price
 history before the first attach.
 
-**Honesty (load-bearing).** Candles carry OHLCV (crypto klines also carry a
-taker buy/sell split), NOT the resting order book. The synthesized density is a
-volume-at-price *reconstruction* — where price traded, not resting L2 size — so
-the session badges the whole backfilled region ``history: 'reconstructed'`` and
-the caller emits a ``Marker{kind=gap}`` between the reconstructed tail and live.
-Reconstructed columns are seeded into the ring but are deliberately NOT recorded
-to Parquet (only genuine live columns persist for a future rehydration).
+**What the history is.** Candles carry OHLCV (crypto klines also carry a taker
+buy/sell split), NOT the resting order book. Nothing was observed about the book
+for that period, so the columns carry no depth at all: the heatmap is empty there
+and the price line, volume and CVD are real. The caller emits a
+``Marker{kind=gap}`` between the history and live. These columns are seeded into
+the ring but are deliberately NOT recorded to Parquet (only live columns persist
+for a future rehydration).
 
 The network fetch is fully behind the injectable ``BackfillFn`` seam
 (``async (market, symbol, *, max_cols, now_ns) -> Sequence[Candle]``): pytest
@@ -27,35 +27,20 @@ Conversion rules (mirrors :meth:`Grid.preload`'s contract):
 
 - one column per candle, ``col_seq`` assigned ``0..N-1`` (strictly contiguous,
   which preload requires), ``t0_ns`` snapped onto the grid's ``dt`` grid and
-  forced strictly increasing;
-- a single synthetic epoch 0 whose ``p0`` is centered on the last candle's
-  close (so live data continues in the SAME epoch with no spurious re-anchor),
-  with ``tick_multiple``/``dt_ns``/``rows`` equal to the grid cfg and the tick
-  equal to ``cfg.tick`` — or, on an auto_tick grid, the price-proportional
-  tick ``adaptive_tick_for(close, cfg.tick)`` the live first mid will adopt
-  (so a DOGE-class symbol's reconstructed history is binned in the same sane
-  frame as its live columns);
-- each candle's volume spread across its ``[low, high]`` row band and split at
-  the candle close into the bid channel (``price <= close``) and the ask
-  channel (``price > close``) — a two-sided volume-at-price profile. The band
-  SHAPE is a display rendering policy (``FLOWMAP_BACKFILL_SHAPE``, default
-  ``erode``; ``flat`` restores the legacy flat fill byte-for-byte): the mass is
-  preserved exactly and peaks at the close row, eroding toward the band edges
-  with a floor. A 1 m candle carries no intra-candle distribution, so the
-  profile claims nothing about where inside the band the volume actually traded
-  — the ``history: 'reconstructed'`` badge is unaffected;
-- one global scale factor normalizes the densest bucket across ALL columns to
-  ``PEAK_TARGET`` (bounded far below float16's ceiling, so a liquid name's
-  volume cannot overflow the ring, while cross-column and
-  cross-side ratios survive exactly);
-- bars carry the candle OHLC and (crypto only) a reconstructed
-  ``vol_buy``/``vol_sell``/``cvd_cum`` from the taker split; equity bars have no
-  side split so those stay 0 (cvd flat). ``vwap_*`` accumulate from the candle
-  typical price for both markets.
-
-Banded (wide/full/deep) grids are skipped — their ``tick_multiple`` is frozen
-from the first real mid, which does not compose with a pre-seeded epoch; the
-default ``native`` band (the first-launch default) is always eligible.
+  forced strictly increasing. Columns are therefore one candle apart in time,
+  not one ``dt`` apart; the client's piecewise t0<->column map keeps the time
+  axis true;
+- a single epoch 0 whose ``p0`` is centered on the last candle's close, with
+  ``tick_multiple``/``dt_ns``/``rows`` equal to the grid cfg and the tick equal
+  to ``cfg.tick`` — or, on an auto_tick grid, the price-proportional tick
+  ``adaptive_tick_for(close, cfg.tick)`` the live first mid will adopt. On a
+  banded grid the first live mid then builds the band frame as a new epoch,
+  exactly as it does after a cold start;
+- every column's bid and ask density is zero;
+- bars carry the candle OHLC and (crypto only) ``vol_buy``/``vol_sell``/
+  ``cvd_cum`` from the taker split; equity bars have no side split so those
+  stay 0 (cvd flat). ``vwap_*`` accumulate from the candle typical price for
+  both markets.
 """
 
 from __future__ import annotations
@@ -63,7 +48,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-import os
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -78,49 +62,6 @@ __all__ = ["Candle", "BackfillFn", "columns_from_candles", "default_backfill_fn"
 
 logger = logging.getLogger(__name__)
 
-# Safety ceiling for the reconstructed density. The per-row density is a TRUE
-# size unit (candle volume / row span, the same base-units-per-row scale the
-# live book ring uses), so a mixed viewport normalizes both regimes coherently —
-# the historical PEAK_TARGET inflation to a fixed 1000 made every candle band
-# saturate to the top of the ramp AND crush the live field below the black
-# point. The only scaling left is a downward clamp for pathological candles
-# (a doji whose whole volume lands in one row) so the float16 ring cannot
-# overflow to inf (max finite 65 504).
-DENSITY_SAFETY_MAX = 60_000.0
-
-# Display gain for reconstructed density. A candle band spreads its volume over
-# EVERY row in [low, high] (median ~30-160 rows on a major), so its per-row
-# value (~0.03-0.11 BTC) sits ~50-100x below a live book cell's resting size
-# (~0.3-7.8 BTC) — a mixed viewport's shared black point then hides the whole
-# reconstructed field. This constant lifts the historical congestion to a
-# live-comparable visual intensity (walls stay a little dimmer than live walls:
-# reconstructed data is coarser, and the gain never moves the live feed's own
-# values). Tuned against a live BTCUSDT measurement; 1 = raw true units.
-BACKFILL_DENSITY_GAIN = 12.0
-
-# Band shaping for reconstructed candles (display policy, env-gated). Instead of
-# the flat ``volume / len(band)`` fill, the volume is distributed over the
-# candle's ``[low, high]`` rows along a normalized profile peaking at the close
-# row and eroding toward the band edges, softened by BAND_WEIGHT_FLOOR so no
-# in-band row is empty. A 1 m candle carries no intra-candle distribution, so
-# this shapes the DISPLAY only (it claims nothing about where inside the band
-# the volume traded) and the weights sum to 1, preserving the candle's mass
-# exactly; the ``history: 'reconstructed'`` honesty badge is unaffected.
-# ``FLOWMAP_BACKFILL_SHAPE=flat`` restores the previous byte-identical flat
-# fill for A/B comparison and golden escapes; any other value (or unset) means
-# the default ``erode``.
-BACKFILL_SHAPE_ENV = "FLOWMAP_BACKFILL_SHAPE"
-BACKFILL_SHAPE_DEFAULT = "erode"
-BAND_WEIGHT_FLOOR = 0.15
-
-# How many depth columns each reconstructed candle becomes. The candle's
-# density band is repeated across this many consecutive columns with the t0
-# spread over the candle's span (kept on the dt grid), so scroll-back history
-# paints as a CONTINUOUS field instead of one thin bar per minute; the client's
-# piecewise t0<->col map keeps the time axis honest. The column budget stays
-# bounded (512 candles x 16 = 8192, inside the 32768 server / 16384 client
-# rings). ``1`` restores the historical one-column-per-candle layout.
-DEFAULT_BACKFILL_STRETCH = 16
 _NAN = float("nan")
 # Total wall-clock timeout for every network client this module builds:
 # the boot path holds the session's _start_lock while backfilling, so one hung
@@ -238,40 +179,6 @@ def _finite(*vals: float) -> bool:
     return all(v is not None and np.isfinite(v) for v in vals)
 
 
-def _backfill_shape() -> str:
-    """Active band shape: ``erode`` (default) or ``flat`` (legacy bytes).
-
-    Read at call time (not import time) so a running server can A/B overrides
-    and tests can pin both paths without a module reload; unrecognized values
-    fall back to ``erode``.
-    """
-    raw = os.environ.get(BACKFILL_SHAPE_ENV, BACKFILL_SHAPE_DEFAULT)
-    return "flat" if raw.strip().lower() == "flat" else "erode"
-
-
-def _band_weights(lo_r: int, hi_r: int, close_r: int) -> np.ndarray:
-    """Normalized display weights over rows ``[lo_r, hi_r]`` inclusive.
-
-    Triangular kernel peaking at the close row (clamped into the band), eroding
-    linearly with row distance toward both edges, softened by
-    ``BAND_WEIGHT_FLOOR`` (``w = floor + (1 - floor) * kernel``) and normalized
-    to sum 1, so ``volume * w`` spreads the candle's volume across the band
-    without changing its total mass.
-    """
-    n = hi_r - lo_r + 1
-    if n <= 0:
-        return np.zeros(0, dtype=np.float64)
-    peak = min(max(int(close_r), lo_r), hi_r)
-    rows = np.arange(lo_r, hi_r + 1, dtype=np.float64)
-    span = float(max(peak - lo_r, hi_r - peak))
-    if span <= 0.0:
-        kernel = np.ones(n, dtype=np.float64)
-    else:
-        kernel = 1.0 - np.abs(rows - float(peak)) / span
-    w = BAND_WEIGHT_FLOOR + (1.0 - BAND_WEIGHT_FLOOR) * kernel
-    return w / w.sum()
-
-
 def _clean_candles(candles: Sequence[Candle]) -> list[Candle]:
     """Finite, non-negative-volume, positive-close candles, sorted by raw t0."""
     clean: list[Candle] = []
@@ -289,8 +196,8 @@ def _price_frame(ref: float, cfg: GridCfg) -> tuple[float, float, float] | None:
     """``(tick, p0, step)`` of the seeded epoch, framed on the reference close.
 
     The tick is resolved AFTER the reference close so an auto_tick grid (crypto
-    feeds serving sub-dollar instruments) can bin the reconstructed history on
-    the same price-proportional step the live first mid will install. For every
+    feeds serving sub-dollar instruments) frames the history on the same
+    price-proportional step the live first mid will install. For every
     other grid this is ``cfg.tick`` verbatim. The frame is centred on the close
     and snapped onto the step grid, so live data continues in this epoch
     without an immediate re-anchor.
@@ -304,71 +211,28 @@ def _price_frame(ref: float, cfg: GridCfg) -> tuple[float, float, float] | None:
     return tick, p0, step
 
 
-def _candle_densities(
-    clean: Sequence[Candle], rows: int, dt: int, p0: float, step: float
-) -> tuple[list[np.ndarray], list[int], list[BarColumn], float]:
-    """First pass: raw two-sided densities, t0 per candle, reconstructed bars.
+def _price_bars(clean: Sequence[Candle], dt: int) -> list[BarColumn]:
+    """One bar per candle, t0 snapped onto the dt grid and strictly increasing.
 
-    Each candle's t0 snaps onto the dt grid; a candle sharing a slot with the
-    previous one is forced to ``prev_t0 + dt`` so t0 strictly increases (preload
-    requires it). No candle is dropped here. Returns the per-candle ``[2, rows]``
-    densities, their t0s, the bar columns, and the global density peak.
+    A candle sharing a slot with the previous one is forced to ``prev_t0 + dt``
+    (preload requires strictly increasing t0). No candle is dropped. Crypto
+    candles carry a real taker split, which becomes ``vol_buy``/``vol_sell`` and
+    the cumulative CVD; without a split those stay 0.
     """
-
-    def row_of(px: float) -> int:
-        return int(round((px - p0) / step))
-
-    raw: list[np.ndarray] = []  # each [2, rows] float64
-    t0s: list[int] = []
+    bars: list[BarColumn] = []
     cvd_cum = 0.0
     vwap_num = 0.0
     vwap_den = 0.0
-    bars: list[BarColumn] = []
-    prev_t0 = None
-    global_peak = 0.0
-    shape = _backfill_shape()
+    prev_t0: int | None = None
     for cd in clean:
         t0 = (cd.t0_ns // dt) * dt
         if prev_t0 is not None and t0 <= prev_t0:
-            t0 = prev_t0 + dt  # force strictly increasing on the dt grid
+            t0 = prev_t0 + dt
         prev_t0 = t0
 
-        dens = np.zeros((2, rows), dtype=np.float64)
-        lo_r = row_of(min(cd.l, cd.h))
-        hi_r = row_of(max(cd.l, cd.h))
-        lo_r, hi_r = min(lo_r, hi_r), max(lo_r, hi_r)
-        # Clamp BEFORE building the range: one candle with an absurd high/low
-        # (mis-scaled venue, raw-unit quote, bad tick) yields a row span of
-        # millions-billions and the list comprehension below would hang the
-        # boot inside _boot's _start_lock.
-        lo_r = max(lo_r, 0)
-        hi_r = min(hi_r, rows - 1)
-        band = list(range(lo_r, hi_r + 1)) if lo_r <= hi_r else []
-        if band:
-            close_r = row_of(cd.c)
-            if shape == "flat":
-                # Legacy byte-exact escape (FLOWMAP_BACKFILL_SHAPE=flat): the
-                # Legacy flat fill, kept untouched for A/B comparisons and golden runs.
-                per = float(cd.volume) / len(band)
-                for r in band:
-                    # price(row) <= close -> bid channel, else ask channel.
-                    dens[0 if r <= close_r else 1, r] += per
-            else:
-                # Display policy: mass-preserving profile over the band, peak at
-                # the close row (see _band_weights). The bid/ask split row is
-                # the raw close row, exactly as the flat fill used it.
-                w = _band_weights(lo_r, hi_r, close_r)
-                vol = float(cd.volume)
-                for i, r in enumerate(band):
-                    dens[0 if r <= close_r else 1, r] += vol * w[i]
-        raw.append(dens)
-        t0s.append(t0)
-        global_peak = max(global_peak, float(dens.max()) if dens.size else 0.0)
-
-        # Reconstructed bar. Crypto: real taker split -> vol_buy/vol_sell + cvd.
         has_split = cd.buy_volume is not None and cd.sell_volume is not None
-        vb = float(cd.buy_volume) if has_split else 0.0
-        vs = float(cd.sell_volume) if has_split else 0.0
+        vb = float(cd.buy_volume) if has_split else 0.0  # type: ignore[arg-type]
+        vs = float(cd.sell_volume) if has_split else 0.0  # type: ignore[arg-type]
         if has_split and _finite(vb, vs):
             cvd_cum += vb - vs
         else:
@@ -379,7 +243,7 @@ def _candle_densities(
         bars.append(
             BarColumn(
                 epoch=0,
-                col_seq=len(bars),  # provisional; rewritten by _emit_columns
+                col_seq=len(bars),
                 t0_ns=t0,
                 o=float(cd.o),
                 h=float(cd.h),
@@ -392,93 +256,26 @@ def _candle_densities(
                 vwap_den_cum=vwap_den,
             )
         )
-    return raw, t0s, bars, global_peak
-
-
-def _emit_columns(
-    raw: list[np.ndarray],
-    t0s: list[int],
-    bars: list[BarColumn],
-    global_peak: float,
-    dt: int,
-    stretch: int,
-) -> list[FinalizedColumn]:
-    """Second pass: spread each candle over up to ``stretch`` consecutive columns.
-
-    Each candle is emitted as up to ``stretch`` consecutive columns whose t0s
-    spread across the candle's span on the dt grid, so reconstructed history
-    paints as a continuous band on the time axis instead of one thin bar per
-    minute (the band's density is the candle's per-row density, repeated).
-    """
-    # True size units scaled by the documented display gain: a candle band's
-    # per-row density (volume / row span) is lifted to a live-comparable
-    # intensity so a viewport that mixes reconstructed and live columns keeps
-    # BOTH legible under one shared black point. The safety scale only pulls a
-    # pathological peak (doji: whole volume in one row) below f16-finite.
-    scale = min(1.0, DENSITY_SAFETY_MAX / global_peak) if global_peak > 0.0 else 1.0
-    gain = BACKFILL_DENSITY_GAIN
-    k_req = max(1, min(240, int(stretch)))
-    columns: list[FinalizedColumn] = []
-    next_seq = 0
-    for seq_c, (dens, t0, bar) in enumerate(zip(raw, t0s, bars, strict=True)):
-        d16 = np.minimum(dens * scale * gain, DENSITY_SAFETY_MAX).astype(np.float16)
-        # The candle's true span: the next candle's snapped open minus ours,
-        # falling back to the nominal 1-minute interval for the last candle.
-        # Same-dt-slot candles span only dt, so they stay one column wide.
-        if seq_c + 1 < len(t0s):
-            span = max(dt, t0s[seq_c + 1] - t0)
-        else:
-            span = max(dt, _INTERVAL_NS["1m"])
-        slots = max(1, span // dt)
-        k = min(k_req, slots)
-        step_slots = max(1, slots // k)
-        # One bar per candle, keyed to the group's FIRST column: the client's
-        # overlays are col_seq-keyed maps, so repeated emissions dedupe.
-        bar = msgspec.structs.replace(bar, col_seq=next_seq)
-        for j in range(k):
-            columns.append(
-                FinalizedColumn(
-                    epoch=0,
-                    col_seq=next_seq + j,
-                    t0_ns=t0 + j * step_slots * dt,
-                    bid=d16[0],
-                    ask=d16[1],
-                    bar=bar,
-                )
-            )
-        next_seq += k
-    return columns
+    return bars
 
 
 def columns_from_candles(
-    candles: Sequence[Candle],
-    cfg: GridCfg,
-    *,
-    stretch: int = DEFAULT_BACKFILL_STRETCH,
+    candles: Sequence[Candle], cfg: GridCfg
 ) -> tuple[list[FinalizedColumn], EpochParams] | None:
-    """Convert candles to ``(columns, epoch)`` for :meth:`Grid.preload`.
+    """Convert candles to price-only ``(columns, epoch)`` for :meth:`Grid.preload`.
 
-    Each candle is emitted as up to ``stretch`` consecutive columns whose t0s
-    spread across the candle's span on the dt grid, so reconstructed history
-    paints as a continuous band on the time axis instead of one thin bar per
-    minute (the band's density is the candle's per-row density, repeated).
-    ``stretch=1`` restores the historical one-column-per-candle layout.
+    One column per candle. Every column's density is zero: a candle says where
+    price traded, not what was resting in the book, so no depth is drawn for it.
 
     Returns ``None`` when nothing usable can be produced (no finite candles, a
-    banded grid, a degenerate price frame) — the caller then degrades to a cold
-    start. Never raises on ordinary bad input; only programming errors surface.
+    degenerate price frame) — the caller then degrades to a cold start. Never
+    raises on ordinary bad input; only programming errors surface.
     """
-    if cfg.band_up is not None or cfg.band_down is not None:
-        # Banded grids freeze tick_multiple from the first real mid — a
-        # pre-seeded epoch cannot honor that. Cold start on those.
-        return None
-
     rows = cfg.rows
     dt = cfg.dt_ns
     if rows <= 0 or cfg.tick * cfg.tick_multiple <= 0.0 or dt <= 0:
         return None
 
-    # No candle is dropped for sharing a dt slot (see _candle_densities).
     clean = _clean_candles(candles)
     if not clean:
         return None
@@ -488,10 +285,16 @@ def columns_from_candles(
     frame = _price_frame(ref, cfg)
     if frame is None:
         return None
-    tick, p0, step = frame
+    tick, p0, _step = frame
 
-    raw, t0s, bars, global_peak = _candle_densities(clean, rows, dt, p0, step)
-    columns = _emit_columns(raw, t0s, bars, global_peak, dt, stretch)
+    # One shared all-zero row: preload copies each column into the ring.
+    empty = np.zeros(rows, dtype=np.float16)
+    columns = [
+        FinalizedColumn(
+            epoch=0, col_seq=bar.col_seq, t0_ns=bar.t0_ns, bid=empty, ask=empty, bar=bar
+        )
+        for bar in _price_bars(clean, dt)
+    ]
     epoch = EpochParams(
         epoch=0,
         tick=tick,
