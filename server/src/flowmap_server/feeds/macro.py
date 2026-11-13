@@ -12,10 +12,12 @@ Every reading keeps the FRED observation date, not the date it was fetched, and
 every failure carries a reason, so a stale or missing value is never presented as
 today's regime.
 
-Wiring status: this build starts no producer for this module. Nothing under
-``src/`` imports it, so the FRED host named here is not contacted by a running
-server; only the tests exercise it. Treat the description above as the module's
-design, not as a data source this build serves.
+Wiring status: the ``/api/macro`` route serves the SOFR, Treasury curve and
+high-yield readings through ``data/macro_public.py``. That module uses
+``MacroStressPoller.fetch_series_observation`` for the FRED high-yield series, and
+``score_reading`` for the stress score, and only when ``FRED_API_KEY`` is set. No
+producer calls ``compute_current_stress``, so this build does not persist stress
+readings to the warehouse.
 """
 
 from __future__ import annotations
@@ -64,11 +66,26 @@ class MacroStressPoller:
         warehouse: DuckWarehouse | None = None,
     ) -> None:
         self.api_key = api_key.strip() if api_key else None
-        self.warehouse = warehouse or shared_warehouse()
+        self._warehouse = warehouse
         self._session: aiohttp.ClientSession | None = None
         # Per-series observation date and failure reason from the latest fetch.
         self._observation_dates: dict[str, str] = {}
         self._failure_reasons: dict[str, str] = {}
+
+    @property
+    def warehouse(self) -> DuckWarehouse:
+        """The warehouse a stress reading is persisted to, opened on first use."""
+        if self._warehouse is None:
+            self._warehouse = shared_warehouse()
+        return self._warehouse
+
+    def failure_reason(self, series_id: str) -> str | None:
+        """Why the latest fetch of ``series_id`` gave no value, or None when it did not fail."""
+        return self._failure_reasons.get(series_id)
+
+    def observation_date(self, series_id: str) -> str | None:
+        """The FRED observation date of the latest value of ``series_id``, if it had one."""
+        return self._observation_dates.get(series_id)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -176,18 +193,7 @@ class MacroStressPoller:
         hy_spread = _finite_float(hy_val)
         yield_curve = _finite_float(t10y2y_val)
 
-        # Uncalibrated heuristic (see _METHOD): the HY spread scores from 0 at 3% to 1 at 6%,
-        # and an inverted 10y-2y curve adds up to 0.4 as it inverts by 0.5 points.
-        hy_score = min(max((hy_spread - 3.0) / 3.0, 0.0), 1.0)
-        curve_score = min(max((-yield_curve) / 0.5, 0.0), 1.0) if yield_curve < 0 else 0.0
-        composite_score = round(0.6 * hy_score + 0.4 * curve_score, 3)
-
-        if composite_score >= 0.70:
-            status = "SEVERE_STRESS"
-        elif composite_score >= 0.35:
-            status = "ELEVATED"
-        else:
-            status = "NORMAL_LIQUIDITY"
+        composite_score, status = score_reading(hy_spread, yield_curve)
 
         # The reading is as old as its oldest series. Without a date for every
         # series there is no honest as-of date, so nothing is persisted under today.
@@ -224,6 +230,23 @@ class MacroStressPoller:
             "inversion_alert": yield_curve < 0.0,
             "method": _METHOD,
         }
+
+
+def score_reading(hy_spread: float, yield_curve: float) -> tuple[float, str]:
+    """The composite stress score and its status, for a HY spread and a 10y-2y spread in percent.
+
+    The HY spread scores from 0 at 3% to 1 at 6%, and an inverted 10y-2y curve adds
+    up to 0.4 as it inverts by 0.5 points. The status is ``SEVERE_STRESS`` at 0.70
+    and above, ``ELEVATED`` at 0.35 and above, else ``NORMAL_LIQUIDITY``.
+    """
+    hy_score = min(max((hy_spread - 3.0) / 3.0, 0.0), 1.0)
+    curve_score = min(max((-yield_curve) / 0.5, 0.0), 1.0) if yield_curve < 0 else 0.0
+    composite_score = round(0.6 * hy_score + 0.4 * curve_score, 3)
+    if composite_score >= 0.70:
+        return composite_score, "SEVERE_STRESS"
+    if composite_score >= 0.35:
+        return composite_score, "ELEVATED"
+    return composite_score, "NORMAL_LIQUIDITY"
 
 
 def _http_reason(status: int) -> str:

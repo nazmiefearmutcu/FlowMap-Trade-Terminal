@@ -63,7 +63,8 @@ describe('AboutDialog', () => {
       .toBe(t('about.sourcesBody', { sources: DATA_SOURCES }));
     expect(DATA_SOURCES).toContain('Binance');
     expect(DATA_SOURCES).toContain('Google Finance');
-    expect(DATA_SOURCES).not.toContain('FRED');
+    expect(DATA_SOURCES).toContain('Cboe');
+    expect(DATA_SOURCES).toContain('FRED');
     expect(el.querySelector('[data-testid="about-not-advice"]')?.textContent).toBe(t('about.notAdvice'));
   });
 

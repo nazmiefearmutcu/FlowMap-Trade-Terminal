@@ -77,6 +77,7 @@ const CHILD_ENV_ALLOWLIST: &[&str] = &[
     "ALPACA_API_KEY",
     "ALPACA_API_SECRET",
     "FINNHUB_API_KEY",
+    "FRED_API_KEY",
     // Windows.
     "SYSTEMROOT",
     "SYSTEMDRIVE",
@@ -513,7 +514,12 @@ mod tests {
         // SECURITY.md says these are read from the environment when present. The server
         // reads them from the child's environment (config.py), so the allowlist must carry
         // them under the exact names it reads.
-        for name in ["ALPACA_API_KEY", "ALPACA_API_SECRET", "FINNHUB_API_KEY"] {
+        for name in [
+            "ALPACA_API_KEY",
+            "ALPACA_API_SECRET",
+            "FINNHUB_API_KEY",
+            "FRED_API_KEY",
+        ] {
             assert!(
                 CHILD_ENV_ALLOWLIST.contains(&name),
                 "{name} must reach the sidecar"

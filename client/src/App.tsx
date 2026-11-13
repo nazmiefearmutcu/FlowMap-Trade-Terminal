@@ -47,6 +47,7 @@ import { SIM_MARKET, SIM_SYMBOL } from './app/workspaceScope';
 import { useChartThemeBridge, useChartThemeSync } from './app/useChartThemeBridge';
 import { useDeskLayout } from './app/useDeskLayout';
 import { useEngineStatus } from './app/useEngineStatus';
+import { useMacroPoll } from './app/useMacroPoll';
 import { useHelpToggle } from './app/useShellKeys';
 import { useHistoryPrefetch } from './app/useHistoryPrefetch';
 import { useRenderFailure } from './app/useRenderFailure';
@@ -142,6 +143,7 @@ export function App() {
   });
   const [renderFailure, setRenderFailure] = useRenderFailure(rendererRef, rendererAttempt);
   const engine = useEngineStatus();
+  useMacroPoll();
   useSettingsApply(settings, rendererRef, prevSettingsRef, liveFollowRef, syncChartTheme);
   useFollowReconcile(rendererRef, liveFollowRef, setSettings);
   const {

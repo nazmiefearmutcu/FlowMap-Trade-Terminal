@@ -46,6 +46,7 @@ When a US equity is closed, the chart shows its last session's price history whe
 - US equity depth and prints: Cboe's public book viewer, for four exchanges only (BZX, BYX, EDGX and EDGA).
 - Equity price history: Yahoo Finance.
 - Market map: Nasdaq's screener and CoinGecko.
+- Macro ticker: the New York Fed (SOFR), the US Treasury (10Y-2Y yield curve) and FRED (high-yield spread, only with a FRED API key).
 
 ### Data providers, attribution and limits
 
@@ -55,8 +56,9 @@ sources listed in the [security guide](SECURITY.md#where-it-connects). Crypto ve
 Binance, Bybit, Coinbase, Deribit and OKX (and CCXT venues). Equity price history comes from unofficial
 Yahoo Finance endpoints. US equity depth and prints come from Cboe's public book viewer (BZX, BYX, EDGX
 and EDGA). The keyless last price, the fallback for a symbol with no recent Cboe print, comes from an
-unofficial Google Finance page. The market map uses Nasdaq's stock screener and CoinGecko.
-The macro (FRED), dark-pool (FINRA), politics (House Stock Watcher), aviation (OpenSky Network), contract (USAspending) and job-board (Greenhouse) feed modules, and the EDGAR and vocal-stress modules, exist, but no producer runs in this build, so those sources are not connected and not contacted today. Each provider's terms of use apply to the data you view through FlowMap. Check them
+unofficial Google Finance page. The market map uses Nasdaq's stock screener and CoinGecko. The macro
+ticker uses the New York Fed, the US Treasury and, with a FRED API key, FRED.
+The dark-pool (FINRA), politics (House Stock Watcher), aviation (OpenSky Network), contract (USAspending) and job-board (Greenhouse) feed modules, and the EDGAR and vocal-stress modules, exist, but no producer runs in this build, so those sources are not connected and not contacted today. Each provider's terms of use apply to the data you view through FlowMap. Check them
 before you rely on the data, redistribute a screenshot, or build on the same endpoints.
 
 Data can be delayed, incomplete or unavailable. Keyless sources can stop without notice. **FlowMap
@@ -146,6 +148,7 @@ Set environment variables before starting the service. Common settings are:
 | `FLOWMAP_DT_EQUITY_KEYLESS_GRID_NS` | `1000000000`; keyless equity grid cadence (1 s). Between 1 ms and 1 hour. |
 | `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Optional equity market-data credentials; supply both, because one alone is ignored. A source run reads them from its environment. The installed app forwards them from the environment that launches it to its server (a fixed allowlist in `app/src-tauri/src/sidecar.rs`); the webview never receives them. |
 | `FINNHUB_API_KEY` | Optional equity tape access. A source run reads it from its environment. The installed app forwards it from the environment that launches it to its server; the webview never receives it. |
+| `FRED_API_KEY` | Optional; a free FRED API key. Adds the high-yield spread and the stress regime to the macro ticker. |
 | `FLOWMAP_SESSION_TOKEN` | Set by the desktop shell at each launch; when present, every request (except `/api/health` and CORS preflight) must send it in `X-FlowMap-Token`, and every WebSocket connection must offer it as the `flowmap.auth.<token>` subprotocol (on a WebSocket, the `token` query parameter is accepted for tools). Leave it unset for source runs. |
 
 Logs in the installed app go to the app data folder: `flowmap-server.log` (the server's output, moved to `flowmap-server.previous.log` at 20 MB) and `shell.log` (the shell's lifecycle messages, moved to `shell.previous.log` at 1 MB, at the next launch). The per-OS paths are in the [security guide](SECURITY.md#what-it-writes).

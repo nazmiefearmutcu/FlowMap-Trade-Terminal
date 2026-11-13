@@ -29,7 +29,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from flowmap_server import __version__
-from flowmap_server.api import _env, discovery, export, lifecycle, market_map, rest, ws
+from flowmap_server.api import _env, discovery, export, lifecycle, macro, market_map, rest, ws
 from flowmap_server.api.market_cache import (
     MarketDataCache,
     default_movers_fn,
@@ -243,6 +243,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await close_market_map()
             except Exception as exc:
                 logger.warning("market map did not close cleanly: %s", type(exc).__name__)
+        # The macro service holds an HTTP session too; it is closed the same way.
+        macro_service = getattr(app.state, "macro", None)
+        close_macro = getattr(macro_service, "close", None)
+        if callable(close_macro):
+            try:
+                await close_macro()
+            except Exception as exc:
+                logger.warning("macro data did not close cleanly: %s", type(exc).__name__)
         close_cache = getattr(market_cache, "aclose", None)
         if callable(close_cache):
             await close_cache()
@@ -336,6 +344,7 @@ def create_app(
     app.include_router(rest.router)
     app.include_router(discovery.router)
     app.include_router(market_map.router)
+    app.include_router(macro.router)
     app.include_router(export.router)
     app.include_router(ws.router)
     return app

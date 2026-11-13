@@ -1,6 +1,7 @@
 import { formatDateTime, formatFixed } from '../i18n/format';
 import { type TFn, useT } from '../i18n/useT';
 import type { MacroStressData } from '../state/intelligenceStore';
+import { macroHyNote } from './TopBarParts';
 import { stressRegimeLabel } from './TopBarLabels';
 
 interface IntelMacroBarProps {
@@ -26,20 +27,26 @@ export function IntelMacroBar({ macro, demo }: IntelMacroBarProps): JSX.Element 
   const receivedAt = macro
     ? formatDateTime(macro.updatedAt, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
     : '';
+  const curve = macro?.yieldCurve10Y2Y ?? null;
   return (
     <div className="intel-drawer__macro-bar" data-testid="intel-macro-bar">
       <div className="macro-chip">
         <span className="macro-chip__lbl">SOFR</span>
-        <span className="macro-chip__val">{macro ? `${formatFixed(macro.sofrRate, 2)}%` : '—'}</span>
+        <span className="macro-chip__val">{macro?.sofrRate != null ? `${formatFixed(macro.sofrRate, 2)}%` : '—'}</span>
       </div>
       <div className="macro-chip">
         <span className="macro-chip__lbl">{t('intel.macro.hy')}</span>
-        <span className="macro-chip__val">{macro ? `${formatFixed(macro.hySpreadBps, 0)} ${t('unit.bps')}` : '—'}</span>
+        <span className="macro-chip__val">
+          {macro?.hySpreadBps != null ? `${formatFixed(macro.hySpreadBps, 0)} ${t('unit.bps')}` : '—'}
+        </span>
+        {macro !== null && macro.hySpreadBps === null && (
+          <span className="macro-chip__lbl" data-testid="intel-macro-hy-note">{macroHyNote(macro, t)}</span>
+        )}
       </div>
       <div className="macro-chip">
         <span className="macro-chip__lbl">{t('intel.macro.curve')}</span>
-        <span className={`macro-chip__val ${macro ? (macro.yieldCurve10Y2Y < 0 ? 'is-neg' : 'is-pos') : ''}`}>
-          {macro ? `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${formatFixed(macro.yieldCurve10Y2Y, 2)}% ${macro.yieldCurve10Y2Y < 0 ? t('intel.inverted') : ''}` : '—'}
+        <span className={`macro-chip__val ${curve !== null ? (curve < 0 ? 'is-neg' : 'is-pos') : ''}`}>
+          {curve !== null ? `${curve < 0 ? '' : '+'}${formatFixed(curve, 2)}% ${curve < 0 ? t('intel.inverted') : ''}` : '—'}
         </span>
       </div>
       <div

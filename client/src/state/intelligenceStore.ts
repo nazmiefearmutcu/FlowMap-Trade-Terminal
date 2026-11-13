@@ -12,6 +12,7 @@
 import { create } from 'zustand';
 import { MsgType, type GexLevelUpdate, type MarketIntelligence, type MacroStressUpdate } from '../proto/types';
 import type { StreamMsg } from '../net/connection';
+import type { MacroReadingData } from '../net/macroApi';
 
 export interface GexData {
   symbol: string;
@@ -97,9 +98,12 @@ export interface TalentData {
 }
 
 export interface MacroStressData {
-  sofrRate: number;
-  hySpreadBps: number;
-  yieldCurve10Y2Y: number;
+  /** SOFR in percent, or null when no value is held for it. */
+  sofrRate: number | null;
+  /** The high-yield spread in basis points, or null when it has no value. */
+  hySpreadBps: number | null;
+  /** The 10Y-2Y spread in percent, or null when it has no value. */
+  yieldCurve10Y2Y: number | null;
   stressRegime: 'NORMAL' | 'ELEVATED' | 'SEVERE' | 'UNKNOWN';
   /** Preserve the received status instead of inferring a normal regime. */
   status?: string;
@@ -108,6 +112,8 @@ export interface MacroStressData {
   asOf?: Readonly<Record<string, string>>;
   /** "ok", or the reason a series has no reading, per series. */
   sourceStatus?: Readonly<Record<string, string>>;
+  /** The publisher's name per series, as the server names it. */
+  sources?: Readonly<Record<string, string>>;
   updatedAt: number;
 }
 
@@ -160,6 +166,8 @@ export interface IntelligenceState {
   handleStreamMsg: (msg: StreamMsg) => void;
   ingestGex: (gex: GexLevelUpdate) => void;
   ingestMacro: (macro: MacroStressUpdate) => void;
+  /** Holds a reading fetched from `GET /api/macro`; a reading with no figure at all is ignored. */
+  setMacroReading: (reading: MacroReadingData) => void;
   ingestIntel: (intel: MarketIntelligence) => void;
 }
 
@@ -516,6 +524,16 @@ function detailObject(detail: string): Record<string, unknown> {
 const OBSERVATION_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The per-series observation dates that are real calendar-style dates; anything else is dropped. */
+/** The regime word for a server status; anything unrecognised is UNKNOWN, never guessed from a score. */
+function regimeOfStatus(status: string | null): MacroStressData['stressRegime'] {
+  if (status === null) return 'UNKNOWN';
+  const word = status.trim().toUpperCase();
+  if (word === 'SEVERE' || word === 'SEVERE_STRESS') return 'SEVERE';
+  if (word === 'ELEVATED') return 'ELEVATED';
+  if (word === 'NORMAL' || word === 'NORMAL_LIQUIDITY') return 'NORMAL';
+  return 'UNKNOWN';
+}
+
 function observationDates(dates: Record<string, string>): Record<string, string> {
   const kept: Record<string, string> = {};
   for (const [series, date] of Object.entries(dates)) {
@@ -675,6 +693,30 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
         stressScore: update.stress_score,
         ...(update.as_of ? { asOf: observationDates(update.as_of) } : {}),
         ...(update.source_status ? { sourceStatus: { ...update.source_status } } : {}),
+        updatedAt: Date.now(),
+      },
+    });
+  },
+
+  setMacroReading: (reading) => {
+    // A reading with no figure at all tells nothing; the last one stays on screen.
+    if (reading.sofr === null && reading.hySpread === null && reading.yield10y2y === null) return;
+    const dates: Record<string, string> = {};
+    if (reading.sofrDate !== null) dates.SOFR = reading.sofrDate;
+    if (reading.hyDate !== null) dates.BAMLH0A0HYM2 = reading.hyDate;
+    if (reading.curveDate !== null) dates.T10Y2Y = reading.curveDate;
+    set({
+      macro: {
+        sofrRate: reading.sofr,
+        // The server gives the spread in percent; the UI shows basis points.
+        hySpreadBps: reading.hySpread === null ? null : reading.hySpread * 100,
+        yieldCurve10Y2Y: reading.yield10y2y,
+        stressRegime: regimeOfStatus(reading.status),
+        ...(reading.status !== null ? { status: reading.status } : {}),
+        ...(reading.stressScore !== null ? { stressScore: reading.stressScore } : {}),
+        asOf: observationDates(dates),
+        sourceStatus: { ...reading.sourceStatus },
+        sources: { ...reading.sources },
         updatedAt: Date.now(),
       },
     });

@@ -5,7 +5,7 @@
  */
 
 import { formatFixed } from '../i18n/format';
-import { useT } from '../i18n/useT';
+import { type TFn, useT } from '../i18n/useT';
 import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 import type { StreamMode } from '../proto/types';
 import type { MacroStressData } from '../state/intelligenceStore';
@@ -148,31 +148,74 @@ export function CapabilityBadges({ pending, chips, depthScopeTitle }: Capability
   );
 }
 
+/**
+ * The ticker's hover text: one line per series with its value or "no value", its
+ * publisher and its observation date, then the reason the high-yield spread is
+ * missing when it is.
+ */
+function macroTitle(macro: MacroStressData, t: TFn): string {
+  const source = (series: string) => macro.sources?.[series];
+  const observed = (series: string) => macro.asOf?.[series];
+  const line = (label: string, series: string, display: string | null): string =>
+    [
+      `${label}: ${display ?? t('macro.title.noValue')}`,
+      source(series),
+      observed(series) ? t('macro.title.observed', { date: observed(series) ?? '' }) : null,
+    ].filter((part): part is string => !!part).join(' · ');
+  const lines = [
+    line('SOFR', 'SOFR', macro.sofrRate === null ? null : `${formatFixed(macro.sofrRate, 2)}%`),
+    line('HY OAS', 'BAMLH0A0HYM2', macro.hySpreadBps === null ? null : `${formatFixed(macro.hySpreadBps, 0)} ${t('unit.bps')}`),
+    line('10Y-2Y', 'T10Y2Y', macro.yieldCurve10Y2Y === null ? null : `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${formatFixed(macro.yieldCurve10Y2Y, 2)}%`),
+  ];
+  if (macro.hySpreadBps === null) lines.push(macroHyNote(macro, t));
+  return lines.join('\n');
+}
+
+/**
+ * Why the high-yield spread has no value, in words. Without a FRED key the spread
+ * is never fetched, so that hint names the key. A key that is set but refused or
+ * unreachable gets the plainer line, so the hint never blames a missing key.
+ */
+export function macroHyNote(macro: MacroStressData, t: TFn): string {
+  const reason = macro.sourceStatus?.BAMLH0A0HYM2;
+  const needsKey = reason === undefined || reason === 'fred_api_key_missing' || reason === 'rejected';
+  return t(needsKey ? 'macro.hyNeedsKey' : 'macro.hyMissing');
+}
+
 /** The macro stress ticker (SOFR, HY OAS, the 10Y-2Y curve and the stress regime). */
 export function MacroTicker({ macro }: { macro: MacroStressData | null }) {
   const t = useT();
+  const hasValue = macro !== null && (macro.sofrRate !== null || macro.hySpreadBps !== null || macro.yieldCurve10Y2Y !== null);
+  const regime = macro?.stressRegime ?? null;
+  // A reading with no regime (the high-yield spread is missing) shows no badge at all.
+  const regimeShown = regime === 'NORMAL' || regime === 'ELEVATED' || regime === 'SEVERE';
   return (
     <div
       className="macro-ticker"
-      data-available={macro !== null}
+      data-available={hasValue}
       data-testid="institutional-stress-ticker"
-      title={macro ? t('topbar.macroTitle') : t('topbar.macroUnavailable')}
+      title={macro ? macroTitle(macro, t) : t('topbar.macroUnavailable')}
     >
       <span className="macro-ticker__lbl">{t('topbar.macro')}</span>
       <span className="macro-ticker__item">
-        SOFR <strong>{macro ? `${formatFixed(macro.sofrRate, 2)}%` : '—'}</strong>
+        SOFR <strong>{macro?.sofrRate != null ? `${formatFixed(macro.sofrRate, 2)}%` : '—'}</strong>
       </span>
       <span className="macro-ticker__div">|</span>
       <span className="macro-ticker__item">
-        HY OAS <strong>{macro ? `${formatFixed(macro.hySpreadBps, 0)} ${t('unit.bps')}` : '—'}</strong>
+        HY OAS <strong>{macro?.hySpreadBps != null ? `${formatFixed(macro.hySpreadBps, 0)} ${t('unit.bps')}` : '—'}</strong>
       </span>
       <span className="macro-ticker__div">|</span>
-      <span className={`macro-ticker__item ${macro ? (macro.yieldCurve10Y2Y < 0 ? 'is-neg' : 'is-pos') : ''}`}>
-        10Y-2Y <strong>{macro ? `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${formatFixed(macro.yieldCurve10Y2Y, 2)}%` : '—'}</strong>
+      <span className={`macro-ticker__item ${macro?.yieldCurve10Y2Y != null ? (macro.yieldCurve10Y2Y < 0 ? 'is-neg' : 'is-pos') : ''}`}>
+        10Y-2Y <strong>{macro?.yieldCurve10Y2Y != null ? `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${formatFixed(macro.yieldCurve10Y2Y, 2)}%` : '—'}</strong>
       </span>
-      <span className={`macro-ticker__badge is-${macro?.stressRegime.toLowerCase() ?? 'unavailable'}`}>
-        {macro ? stressRegimeLabel(macro.stressRegime, t) : t('topbar.unavailable')}
-      </span>
+      {macro === null && (
+        <span className="macro-ticker__badge is-unavailable">{t('topbar.unavailable')}</span>
+      )}
+      {macro !== null && regimeShown && (
+        <span className={`macro-ticker__badge is-${regime.toLowerCase()}`}>
+          {stressRegimeLabel(regime, t)}
+        </span>
+      )}
     </div>
   );
 }

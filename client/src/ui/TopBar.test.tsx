@@ -8,6 +8,7 @@ import { isSingleKeyShortcutsEnabled, setSingleKeyShortcutsEnabled } from '../in
 import { useFlowMapStore } from '../state/store';
 import { useIntelligenceStore } from '../state/intelligenceStore';
 import { MsgType } from '../proto/types';
+import type { MacroReadingData } from '../net/macroApi';
 import type { SymbolSearchHandle } from './SymbolSearch';
 import { TopBar } from './TopBar';
 import { capabilityChipClass } from './symbols';
@@ -505,13 +506,71 @@ describe('TopBar i18n shell', () => {
     expect(ticker?.textContent).not.toContain('UNAVAILABLE');
   });
 
-  it('shows an UNKNOWN stress regime as the unavailable word, with no raw server token', () => {
+  it('shows a reading with an unrecognised status with no badge and no raw token', () => {
     const { container } = render(topbar());
     act(() => useIntelligenceStore.getState().ingestMacro({ type: MsgType.MACRO_STRESS, ts_ns: 1n, sofr: 5.32, hy_spread: 3.42, yield_10y2y: -0.18, stress_score: 0, status: 'UNKNOWN' }));
-    const badge = container.querySelector('.macro-ticker__badge');
-    expect(badge?.textContent).toBe(tFor('en', 'topbar.unavailable'));
-    expect(badge?.textContent).not.toContain('UNKNOWN');
-    expect(badge?.getAttribute('title')).toBeNull();
+    expect(container.querySelector('.macro-ticker__badge')).toBeNull();
+    expect(container.querySelector('[data-testid="institutional-stress-ticker"]')?.textContent).not.toContain('UNKNOWN');
+  });
+});
+
+function macroReading(overrides: Partial<MacroReadingData> = {}): MacroReadingData {
+  return {
+    sofr: 3.9, sofrDate: '2026-11-12', yield10y2y: 0.24, curveDate: '2026-11-12',
+    hySpread: 3.5, hyDate: '2026-11-11', stressScore: 0.1, status: 'NORMAL_LIQUIDITY',
+    sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'ok', T10Y2Y: 'ok' },
+    sources: { SOFR: 'New York Fed', T10Y2Y: 'US Treasury', BAMLH0A0HYM2: 'FRED' },
+    asOf: 1_700_000_000_000, stale: false, ...overrides,
+  };
+}
+
+describe('TopBar macro ticker from the REST reading', () => {
+  it('shows every value and the regime badge for a full reading', () => {
+    const { container } = render(topbar());
+    act(() => useIntelligenceStore.getState().setMacroReading(macroReading()));
+    const ticker = container.querySelector('[data-testid="institutional-stress-ticker"]');
+    expect(ticker?.getAttribute('data-available')).toBe('true');
+    expect(ticker?.textContent).toContain('3.90%');
+    expect(ticker?.textContent).toContain('350 bps');
+    expect(ticker?.textContent).toContain('+0.24%');
+    expect(container.querySelector('.macro-ticker__badge')?.textContent).toBe(tFor('en', 'stress.regime.normal'));
+  });
+
+  it('shows SOFR and the curve with no badge and no UNAVAILABLE word when the spread is missing', () => {
+    const { container } = render(topbar());
+    act(() => useIntelligenceStore.getState().setMacroReading(macroReading({
+      hySpread: null, hyDate: null, stressScore: null, status: null,
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'fred_api_key_missing', T10Y2Y: 'ok' },
+    })));
+    const ticker = container.querySelector('[data-testid="institutional-stress-ticker"]');
+    expect(ticker?.getAttribute('data-available')).toBe('true');
+    expect(ticker?.textContent).toContain('3.90%');
+    expect(ticker?.textContent).toContain('+0.24%');
+    expect(ticker?.textContent).toContain('HY OAS —');
+    expect(container.querySelector('.macro-ticker__badge')).toBeNull();
+    expect(ticker?.textContent).not.toContain(tFor('en', 'topbar.unavailable'));
+  });
+
+  it('lists each series with its publisher and date in the hover text, and names the FRED key', () => {
+    const { container } = render(topbar());
+    act(() => useIntelligenceStore.getState().setMacroReading(macroReading({
+      hySpread: null, hyDate: null, stressScore: null, status: null,
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'fred_api_key_missing', T10Y2Y: 'ok' },
+    })));
+    const title = container.querySelector('[data-testid="institutional-stress-ticker"]')?.getAttribute('title') ?? '';
+    const lines = title.split('\n');
+    expect(lines[0]).toBe('SOFR: 3.90% · New York Fed · observed 2026-11-12');
+    expect(lines[1]).toBe('HY OAS: no value · FRED');
+    expect(lines[2]).toBe('10Y-2Y: +0.24% · US Treasury · observed 2026-11-12');
+    expect(lines[3]).toBe(tFor('en', 'macro.hyNeedsKey'));
+    expect(lines[3]).toContain('FRED_API_KEY');
+  });
+
+  it('shows the unavailable badge only when nothing has been received', () => {
+    const { container } = render(topbar());
+    const ticker = container.querySelector('[data-testid="institutional-stress-ticker"]');
+    expect(ticker?.getAttribute('data-available')).toBe('false');
+    expect(container.querySelector('.macro-ticker__badge')?.textContent).toBe(tFor('en', 'topbar.unavailable'));
   });
 });
 

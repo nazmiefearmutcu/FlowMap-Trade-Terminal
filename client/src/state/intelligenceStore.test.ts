@@ -196,3 +196,63 @@ describe('synthetic fixtures are development-only (state-16)', () => {
     expect(fresh.DEMO_INTELLIGENCE.macro.stressRegime).toBe('UNKNOWN');
   });
 });
+
+describe('setMacroReading holds a reading from GET /api/macro', () => {
+  const full: MacroReadingData = {
+    sofr: 3.9, sofrDate: '2026-11-12', yield10y2y: 0.24, curveDate: '2026-11-12',
+    hySpread: 3.5, hyDate: '2026-11-11', stressScore: 0.1, status: 'NORMAL_LIQUIDITY',
+    sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'ok', T10Y2Y: 'ok' },
+    sources: { SOFR: 'New York Fed', T10Y2Y: 'US Treasury', BAMLH0A0HYM2: 'FRED' },
+    asOf: 1_700_000_000_000, stale: false,
+  };
+
+  it('stores a full reading in the store units with its dates, sources and status', () => {
+    useIntelligenceStore.getState().setMacroReading(full);
+    expect(useIntelligenceStore.getState().macro).toMatchObject({
+      sofrRate: 3.9,
+      hySpreadBps: 350,
+      yieldCurve10Y2Y: 0.24,
+      stressRegime: 'NORMAL',
+      status: 'NORMAL_LIQUIDITY',
+      stressScore: 0.1,
+      asOf: { SOFR: '2026-11-12', BAMLH0A0HYM2: '2026-11-11', T10Y2Y: '2026-11-12' },
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'ok', T10Y2Y: 'ok' },
+      sources: { SOFR: 'New York Fed', T10Y2Y: 'US Treasury', BAMLH0A0HYM2: 'FRED' },
+    });
+  });
+
+  it('keeps a partial reading with null for each missing figure and no regime', () => {
+    useIntelligenceStore.getState().setMacroReading({
+      ...full, hySpread: null, hyDate: null, stressScore: null, status: null,
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'fred_api_key_missing', T10Y2Y: 'ok' },
+    });
+    const macro = useIntelligenceStore.getState().macro;
+    expect(macro?.sofrRate).toBe(3.9);
+    expect(macro?.yieldCurve10Y2Y).toBe(0.24);
+    expect(macro?.hySpreadBps).toBeNull();
+    expect(macro?.stressRegime).toBe('UNKNOWN');
+    expect(macro?.status).toBeUndefined();
+    expect(macro?.stressScore).toBeUndefined();
+    expect(macro?.asOf).toEqual({ SOFR: '2026-11-12', T10Y2Y: '2026-11-12' });
+    expect(macro?.sourceStatus?.BAMLH0A0HYM2).toBe('fred_api_key_missing');
+  });
+
+  it('ignores a reading with no figure at all and keeps the last one', () => {
+    useIntelligenceStore.getState().setMacroReading(full);
+    const held = useIntelligenceStore.getState().macro;
+    useIntelligenceStore.getState().setMacroReading({
+      ...full, sofr: null, hySpread: null, yield10y2y: null, stressScore: null, status: null,
+    });
+    expect(useIntelligenceStore.getState().macro).toBe(held);
+  });
+
+  it('maps the server statuses to the regime words and leaves an unknown one unknown', () => {
+    const set = useIntelligenceStore.getState().setMacroReading;
+    set({ ...full, status: 'ELEVATED', stressScore: 0.4 });
+    expect(useIntelligenceStore.getState().macro?.stressRegime).toBe('ELEVATED');
+    set({ ...full, status: 'SEVERE_STRESS', stressScore: 0.8 });
+    expect(useIntelligenceStore.getState().macro?.stressRegime).toBe('SEVERE');
+    set({ ...full, status: 'SOMETHING_NEW', stressScore: 0.4 });
+    expect(useIntelligenceStore.getState().macro?.stressRegime).toBe('UNKNOWN');
+  });
+});

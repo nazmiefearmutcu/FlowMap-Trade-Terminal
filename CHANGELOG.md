@@ -25,16 +25,21 @@ Unreleased work sits on top of the newest listed commit.
   time axis (weekday, day, month, `HH:MM:SS` in the chosen time zone), and the readout box uses words instead
   of abbreviations.
 
+### Fixed
+
+- Macro ticker always read UNAVAILABLE. No part of the server produced macro data. `GET /api/macro` now
+  serves SOFR from the New York Fed and the 10Y-2Y spread from the US Treasury's par yield curve, both
+  without a key, and the top bar and the Research drawer show them with their observation dates. The
+  high-yield spread and the stress regime need a free FRED API key (`FRED_API_KEY`, which the desktop app
+  now passes to its server); without it that value shows a dash and no regime is shown.
+- History did not load on the default price band. The first-launch history was skipped on every banded price
+  range, and the default range (*deep*) is banded, so a newly opened symbol started with a few seconds of
+  data whatever the *History depth* setting said. It now loads on every price range.
+
 ### Changed
 
 - History before the app was watching is price history only: price line, volume and, for crypto, CVD. No depth
   is drawn for that period. The volume-derived "reconstructed" density is gone.
-
-### Fixed
-
-- History did not load on the default price band. The first-launch history was skipped on every banded price
-  range, and the default range (*deep*) is banded, so a newly opened symbol started with a few seconds of
-  data whatever the *History depth* setting said. It now loads on every price range.
 
 ### Removed
 
