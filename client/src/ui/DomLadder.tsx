@@ -45,6 +45,7 @@ import { useFlowMapStore } from '../state/store';
 import { formatPrice, formatSizeCompact } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import { LadderHeader } from './DomLadderHeader';
+import { depthScopeKey } from './symbols';
 import { ROW_H, clampRow, useBookSnapshot, useLockedWheel, useVisibleRowCount } from './DomLadderHooks';
 import './TradingPanels.css';
 import './DomLadder.css';
@@ -381,6 +382,7 @@ export function DomLadder(): JSX.Element {
   // Class-safe token: `tier.toLowerCase()` yields 'l2'/'l1'/'synth' (and 'na'
   // for the no-data case) — never 'n/a', whose slash breaks the CSS selector.
   const badgeClass = tier ? tier.toLowerCase() : 'na';
+  const scopeKey = depthScopeKey(capability);
 
   const spreadTicks =
     model.spread !== null && params && params.tick > 0
@@ -420,6 +422,7 @@ export function DomLadder(): JSX.Element {
         onToggleCollapsed={() => setCollapsed((c) => !c)}
         badge={badge}
         badgeClass={badgeClass}
+        badgeTitle={scopeKey ? t(scopeKey) : undefined}
         recorded={recorded}
         spread={spreadTicks !== null
           ? { price: formatPrice(model.spread!, model.priceDecimals), approximate: !snap.bbo, ticks: spreadTicks }

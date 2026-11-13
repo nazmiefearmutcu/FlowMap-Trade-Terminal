@@ -7,6 +7,7 @@ import { useT } from '../i18n/useT';
 import { getSnapshot, subscribe as subscribeBook } from '../state/bookStore';
 import { useTheme } from '../theme';
 import { depthIsSynthetic, depthReadoutTier, resolveLegend } from './heatLegendModel';
+import { depthScopeKey } from './symbols';
 import type { ChartStop } from '../theme/registry';
 interface HeatLegendProps { colormap: Colormap; channel: DepthChannelMode }
 export type LegendStop = ChartStop;
@@ -29,6 +30,11 @@ export function HeatLegend({ colormap, channel }: HeatLegendProps): JSX.Element 
   const synth = depthIsSynthetic(capability, bookMode);
   const tier = depthReadoutTier(capability, bookMode);
   const recorded = capability?.depth_provenance === 'recorded-density';
+  // A book that covers only some exchanges says so: the tier's title names the
+  // scope, and the short scope name joins the tier for screen readers.
+  const scopeKey = depthScopeKey(capability);
+  const scopeTitle = scopeKey ? t(scopeKey) : undefined;
+  const tierLabel = tier && scopeKey ? `${tier} · ${t('depthScope.cboeTop5.short')}` : tier;
   const legend = resolveLegend({ channel, colormap, synth, theme });
   const channelSuffix =
     channel === 'sum' || synth ? '' : t('heat.channelSuffix', { channel });
@@ -40,7 +46,7 @@ export function HeatLegend({ colormap, channel }: HeatLegendProps): JSX.Element 
       data-testid="heat-legend"
       data-channel={legend.effectiveChannel}
       role="img"
-      aria-label={t('heat.ariaLabel', { ramp: legend.rampName, channel: channelSuffix, tier: tier ? t('heat.tierSuffix', { tier }) : '' })}
+      aria-label={t('heat.ariaLabel', { ramp: legend.rampName, channel: channelSuffix, tier: tierLabel ? t('heat.tierSuffix', { tier: tierLabel }) : '' })}
     >
       <span className="heat-legend__cap">{legend.topCap}</span>
       <div
@@ -63,7 +69,7 @@ export function HeatLegend({ colormap, channel }: HeatLegendProps): JSX.Element 
       <span
         className={`heat-legend__tier${tier === 'L2-SNAPSHOT' ? ' heat-legend__tier--caution' : ''}`}
         data-testid="heat-legend-tier"
-        title={recorded ? t('depthChip.recorded') : undefined}
+        title={scopeTitle ?? (recorded ? t('depthChip.recorded') : undefined)}
       >
         {tier ?? 'liq'}
       </span>

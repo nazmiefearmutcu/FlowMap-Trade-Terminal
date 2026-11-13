@@ -143,6 +143,31 @@ it('reads a sim readout as the session-relative clock, not a zoned wall time', (
   }
 });
 
+it('titles a Cboe top-five source tag with its exchange scope', () => {
+  useFlowMapStore.setState({ capability: { depth: 'L2-snapshot', depth_scope: 'cboe-top5' } });
+  const mounted = mountProbedCrosshair({});
+  try {
+    const tag = mounted.container.querySelector('[data-testid="crosshair-src"]');
+    expect(tag?.textContent).toBe('L2-SNAPSHOT');
+    expect(tag?.getAttribute('title')).toContain('Cboe exchanges only');
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ capability: null });
+  }
+});
+
+it('keeps the source tag untitled for a ccxt venue snapshot with no scope', () => {
+  useFlowMapStore.setState({ capability: { depth: 'L2-snapshot' } });
+  const mounted = mountProbedCrosshair({});
+  try {
+    const tag = mounted.container.querySelector('[data-testid="crosshair-src"]');
+    expect(tag?.getAttribute('title')).toBeNull();
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ capability: null });
+  }
+});
+
 it('names a polled venue snapshot L2-SNAPSHOT, never L2', () => {
   useFlowMapStore.setState({ capability: { depth: 'L2-snapshot' } });
   const mounted = mountProbedCrosshair({});

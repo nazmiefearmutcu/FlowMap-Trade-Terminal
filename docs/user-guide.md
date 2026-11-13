@@ -86,14 +86,20 @@ Market grammar (what you can type into the search or the socket):
 - `<exchange>[-<segment>]:<SYMBOL>` — e.g. `binance:BTCUSDT`,
   `bybit-usdm:ETHUSDT`. Native incremental L2 on binance, bybit, coinbase,
   deribit, okx; every other ccxt venue via snapshot polling.
-- `equity:AAPL` — keyless synthetic depth (Yahoo 1-minute bars) on a distinct
-  amber ramp; with `ALPACA_API_KEY`/`ALPACA_API_SECRET` or `FINNHUB_API_KEY` in the
-  environment that starts FlowMap (the installed app forwards them to its server) it upgrades to real L1 top-of-book and tick tape during market
-  hours.
+- `equity:AAPL` — keyless US equity depth from Cboe's public book viewer: the top
+  five displayed price levels per side on the BZX, BYX, EDGX and EDGA exchanges,
+  read every 5 seconds and merged by price, in shares. It is not the consolidated
+  US order book: NYSE, Nasdaq and other venues are absent. Prints carry no buyer or
+  seller side, so there is no CVD. The feed is live from 04:00 to 20:00 New York
+  time on trading days. Before FlowMap starts watching a symbol, the chart shows
+  its price history only, with no depth. With `ALPACA_API_KEY`/`ALPACA_API_SECRET`
+  or `FINNHUB_API_KEY` in the environment that starts FlowMap (the installed app
+  forwards them to its server) it upgrades to real L1 top-of-book and tick tape
+  during market hours.
 
 **Capability badges, never silent downgrades.** The top bar shows what the
 active feed actually delivers — `L2` / `L2-SNAPSHOT` / `L1` / `SYNTH`, `TAPE TICK` / `TAPE
-POLL`, `SIDE EXCHANGE` / `SIDE NA`, and `RECORDED DENSITY` when the depth on screen is read back from a recording. A simulated feed (`sim:SIM-DEMO`) shows a `SIM` chip. A replay keeps its real depth tier (a keyless equity recording still reads `SYNTH`) and adds `RECORDED DENSITY`. `L2-SNAPSHOT` is a real book that a polled venue re-reads whole on each tick (the ccxt venues), so it is less detailed than a streamed `L2` book and carries an amber caution style. If a badge says the side or the tape is
+POLL`, `SIDE EXCHANGE` / `SIDE NA`, and `RECORDED DENSITY` when the depth on screen is read back from a recording. A simulated feed (`sim:SIM-DEMO`) shows a `SIM` chip. A replay keeps its real depth tier (a keyless equity recording still reads `SYNTH`) and adds `RECORDED DENSITY`. `L2-SNAPSHOT` is a real book that a polled venue re-reads whole on each tick (the ccxt venues), so it is less detailed than a streamed `L2` book and carries an amber caution style. A keyless equity book from Cboe also reads `L2-SNAPSHOT`, and its tooltip names the four exchanges it covers. If a badge says the side or the tape is
 degraded, that is the truth of the stream, not a UI guess.
 
 Up to 4 sessions can be subscribed at once (`FLOWMAP_MAX_SESSIONS`).
@@ -124,7 +130,8 @@ the *Depth channel* segmented control in `Settings → Display`:
 | `imbalance` | signed `(bid−ask)/(bid+ask)` | Fixed −1…+1 scale; one end of the divergent blue↔orange ramp is bid-heavy, the other ask-heavy; the neutral middle is balance. |
 
 The setting persists across launches. If the active session is a synthetic
-(SYNTH) feed — which has no real two-sided book — the renderer keeps showing
+(SYNTH) feed — which has no real two-sided book, as in an old recording of a
+keyless equity — the renderer keeps showing
 the honest `sum`/amber view and re-applies your channel when a real-depth
 session is active again.
 

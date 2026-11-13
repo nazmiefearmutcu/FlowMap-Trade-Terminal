@@ -170,6 +170,27 @@ describe('TopBar capability badges', () => {
     expect(depth.getAttribute('title')).toContain('re-read');
   });
 
+  it('says which exchanges a Cboe top-five book covers, in the depth chip title', () => {
+    act(() =>
+      useFlowMapStore.setState({
+        capability: { depth: 'L2-snapshot', depth_scope: 'cboe-top5', tape: 'poll', trade_side: 'na' },
+      }),
+    );
+    const { container } = render(topbar());
+    const depth = container.querySelector('[data-testid="capability-badges"] .cap--depth')!;
+    expect(depth.getAttribute('title')).toBe(
+      'Cboe exchanges only: the top 5 price levels per side on BZX, BYX, EDGX and EDGA, read every 5 seconds. This is not the consolidated US order book.',
+    );
+  });
+
+  it('keeps the ccxt snapshot title when the book names no scope', () => {
+    act(() => useFlowMapStore.setState({ capability: { depth: 'L2-snapshot', tape: 'tick' } }));
+    const { container } = render(topbar());
+    const depth = container.querySelector('[data-testid="capability-badges"] .cap--depth')!;
+    expect(depth.getAttribute('title')).toContain('re-read');
+    expect(depth.getAttribute('title')).not.toContain('Cboe');
+  });
+
   it('gives ABSENT depth (finnhub `N/A`) its own tier, not the real-depth accent', () => {
     act(() =>
       useFlowMapStore.setState({ capability: { depth: 'N/A', tape: 'tick', trade_side: 'inferred' } }),

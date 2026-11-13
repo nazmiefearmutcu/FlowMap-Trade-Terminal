@@ -34,6 +34,7 @@ import { useT } from '../i18n/useT';
 import { clearProbeSpot, recordProbeSpot } from './lastProbe';
 import { setCrosshairProbe } from './crosshairStore';
 import { depthIsSynthetic, depthReadoutTier } from './heatLegendModel';
+import { depthScopeKey } from './symbols';
 import { marketGroup } from './symbols';
 import { fmtClockMs } from '../gl/overlays/axisTicks';
 import './Crosshair.css';
@@ -225,6 +226,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   const bookMode = getSnapshot().book?.mode ?? null;
   const isSynth = depthIsSynthetic(capability, bookMode);
   const tier = depthReadoutTier(capability, bookMode);
+  const scopeKey = depthScopeKey(capability);
   const recorded = capability?.depth_provenance === 'recorded-density';
   const sizeSynthCls = isSynth ? ' crosshair__val--synth' : '';
   // A snapshot book (ccxt polling) is not a native L2 feed: its tag takes the caution tone.
@@ -259,7 +261,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
               <span
                 className={`crosshair__tag${isSynth ? ' crosshair__tag--synth' : ''}${tierCaution ? ' crosshair__tag--caution' : ''}`}
                 data-testid="crosshair-src"
-                title={isSynth && recorded ? t('depthChip.recorded') : undefined}
+                title={scopeKey ? t(scopeKey) : isSynth && recorded ? t('depthChip.recorded') : undefined}
               >
                 {tier}
               </span>

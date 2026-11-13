@@ -7,6 +7,7 @@ import {
   capabilityChipTitle,
   capabilityChips,
   capabilityChipLabel,
+  depthScopeKey,
   fuzzyRank,
   fuzzyScore,
   getVenueCatalog,
@@ -34,15 +35,20 @@ const BTC: SymbolEntry = {
   capability: { depth: 'L2', tape: 'tick' },
 };
 const ETH: SymbolEntry = { market: 'binance-spot', symbol: 'ETHUSDT', capability: { depth: 'L2', tape: 'tick' } };
-const AAPL: SymbolEntry = { market: 'equity', symbol: 'AAPL', capability: { depth: 'SYNTH', tape: 'poll' } };
+const AAPL: SymbolEntry = {
+  market: 'equity',
+  symbol: 'AAPL',
+  capability: { depth: 'L2-snapshot', depth_scope: 'cboe-top5', tape: 'poll', trade_side: 'na', cvd: 'na' },
+};
 
 const DIRECTORY = [SIM, BTC, ETH, AAPL];
 
 // Shapes mirror a live GET /api/venues: the server reports each venue's REAL
-// depth tier, so equity says SYNTH even though it is a native (non-ccxt) feed.
+// depth tier, so equity says L2-snapshot (the Cboe top-five book) even though it
+// is a native (non-ccxt) feed.
 const CATALOG: VenueInfo[] = [
   { id: 'sim', assetClass: 'sim', depth: 'L2', native: true, segments: [] },
-  { id: 'equity', assetClass: 'equity', depth: 'SYNTH', native: true, segments: [] },
+  { id: 'equity', assetClass: 'equity', depth: 'L2-snapshot', native: true, segments: [] },
   { id: 'binance', assetClass: 'crypto', depth: 'L2', native: true, segments: ['spot', 'usdm', 'coinm'] },
   { id: 'kraken', assetClass: 'crypto', depth: 'L2-snapshot', native: false, segments: [] },
   { id: 'gateio', assetClass: 'crypto', depth: 'L2-snapshot', native: false, segments: [] },
@@ -133,9 +139,9 @@ describe('venueOptions', () => {
     const byMarket = new Map(venueOptions(CATALOG).map((o) => [o.market, o]));
     expect(byMarket.get('binance-usdm')!.depth).toBe('L2');
     expect(byMarket.get('kraken')!.depth).toBe('L2-snapshot');
-    // equity is native:true yet only reaches synthetic depth — the badge must
-    // follow the server's tier, not the native flag.
-    expect(byMarket.get('equity')!.depth).toBe('SYNTH');
+    // equity is native:true yet reads a snapshot book, not a streamed one — the
+    // badge must follow the server's tier, not the native flag.
+    expect(byMarket.get('equity')!.depth).toBe('L2-snapshot');
     expect(byMarket.get('equity')!.native).toBe(true);
     expect(byMarket.get('sim')!.depth).toBe('L2');
     // The bundled scope spans every tier at once, so it claims none.
@@ -245,6 +251,20 @@ describe('keyless-equity replay capability chips', () => {
     expect(chips).toContain('SYNTH');
     expect(chips).toContain('RECORDED DENSITY');
     expect(chips).not.toContain('SIM');
+  });
+});
+
+describe('depthScopeKey (which exchanges a depth book covers)', () => {
+  it('names the Cboe top-five scope for a Cboe book', () => {
+    expect(depthScopeKey({ depth: 'L2-snapshot', depth_scope: 'cboe-top5' })).toBe('depthScope.cboeTop5');
+  });
+
+  it('names no scope for a ccxt venue book, a replay or a missing capability', () => {
+    expect(depthScopeKey({ depth: 'L2-snapshot' })).toBeNull();
+    expect(depthScopeKey({ depth: 'L2', tape: 'tick' })).toBeNull();
+    expect(depthScopeKey({ depth: 'L2-snapshot', depth_scope: 'some-other-scope' })).toBeNull();
+    expect(depthScopeKey(null)).toBeNull();
+    expect(depthScopeKey(undefined)).toBeNull();
   });
 });
 

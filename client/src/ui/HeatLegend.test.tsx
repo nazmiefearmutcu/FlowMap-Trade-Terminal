@@ -216,6 +216,26 @@ describe('HeatLegend replay honesty', () => {
   });
 });
 
+describe('HeatLegend depth scope', () => {
+  it('titles a Cboe top-five book with its scope and shows the short scope name', () => {
+    useFlowMapStore.setState({ capability: { depth: 'L2-snapshot', depth_scope: 'cboe-top5' } });
+    const el = mountLegend('flow', 'sum');
+    const tier = el.querySelector('[data-testid="heat-legend-tier"]');
+    expect(tier?.getAttribute('title')).toContain('Cboe exchanges only');
+    expect(el.querySelector('[data-testid="heat-legend"]')?.getAttribute('aria-label')).toContain('Cboe · top 5');
+    useFlowMapStore.setState({ capability: null });
+  });
+
+  it('keeps the tier title empty for a ccxt venue book with no scope', () => {
+    useFlowMapStore.setState({ capability: { depth: 'L2-snapshot' } });
+    const el = mountLegend('flow', 'sum');
+    const tier = el.querySelector('[data-testid="heat-legend-tier"]');
+    expect(tier?.getAttribute('title')).toBeNull();
+    expect(el.querySelector('[data-testid="heat-legend"]')?.getAttribute('aria-label')).not.toContain('Cboe');
+    useFlowMapStore.setState({ capability: null });
+  });
+});
+
 describe('HeatLegend snapshot tier', () => {
   it('names a polled venue book L2-SNAPSHOT with the caution tone, never as native L2', () => {
     useFlowMapStore.setState({ capability: { depth: 'L2-snapshot' } });

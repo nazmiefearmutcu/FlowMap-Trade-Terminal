@@ -164,9 +164,9 @@ export function venueMarkets(venue: VenueInfo): string[] {
  *
  * The depth badge is carried VERBATIM off the catalog for every venue, because
  * the server reports each venue's real tier rather than deriving it from
- * `native` — so equity reads `SYNTH`, a ccxt venue reads `L2-snapshot`, and only
- * a venue that truly streams diffs reads `L2`. The bundled `all` scope spans
- * every tier at once, so it honestly carries none.
+ * `native` — so equity reads `L2-snapshot` (the Cboe top-five book), a ccxt venue
+ * reads `L2-snapshot`, and only a venue that truly streams diffs reads `L2`. The
+ * bundled `all` scope spans every tier at once, so it honestly carries none.
  */
 export function venueOptions(venues: readonly VenueInfo[]): VenueOption[] {
   const native: VenueOption[] = [];
@@ -450,6 +450,17 @@ export function capabilityChipTitle(chip: string, t: Translate = englishT): stri
   if (chip.includes('SNAPSHOT')) return t('depthChip.snapshot');
   if (chip === 'L1') return t('depthChip.l1');
   return undefined;
+}
+
+/**
+ * The translation key that says which exchanges a depth book covers, or null
+ * when the book needs no scope note. Only the Cboe top-five book carries one
+ * today: it spans four exchanges, not the consolidated US book, and a reader
+ * must not take it for the whole market. The key's `.short` form names the
+ * scope in a few words.
+ */
+export function depthScopeKey(capability: Record<string, unknown> | null | undefined): string | null {
+  return capability?.depth_scope === 'cboe-top5' ? 'depthScope.cboeTop5' : null;
 }
 
 /**

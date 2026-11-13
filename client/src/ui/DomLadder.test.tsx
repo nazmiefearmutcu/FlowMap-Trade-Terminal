@@ -433,6 +433,24 @@ describe('buildLadder', () => {
   });
 });
 
+describe('DomLadder depth scope', () => {
+  it('titles the depth badge with the Cboe top-five scope', () => {
+    useFlowMapStore.setState({ capability: { depth: 'L2-snapshot', depth_scope: 'cboe-top5' } });
+    const { container } = render(<DomLadder />);
+    const badge = container.querySelector('[data-testid="ladder-badge"]');
+    expect(badge?.textContent).toBe('L2-SNAPSHOT');
+    expect(badge?.getAttribute('title')).toContain('Cboe exchanges only');
+    useFlowMapStore.setState({ capability: null });
+  });
+
+  it('leaves the badge untitled for a ccxt venue snapshot with no scope', () => {
+    useFlowMapStore.setState({ capability: { depth: 'L2-snapshot' } });
+    const { container } = render(<DomLadder />);
+    expect(container.querySelector('[data-testid="ladder-badge"]')?.getAttribute('title')).toBeNull();
+    useFlowMapStore.setState({ capability: null });
+  });
+});
+
 describe('DomLadder render', () => {
   it('labels recorded density and removes inside claims at a crossed paused/playback position', () => {
     useFlowMapStore.setState({ subscription: { market: 'binance', symbol: 'BTCUSDT', mode: 'replay', band: 'native' },

@@ -22,7 +22,7 @@ import { FEED_KEY } from './MarketStrip';
 import { SymbolSearch, type SymbolSearchHandle } from './SymbolSearch';
 import { PixelWordmark } from './PixelWordmark';
 import { Wordmark } from './Wordmark';
-import { capabilityChips, marketGroup } from './symbols';
+import { capabilityChips, depthScopeKey, marketGroup } from './symbols';
 import {
   CapabilityBadges,
   ExportPngButton,
@@ -97,6 +97,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
   const mode: StreamMode = subscription?.mode ?? 'live';
   const group = marketGroup(market);
   const chips = capabilityChips(capability);
+  const scopeKey = depthScopeKey(capability);
   // The SIM badge follows the server's word: `synthetic` decides it once the
   // capability has arrived. Only before that does the market name stand in for it.
   const showSimBadge = capability ? capability.synthetic === true : market === 'sim';
@@ -125,7 +126,11 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         </span>
       )}
 
-      <CapabilityBadges pending={capability === null} chips={chips} />
+      <CapabilityBadges
+        pending={capability === null}
+        chips={chips}
+        depthScopeTitle={scopeKey ? t(scopeKey) : undefined}
+      />
 
       {/* Institutional Macro & Liquidity Stress Ticker (MACRO <GO>) */}
       <MacroTicker macro={macro} />

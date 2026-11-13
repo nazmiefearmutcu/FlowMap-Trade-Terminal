@@ -20,6 +20,8 @@ export interface LadderHeaderProps {
   onToggleCollapsed: () => void;
   badge: string;
   badgeClass: string;
+  /** Hover text for the badge: the exchange scope of a partial book, when there is one. */
+  badgeTitle?: string;
   recorded: boolean;
   spread: LadderSpreadReadout | null;
   /** The formatted price step at the mid, or null when there is no mid yet. */
@@ -35,6 +37,7 @@ export function LadderHeader({
   onToggleCollapsed,
   badge,
   badgeClass,
+  badgeTitle,
   recorded,
   spread,
   resolution,
@@ -61,6 +64,7 @@ export function LadderHeader({
       <span
         className={`panel__badge panel__badge--${badgeClass}`}
         data-testid="ladder-badge"
+        title={badgeTitle}
       >
         {badge}
       </span>

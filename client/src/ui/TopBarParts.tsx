@@ -118,10 +118,12 @@ interface CapabilityBadgesProps {
   /** True before the Hello frame: capabilities are not loaded yet. */
   pending: boolean;
   chips: string[];
+  /** The translated scope note for the depth chip, when the book names one. */
+  depthScopeTitle?: string;
 }
 
 /** The honest capability chips, or a placeholder while they are still loading. */
-export function CapabilityBadges({ pending, chips }: CapabilityBadgesProps) {
+export function CapabilityBadges({ pending, chips, depthScopeTitle }: CapabilityBadgesProps) {
   const t = useT();
   return (
     <span className="caps" data-testid="capability-badges">
@@ -133,7 +135,11 @@ export function CapabilityBadges({ pending, chips }: CapabilityBadgesProps) {
         <span className="cap cap--na">{t('topbar.noCaps')}</span>
       ) : (
         chips.map((c) => (
-          <span key={c} className={capabilityChipClass(c)} title={capabilityChipTitle(c, t)}>
+          <span
+            key={c}
+            className={capabilityChipClass(c)}
+            title={depthScopeTitle && c.includes('SNAPSHOT') ? depthScopeTitle : capabilityChipTitle(c, t)}
+          >
             {capabilityChipLabel(c, t)}
           </span>
         ))

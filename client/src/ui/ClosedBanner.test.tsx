@@ -107,6 +107,19 @@ describe('ClosedBanner accessibility (single announcement of closed state)', () 
   });
 });
 
+describe('ClosedBanner — what the chart shows while closed', () => {
+  it('says the chart holds the last session’s price history and the book returns on reopen', () => {
+    act(() => {
+      useFlowMapStore.setState({ feedState: 'closed', nextOpenTs: null });
+    });
+    const { container } = render(<ClosedBanner />);
+    const banner = container.querySelector('[data-testid="closed-banner"]');
+    expect(banner?.textContent).toContain('The chart shows the last session’s price history');
+    expect(banner?.textContent).toContain('The order book returns when trading reopens');
+    expect(banner?.textContent).not.toMatch(/synth/i);
+  });
+});
+
 describe('ClosedBanner — terminal no-feed refusal', () => {
   it('states the truthful NO FEED case instead of "market closed"', () => {
     // Pre-close Status feed_state='closed' + 1003 = NO feed

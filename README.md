@@ -34,9 +34,18 @@ FlowMap Trade Terminal is a desktop application for studying liquidity and order
 |---|---|---|
 | Native crypto connectors | Incremental L2 books and trade events from supported Binance, Bybit, Coinbase, Deribit, and OKX markets | Channels and update cadence depend on the venue and market segment. |
 | Other supported CCXT venues | Order-book snapshots and available trade feeds | Snapshot or polling coverage is different from a native incremental feed. |
-| Keyless US equities | A synthetic liquidity profile derived from Yahoo bar data | The `SYNTH` label identifies an estimate, not observed resting orders. |
+| Keyless US equities | Depth and prints from Cboe's public book viewer, for the BZX, BYX, EDGX and EDGA exchanges: the top five displayed price levels per side, read every 5 seconds, in shares. Price history from Yahoo Finance. | This is not the consolidated US order book: NYSE, Nasdaq and other venues are absent. Prints carry no buyer or seller side, so there is no CVD. The feed is live from 04:00 to 20:00 New York time on trading days. |
 | Optional Alpaca / Finnhub credentials | Equity L1 quotes and/or trade tape, according to provider support | These feeds do not turn an equity session into an L2 order book. |
 | `sim:SIM-DEMO` | Deterministic demonstration data | Works offline; contains no live market observations. |
+
+When a US equity is closed, the chart shows its last session's price history and no depth. Before FlowMap starts watching a symbol, the chart also has price history only, with no depth. Recordings made by older versions of FlowMap replay as they were recorded and are labelled `SYNTH`, which marks an estimated depth profile rather than observed resting orders.
+
+### Data sources
+
+- Crypto: the exchanges' own public APIs.
+- US equity depth and prints: Cboe's public book viewer, for four exchanges only (BZX, BYX, EDGX and EDGA).
+- Equity price history: Yahoo Finance.
+- Market map: Nasdaq's screener and CoinGecko.
 
 ### Data providers, attribution and limits
 
@@ -127,12 +136,11 @@ Set environment variables before starting the service. Common settings are:
 | `FLOWMAP_BOOK_TOP_N` | `20000`; order-book depth cap (levels). |
 | `FLOWMAP_RING_COLUMNS` | `32768`; in-memory history columns per session (256 to 65536). Larger values use more memory. |
 | `FLOWMAP_REPLAY_MAX_COLS` | `0`; replay window cap in columns. `0` follows the ring size. |
-| `FLOWMAP_BACKFILL_ENABLED` | `1`; fetch historical candles on the first subscribe (Binance klines for crypto, Yahoo bars for keyless equities). `0` keeps those requests off. Same boolean spellings as `FLOWMAP_RECORDING_ENABLED`. |
-| `FLOWMAP_BACKFILL_MAX_COLS` | `512`; cap on backfilled columns per session. |
-| `FLOWMAP_BACKFILL_SHAPE` | `erode`; how backfilled candles are drawn. `flat` restores the previous rendering. |
-| `FLOWMAP_BACKFILL_STRETCH` | `16`; depth columns drawn per reconstructed candle (1 to 240). |
+| `FLOWMAP_BACKFILL_ENABLED` | `1`; fetch price history on the first subscribe (Binance klines for crypto, one-minute Yahoo bars for keyless equities). This history carries price and volume only, never depth. `0` keeps those requests off. Same boolean spellings as `FLOWMAP_RECORDING_ENABLED`. |
+| `FLOWMAP_BACKFILL_MAX_COLS` | `512`; cap on price-history columns fetched per session. |
 | `FLOWMAP_DT_CRYPTO_NS` | `250000000`; crypto update cadence, in nanoseconds. Between 1 ms and 1 hour. |
-| `FLOWMAP_DT_EQUITY_KEYLESS_NS` | `10000000000`; keyless equity update cadence (10 s). Between 1 ms and 1 hour. |
+| `FLOWMAP_DT_EQUITY_BOOK_NS` | `5000000000`; how often the Cboe equity books are read (5 s). Between 2 s and 1 hour. |
+| `FLOWMAP_DT_EQUITY_KEYLESS_NS` | `10000000000`; how long a keyless equity symbol may go without a Cboe print before a last-price fallback is polled (10 s). Between 1 ms and 1 hour. |
 | `FLOWMAP_DT_EQUITY_KEYLESS_GRID_NS` | `1000000000`; keyless equity grid cadence (1 s). Between 1 ms and 1 hour. |
 | `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Optional equity market-data credentials; supply both, because one alone is ignored. A source run reads them from its environment. The installed app forwards them from the environment that launches it to its server (a fixed allowlist in `app/src-tauri/src/sidecar.rs`); the webview never receives them. |
 | `FINNHUB_API_KEY` | Optional equity tape access. A source run reads it from its environment. The installed app forwards it from the environment that launches it to its server; the webview never receives it. |

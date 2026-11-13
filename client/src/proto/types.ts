@@ -223,13 +223,23 @@ export interface HistoryResponse {
 
 // --- Cold (JSON) messages ------------------------------------------------------
 
+/**
+ * The session's capability descriptor (Hello and Status). `depth_scope` names the
+ * exchanges a depth book covers when that is not the whole market, for example
+ * `cboe-top5` for the Cboe top-five book. Other keys are read by name where used.
+ */
+export interface Capability {
+  depth_scope?: string;
+  [key: string]: unknown;
+}
+
 export interface Hello {
   type: MsgType.HELLO;
   protocol_version: number;
   session_id: string;
   grid_epoch: number;
   epoch_params: EpochParams;
-  capability: Record<string, unknown>;
+  capability: Capability;
   norm_seed: number;
 }
 
@@ -251,7 +261,7 @@ export interface Marker {
 export interface Status {
   type: MsgType.STATUS;
   feed_state: FeedState;
-  capability: Record<string, unknown>;
+  capability: Capability;
   latency_ms: number;
   clock_skew_ms: number;
   next_open_ts: bigint | null;

@@ -5,9 +5,9 @@
  * (an equity RTH window that is closed — nights, weekends, holidays) the store
  * surfaces `feedState==='closed'` + `nextOpenTs`. This small, unobtrusive banner
  * (near-black, amber accent) then overlays the stage with "MARKET CLOSED" and a
- * live countdown to the next open. It is HONEST: it never implies a live feed —
- * the last session's SYNTH warmup profile stays visible behind it (no
- * empty-column accumulation), and the banner just states the closed state.
+ * live countdown to the next open, and a note on what the chart shows. It is
+ * HONEST: it never implies a live feed. The chart keeps the last session's price
+ * history and draws no depth until trading reopens.
  *
  * Only mounts its 1 Hz ticker while closed; renders nothing otherwise (the vast
  * majority of the time — crypto is 24/7, equities are open during RTH), so there
@@ -101,6 +101,7 @@ export function ClosedBanner(): JSX.Element | null {
           {t('banner.opensIn', { time: formatCountdown(remainingMs, t('unit.d')) })}
         </span>
       )}
+      <span data-testid="closed-history">{t('banner.closedHistory')}</span>
     </div>
   );
 }
