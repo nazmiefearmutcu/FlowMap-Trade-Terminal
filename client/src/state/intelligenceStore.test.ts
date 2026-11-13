@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { MacroReadingData } from '../net/macroApi';
 import { MsgType, type GexLevelUpdate, type MacroStressUpdate, type MarketIntelligence } from '../proto/types';
 import { DEMO_INTELLIGENCE, intelKindKey, useIntelligenceStore } from './intelligenceStore';
 

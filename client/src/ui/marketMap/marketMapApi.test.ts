@@ -39,7 +39,8 @@ describe('fetchMarketMap', () => {
 
     const data = await fetchMarketMap('us');
 
-    expect(String(fetchMock.mock.calls[0][0])).toContain('/api/market-map?market=us');
+    const [url] = fetchMock.mock.calls[0] as unknown as [unknown];
+    expect(String(url)).toContain('/api/market-map?market=us');
     expect(data.market).toBe('us');
     expect(data.asOf).toBe(1794593685406);
     expect(data.source).toBe('Nasdaq screener');
