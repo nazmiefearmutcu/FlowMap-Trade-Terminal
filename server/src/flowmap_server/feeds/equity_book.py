@@ -30,6 +30,7 @@ import numpy as np
 
 from crocodile.core.scheduler.calendar import MARKET_TZ, USMarketCalendar
 
+from flowmap_server.data.market_map import read_capped_json
 from flowmap_server.feeds.base import DropCounters, ts_ns_sane
 from flowmap_server.proto.events import SIDE_SRC_NA, SIDE_UNKNOWN, Trade
 
@@ -57,9 +58,10 @@ _BOOK_URL = "https://www.cboe.com/json/{venue}/book/{symbol}"
 _REFERER = "https://www.cboe.com/us/equities/market_statistics/book/{symbol}/"
 # One read of the four books must cost one cycle, not the feed loop.
 _HTTP_TIMEOUT_S = 8.0
+# A real book response is about 1 KB; larger than this is refused for that venue.
+_BOOK_BODY_LIMIT = 256 * 1024
 # A venue clock that reads slightly ahead of ours is the same day, not yesterday.
 _CLOCK_SLACK_NS = 120 * 10**9
-_DAY_NS = 24 * 60 * 60 * 10**9
 # Trading window of the Cboe books, New York time: pre-market open to after-hours close.
 EXTENDED_OPEN = datetime.time(4, 0)
 EXTENDED_CLOSE = datetime.time(20, 0)
@@ -125,11 +127,18 @@ def _print_ts(clock: object, now_ns: int) -> int | None:
     except ValueError:
         return None
     today = datetime.datetime.fromtimestamp(now_ns / 1e9, tz=MARKET_TZ).date()
-    stamp = datetime.datetime.combine(today, parsed, tzinfo=MARKET_TZ)
-    ts_ns = int(stamp.timestamp()) * 10**9 + parsed.microsecond * 1000
+    ts_ns = _et_clock_ns(today, parsed)
     if ts_ns > now_ns + _CLOCK_SLACK_NS:
-        ts_ns -= _DAY_NS
+        # The previous calendar day, not 24 hours earlier: the two differ across a
+        # daylight-saving change.
+        ts_ns = _et_clock_ns(today - datetime.timedelta(days=1), parsed)
     return ts_ns
+
+
+def _et_clock_ns(day: datetime.date, clock: datetime.time) -> int:
+    """``clock`` on ``day`` in New York time, as UTC ns with its microseconds."""
+    stamp = datetime.datetime.combine(day, clock, tzinfo=MARKET_TZ)
+    return int(stamp.timestamp()) * 10**9 + clock.microsecond * 1000
 
 
 def _prints(raw: object, now_ns: int) -> tuple[VenuePrint, ...]:
@@ -207,6 +216,11 @@ def new_prints(previous: Sequence[VenuePrint], current: Sequence[VenuePrint]) ->
     the start of this one, which keeps two genuine prints with the same time,
     price and size. With no overlap every print is new (more than ten printed
     between reads, and the ones in between were never seen).
+
+    The limit: when both reads hold the same ten identical prints, the overlap is
+    total and nothing is returned, even if new identical prints came in between.
+    Cboe stamps prints to the microsecond, so this needs ten or more fills with
+    the same clock, price and size inside one cycle.
     """
     cur = list(current)
     prev = list(previous)
@@ -236,7 +250,7 @@ def extended_session_state(
         if open_dt <= et < close_dt:
             return "open", None
         if et < open_dt:
-            return "closed", int(open_dt.timestamp() * 1e9)
+            return "closed", int(open_dt.timestamp()) * 10**9
     return "closed", None  # pragma: no cover — always a trading day within 10 days
 
 
@@ -332,7 +346,7 @@ class CboeBookClient:
         url = _BOOK_URL.format(venue=venue, symbol=quote(self._symbol, safe=""))
         async with session.get(url) as response:
             response.raise_for_status()
-            payload = await response.json(content_type=None)
+            payload = await read_capped_json(response, limit=_BOOK_BODY_LIMIT)
         return parse_venue_book(venue, payload, now_ns=now_ns)
 
     async def close(self) -> None:

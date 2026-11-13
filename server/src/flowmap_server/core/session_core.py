@@ -587,8 +587,9 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
         The session stays registered (refcounted) while a client is attached;
         a later re-subscribe restarts the feed (``start()`` is idempotent), so
         the client wakes the stream after the next open. Known limitation: the
-        wake at ``next_open_ts`` is client-driven, not a server-scheduled timer. The weekend demo is a
-        closed banner + last-session SYNTH warmup that resumes on re-subscribe.
+        wake at ``next_open_ts`` is client-driven, not a server-scheduled timer.
+        A closed keyless market shows a closed banner and the last session's
+        price history, with no depth, and resumes on re-subscribe.
         """
         if getattr(self._feed, "feed_state", None) != "closed":
             return

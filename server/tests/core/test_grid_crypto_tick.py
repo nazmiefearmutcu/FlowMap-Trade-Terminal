@@ -291,7 +291,7 @@ def test_adaptation_survives_pre_book_trade_intervals() -> None:
     assert grid._p0 > 0.0
 
 
-def test_backfill_bins_reconstructed_history_in_the_adapted_frame() -> None:
+def test_backfill_bins_candle_history_in_the_adapted_frame() -> None:
     mgr = SessionManager(Config(recording_enabled=False), timer=FakeTimer())
     grid = mgr._grid_for(_adaptive_feed())
     assert grid.cfg.auto_tick is True

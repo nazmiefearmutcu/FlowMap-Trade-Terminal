@@ -33,7 +33,10 @@ found by overlap with the previous read (see
 :func:`~flowmap_server.feeds.equity_book.new_prints`) and emitted as trades
 stamped with the venue's own clock and tagged with the book they printed on.
 The tape is therefore a sample: prints on other venues, and prints beyond ten
-per book per cycle, are not in it (``tape='poll'``). A symbol with no fresh Cboe
+per book per cycle, are not in it (``tape='poll'``). Prints are read up to one
+cycle after they happened, so the bar that holds a print (and the price line)
+can trail it by up to ``dt_equity_book_ns``; the grid counts such a print in
+``out_of_interval_trades``, and the trade itself keeps the venue's own timestamp. A symbol with no fresh Cboe
 print for ``dt_equity_keyless_ns`` falls back to a Google Finance last price so
 the chart still moves; that fallback is a display-only price, tagged
 ``venue='last-price'`` with size 0.
@@ -128,6 +131,8 @@ _POLL_FAILURES_BEFORE_NOTICE = 3
 _BOOK_FAILURES_BEFORE_NOTICE = 3
 # A book that misses cycles keeps its last read for this many cycles.
 _BOOK_HOLD_CYCLES = 3
+# Once the notice is out, a failed book read is retried after this long, not one cycle.
+_BOOK_RETRY_NS = 30 * 10**9
 # Keyed tiers: no provider event for this long is a silent socket or a stuck
 # provider, not a quiet name, so the feed fails and the session restarts it.
 # The check cadence bounds how quickly the calendar close is noticed.
@@ -317,7 +322,7 @@ class EquityFeed:
                 continue
             open_dt, _close_dt = hours
             if et < open_dt:
-                return int(open_dt.timestamp() * 1e9)
+                return int(open_dt.timestamp()) * 10**9
         return None  # pragma: no cover — always a trading day within 10 days
 
     # -- feed protocol ---------------------------------------------------------
@@ -482,10 +487,12 @@ class EquityFeed:
                             )
                         if self.book_failures >= _BOOK_FAILURES_BEFORE_NOTICE:
                             self.feed_state = "degraded"
-                    # A book that has not answered for hold_ns is dropped, never
-                    # re-drawn as if it were still resting.
-                    held = {v: e for v, e in held.items() if now - e[1] <= hold_ns}
-                    levels = merge_books(book for book, _read_ns in held.values())
+                            next_book = now + _BOOK_RETRY_NS
+
+                # Checked every tick, not only on a read: with retries 30 s apart a
+                # book that has stopped answering must still drop after hold_ns.
+                held = {v: e for v, e in held.items() if now - e[1] <= hold_ns}
+                levels = merge_books(book for book, _read_ns in held.values())
 
                 quiet = now - last_print_ns >= cfg.dt_equity_keyless_ns
                 if price_task is None and quiet and now >= next_price:
@@ -539,9 +546,11 @@ class EquityFeed:
                 )
                 await self._sleep(grid_s)
         finally:
-            for task in (book_task, price_task):
-                if task is not None and not task.done():
-                    task.cancel()
+            # Cancelled reads are awaited, so the HTTP session closes only after they end.
+            tasks = [task for task in (book_task, price_task) if task is not None]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _fetch_bars(self) -> Sequence[EqBar]:
         if self._bars_fn is not None:

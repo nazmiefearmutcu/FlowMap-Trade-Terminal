@@ -13,7 +13,7 @@ from what a subscribe actually delivers:
   these symbols is served separately by ``/api/movers`` + ``/api/quote`` through
   the network cache);
 - the curated equity list, capability read off :class:`EquityFeed` (the keyless
-  SYNTH tier on this machine; keyed tiers activate with no code change).
+  Cboe-book tier on this machine; keyed tiers activate with no code change).
 
 ``current_directory()`` is shared with the ``/api/universe`` handler
 (``api/discovery.py``) so both surfaces stay identical and honest.
@@ -59,7 +59,7 @@ CRYPTO_CAPABILITY: dict[str, object] = {
 def _equity_capability() -> dict[str, object]:
     """Equity capability mirrored from :class:`EquityFeed`'s own tier selection
     so the directory never lies about an equity subscribe. Keys are auto-detected
-    from env: keyless -> SYNTH on this machine; Alpaca/Finnhub keyed
+    from env: keyless -> Cboe's books (L2-snapshot) on this machine; Alpaca/Finnhub keyed
     tiers activate with no code change. Construction is pure (no I/O)."""
     try:
         cfg = Config.from_env(os.environ)

@@ -100,7 +100,8 @@ async def test_venues_route_never_advertises_a_depth_the_feed_cannot_serve() -> 
 
     async with _make_client() as c:
         by_id = {v["id"]: v for v in (await c.get("/api/venues")).json()["venues"]}
-    # Equity has no L2 tier (keyless is SYNTH, Alpaca is L1); claiming one here
+    # Equity has no consolidated L2 tier (keyless is Cboe's top five levels,
+    # Alpaca is L1); claiming one here
     # would contradict what /api/universe reports for the same market.
     assert by_id["equity"]["depth"] == _equity_capability()["depth"]
     assert by_id["equity"]["depth"] != "L2"

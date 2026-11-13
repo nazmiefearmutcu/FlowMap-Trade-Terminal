@@ -71,7 +71,7 @@ async def yahoo_types():
     return yahoo.YahooClient, calendar.USMarketCalendar
 
 
-# The keyless chart, picker quote and reconstructed-history callers all need
+# The keyless chart, picker quote and price-history callers all need
 # the same small data set. Use Yahoo's chart response directly, as yfinance's
 # history.py does, without importing pandas/yfinance or entering their shared
 # blocking cookie/session worker. These are sampled 1m bars, never a tick tape.

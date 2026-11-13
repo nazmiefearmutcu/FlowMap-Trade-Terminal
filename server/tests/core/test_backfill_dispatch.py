@@ -6,7 +6,7 @@ and a cold start on 108 of them:
 
 - native FIRST where the venue has a native REST ohlcv path, because only the
   venue's own klines carry the taker buy/sell split that makes the
-  reconstructed CVD real rather than flat;
+  CVD built from the candles real rather than flat;
 - ccxt otherwise, AND whenever the native path raises or comes back empty.
 
 Both candle fetchers are monkeypatched here, so the tests assert the routing

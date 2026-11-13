@@ -975,10 +975,10 @@ async def test_unknown_feed_event_warns_and_continues(caplog):
 
 
 # ---------------------------------------------------------------------------
-# equity sessions: SYNTH grid routing + closed-market Status
+# equity sessions: keyless grid routing + closed-market Status
 #
 # Fixture-driven, NO live network: bars/clock are injected so the EquityFeed
-# runs its keyless SYNTH path against a pinned closed market (Saturday) with a
+# runs its keyless path against a pinned closed market (Saturday) with a
 # hand-built last session's 1 m bars.
 
 
@@ -1090,7 +1090,7 @@ async def test_equity_grid_reanchors_to_symbol_price():
     sess = await mgr.subscribe(sub, client)
     await asyncio.wait_for(sess.run_task, timeout=5)
 
-    # the two-sided SYNTH profile re-anchored the grid onto ~$180.
+    # the first two-sided book re-anchored the grid onto ~$180.
     ep = sess._grid.current_epoch_params()
     assert ep.epoch >= 1, "grid never re-anchored to the symbol price"
     assert 155.0 <= ep.p0 <= 165.0  # p0 = 180 - span/2 ~ 159.5
@@ -1264,10 +1264,10 @@ async def test_empty_closed_equity_retries_before_reattach_without_flooding_exis
 
 
 def test_reanchor_ref_handles_all_bid_ask_populations():
-    """The two-sided synthetic split can leave a book bid-only, ask-only, or
-    two-sided; _reanchor_ref must recentre in every case. A sustained intraday
-    decline pushes the reference below every occupied bucket, yielding an
-    ask-only book — that MUST still re-anchor, not freeze the grid at nominal p0
+    """A book can be bid-only, ask-only, or two-sided; _reanchor_ref must
+    recentre in every case. A one-sided book (a thin real book, or a recorded
+    synthetic split) is still a book, so an ask-only book MUST re-anchor, not
+    freeze the grid at nominal p0
     (which would drop every real level as out-of-range and render nothing)."""
 
     def bs(bids, asks):

@@ -154,15 +154,13 @@ class BookMixin:
     def _reanchor_ref(ev: BookState) -> float | None:
         """Price the grid re-anchors around for this book (None to skip).
 
-        Two-sided books (L2 crypto/sim, and keyed L1_BAND equity) use the BBO
-        mid — the exact expression the L2 path has always used, so crypto/sim
-        stay byte-identical. A one-sided density (only bid, or — for a two-sided
-        synthetic split whose reference price sits at/below every occupied bucket
-        during a sustained decline — only ask) has no BBO, so it re-anchors around
-        that side's price-span center instead: this is what lets an equity grid
-        started at a nominal $100 p0 recentre on the symbol's real price (e.g. an
-        AAPL profile near $180) regardless of which side the split leaves
-        populated."""
+        Two-sided books (L2 crypto/sim, Cboe's books, and keyed L1_BAND equity)
+        use the BBO mid, the exact expression the L2 path has always used. A
+        one-sided book (only bid, or only ask, as a thin real book can be) has no
+        BBO, so it re-anchors around that side's price-span center. That is what
+        lets an equity grid started at a nominal $100 p0 recentre on the symbol's
+        real price on its first book, whichever side is populated. An empty book
+        re-anchors on its anchor price (price history with no depth)."""
         if len(ev.bid_px) and len(ev.ask_px):
             return (float(np.max(ev.bid_px)) + float(np.min(ev.ask_px))) / 2.0
         if len(ev.bid_px):

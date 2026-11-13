@@ -104,7 +104,8 @@ class VenueInfo:
         # Crypto: a native connector streams true book diffs, a ccxt venue is
         # re-read whole each tick, and the client badges the difference — so the
         # `native` flag IS the depth there. Off the crypto side it is not:
-        # no equity tier serves L2 (keyless is SYNTH, Alpaca is L1), and
+        # no equity tier serves a consolidated L2 (keyless is the top five levels
+        # on Cboe's four books, Alpaca is L1), and
         # /api/universe reports the same market. Non-crypto venues therefore
         # state their own depth, read off the feed.
         self.depth = depth or ("L2" if native else "L2-snapshot")

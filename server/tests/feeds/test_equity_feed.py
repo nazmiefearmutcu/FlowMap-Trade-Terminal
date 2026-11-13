@@ -367,7 +367,9 @@ async def test_no_book_for_three_cycles_withholds_depth_and_says_so():
     async for ev in feed.events():
         events.append(ev)
         states.append(feed.feed_state)
-        if len(events) >= 45:
+        # The retries after the notice are thirty seconds apart, so the book
+        # returns about a minute after it was lost.
+        if len(events) >= 200:
             break
     gaps = [e for e in events if isinstance(e, Marker) and e.kind == "gap"]
     assert len([g for g in gaps if "order book unavailable" in g.text]) == 1
@@ -990,6 +992,75 @@ def _const_price(px: float):
         return px
 
     return price_fn
+
+
+# --- keyless book retries back off after the notice ---------------------------
+
+
+async def test_failing_book_reads_back_off_to_thirty_seconds_then_return_to_the_cycle():
+    clock = {"t": RTH}
+    reads: list[int] = []
+    good = [_book("edgx", [(100.00, 300.0)], [(100.01, 200.0)])]
+
+    async def book_fn() -> list[VenueBook]:
+        reads.append(clock["t"])
+        return [] if len(reads) <= 3 else list(good)
+
+    async def sleep_fn(seconds: float) -> None:
+        clock["t"] += round(seconds * 10**9)
+        await asyncio.sleep(0)
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=lambda: clock["t"],
+        bars_fn=_make_bars_fn([]),
+        book_fn=book_fn,
+        price_fn=_const_price(100.0),
+        sleep_fn=sleep_fn,
+    )
+    await _collect(feed, 120)
+    assert len(reads) >= 5
+    # Before the notice the reads keep their five-second cycle.
+    assert reads[2] - reads[1] == 5 * 10**9
+    # From the notice on, a failed read is retried thirty seconds later.
+    assert reads[3] - reads[2] >= 30 * 10**9
+    # A read that succeeds returns to the normal cycle.
+    assert reads[4] - reads[3] == 5 * 10**9
+
+
+# --- a cancelled book read is finished before the stream closes -----------------
+
+
+async def test_a_cancelled_book_read_has_finished_when_the_stream_is_closed():
+    started: list[bool] = []
+    finished: list[bool] = []
+
+    async def slow_books() -> list[VenueBook]:
+        started.append(True)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.append(True)
+        return []
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=slow_books,
+        price_fn=_const_price(100.0),
+        sleep_fn=_nosleep,
+    )
+    # The live loop is closed directly, so its finally has run when aclose returns.
+    live = feed._keyless_live(100.0, has_history=False)
+    for _ in range(5):
+        await live.__anext__()
+    assert started == [True]
+    assert finished == []
+    await live.aclose()
+    assert finished == [True]
 
 
 # --- the record header's clock + field names, pinned --------------------------

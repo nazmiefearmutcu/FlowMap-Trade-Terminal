@@ -4,8 +4,8 @@
 Runs against ``create_app`` through httpx's ASGITransport — no real server,
 no network. The symbol directory is: the sim symbol (capability taken from
 SimFeed) + a static crypto shortlist + a static equity
-shortlist whose capability is read off EquityFeed (live keyless SYNTH tier,
-no note); handlers must never do network I/O.
+shortlist whose capability is read off EquityFeed (live keyless tier, Cboe's
+books, no note); handlers must never do network I/O.
 """
 
 from __future__ import annotations

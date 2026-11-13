@@ -319,17 +319,23 @@ class BootMixin:
         the candle backfill."""
         if isinstance(self._feed, EquityFeed) and tail.columns:
             # An equity recording made under another depth tier is a different
-            # kind of data: a synthetic volume profile (the keyless tier before
-            # it read real books) must never be continued as live displayed
-            # depth. Start cold, retaining the old files and the new recorder
-            # UUID so restarted seq 0 cannot collide with them. A recording
-            # that predates the stored capability was synthetic.
-            recorded = (tail.capability or {}).get("depth", "SYNTH")
-            if recorded != self._feed.capability.get("depth"):
+            # kind of data, and must not be continued as live displayed depth.
+            # Start cold, keeping the old files and the new recorder UUID so a
+            # restarted seq 0 cannot collide with them. Only the keyless tier
+            # ever recorded a synthetic profile, so a recording with no stored
+            # capability is cold only when the keyless tier reads it.
+            live = self._feed.capability.get("depth")
+            recorded: object = "SYNTH"
+            if tail.capability is None:
+                cold = self._feed.tier == "keyless"
+            else:
+                recorded = tail.capability.get("depth")
+                cold = recorded != live
+            if cold:
                 logger.info(
                     "equity tail was recorded as %s depth, live is %s; cold start for %s",
                     recorded,
-                    self._feed.capability.get("depth"),
+                    live,
                     self.session_id,
                 )
                 return False

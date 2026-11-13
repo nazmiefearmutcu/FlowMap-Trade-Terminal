@@ -254,14 +254,30 @@ def _summary(reasons: dict[str, str]) -> str:
     return ", ".join(f"{name} {reason}" for name, reason in reasons.items())
 
 
+def _held_observation(held: MacroReading | None, name: str) -> Observation | None:
+    """The value and date a held reading has for one series, or None when it has none."""
+    if held is None:
+        return None
+    if name == SOFR_SERIES:
+        value, day = held.sofr, held.sofr_date
+    elif name == CURVE_SERIES:
+        value, day = held.yield_10y2y, held.curve_date
+    else:
+        value, day = held.hy_spread, held.hy_date
+    if value is None or day is None:
+        return None
+    return Observation(value, day)
+
+
 class MacroPublicService:
     """The macro reading, cached for ``ttl_s`` seconds.
 
     Concurrent callers share one refresh, and the three series are fetched at once.
-    A refresh that gives at least one value replaces the reading. A refresh where
-    every series fails serves the previous reading as stale, or raises
-    ``MacroUnavailable`` when there is none, and is not retried for
-    ``RETRY_AFTER_FAILURE_S`` seconds.
+    A refresh that gives at least one value is merged into the held reading: a
+    series that failed keeps its last good value and date, and the reading is
+    stale while any such value is carried over. A refresh where every series
+    fails serves the previous reading as stale, or raises ``MacroUnavailable``
+    when there is none, and is not retried for ``RETRY_AFTER_FAILURE_S`` seconds.
     """
 
     def __init__(
@@ -300,7 +316,8 @@ class MacroPublicService:
                 outcomes = await asyncio.gather(*(self._observe(name) for name in SERIES_ORDER))
                 results = dict(zip(SERIES_ORDER, outcomes, strict=True))
                 if any(isinstance(result, Observation) for result in results.values()):
-                    reading = self._build(results)
+                    held = self._held[0] if self._held is not None else None
+                    reading = self._build(results, held)
                     self._held = (reading, self._monotonic())
                     self._failed_at = None
                     self._failure = {}
@@ -335,13 +352,25 @@ class MacroPublicService:
             logger.warning("macro series %s failed: %s", name, type(exc).__name__)
             return "unreachable"
 
-    def _build(self, results: dict[str, Observation | str]) -> MacroReading:
-        sofr = results[SOFR_SERIES]
-        hy = results[HY_SERIES]
-        curve = results[CURVE_SERIES]
-        sofr_obs = sofr if isinstance(sofr, Observation) else None
-        hy_obs = hy if isinstance(hy, Observation) else None
-        curve_obs = curve if isinstance(curve, Observation) else None
+    def _build(self, results: dict[str, Observation | str], held: MacroReading | None) -> MacroReading:
+        """The reading for this refresh, with each failed series filled from ``held``.
+
+        A series that failed keeps its last good value and date when the held
+        reading has one. The score and status come from the merged values, and
+        the reading is stale when any value was carried over.
+        """
+        values: dict[str, Observation | None] = {}
+        carried = False
+        for name, result in results.items():
+            if isinstance(result, Observation):
+                values[name] = result
+                continue
+            previous = _held_observation(held, name)
+            carried = carried or previous is not None
+            values[name] = previous
+        sofr_obs = values[SOFR_SERIES]
+        hy_obs = values[HY_SERIES]
+        curve_obs = values[CURVE_SERIES]
         score: float | None = None
         status: str | None = None
         if hy_obs is not None and curve_obs is not None:
@@ -361,7 +390,7 @@ class MacroPublicService:
             },
             sources=dict(SOURCE_NAMES),
             as_of_ns=self._clock(),
-            stale=False,
+            stale=carried,
         )
 
     async def _fetch_sofr(self) -> Observation:
@@ -373,8 +402,8 @@ class MacroPublicService:
         return parse_sofr_json(payload)
 
     async def _fetch_curve(self) -> Observation:
-        # Early in the year the current year's file can have no rows yet, so the
-        # previous year is read when the current one has no observation.
+        # Early in the year the current year's file can have no rows yet, or no
+        # file at all (HTTP 404), so the previous year is read in those cases.
         year = datetime.now(UTC).year
         for candidate in (year, year - 1):
             try:
@@ -387,7 +416,8 @@ class MacroPublicService:
                     raise MacroSourceError("malformed") from None
                 return parse_treasury_curve_csv(text)
             except MacroSourceError as exc:
-                if exc.reason != "no_observation" or candidate == year - 1:
+                missing_this_year = exc.reason in ("no_observation", "http_404")
+                if not missing_this_year or candidate == year - 1:
                     raise
         raise MacroSourceError("no_observation")
 

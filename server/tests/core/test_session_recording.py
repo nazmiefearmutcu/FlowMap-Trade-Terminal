@@ -220,6 +220,40 @@ def test_equity_tail_from_another_depth_tier_starts_cold(tmp_path, recorded, con
         assert sess._grid.history(10**18, 10) == []
 
 
+@pytest.mark.parametrize(
+    ("recorded", "continues"),
+    [
+        # A keyed tier never recorded a synthetic profile, so a recording that
+        # predates the stored capability is continued as it always was.
+        (None, True),
+        # A stored synthetic profile is still other data for a keyed tier.
+        ({"depth": "SYNTH", "tape": "poll"}, False),
+    ],
+)
+def test_keyed_equity_tail_without_a_stored_capability_follows_the_tier(tmp_path, recorded, continues):
+    cfg = _cfg()
+    source = Grid(cfg)
+    source.on_book(0, *_book(100.0))
+    source.on_bar_sample(0, 100.0, 100.0, 100.0, 100.0, 1.0)
+    columns = source.on_book(DT, *_book(100.0))
+    old = TailData(
+        [source.current_epoch_params()], columns, [], [], 0,
+        recording_id="old-id", capability=recorded,
+    )
+    keyed = EquityFeed("AAPL", Config(alpaca_key="k", alpaca_secret="s"))
+    root = Recorder(tmp_path / "equity-keyed-tier", 20.0)
+    sess = Session("eq-keyed-tier", feed=keyed, grid=Grid(cfg), recorder=root)
+    sess._rec = root.open_session("equity", "AAPL")
+    new_id = sess._rec.recording_id
+    assert sess._apply_tail(old) is continues
+    if continues:
+        assert sess._rec.recording_id == "old-id"
+        assert sess._grid.history(10**18, 10)[0].bar.c == 100.0
+    else:
+        assert sess._rec.recording_id == new_id
+        assert sess._grid.history(10**18, 10) == []
+
+
 async def test_closed_preparation_records_initial_epoch_before_any_reanchor(tmp_path):
     start = int(datetime.datetime(2026, 7, 17, 14, 0, tzinfo=datetime.timezone.utc).timestamp()) * 10**9
 

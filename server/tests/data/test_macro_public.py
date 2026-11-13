@@ -460,3 +460,92 @@ async def test_capped_read_stops_an_undeclared_body_over_the_limit():
 
     with pytest.raises(ValueError):
         await _read_capped(_FakeResponse(b"x" * 200_000), limit=100_000)
+
+
+# --- A partial refresh keeps the last good value of the series that failed ----
+
+
+def _curve_source(state: dict[str, object]):
+    async def curve():
+        if state["down"]:
+            raise MacroSourceError("http_503")
+        return state["value"]
+
+    return curve
+
+
+async def test_a_failed_curve_keeps_the_held_value_and_marks_the_reading_stale():
+    now = [0.0]
+    state: dict[str, object] = {"down": False, "value": Observation(-0.25, "2026-11-12")}
+    service = _service(curve=_curve_source(state), now=now)
+    first = await service.get()
+    state["down"] = True
+    now[0] = CACHE_TTL_S
+    merged = await service.get()
+    assert merged.stale is True
+    assert merged.yield_10y2y == -0.25
+    assert merged.curve_date == "2026-11-12"
+    assert merged.source_status["T10Y2Y"] == "http_503"
+    assert merged.source_status["SOFR"] == "ok"
+    assert merged.sofr == first.sofr
+    assert merged.hy_spread == 6.0
+    assert merged.stress_score == first.stress_score
+    assert merged.status == first.status
+
+
+async def test_a_successful_curve_read_after_a_failure_clears_stale():
+    now = [0.0]
+    state: dict[str, object] = {"down": False, "value": Observation(-0.25, "2026-11-12")}
+    service = _service(curve=_curve_source(state), now=now)
+    await service.get()
+    state["down"] = True
+    now[0] = CACHE_TTL_S
+    assert (await service.get()).stale is True
+    state["down"] = False
+    state["value"] = Observation(-0.5, "2026-11-13")
+    now[0] = 2 * CACHE_TTL_S
+    reading = await service.get()
+    assert reading.stale is False
+    assert reading.yield_10y2y == -0.5
+    assert reading.curve_date == "2026-11-13"
+    assert reading.source_status["T10Y2Y"] == "ok"
+
+
+async def test_a_series_that_never_succeeded_stays_missing_after_a_partial_refresh():
+    now = [0.0]
+    state: dict[str, object] = {"down": True, "value": Observation(-0.25, "2026-11-12")}
+    service = _service(curve=_curve_source(state), now=now)
+    first = await service.get()
+    assert first.yield_10y2y is None
+    assert first.curve_date is None
+    assert first.stress_score is None
+    assert first.status is None
+    assert first.source_status["T10Y2Y"] == "http_503"
+    now[0] = CACHE_TTL_S
+    second = await service.get()
+    assert second.yield_10y2y is None
+    assert second.curve_date is None
+    assert second.stale is False
+    assert second.source_status["SOFR"] == "ok"
+
+
+# --- Curve year fallback -----------------------------------------------------
+
+
+async def test_the_curve_falls_back_to_the_previous_year_when_this_years_file_is_404(monkeypatch):
+    from datetime import UTC
+    from datetime import datetime as real_datetime
+
+    year = real_datetime.now(UTC).year
+    seen: list[str] = []
+
+    async def fake_get_body(self, url, *, headers, limit):
+        seen.append(url)
+        if f"/{year}/all" in url:
+            raise MacroSourceError("http_404")
+        return _csv([_curve_row("11/12/2026")]).encode()
+
+    monkeypatch.setattr(MacroPublicService, "_get_body", fake_get_body)
+    observation = await MacroPublicService()._fetch_curve()
+    assert observation == Observation(0.24, "2026-11-12")
+    assert len(seen) == 2

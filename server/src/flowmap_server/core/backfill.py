@@ -157,7 +157,7 @@ class Candle(msgspec.Struct):
 
     ``t0_ns`` is the candle-open UTC ns. ``buy_volume``/``sell_volume`` are the
     taker aggressor split (crypto klines); ``None`` for markets without a split
-    (equity), which suppresses the reconstructed CVD.
+    (equity), which leaves the CVD built from the candles' taker split empty.
     """
 
     t0_ns: int
@@ -377,8 +377,8 @@ async def crypto_klines(
     kw = {"interval": interval, "max_bars": max_bars, "now_ns": now_ns}
     if "ohlcv" in SUPPORTED_CHANNELS.get(exchange, frozenset()):
         # Native first: only the venue's own klines carry the taker buy/sell
-        # split, which is what makes the reconstructed CVD real rather than
-        # flat. ccxt's unified OHLCV has no such column.
+        # split, which is what makes the CVD built from the candles real rather
+        # than flat. ccxt's unified OHLCV has no such column.
         try:
             native = await _native_candles(exchange, symbol, seg, **kw)
         except Exception:  # fall through to ccxt below
@@ -548,7 +548,7 @@ async def _ccxt_candles_owned(
     symbol — the caller treats an empty result as a clean cold start.
 
     No taker split: ccxt's unified OHLCV has no buy/sell breakdown, so the
-    candles carry ``None`` and the reconstructed CVD stays flat instead of
+    candles carry ``None`` and the CVD built from them stays flat instead of
     inventing a direction.
     """
     from crocodile.crypto.exchanges.ccxt_universal.connector import CCXTConnector

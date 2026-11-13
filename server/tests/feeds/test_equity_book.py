@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import datetime
 
+import aiohttp
 import numpy as np
 import pytest
 
-from crocodile.core.scheduler.calendar import MARKET_TZ
+from crocodile.core.scheduler.calendar import MARKET_TZ, USMarketCalendar
 
 from flowmap_server.feeds.equity_book import (
     CBOE_VENUES,
+    CboeBookClient,
     VenueBook,
     VenuePrint,
+    extended_session_state,
     merge_books,
     new_prints,
     parse_venue_book,
@@ -174,3 +177,99 @@ def test_two_identical_prints_are_both_kept() -> None:
 def test_without_overlap_every_print_is_new() -> None:
     assert new_prints([_p(1), _p(2)], [_p(7), _p(8)]) == [_p(7), _p(8)]
     assert new_prints([], [_p(7)]) == [_p(7)]
+
+
+def test_ten_identical_prints_on_both_reads_add_nothing() -> None:
+    # The stated limit: with ten identical prints in each read, the overlap is
+    # total, so a new identical print is not seen. Cboe stamps prints to the
+    # microsecond, so this needs ten or more fills with the same clock, price and size.
+    same = [_p(2)] * 10
+    assert new_prints(same, same) == []
+
+
+def _print_payload(clock: str, now_ns: int) -> VenueBook:
+    row = [clock, "10", "50.0", f"{clock}.000000"]
+    return parse_venue_book("edgx", _payload(trades=[row]), now_ns=now_ns)
+
+
+def test_a_late_print_clock_is_the_previous_calendar_day_across_spring_forward() -> None:
+    # 2026-03-08 is the day the clocks spring forward. Read at 10:00 New York
+    # time, a 23:30 print happened on the 7th, at 23:30 New York time.
+    book = _print_payload("23:30:00", _et_ns(2026, 3, 8, 10, 0))
+    assert book.prints[0].ts_ns == _et_ns(2026, 3, 7, 23, 30)
+
+
+def test_a_late_print_clock_is_the_previous_calendar_day_across_fall_back() -> None:
+    book = _print_payload("23:30:00", _et_ns(2026, 11, 1, 10, 0))
+    assert book.prints[0].ts_ns == _et_ns(2026, 10, 31, 23, 30)
+
+
+def test_the_extended_open_is_an_exact_whole_second_in_nanoseconds() -> None:
+    state = extended_session_state(USMarketCalendar(), _et_ns(2026, 7, 15, 3, 0))
+    assert state == ("closed", _et_ns(2026, 7, 15, 4, 0))
+    assert state[1] is not None and state[1] % 10**9 == 0
+
+
+class _Stream:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def read(self, n: int = -1) -> bytes:
+        chunk, self._data = self._data[:n], self._data[n:]
+        return chunk
+
+
+class _Reply:
+    """A response with a declared length and a body, usable as an async context."""
+
+    def __init__(self, body: bytes, declared: int | None = None) -> None:
+        self.content_length = declared
+        self.content = _Stream(body)
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def __aenter__(self) -> _Reply:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _ReplySession(aiohttp.ClientSession):
+    """A real session type whose ``get`` returns one canned reply. No network."""
+
+    ATTRS = aiohttp.ClientSession.ATTRS | frozenset({"_reply"})
+
+    def __init__(self, reply: _Reply) -> None:
+        super().__init__()
+        self._reply = reply
+
+    def get(self, url: str, **kwargs: object) -> _Reply:  # type: ignore[override]
+        return self._reply
+
+
+async def _fetch_from(reply: _Reply) -> VenueBook:
+    session = _ReplySession(reply)
+    try:
+        return await CboeBookClient("NVDA")._fetch_venue(session, "bzx", NOW)
+    finally:
+        await session.close()
+
+
+async def test_a_cboe_body_within_the_cap_is_parsed() -> None:
+    import json
+
+    body = json.dumps(_payload()).encode()
+    book = await _fetch_from(_Reply(body, declared=len(body)))
+    assert book.bids == ((160.93, 100.0), (160.92, 45.0))
+
+
+async def test_a_cboe_body_declared_over_the_cap_is_refused_before_reading() -> None:
+    with pytest.raises(ValueError):
+        await _fetch_from(_Reply(b"{}", declared=300 * 1024))
+
+
+async def test_a_cboe_body_that_runs_over_the_cap_undeclared_is_refused() -> None:
+    with pytest.raises(ValueError):
+        await _fetch_from(_Reply(b" " * (300 * 1024)))

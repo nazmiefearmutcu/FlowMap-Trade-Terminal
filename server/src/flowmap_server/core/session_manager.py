@@ -94,18 +94,18 @@ def _crypto_tick_auto(feed: Feed, cfg_tick: float) -> bool:
 # a ~$41 vertical span at 4096 rows, and a nominal $100 p0 that the grid
 # re-anchors to the symbol's real price on the first book. mode + cadence are
 # derived from the feed's honest capability so the grid can never claim more
-# than the feed delivers (SYNTH_PROFILE keyless / L1_BAND keyed).
+# than the feed delivers (L2-snapshot keyless / L1_BAND keyed).
 _EQUITY_TICK = 0.01
 
 _EQUITY_ROWS = 4096
 
 _EQUITY_P0_NOMINAL = 100.0
 
-# Depth-capability string -> grid render mode. Two-sided equity depth (synthetic
-# volume-at-price split at the reference price, or real Alpaca L1 top-of-book)
-# renders two-channel via MODE_L1_BAND; the honest tier lives in the capability
-# badge (SYNTH vs L1), decoupled from the render shape. Legacy one-sided
-# SYNTH_PROFILE kept for compatibility.
+# Depth-capability string -> grid render mode. Two-sided equity depth (real
+# Alpaca L1 top-of-book, or a recorded SYNTH profile) renders two-channel via
+# MODE_L1_BAND; the honest tier lives in the capability badge (SYNTH vs L1),
+# decoupled from the render shape. Legacy one-sided SYNTH_PROFILE kept for
+# compatibility.
 _EQUITY_DEPTH_MODE: dict[object, int] = {
     "SYNTH": events.MODE_L1_BAND,
     # Keyless equity: a real two-sided book (Cboe's four books), full L2 shape.
