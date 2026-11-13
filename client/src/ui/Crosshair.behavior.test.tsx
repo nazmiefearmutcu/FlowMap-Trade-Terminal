@@ -255,3 +255,29 @@ it('reads a grouped cell as its price band and level count, and an averaged cell
     mounted.done();
   }
 });
+
+it('publishes the axis-tag probe inside the frame callback, before any effect runs', () => {
+  vi.useFakeTimers();
+  const callbacks = new Map<number, FrameRequestCallback>(); let seq = 0;
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { callbacks.set(++seq, cb); return seq; });
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => { callbacks.delete(id); });
+  const canvas = document.createElement('canvas');
+  const canvasRef = createRef<HTMLCanvasElement>(); Object.assign(canvasRef, { current: canvas });
+  const container = document.createElement('div'); const root = createRoot(container);
+  let price = 100;
+  const probeAt = vi.fn((x: number) => ({ colSeq: x, row: 1, group: 1, price, priceLo: price, priceHi: price, priceDecimals: 2, bid: 1, ask: 2, timeNs: 0n, inRange: true } satisfies CrosshairReadout));
+  const rendererRef = { current: { probeAt } as unknown as Renderer };
+  act(() => root.render(<Crosshair canvasRef={canvasRef} rendererRef={rendererRef} />));
+  const event = new Event('pointermove'); Object.assign(event, { clientX: 10, clientY: 20 });
+  canvas.dispatchEvent(event);
+  // Run the frame callbacks with no act() wrapper: nothing React-side flushes
+  // between the probe and the assertion, so only a synchronous publish passes.
+  price = 101;
+  const pending = [...callbacks.values()]; callbacks.clear();
+  pending.forEach(cb => cb(0));
+  expect(getCrosshairProbe()).toMatchObject({ x: 10, y: 20, price: 101, sessionRelative: false });
+  act(() => canvas.dispatchEvent(new Event('pointerleave')));
+  expect(getCrosshairProbe()).toBeNull();
+  act(() => root.unmount());
+  vi.useRealTimers();
+});

@@ -1,6 +1,6 @@
 import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { setLocale } from '../i18n';
 import { getTimeZonePref, setTimeZonePref } from '../i18n/format';
@@ -76,5 +76,70 @@ describe('TimeAxis crosshair time tag', () => {
   it('is absent when the probe has no time', () => {
     setCrosshairProbe(probe({ timeNs: null }));
     expect(tagOf(render())).toBeNull();
+  });
+});
+
+describe('TimeAxis tag clamp', () => {
+  // jsdom has no layout: the axis is 300px wide and every tag 60px, through stubs.
+  let axisWidth = 300;
+  const tagWidth = 60;
+  let restore: () => void = () => {};
+  let observed: (() => void) | null = null;
+
+  beforeEach(() => {
+    axisWidth = 300;
+    observed = null;
+    const client = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!;
+    const offset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')!;
+    Object.defineProperty(Element.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: Element) { return this.classList.contains('time-axis') ? axisWidth : 0; },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+      configurable: true,
+      get(this: HTMLElement) { return this.classList.contains('axis-tag') ? tagWidth : 0; },
+    });
+    // A stand-in ResizeObserver that keeps its callback, so a test can fire a resize.
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { observed = cb; }
+      observe(): void {}
+      disconnect(): void {}
+    });
+    restore = () => {
+      Object.defineProperty(Element.prototype, 'clientWidth', client);
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', offset);
+      vi.unstubAllGlobals();
+    };
+  });
+
+  afterEach(() => {
+    restore();
+  });
+
+  const leftOf = (container: HTMLElement): string | undefined => tagOf(container)?.style.left;
+
+  it('pulls the tag centre in at the left edge so the whole tag stays in the gutter', () => {
+    setCrosshairProbe(probe({ x: 2, timeNs: 5_000_000_000n, sessionRelative: true }));
+    expect(leftOf(render())).toBe('30px');
+  });
+
+  it('pulls the tag centre in at the right edge so the whole tag stays in the gutter', () => {
+    setCrosshairProbe(probe({ x: 298, timeNs: 5_000_000_000n, sessionRelative: true }));
+    expect(leftOf(render())).toBe('270px');
+  });
+
+  it('leaves the centre on the cursor away from both edges', () => {
+    setCrosshairProbe(probe({ x: 150, timeNs: 5_000_000_000n, sessionRelative: true }));
+    expect(leftOf(render())).toBe('150px');
+  });
+
+  it('re-clamps when the axis is resized without any probe change', () => {
+    setCrosshairProbe(probe({ x: 190, timeNs: 5_000_000_000n, sessionRelative: true }));
+    const container = render();
+    expect(leftOf(container)).toBe('190px');
+    // The axis narrows to 200px: the right-edge limit becomes 170px.
+    axisWidth = 200;
+    act(() => observed?.());
+    expect(leftOf(container)).toBe('170px');
   });
 });

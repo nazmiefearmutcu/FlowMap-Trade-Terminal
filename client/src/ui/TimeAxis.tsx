@@ -8,7 +8,7 @@
  * owns only the chrome + the canvas element; the renderer paints the pixels.
  */
 
-import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 
 import { fmtClockMs } from '../gl/overlays/axisTicks';
 import { exchangeZoneFor, formatZonedDayTime, useTimeZone } from '../i18n/format';
@@ -55,14 +55,30 @@ export function TimeAxis({ canvasRef }: TimeAxisProps): JSX.Element {
       : formatZonedDayTime(Number(timeNs / 1_000_000n), zonePref, exchangeZone);
   }
 
-  // The clamp needs the widths on screen. The tag's width changes with its text,
-  // so the widths are read whenever the text changes. A width change costs one
-  // extra render, which React runs before the browser paints.
+  // The clamp needs the widths on screen. The tag's width changes with its text and
+  // the clamp with the cursor, so both are read when x or the text changes. A
+  // change costs one extra render, which React runs before the browser paints. The
+  // functional update returns the same object when nothing moved, so an unchanged
+  // read does not render again.
+  const probeX = probe?.x ?? null;
   useLayoutEffect(() => {
     const axis = axisRef.current?.clientWidth ?? 0;
     const tag = tagRef.current?.offsetWidth ?? 0;
-    if (axis !== measured.axis || tag !== measured.tag) setMeasured({ axis, tag });
-  }, [text, measured.axis, measured.tag]);
+    setMeasured(prev => (prev.axis === axis && prev.tag === tag ? prev : { axis, tag }));
+  }, [probeX, text]);
+
+  // A resize of the chart (the window or a pane) changes the axis width without
+  // any probe change, so the axis is observed directly.
+  useEffect(() => {
+    const axis = axisRef.current;
+    if (axis === null || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      const width = axis.clientWidth;
+      setMeasured(prev => (prev.axis === width ? prev : { ...prev, axis: width }));
+    });
+    observer.observe(axis);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div className="time-axis" aria-hidden="true" ref={axisRef}>

@@ -100,10 +100,11 @@ export function fmtTime(ns: bigint | null, pref: TimeZonePref = 'utc', exchangeZ
  * it (rAF-coalesced, re-read about ten times a second while still), shares the probed
  * price for the A key, and commits only changed readouts.
  */
-function useCrosshairProbe(
+function usePointerProbe(
   canvasRef: RefObject<HTMLCanvasElement>,
   rendererRef: MutableRefObject<Renderer | null>,
   probeKeyRef: MutableRefObject<string>,
+  sessionRef: MutableRefObject<boolean>,
   setHover: Dispatch<SetStateAction<HoverState | null>>,
 ): void {
   const rafRef = useRef(0);
@@ -136,6 +137,16 @@ useEffect(() => {
         x,
         y,
         at: Date.now(),
+      });
+      // The axis tags are published in the same tick as the box, not in a later
+      // effect, so they never trail the readout by a frame.
+      setCrosshairProbe({
+        x,
+        y,
+        price: readout?.price ?? null,
+        priceDecimals: readout?.priceDecimals ?? 2,
+        timeNs: readout?.timeNs ?? null,
+        sessionRelative: readout?.sessionClock === true || sessionRef.current,
       });
       setHover(prev => prev && prev.x === x && prev.y === y && sameReadout(prev.readout, readout) ? prev : { x, y, readout });
       // Only changed readouts commit a React render. The next probe is due in
@@ -176,7 +187,7 @@ useEffect(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     setCrosshairProbe(null);
   };
-}, [canvasRef, rendererRef, probeKeyRef, setHover]);
+}, [canvasRef, rendererRef, probeKeyRef, sessionRef, setHover]);
 }
 
 export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Element | null {
@@ -191,30 +202,19 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   // The market:symbol the probe is read on, in the same form PriceAlerts keys its
   // alerts by. Held in a ref so the pointer loop never re-subscribes for a switch.
   const probeKeyRef = useRef('');
+  // Whether the instrument's clock is the sim's session clock, read by the pointer
+  // loop when it publishes a probe for the axis tags.
+  const sessionRef = useRef(false);
   useEffect(() => {
     probeKeyRef.current = `${market}:${symbol}`;
-  }, [market, symbol]);
+    sessionRef.current = group === 'sim';
+  }, [market, symbol, group]);
 
-  useCrosshairProbe(canvasRef, rendererRef, probeKeyRef, setHover);
+  usePointerProbe(canvasRef, rendererRef, probeKeyRef, sessionRef, setHover);
 
   // A session-relative (sim) timestamp is elapsed time from the session start, not
   // wall time: it reads the same T+ clock as the time axis, with no zone label.
   const sessionRelative = hover?.readout?.sessionClock === true || group === 'sim';
-  // The axis tags read the same probe as the box, so they never disagree with it.
-  useEffect(() => {
-    if (!hover) {
-      setCrosshairProbe(null);
-      return;
-    }
-    setCrosshairProbe({
-      x: hover.x,
-      y: hover.y,
-      price: hover.readout?.price ?? null,
-      priceDecimals: hover.readout?.priceDecimals ?? 2,
-      timeNs: hover.readout?.timeNs ?? null,
-      sessionRelative,
-    });
-  }, [hover, sessionRelative]);
 
   if (!hover) return null;
   const { x, y, readout } = hover;
