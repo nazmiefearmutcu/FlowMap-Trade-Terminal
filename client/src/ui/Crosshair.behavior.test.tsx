@@ -156,6 +156,21 @@ it('titles a Cboe top-five source tag with its exchange scope', () => {
   }
 });
 
+it('keeps the recorded-density disclosure ahead of the scope on a Cboe replay', () => {
+  useFlowMapStore.setState({
+    capability: { depth: 'L2-snapshot', depth_scope: 'cboe-top5', depth_provenance: 'recorded-density', playback: {} },
+  });
+  const mounted = mountProbedCrosshair({});
+  try {
+    const title = mounted.container.querySelector('[data-testid="crosshair-src"]')?.getAttribute('title') ?? '';
+    expect(title.startsWith('recorded time-weighted density')).toBe(true);
+    expect(title).toContain('Cboe exchanges only');
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ capability: null });
+  }
+});
+
 it('keeps the source tag untitled for a ccxt venue snapshot with no scope', () => {
   useFlowMapStore.setState({ capability: { depth: 'L2-snapshot' } });
   const mounted = mountProbedCrosshair({});

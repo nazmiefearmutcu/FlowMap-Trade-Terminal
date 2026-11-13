@@ -228,6 +228,12 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   const tier = depthReadoutTier(capability, bookMode);
   const scopeKey = depthScopeKey(capability);
   const recorded = capability?.depth_provenance === 'recorded-density';
+  // The recorded-density note stays on a synthetic replay, and on a partial-book
+  // replay whose scope note is shown beside it, so the reconstruction is never silent.
+  const recordedNote = recorded && (isSynth || scopeKey !== null) ? t('depthChip.recorded') : null;
+  const tagTitle = [recordedNote, scopeKey ? t(scopeKey) : null]
+    .filter((part): part is string => part !== null)
+    .join(' ');
   const sizeSynthCls = isSynth ? ' crosshair__val--synth' : '';
   // A snapshot book (ccxt polling) is not a native L2 feed: its tag takes the caution tone.
   const tierCaution = tier === 'L2-SNAPSHOT' && !isSynth;
@@ -261,7 +267,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
               <span
                 className={`crosshair__tag${isSynth ? ' crosshair__tag--synth' : ''}${tierCaution ? ' crosshair__tag--caution' : ''}`}
                 data-testid="crosshair-src"
-                title={scopeKey ? t(scopeKey) : isSynth && recorded ? t('depthChip.recorded') : undefined}
+                title={tagTitle || undefined}
               >
                 {tier}
               </span>

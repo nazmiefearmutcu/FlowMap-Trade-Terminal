@@ -807,7 +807,7 @@ export const en: Record<string, string> = {
   'transport.span': 'span',
   'banner.closed': 'MARKET CLOSED',
   'banner.opensIn': 'opens in {time}',
-  'banner.closedHistory': 'The chart shows the last session’s price history. The order book returns when trading reopens.',
+  'banner.closedHistory': 'The market is closed. The chart shows no depth until trading reopens; any price history on it is from the last session.',
   'banner.noFeed': 'NO FEED',
   'banner.noFeedDetail': 'no feed available for this market',
   'banner.recordingDegraded': 'Recording has stalled for this session: new data is not being saved for replay.',

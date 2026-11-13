@@ -34,11 +34,11 @@ FlowMap Trade Terminal is a desktop application for studying liquidity and order
 |---|---|---|
 | Native crypto connectors | Incremental L2 books and trade events from supported Binance, Bybit, Coinbase, Deribit, and OKX markets | Channels and update cadence depend on the venue and market segment. |
 | Other supported CCXT venues | Order-book snapshots and available trade feeds | Snapshot or polling coverage is different from a native incremental feed. |
-| Keyless US equities | Depth and prints from Cboe's public book viewer, for the BZX, BYX, EDGX and EDGA exchanges: the top five displayed price levels per side, read every 5 seconds, in shares. Price history from Yahoo Finance. | This is not the consolidated US order book: NYSE, Nasdaq and other venues are absent. Prints carry no buyer or seller side, so there is no CVD. The feed is live from 04:00 to 20:00 New York time on trading days. |
+| Keyless US equities | Depth and prints from Cboe's public book viewer, for the BZX, BYX, EDGX and EDGA exchanges: the top five displayed price levels per side, read every 5 seconds, in shares. Price history from Yahoo Finance. | This is not the consolidated US order book: NYSE, Nasdaq and other venues are absent. Prints carry no buyer or seller side, so there is no cumulative volume delta (CVD). The feed is live from 04:00 to 20:00 New York time on trading days. |
 | Optional Alpaca / Finnhub credentials | Equity L1 quotes and/or trade tape, according to provider support | These feeds do not turn an equity session into an L2 order book. |
 | `sim:SIM-DEMO` | Deterministic demonstration data | Works offline; contains no live market observations. |
 
-When a US equity is closed, the chart shows its last session's price history and no depth. Before FlowMap starts watching a symbol, the chart also has price history only, with no depth. Recordings made by older versions of FlowMap replay as they were recorded and are labelled `SYNTH`, which marks an estimated depth profile rather than observed resting orders.
+When a US equity is closed, the chart shows its last session's price history when one is available, and no depth. Before FlowMap starts watching a symbol, the chart also has price history only, with no depth. Recordings made by older versions of FlowMap replay as they were recorded and are labelled `SYNTH`, which marks an estimated depth profile rather than observed resting orders.
 
 ### Data sources
 
@@ -52,8 +52,10 @@ When a US equity is closed, the chart shows its last session's price history and
 FlowMap displays market data that other companies publish. It does not own that data, and it does
 not resell it. The providers that a feed can use are the ones in the table above, plus the public
 sources listed in the [security guide](SECURITY.md#where-it-connects). Crypto venue data comes from
-Binance, Bybit, Coinbase, Deribit and OKX (and CCXT venues); equity history and display quotes come from
-unofficial Yahoo Finance endpoints, and the keyless last price from an unofficial Google Finance page.
+Binance, Bybit, Coinbase, Deribit and OKX (and CCXT venues). Equity price history comes from unofficial
+Yahoo Finance endpoints. US equity depth and prints come from Cboe's public book viewer (BZX, BYX, EDGX
+and EDGA). The keyless last price, the fallback for a symbol with no recent Cboe print, comes from an
+unofficial Google Finance page. The market map uses Nasdaq's stock screener and CoinGecko.
 The macro (FRED), dark-pool (FINRA), politics (House Stock Watcher), aviation (OpenSky Network), contract (USAspending) and job-board (Greenhouse) feed modules, and the EDGAR and vocal-stress modules, exist, but no producer runs in this build, so those sources are not connected and not contacted today. Each provider's terms of use apply to the data you view through FlowMap. Check them
 before you rely on the data, redistribute a screenshot, or build on the same endpoints.
 

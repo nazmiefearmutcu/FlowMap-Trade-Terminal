@@ -90,7 +90,7 @@ Market grammar (what you can type into the search or the socket):
   five displayed price levels per side on the BZX, BYX, EDGX and EDGA exchanges,
   read every 5 seconds and merged by price, in shares. It is not the consolidated
   US order book: NYSE, Nasdaq and other venues are absent. Prints carry no buyer or
-  seller side, so there is no CVD. The feed is live from 04:00 to 20:00 New York
+  seller side, so there is no cumulative volume delta (CVD). The feed is live from 04:00 to 20:00 New York
   time on trading days. Before FlowMap starts watching a symbol, the chart shows
   its price history only, with no depth. With `ALPACA_API_KEY`/`ALPACA_API_SECRET`
   or `FINNHUB_API_KEY` in the environment that starts FlowMap (the installed app
@@ -130,10 +130,10 @@ the *Depth channel* segmented control in `Settings → Display`:
 | `imbalance` | signed `(bid−ask)/(bid+ask)` | Fixed −1…+1 scale; one end of the divergent blue↔orange ramp is bid-heavy, the other ask-heavy; the neutral middle is balance. |
 
 The setting persists across launches. If the active session is a synthetic
-(SYNTH) feed — which has no real two-sided book, as in an old recording of a
-keyless equity — the renderer keeps showing
-the honest `sum`/amber view and re-applies your channel when a real-depth
-session is active again.
+(SYNTH) feed, the renderer keeps showing the honest `sum`/amber view. A synthetic
+feed has no real two-sided book. Old recordings of keyless equities replay as
+SYNTH too. When a real-depth session is active again, the renderer re-applies
+your channel.
 
 Eight colormaps (`theme`, the default, which follows the active theme colours; `flow`, `inferno`,
 `classic`, `ice`, `viridis`, `cividis` and `mono`), tolerance, contrast, normalization percentile and

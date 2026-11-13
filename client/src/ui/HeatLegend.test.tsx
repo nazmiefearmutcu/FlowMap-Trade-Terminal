@@ -226,6 +226,17 @@ describe('HeatLegend depth scope', () => {
     useFlowMapStore.setState({ capability: null });
   });
 
+  it('keeps the recorded-density disclosure ahead of the scope on a Cboe replay', () => {
+    useFlowMapStore.setState({
+      capability: { depth: 'L2-snapshot', depth_scope: 'cboe-top5', depth_provenance: 'recorded-density', playback: {} },
+    });
+    const el = mountLegend('flow', 'sum');
+    const title = el.querySelector('[data-testid="heat-legend-tier"]')?.getAttribute('title') ?? '';
+    expect(title.startsWith('recorded time-weighted density')).toBe(true);
+    expect(title).toContain('Cboe exchanges only');
+    useFlowMapStore.setState({ capability: null });
+  });
+
   it('keeps the tier title empty for a ccxt venue book with no scope', () => {
     useFlowMapStore.setState({ capability: { depth: 'L2-snapshot' } });
     const el = mountLegend('flow', 'sum');

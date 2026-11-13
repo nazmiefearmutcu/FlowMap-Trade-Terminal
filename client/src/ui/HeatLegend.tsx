@@ -33,7 +33,11 @@ export function HeatLegend({ colormap, channel }: HeatLegendProps): JSX.Element 
   // A book that covers only some exchanges says so: the tier's title names the
   // scope, and the short scope name joins the tier for screen readers.
   const scopeKey = depthScopeKey(capability);
-  const scopeTitle = scopeKey ? t(scopeKey) : undefined;
+  // A recording of a partial book keeps its recorded-density disclosure in front
+  // of the scope note, so the replay never loses that it was reconstructed.
+  const tierTitle = [recorded ? t('depthChip.recorded') : null, scopeKey ? t(scopeKey) : null]
+    .filter((part): part is string => part !== null)
+    .join(' ');
   const tierLabel = tier && scopeKey ? `${tier} · ${t('depthScope.cboeTop5.short')}` : tier;
   const legend = resolveLegend({ channel, colormap, synth, theme });
   const channelSuffix =
@@ -69,7 +73,7 @@ export function HeatLegend({ colormap, channel }: HeatLegendProps): JSX.Element 
       <span
         className={`heat-legend__tier${tier === 'L2-SNAPSHOT' ? ' heat-legend__tier--caution' : ''}`}
         data-testid="heat-legend-tier"
-        title={scopeTitle ?? (recorded ? t('depthChip.recorded') : undefined)}
+        title={tierTitle || undefined}
       >
         {tier ?? 'liq'}
       </span>

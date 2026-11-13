@@ -131,8 +131,9 @@ boundary; `payload_len` is always the **unpadded** length, so readers advance by
 | `0x40`–`0x46` | `SUBSCRIBE`, `UNSUBSCRIBE`, `SEEK`, `SET_SPEED`, `PAUSE`, `RESUME`, `HISTORY_REQ` | C→S | cold JSON |
 
 **Depth tiles are f32, not f16.** A `DEPTH_COL` carries one grid column: `mode` is `L2` (true
-two-sided book density), `L1_BAND`, or `SYNTH_PROFILE` (a legacy synthetic equity profile, as replayed from old recordings — bid side only, the ask
-array is omitted by protocol and its presence is an encoder error). Malformed input of any kind
+two-sided book density), `L1_BAND`, or `SYNTH_PROFILE` (bid side only; the ask
+array is omitted by protocol and its presence is an encoder error). Recordings made by older versions
+replay as they were recorded, labelled `SYNTH`. Malformed input of any kind
 raises a `ValueError`; unknown msg_types are skipped via `payload_len` (forward compatibility).
 
 **History is requested in pages.** The client asks for at most `HISTORY_PAGE_COLS = 256` columns
@@ -170,9 +171,10 @@ Pong and subscription changes while one bounded history worker is running.
   (`binance-usdm`).
 - `equity` — keyless by default: the Cboe top-five books for BZX, BYX, EDGX and EDGA, read every
   `FLOWMAP_DT_EQUITY_BOOK_NS` (5 s) and merged by price, reported as `L2-snapshot` with
-  `depth_scope: cboe-top5`. Prints come from the same source as a polled tape with no buyer or seller
-  side. A symbol with no Cboe print for `FLOWMAP_DT_EQUITY_KEYLESS_NS` (10 s) gets a polled last
-  price. Yahoo 1 m bars give price history before the first live book, with no depth. Keyed:
+  `depth_scope: cboe-top5`. Prints come from the same Cboe books and are reported as a polled tape with
+  no buyer or seller side (`trade_side` is `na`, so there is no CVD). A symbol with no Cboe print for
+  `FLOWMAP_DT_EQUITY_KEYLESS_NS` (10 s) gets a polled last price. Before FlowMap starts watching the
+  symbol, Yahoo 1 m bars give price history with no depth. Keyed:
   Alpaca IEX L1 / Finnhub tape when credentials are present in the environment.
 
 An unknown market raises `NotImplementedError`, which the WS layer turns into close code `1003`.
