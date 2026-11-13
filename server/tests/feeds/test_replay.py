@@ -220,13 +220,14 @@ def test_replayed_keyed_equity_recording_is_not_flagged_synthetic(tmp_path):
     assert feed.capability["synthetic"] is False
 
 
-def test_unrecorded_stand_in_matches_keyless_equity_tier():
-    """The equity stand-in is the keyless tier's own honesty fields, so the two
-    cannot drift apart."""
-    keyless = _CAPABILITY["keyless"]
+def test_unrecorded_equity_stand_in_stays_synthetic():
+    """An equity recording that stored no capability was made when the keyless
+    tier drew a synthetic profile. It replays as that, whatever the live keyless
+    tier reads today."""
     stand_in = unrecorded_capability("equity")
-    for key in ("depth", "tape", "trade_side", "cvd"):
-        assert stand_in[key] == keyless[key]
+    assert stand_in["depth"] == "SYNTH"
+    assert (stand_in["tape"], stand_in["trade_side"], stand_in["cvd"]) == ("poll", "na", "na")
+    assert _CAPABILITY["keyless"]["depth"] == "L2-snapshot"
 
 
 def test_stored_live_capability_is_replayed_as_recorded(tmp_path):

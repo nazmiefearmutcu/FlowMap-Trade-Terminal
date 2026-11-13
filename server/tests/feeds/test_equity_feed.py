@@ -1,21 +1,16 @@
 """EquityFeed tests: fixture-driven, NO live network.
 
-All bars/prices/clocks are hand-built and injected (``bars_fn`` / ``price_fn``
-/ ``now_ns_fn`` / ``sleep_fn``), so pytest never touches Yahoo or
-google_finance. The frozen contract:
+All bars/books/prices/clocks are hand-built and injected (``bars_fn`` /
+``book_fn`` / ``price_fn`` / ``now_ns_fn`` / ``sleep_fn``), so pytest never
+touches Yahoo, Cboe or google_finance. The frozen contract:
 
-1. SYNTH volume-at-price builder: bars -> **two-sided** BookState split at a
-   reference price (bid ``price <= ref`` / ask ``price > ref``, engine
-   ``split_ladder`` semantics), the profile SHAPE rescaled to a combined peak,
-   the point-of-control preserved.
-2. That profile lands as two-sided density in a real L1_BAND Grid.
-3. Keyless live poll emits display-only Trades (side_src=na, venue synthetic).
-4. Market-closed (pinned Saturday): warmup profile still renders, one
-   session_break marker, NO live trades, closed state exposed.
-5. Market-open (pinned weekday RTH): live polling emits trades.
-6. Tier auto-select + capability shapes (keyless SYNTH / alpaca L1); keyed sink
-   side inference + real L1 depth column; re-callable events(); NaN/finite
-   safety; Feed protocol conformance.
+1. Warmup is price history on empty anchored books: no depth is invented.
+2. The live book is the merged Cboe levels, in shares, in a real L2 Grid.
+3. New prints become trades with the venue clock and tag, side unknown.
+4. A quiet symbol falls back to a display-only last price.
+5. Closed market and the 04:00-20:00 keyless window.
+6. Tier auto-select + capability shapes; keyed sink side inference + real L1
+   depth column; re-callable events(); Feed protocol conformance.
 """
 
 from __future__ import annotations
@@ -37,17 +32,15 @@ from flowmap_server.config import Config
 from flowmap_server.core.grid import Grid, GridCfg
 from flowmap_server.feeds.base import BarSample, BookState, Feed, FeedEvent
 from flowmap_server.feeds.equity import (
-    DEFAULT_PROFILE_TICK,
     EQUITY_MARKET,
-    PROFILE_PEAK_TARGET,
     EquityFeed,
     _bar_ts,
     _EquitySink,
 )
+from flowmap_server.feeds.equity_book import VenueBook, VenuePrint
 from flowmap_server.proto.events import (
     BBO,
-    MODE_L1_BAND,
-    MODE_SYNTH_PROFILE,
+    MODE_L2,
     SIDE_BUY,
     SIDE_SELL,
     SIDE_SRC_INFERRED,
@@ -59,7 +52,6 @@ from flowmap_server.proto.events import (
 
 # --- fixtures / helpers --------------------------------------------------------
 
-DT_KEYLESS_NS = 10 * 10**9  # matches Config.dt_equity_keyless_ns (price poll)
 DT_KEYLESS_GRID_NS = 10**9  # matches Config.dt_equity_keyless_grid_ns (column)
 
 
@@ -131,68 +123,65 @@ async def _collect(feed: EquityFeed, n: int, cap: int = 10_000) -> list[FeedEven
     return out
 
 
-# --- 1. SYNTH profile builder --------------------------------------------------
+# --- 1. warmup: price history on empty anchored books ---------------------------
 
 
-def test_synth_profile_two_sided_split_peaks_and_bounded():
-    bars = _concentrated_session()  # last close 100.00 -> ref = 100.00
-    bs = EquityFeed.synth_profile(bars)
-
-    assert isinstance(bs, BookState)
-    # Two-sided now: ref 100.00 puts {95.00, 100.00} on bid, {105.00} on ask.
-    assert set(np.round(bs.bid_px, 2)) == {95.00, 100.00}
-    assert set(np.round(bs.ask_px, 2)) == {105.00}
-    # every emitted value finite.
-    for arr in (bs.bid_px, bs.bid_sz, bs.ask_px, bs.ask_sz):
-        assert np.isfinite(arr).all()
-    # combined-peak normalization: the global peak (both sides) == the target,
-    # bounded far below the grid's f16 ceiling.
-    combined_peak = max(float(bs.bid_sz.max()), float(bs.ask_sz.max()))
-    assert combined_peak == PROFILE_PEAK_TARGET
-    assert combined_peak < float(np.finfo(np.float16).max)
-    # the point-of-control (100.00, stacked 3000) is the peak, on the bid side.
-    poc_price = float(bs.bid_px[int(np.argmax(bs.bid_sz))])
-    assert abs(poc_price - 100.00) < DEFAULT_PROFILE_TICK
-    assert float(bs.bid_sz.max()) == PROFILE_PEAK_TARGET
-    # SHAPE preserved exactly through a single combined scale: raw 3000 vs 50
-    # (ratio 60) survives, and holds ACROSS the bid/ask split (100.00 bid vs
-    # 105.00 ask) — the cross-side comparison is honest.
-    bid_sz = bs.bid_sz[np.argsort(bs.bid_px)]  # ascending: 95.00, 100.00
-    assert abs(bid_sz[1] / bid_sz[0] - 60.0) < 1e-9  # 3000 / 50 (both bid)
-    assert abs(float(bs.bid_sz.max()) / float(bs.ask_sz.max()) - 60.0) < 1e-9  # 3000 / 50 cross-side
+def _book(
+    venue: str,
+    bids: list[tuple[float, float]],
+    asks: list[tuple[float, float]],
+    prints: list[VenuePrint] | None = None,
+) -> VenueBook:
+    return VenueBook(venue=venue, bids=tuple(bids), asks=tuple(asks), prints=tuple(prints or ()))
 
 
-def test_synth_profile_bounded_under_liquid_cumulative_volume():
-    # A liquid name over a full RTH session: raw cumulative shares reach the
-    # hundreds of millions and would overflow the grid's float16 ring (max
-    # 65 504) to inf. The normalized profile must stay finite, bounded, and
-    # peaked at the high-volume price no matter how large the cumulative grows.
-    base = _et_ns(2026, 7, 17, 10, 0)
-    m = 60 * 10**9
-    bars = []
-    for i in range(390):  # 390 one-minute RTH bars
-        if i % 3:
-            bars.append(_flat_bar(base + i * m, 200.00, 3_000_000.0))
-        else:
-            bars.append(_flat_bar(base + i * m, 199.99, 20_000.0))
-    bs = EquityFeed.synth_profile(bars)
-    f16_max = float(np.finfo(np.float16).max)
-    # raw cumulative peak ~= 260 * 3e6 = 7.8e8 >> f16 max; normalized fits with
-    # room to spare and survives the grid's f16 cast.
-    assert np.isfinite(bs.bid_sz).all()
-    assert bs.bid_sz.max() == PROFILE_PEAK_TARGET
-    assert float(bs.bid_sz.astype(np.float16).max()) < f16_max
-    peak_price = float(bs.bid_px[int(np.argmax(bs.bid_sz))])
-    assert abs(peak_price - 200.00) < DEFAULT_PROFILE_TICK
+def _books_fn(reads: list[list[VenueBook]], calls: dict[str, int] | None = None):
+    """A ``book_fn`` that returns ``reads`` in order, then repeats the last one."""
+    state = {"i": 0}
+
+    async def book_fn() -> list[VenueBook]:
+        i = min(state["i"], len(reads) - 1)
+        state["i"] += 1
+        if calls is not None:
+            calls["n"] = calls.get("n", 0) + 1
+        return list(reads[i])
+
+    return book_fn
 
 
-def test_synth_profile_empty_bars_is_empty_book():
-    bs = EquityFeed.synth_profile([])
-    assert bs.bid_px.size == 0 and bs.bid_sz.size == 0
-    assert bs.ask_px.size == 0 and bs.ask_sz.size == 0
+async def _no_books() -> list[VenueBook]:
+    return []
 
 
-def test_synth_profile_skips_nonfinite_and_negative_volume():
+RTH = _et_ns(2026, 7, 15, 11, 0)  # Wednesday, regular session
+SATURDAY = _et_ns(2026, 7, 18, 12, 0)
+
+
+async def test_warmup_draws_no_depth_and_anchors_on_each_close():
+    friday = _et_ns(2026, 7, 17, 15, 57)
+    bars = [
+        _bar(friday, 100.0, 102.0, 99.0, 101.0, 50.0),
+        _bar(friday + 60 * 10**9, 101.0, 104.0, 100.0, 103.0, 75.0),
+    ]
+    feed = EquityFeed("AAPL", Config(), now_ns_fn=lambda: SATURDAY, bars_fn=_make_bars_fn(bars))
+    events = await _collect(feed, 100)
+    assert [type(ev) for ev in events] == [BookState, BarSample, BookState, BarSample, Marker]
+    books = [ev for ev in events if isinstance(ev, BookState)]
+    # No depth is known for the time before the feed read a book: none is invented.
+    for book in books:
+        assert book.bid_px.size == 0 and book.bid_sz.size == 0
+        assert book.ask_px.size == 0 and book.ask_sz.size == 0
+    assert [book.anchor_px for book in books] == [101.0, 103.0]
+    assert [book.ts_ns for book in books] == [friday, friday + 60 * 10**9]
+    samples = [ev for ev in events if isinstance(ev, BarSample)]
+    assert [(ev.o, ev.h, ev.l, ev.c, ev.volume) for ev in samples] == [
+        (100.0, 102.0, 99.0, 101.0, 50.0),
+        (101.0, 104.0, 100.0, 103.0, 75.0),
+    ]
+    assert not any(isinstance(ev, Trade) for ev in events)
+
+
+async def test_warmup_skips_nonfinite_and_negative_volume_bars():
     base = _et_ns(2026, 7, 17, 10, 0)
     m = 60 * 10**9
     bars = [
@@ -201,396 +190,464 @@ def test_synth_profile_skips_nonfinite_and_negative_volume():
         _flat_bar(base + 2 * m, 100.0, -7.0),  # negative volume
         _flat_bar(base + 3 * m, 100.0, 500.0),
     ]
-    bs = EquityFeed.synth_profile(bars)
-    # only the two finite, non-negative bars survive -> 1000 total at 100.00.
-    assert bs.bid_sz.sum() == 1000.0
-    assert np.isfinite(bs.bid_px).all() and np.isfinite(bs.bid_sz).all()
+    feed = EquityFeed("AAPL", Config(), now_ns_fn=lambda: SATURDAY, bars_fn=_make_bars_fn(bars))
+    events = await _collect(feed, 100)
+    samples = [ev for ev in events if isinstance(ev, BarSample)]
+    assert [ev.ts_ns for ev in samples] == [base, base + 3 * m]
 
 
-# --- 2. profile lands as two-sided density in an L1_BAND Grid ------------------
-
-
-async def test_warmup_profile_drives_two_sided_l1band_density():
-    # bars within the grid span so nothing is clipped by the grid.
-    base = _et_ns(2026, 7, 17, 10, 0)
-    m = 60 * 10**9
-    bars = [
-        _flat_bar(base + 0 * m, 100.00, 1000.0),
-        _flat_bar(base + 1 * m, 100.50, 40.0),
-        _flat_bar(base + 2 * m, 100.00, 1000.0),
-        _flat_bar(base + 3 * m, 99.50, 40.0),  # last close 99.50 -> ref splits here
-    ]
-    cfg = Config()
+async def test_history_older_than_the_grid_can_hold_is_not_replayed():
+    # Live on Wednesday with only Monday's bars: the empty columns between them
+    # and now would push that history out of the ring, so it is not drawn.
+    monday = _et_ns(2026, 7, 13, 15, 59)
     feed = EquityFeed(
         "AAPL",
-        cfg,
-        now_ns_fn=lambda: _et_ns(2026, 7, 18, 12, 0),  # Saturday -> closed after warmup
-        bars_fn=_make_bars_fn(bars),
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([_flat_bar(monday, 100.0, 10.0)]),
+        book_fn=_no_books,
+        price_fn=_const_price(101.0),
+        sleep_fn=_nosleep,
     )
-    events = await _collect(feed, 100)
-    books = [e for e in events if isinstance(e, BookState)]
-    assert books, "no warmup BookState emitted"
-    # two-sided: by the last book the ref (99.50) leaves the 100.00/100.50 mass
-    # on the ask side, so the ask channel is genuinely populated.
-    assert any(b.ask_px.size > 0 for b in books), "no ask channel — depth is still one-sided"
+    events = await _collect(feed, 4)
+    assert not any(isinstance(ev, BarSample) for ev in events)
+    books = [ev for ev in events if isinstance(ev, BookState)]
+    assert books and all(book.ts_ns >= RTH for book in books)
+    assert books[0].anchor_px == 100.0  # the last known close still centres the grid
 
-    rows = 512
-    tick = 0.01
+
+# --- 2. live: the merged Cboe book -------------------------------------------------
+
+
+async def test_live_book_is_the_merged_cboe_levels_in_shares():
+    reads = [
+        [
+            _book("edgx", [(100.00, 300.0), (99.99, 100.0)], [(100.01, 200.0)]),
+            _book("bzx", [(100.00, 50.0)], [(100.01, 25.0), (100.02, 400.0)]),
+        ]
+    ]
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn(reads),
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 6)
+    live = [ev for ev in events if isinstance(ev, BookState) and ev.bid_px.size]
+    assert live, "the merged book never reached the grid"
+    book = live[-1]
+    assert book.source == "cboe"
+    assert dict(zip(book.bid_px.tolist(), book.bid_sz.tolist(), strict=True)) == {
+        99.99: 100.0,
+        100.00: 350.0,
+    }
+    assert dict(zip(book.ask_px.tolist(), book.ask_sz.tolist(), strict=True)) == {
+        100.01: 225.0,
+        100.02: 400.0,
+    }
+    assert feed.feed_state == "live"
+
+
+async def test_live_book_lands_in_an_l2_grid_at_its_price_rows():
+    reads = [[_book("edgx", [(100.00, 300.0)], [(100.02, 120.0)])]]
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn(reads),
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 8)
+    books = [ev for ev in events if isinstance(ev, BookState)]
+    rows, tick = 512, 0.01
     p0 = round((100.00 - rows * tick / 2.0) / tick) * tick
     grid = Grid(
         GridCfg(
-            tick=tick,
-            tick_multiple=1,
-            dt_ns=DT_KEYLESS_NS,
-            p0=p0,
-            rows=rows,
-            ring_columns=4096,
-            mode=MODE_L1_BAND,
+            tick=tick, tick_multiple=1, dt_ns=DT_KEYLESS_GRID_NS, p0=p0, rows=rows,
+            ring_columns=4096, mode=MODE_L2,
         )
     )
     cols = []
     for b in books:
         cols.extend(grid.on_book(b.ts_ns, b.bid_px, b.bid_sz, b.ask_px, b.ask_sz))
-    # flush the final interval.
-    cols.extend(
-        grid.on_book(
-            books[-1].ts_ns + DT_KEYLESS_NS,
-            books[-1].bid_px,
-            books[-1].bid_sz,
-            books[-1].ask_px,
-            books[-1].ask_sz,
-        )
-    )
-    assert cols
     last = cols[-1]
-    bid = last.bid.astype(np.float64)
-    ask = last.ask.astype(np.float64)
-    # combined point-of-control (100.00, stacked 2000) is the peak across BOTH
-    # channels; with ref 99.50 it lands on the ask side.
-    peak_row = int(np.argmax(np.maximum(bid, ask)))
-    assert peak_row == round((100.00 - p0) / tick), "combined density peak not at 100.00 row"
-    # L1_BAND keeps both channels on the wire; the ask density is real.
+    assert int(np.argmax(last.bid)) == round((100.00 - p0) / tick)
+    assert int(np.argmax(last.ask)) == round((100.02 - p0) / tick)
+    # A full column of an unchanged book reads the displayed size, in shares.
+    assert float(last.bid.max()) == pytest.approx(300.0)
+    assert float(last.ask.max()) == pytest.approx(120.0)
     assert grid.to_depth(last).ask is not None
-    assert float(ask.max()) > 0.0
-    # finite + bounded (no f16 overflow on either channel).
-    f16_max = float(np.finfo(np.float16).max)
-    assert np.isfinite(bid).all() and np.isfinite(ask).all()
-    assert float(bid.max()) < f16_max and float(ask.max()) < f16_max
 
 
-async def test_liquid_name_synth_grid_density_stays_finite_f16():
-    # Regression: a liquid name's raw cumulative shares (hundreds of millions)
-    # cast to the grid's float16 ring overflow to inf — the heatmap blows out to
-    # a saturated white band and the ladder shows ∞. With the normalized profile,
-    # every finalized f16 density must stay finite and bounded, peaked at price.
-    base = _et_ns(2026, 7, 17, 10, 0)
-    m = 60 * 10**9
-    bars = []
-    for i in range(60):  # revisit 200.00 (heavy) so its cumulative >> f16 max
-        if i % 3:
-            bars.append(_flat_bar(base + i * m, 200.00, 3_000_000.0))
-        else:
-            bars.append(_flat_bar(base + i * m, 200.01, 20_000.0))
+async def test_books_are_read_once_per_cycle_and_the_grid_advances_every_column():
+    calls: dict[str, int] = {}
+    reads = [[_book("edgx", [(100.00, 300.0)], [(100.01, 200.0)])]]
     feed = EquityFeed(
         "AAPL",
         Config(),
-        now_ns_fn=lambda: _et_ns(2026, 7, 18, 12, 0),  # Saturday -> closed after warmup
-        bars_fn=_make_bars_fn(bars),
+        now_ns_fn=_StepClock(RTH, 10**9),  # 1 s steps
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn(reads, calls),
+        sleep_fn=_nosleep,
     )
-    events = await _collect(feed, 10_000)
+    events = await _collect(feed, 26)
+    books = [ev for ev in events if isinstance(ev, BookState)]
+    assert len(books) == 26
+    ts = [b.ts_ns for b in books]
+    assert all(b - a == 10**9 for a, b in zip(ts, ts[1:], strict=False)), "column cadence != 1 s"
+    # 26 one-second columns span five 5 s cycles: a read per cycle, not per column.
+    assert 5 <= calls["n"] <= 6
+
+
+async def test_a_slow_book_read_does_not_stall_the_column_cadence():
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow_books() -> list[VenueBook]:
+        started.set()
+        await release.wait()
+        return []
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=slow_books,
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 8)
+    assert started.is_set() and not release.is_set()
+    assert len([e for e in events if isinstance(e, BookState)]) == 8
+    release.set()
+    await asyncio.sleep(0)
+
+
+async def test_a_book_that_misses_a_cycle_is_held_then_dropped():
+    edgx = _book("edgx", [(100.00, 300.0)], [(100.01, 200.0)])
+    bzx = _book("bzx", [(99.99, 50.0)], [(100.02, 75.0)])
+    # bzx answers the first read only.
+    reads = [[edgx, bzx], [edgx]]
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn(reads),
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 40)
+    books = [ev for ev in events if isinstance(ev, BookState) and ev.bid_px.size]
+    has_bzx = [99.99 in b.bid_px.tolist() for b in books]
+    assert has_bzx[0], "the first merged book carries both venues"
+    # Held across the next reads (3 cycles of 5 s), gone after that.
+    held_columns = sum(has_bzx)
+    assert 11 <= held_columns <= 21
+    assert not has_bzx[-1], "a book that stopped answering must not rest forever"
+    assert all(100.00 in b.bid_px.tolist() for b in books), "the answering book stays"
+
+
+async def test_no_book_for_three_cycles_withholds_depth_and_says_so():
+    good = [_book("edgx", [(100.00, 300.0)], [(100.01, 200.0)])]
+    reads: list[list[VenueBook]] = [good, [], [], [], [], [], good]
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn(reads),
+        price_fn=_const_price(100.0),
+        sleep_fn=_nosleep,
+    )
+    events: list[FeedEvent] = []
+    states: list[str] = []
+    async for ev in feed.events():
+        events.append(ev)
+        states.append(feed.feed_state)
+        if len(events) >= 45:
+            break
+    gaps = [e for e in events if isinstance(e, Marker) and e.kind == "gap"]
+    assert len([g for g in gaps if "order book unavailable" in g.text]) == 1
+    assert "degraded" in states
+    gap_at = next(i for i, e in enumerate(events) if isinstance(e, Marker) and e.kind == "gap")
+    after = [e for e in events[gap_at:] if isinstance(e, BookState)]
+    # The last good book is dropped once it is older than the hold: nothing stale is drawn.
+    assert any(b.bid_px.size == 0 and b.ask_px.size == 0 for b in after)
+    # The book returns and the feed says live again.
+    assert states[-1] == "live"
+    assert after[-1].bid_px.size == 1
+
+
+# --- 3. live: prints become the tape -------------------------------------------------
+
+
+async def test_new_prints_become_trades_with_the_venue_clock_and_tag():
+    old = VenuePrint(ts_ns=RTH - 60 * 10**9, price=99.50, size=10.0)
+    recent = VenuePrint(ts_ns=RTH + 1 * 10**9, price=100.00, size=200.0)
+    later = VenuePrint(ts_ns=RTH + 6 * 10**9, price=100.01, size=35.0)
+    reads = [
+        [_book("edgx", [(99.99, 1.0)], [(100.02, 1.0)], [old, recent])],
+        [_book("edgx", [(99.99, 1.0)], [(100.02, 1.0)], [old, recent, later])],
+    ]
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn(reads),
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 14)
+    trades = [e for e in events if isinstance(e, Trade)]
+    # The first read contributes only the prints of the last cycle; the print from
+    # a minute ago happened before the feed was watching.
+    assert [(t.price, t.size, t.ts_ns) for t in trades] == [
+        (100.00, 200.0, RTH + 1 * 10**9),
+        (100.01, 35.0, RTH + 6 * 10**9),
+    ]
+    for trade in trades:
+        assert trade.venue == "EDGX"
+        assert trade.side == SIDE_UNKNOWN and trade.side_src == SIDE_SRC_NA
+
+
+async def test_prints_from_several_books_are_emitted_in_time_order():
+    a = VenuePrint(ts_ns=RTH + 2 * 10**9, price=100.02, size=5.0)
+    b = VenuePrint(ts_ns=RTH + 1 * 10**9, price=100.01, size=7.0)
+    reads = [[_book("edgx", [], [], [a]), _book("byx", [], [], [b])]]
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn(reads),
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 6)
+    trades = [e for e in events if isinstance(e, Trade)]
+    assert [(t.venue, t.price) for t in trades] == [("BYX", 100.01), ("EDGX", 100.02)]
+
+
+async def test_the_last_print_is_the_anchor_while_the_book_is_empty():
+    p = VenuePrint(ts_ns=RTH + 1 * 10**9, price=123.45, size=5.0)
+    reads = [[_book("edgx", [], [], [p])]]
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn(reads),
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 6)
     books = [e for e in events if isinstance(e, BookState)]
-    assert books, "no warmup BookState emitted"
-
-    rows = 512
-    tick = 0.01
-    p0 = round((200.00 - rows * tick / 2.0) / tick) * tick
-    grid = Grid(
-        GridCfg(
-            tick=tick,
-            tick_multiple=1,
-            dt_ns=DT_KEYLESS_NS,
-            p0=p0,
-            rows=rows,
-            ring_columns=4096,
-            mode=MODE_SYNTH_PROFILE,
-        )
-    )
-    cols = []
-    for b in books:
-        cols.extend(grid.on_book(b.ts_ns, b.bid_px, b.bid_sz, b.ask_px, b.ask_sz))
-    cols.extend(
-        grid.on_book(
-            books[-1].ts_ns + DT_KEYLESS_NS,
-            books[-1].bid_px,
-            books[-1].bid_sz,
-            books[-1].ask_px,
-            books[-1].ask_sz,
-        )
-    )
-    assert cols
-    f16_max = float(np.finfo(np.float16).max)
-    for c in cols:
-        bid = c.bid.astype(np.float64)
-        assert np.isfinite(bid).all(), "SYNTH f16 density overflowed to inf"
-        assert float(bid.max()) < f16_max
-    # peak density lands on the high-volume price (200.00) after normalization.
-    last = cols[-1]
-    assert int(np.argmax(last.bid.astype(np.float64))) == round((200.00 - p0) / tick)
+    assert books[-1].anchor_px == 123.45
 
 
-# --- 3. keyless live poll emits display-only trades ----------------------------
+# --- 4. live: the last-price fallback ------------------------------------------------
 
 
-async def test_keyless_live_emits_display_only_trades():
-    prices = [100.0, 101.0, 100.5, 102.0]
-    idx = {"i": 0}
+async def test_a_quiet_symbol_falls_back_to_a_last_price_without_inventing_a_print():
+    calls = {"n": 0}
 
     async def price_fn() -> float:
-        i = idx["i"]
-        idx["i"] += 1
-        return prices[i] if i < len(prices) else prices[-1]
+        calls["n"] += 1
+        return 150.25
 
     feed = EquityFeed(
         "AAPL",
         Config(),
-        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), DT_KEYLESS_NS),  # Wed RTH
-        bars_fn=_make_bars_fn([]),  # no warmup -> straight to live
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn([[_book("edgx", [(150.2, 10.0)], [(150.3, 10.0)])]]),
         price_fn=price_fn,
         sleep_fn=_nosleep,
-        bar_refresh_ns=10**18,  # never refresh during the test
     )
-    events = await _collect(feed, 12)
+    events = await _collect(feed, 40)
     trades = [e for e in events if isinstance(e, Trade)]
-    assert len(trades) >= len(prices)
-    for tr, px in zip(trades, prices, strict=False):
-        assert tr.side_src == SIDE_SRC_NA
-        assert tr.side == SIDE_UNKNOWN
-        assert tr.venue == "synthetic"
-        assert tr.size == 1.0
-        assert tr.price == px
-    # every live cycle also re-asserts the resting profile (BookState).
-    assert any(isinstance(e, BookState) for e in events)
+    assert trades, "a symbol with no Cboe print must still move"
+    # Nothing in the first 10 s, then one poll per 10 s, never one per column.
+    assert 2 <= calls["n"] <= 4
+    for trade in trades:
+        assert trade.venue == "last-price"
+        assert trade.size == 0.0  # a scraped price is not a print: no size
+        assert trade.price == 150.25
+        assert trade.side == SIDE_UNKNOWN and trade.side_src == SIDE_SRC_NA
+    books = [e for e in events if isinstance(e, BookState)]
+    first_trade_at = events.index(trades[0])
+    columns_before = len([e for e in events[:first_trade_at] if isinstance(e, BookState)])
+    assert columns_before >= 10
+    assert len(books) > columns_before
 
 
-# --- 4. market closed ----------------------------------------------------------
-
-
-async def test_market_closed_renders_warmup_no_trades_and_exposes_state():
-    sat = _et_ns(2026, 7, 18, 12, 0)  # Saturday
-    trade_calls = {"n": 0}
+async def test_fresh_cboe_prints_keep_the_fallback_silent():
+    calls = {"n": 0}
 
     async def price_fn() -> float:
-        trade_calls["n"] += 1  # must never be called when closed
-        return 123.0
+        calls["n"] += 1
+        return 1.0
+
+    prints: list[VenuePrint] = []
+    state = {"i": 0}
+
+    async def book_fn() -> list[VenueBook]:
+        # A new print on every read: the symbol is never quiet.
+        state["i"] += 1
+        prints.append(VenuePrint(ts_ns=RTH + state["i"] * 5 * 10**9, price=100.0, size=1.0))
+        return [_book("edgx", [], [], prints[-10:])]
 
     feed = EquityFeed(
         "AAPL",
         Config(),
-        now_ns_fn=lambda: sat,
+        now_ns_fn=_StepClock(RTH, 10**9),
+        bars_fn=_make_bars_fn([]),
+        book_fn=book_fn,
+        price_fn=price_fn,
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 40)
+    assert calls["n"] == 0
+    assert all(t.venue == "EDGX" for t in events if isinstance(t, Trade))
+
+
+# --- 5. market closed and the trading window ----------------------------------------
+
+
+async def test_market_closed_shows_history_no_trades_and_exposes_state():
+    calls = {"price": 0, "book": 0}
+
+    async def price_fn() -> float:
+        calls["price"] += 1  # must never be called when closed
+        return 123.0
+
+    async def book_fn() -> list[VenueBook]:
+        calls["book"] += 1
+        return []
+
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=lambda: SATURDAY,
         bars_fn=_make_bars_fn(_concentrated_session()),
+        book_fn=book_fn,
         price_fn=price_fn,
         sleep_fn=_nosleep,
     )
     events = await _collect(feed, 10_000)  # generator ends on its own when closed
 
-    books = [e for e in events if isinstance(e, BookState)]
+    samples = [e for e in events if isinstance(e, BarSample)]
     markers = [e for e in events if isinstance(e, Marker)]
-    trades = [e for e in events if isinstance(e, Trade)]
-
-    assert books, "warmup SYNTH profile must still render when closed"
-    # two-sided depth: some warmup books carry an ask channel (mass above the
-    # then-current price); all books are finite.
-    assert all(np.isfinite(b.bid_sz).all() and np.isfinite(b.ask_sz).all() for b in books)
-    assert not trades, "closed market must emit no stale live trades"
-    assert trade_calls["n"] == 0, "must not poll last price when closed"
+    assert len(samples) == len(_concentrated_session())
+    assert not [e for e in events if isinstance(e, Trade)], "closed market emits no live trades"
+    assert calls == {"price": 0, "book": 0}, "nothing is polled when closed"
     assert len(markers) == 1 and markers[0].kind == "session_break"
-    assert "closed" in markers[0].text
+    assert "closed" in markers[0].text and "price history" in markers[0].text
 
     assert feed.feed_state == "closed"
-    # next open is Monday 2026-07-20 09:30 ET.
-    assert feed.next_open_ts == _et_ns(2026, 7, 20, 9, 30)
+    # The keyless tier opens with the pre-market: Monday 2026-07-20 04:00 ET.
+    assert feed.next_open_ts == _et_ns(2026, 7, 20, 4, 0)
 
 
 async def test_closed_with_no_bars_still_marks_session_break():
-    sat = _et_ns(2026, 7, 18, 12, 0)
-    feed = EquityFeed(
-        "AAPL",
-        Config(),
-        now_ns_fn=lambda: sat,
-        bars_fn=_make_bars_fn([]),
-    )
+    feed = EquityFeed("AAPL", Config(), now_ns_fn=lambda: SATURDAY, bars_fn=_make_bars_fn([]))
     events = await _collect(feed, 100)
     markers = [e for e in events if isinstance(e, Marker)]
     assert len(markers) == 1 and markers[0].kind == "session_break"
-    assert markers[0].ts_ns == sat
+    assert markers[0].ts_ns == SATURDAY
+    assert "no cached history" in markers[0].text
     assert feed.feed_state == "closed"
 
 
-async def test_weekend_warmup_publishes_native_price_samples_without_prints():
-    friday = _et_ns(2026, 7, 17, 15, 57)
-    saturday = _et_ns(2026, 7, 18, 12, 0)
-    bars = [
-        _bar(friday, 100.0, 102.0, 99.0, 101.0, 50.0),
-        _bar(friday + 60 * 10**9, 101.0, 104.0, 100.0, 103.0, 75.0),
-    ]
-    feed = EquityFeed("AAPL", Config(), now_ns_fn=lambda: saturday, bars_fn=_make_bars_fn(bars))
-    events = await _collect(feed, 100)
-    assert [type(ev) for ev in events] == [BookState, BarSample, BookState, BarSample, Marker]
-    samples = [ev for ev in events if isinstance(ev, BarSample)]
-    assert [ev.ts_ns for ev in samples] == [friday, friday + 60 * 10**9]
-    assert [(ev.o, ev.h, ev.l, ev.c, ev.volume) for ev in samples] == [
-        (100.0, 102.0, 99.0, 101.0, 50.0), (101.0, 104.0, 100.0, 103.0, 75.0),
-    ]
-    assert not any(isinstance(ev, Trade) for ev in events)
+@pytest.mark.parametrize(
+    ("hour", "minute", "is_open"),
+    [(3, 59, False), (4, 0, True), (9, 0, True), (12, 0, True), (19, 59, True), (20, 0, False)],
+)
+def test_the_keyless_window_covers_pre_market_to_after_hours(hour, minute, is_open):
+    wednesday = _et_ns(2026, 7, 15, hour, minute)
+    feed = EquityFeed("AAPL", Config(), now_ns_fn=lambda: wednesday)
+    assert feed.is_closed_now() is (not is_open)
+
+
+def test_the_keyless_window_is_closed_on_a_market_holiday():
+    july_3rd = _et_ns(2026, 7, 3, 12, 0)  # Independence Day observed, a Friday
+    feed = EquityFeed("AAPL", Config(), now_ns_fn=lambda: july_3rd)
+    assert feed.is_closed_now()
+
+
+async def test_the_live_loop_ends_with_a_session_break_at_the_after_hours_close():
+    clock = _StepClock(_et_ns(2026, 7, 15, 19, 59, 55), 10**9)
+    feed = EquityFeed(
+        "AAPL",
+        Config(),
+        now_ns_fn=clock,
+        bars_fn=_make_bars_fn([]),
+        book_fn=_no_books,
+        sleep_fn=_nosleep,
+    )
+    events = await _collect(feed, 10_000)
+    assert isinstance(events[-1], Marker) and events[-1].kind == "session_break"
+    assert feed.feed_state == "closed"
+    assert feed.next_open_ts == _et_ns(2026, 7, 16, 4, 0)
 
 
 async def test_closed_history_preparation_remains_finite_if_market_opens_during_fetch():
-    clock = {"now": _et_ns(2026, 7, 20, 9, 29)}
+    clock = {"now": _et_ns(2026, 7, 20, 3, 59)}
 
     async def delayed_history():
-        clock["now"] = _et_ns(2026, 7, 20, 9, 31)
+        clock["now"] = _et_ns(2026, 7, 20, 4, 1)
         return [_bar(_et_ns(2026, 7, 17, 15, 59), 100, 101, 99, 100, 10)]
 
     async def forbidden_poll():
         raise AssertionError("preparation entered unbounded live poll")
 
-    feed = EquityFeed("AAPL", Config(), now_ns_fn=lambda: clock["now"], bars_fn=delayed_history, price_fn=forbidden_poll)
+    feed = EquityFeed(
+        "AAPL", Config(), now_ns_fn=lambda: clock["now"], bars_fn=delayed_history,
+        book_fn=forbidden_poll, price_fn=forbidden_poll,
+    )
     assert feed.is_closed_now()
     events = [event async for event in feed.closed_history_events()]
     assert [type(event) for event in events] == [BookState, BarSample, Marker]
-
-
-# --- 5. market open ------------------------------------------------------------
-
-
-async def test_market_open_polls_and_emits_trades():
-    feed = EquityFeed(
-        "AAPL",
-        Config(),
-        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), DT_KEYLESS_NS),
-        bars_fn=_make_bars_fn(_concentrated_session()),
-        price_fn=_const_price(150.25),
-        sleep_fn=_nosleep,
-        bar_refresh_ns=10**18,
-    )
-    events = await _collect(feed, 20)
-    trades = [e for e in events if isinstance(e, Trade)]
-    assert trades, "open market must emit live display trades"
-    assert all(t.price == 150.25 and t.side_src == SIDE_SRC_NA for t in trades)
-    assert feed.feed_state == "live"
 
 
 async def test_keyless_bar_fetch_failure_closed_still_marks_session_break():
     """A Yahoo 429 storm must degrade, not kill the feed: when the initial bar
     fetch raises, a CLOSED market still emits the session_break marker + closed
     state (no crash -> no session restart/backoff loop)."""
-    sat = _et_ns(2026, 7, 18, 12, 0)  # Saturday
 
     async def broken_bars_fn():
         raise RuntimeError("Yahoo Finance provider request failed after 5 attempts.")
 
     feed = EquityFeed(
-        "AAPL",
-        Config(),
-        now_ns_fn=lambda: sat,
-        bars_fn=broken_bars_fn,
-        sleep_fn=_nosleep,
+        "AAPL", Config(), now_ns_fn=lambda: SATURDAY, bars_fn=broken_bars_fn, sleep_fn=_nosleep
     )
     events = await _collect(feed, 10_000)  # generator ends on its own
     markers = [e for e in events if isinstance(e, Marker)]
-    trades = [e for e in events if isinstance(e, Trade)]
     assert len(markers) == 1 and markers[0].kind == "session_break"
-    assert not trades
+    assert not [e for e in events if isinstance(e, Trade)]
     assert feed.feed_state == "closed"
 
 
 async def test_keyless_bar_fetch_failure_open_still_lives():
-    """Same 429 storm, but during RTH: the feed must fall back to an empty
-    profile live loop (display trades + empty-book re-asserts) instead of
-    crashing into the session's restart/degraded cycle."""
+    """Same 429 storm, but while trading: the feed goes live on the book alone
+    instead of crashing into the session's restart cycle."""
+
     async def broken_bars_fn():
         raise RuntimeError("Yahoo Finance provider request failed after 5 attempts.")
 
     feed = EquityFeed(
         "AAPL",
         Config(),
-        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), DT_KEYLESS_NS),  # Wed RTH
+        now_ns_fn=_StepClock(RTH, 10**9),
         bars_fn=broken_bars_fn,
-        price_fn=_const_price(150.25),
+        book_fn=_books_fn([[_book("edgx", [(150.2, 10.0)], [(150.3, 10.0)])]]),
         sleep_fn=_nosleep,
-        bar_refresh_ns=10**18,  # never re-fetch during the test
     )
     events = await _collect(feed, 12)
-    trades = [e for e in events if isinstance(e, Trade)]
     books = [e for e in events if isinstance(e, BookState)]
-    assert trades, "open market must keep emitting display trades"
-    assert all(t.price == 150.25 for t in trades)
-    assert books, "live loop must keep re-asserting the (empty) profile"
+    assert books and books[-1].bid_px.size == 1
     assert feed.feed_state == "live"
-
-
-async def test_keyless_live_column_cadence_splits_from_poll():
-    """Regression: the SYNTH grid must advance a column at the 1 s GRID cadence
-    while the slow 10 s price POLL cadence only refreshes the split reference —
-    the heatmap right edge moves 1 col/s between polls instead of freezing for
-    10 s."""
-    calls = {"n": 0}
-
-    async def price_fn() -> float:
-        calls["n"] += 1
-        return 100.0
-
-    feed = EquityFeed(
-        "AAPL",
-        Config(),
-        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), 10**9),  # 1 s steps
-        bars_fn=_make_bars_fn([]),  # no warmup -> straight to live
-        price_fn=price_fn,
-        sleep_fn=_nosleep,
-        bar_refresh_ns=10**18,
-    )
-    # 25 live cycles at 1 s: polls at t0, t0+10s, t0+20s -> 3 trades + 25 books.
-    events = await _collect(feed, 28)
-    trades = [e for e in events if isinstance(e, Trade)]
-    books = [e for e in events if isinstance(e, BookState)]
-    assert calls["n"] == 3, "price polled once per 10 s, not per column"
-    assert len(trades) == 3
-    assert len(books) == 25
-    ts = [b.ts_ns for b in books]
-    assert all(b - a == 10**9 for a, b in zip(ts, ts[1:])), "column cadence != 1 s"
-    # The scrape runs as its own task, so each price is recorded on the column after
-    # the poll that requested it: the grid cadence is never blocked by the scrape.
-    assert trades[0].ts_ns == ts[1]
-    assert trades[1].ts_ns == ts[11]
-    assert trades[2].ts_ns == ts[21]
-
-
-async def test_slow_price_scrape_does_not_stall_the_column_cadence():
-    """A scrape that takes longer than a grid tick must not freeze the heatmap's
-    right edge: columns keep advancing while the poll is still pending."""
-    release = asyncio.Event()
-    started = asyncio.Event()
-
-    async def slow_price() -> float:
-        started.set()
-        await release.wait()
-        return 100.0
-
-    feed = EquityFeed(
-        "AAPL",
-        Config(),
-        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), 10**9),
-        bars_fn=_make_bars_fn([]),
-        price_fn=slow_price,
-        sleep_fn=_nosleep,
-        bar_refresh_ns=10**18,
-    )
-    events = await _collect(feed, 8)
-    assert started.is_set() and not release.is_set()
-    assert len([e for e in events if isinstance(e, BookState)]) == 8
-    assert not [e for e in events if isinstance(e, Trade)]
-    release.set()
-    await asyncio.sleep(0)
 
 
 # --- 6a. tier auto-select + capability -----------------------------------------
@@ -600,7 +657,9 @@ def test_tier_keyless_when_no_keys():
     feed = EquityFeed("AAPL", Config())
     assert feed.tier == "keyless"
     assert feed.capability == {
-        "depth": "SYNTH",
+        # Real displayed depth, re-read whole each cycle, from Cboe's books only.
+        "depth": "L2-snapshot",
+        "depth_scope": "cboe-top5",
         "tape": "poll",
         "trade_side": "na",
         "cvd": "na",  # SIDE_UNKNOWN is never counted -> cvd is meaningless
@@ -798,31 +857,6 @@ def _make_bars_fn(bars: list[StkBar]):
     return bars_fn
 
 
-async def test_stale_profile_in_rth_withholds_depth_and_names_its_session():
-    """A failed Yahoo refresh during RTH leaves yesterday's bars in the cache. They
-    must not be re-stamped with today's clock as a live book; the client gets a gap
-    marker naming the stale session instead."""
-    now = _et_ns(2026, 7, 15, 11, 0)  # Wednesday RTH
-    prior = _et_ns(2026, 7, 14, 10, 0)  # Tuesday session
-    bars = [_flat_bar(prior + i * 60 * 10**9, 100.0 + i, 100.0) for i in range(5)]
-    last_bar_ts = _bar_ts(bars[-1])
-    feed = EquityFeed(
-        "AAPL",
-        Config(),
-        now_ns_fn=_StepClock(now, DT_KEYLESS_NS),
-        bars_fn=_make_bars_fn(bars),
-        price_fn=_const_price(150.25),
-        sleep_fn=_nosleep,
-        bar_refresh_ns=10**18,  # the refresh never succeeds in this test
-    )
-    events = await _collect(feed, 14)
-    books = [e for e in events if isinstance(e, BookState)]
-    gaps = [e for e in events if isinstance(e, Marker) and e.kind == "gap"]
-    assert books and all(b.ts_ns <= last_bar_ts for b in books), "no live book stamped with now"
-    assert len(gaps) == 1 and "2026-07-14" in gaps[0].text
-    assert feed.feed_state == "degraded"
-
-
 async def test_keyed_provider_error_is_forwarded_to_the_session():
     from flowmap_server.feeds.base import BoundedFeedQueue
     from flowmap_server.feeds.equity import _FeedEnd
@@ -939,13 +973,13 @@ async def test_repeated_price_poll_failures_surface_a_gap_marker():
     feed = EquityFeed(
         "AAPL",
         Config(),
-        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), DT_KEYLESS_NS),
+        now_ns_fn=_StepClock(_et_ns(2026, 7, 15, 11, 0), 10**9),
         bars_fn=_make_bars_fn([]),
+        book_fn=_books_fn([[_book("edgx", [(150.2, 10.0)], [(150.3, 10.0)])]]),
         price_fn=no_price,
         sleep_fn=_nosleep,
-        bar_refresh_ns=10**18,
     )
-    events = await _collect(feed, 12)
+    events = await _collect(feed, 60)
     gaps = [e for e in events if isinstance(e, Marker) and e.kind == "gap"]
     assert len(gaps) == 1 and "live price unavailable" in gaps[0].text
     assert not [e for e in events if isinstance(e, Trade)]
@@ -1006,8 +1040,8 @@ async def test_keyed_trade_falls_back_to_the_receive_clock_only_when_unstamped()
     assert trade.ts_ns == _EQ_LOCAL_NS
 
 
-async def test_synth_profile_bars_use_the_provider_clock() -> None:
-    """The SYNTH ladder's column timestamps come from the bar's own clock."""
+async def test_warmup_bars_use_the_provider_clock() -> None:
+    """The price-history column timestamps come from the bar's own clock."""
     bar = msgspec.structs.replace(
         _bar(_EQ_LOCAL_NS, 10.0, 10.0, 10.0, 10.0, 5.0), source_ts=_EQ_VENUE_NS
     )

@@ -29,7 +29,6 @@ import datetime
 from types import SimpleNamespace
 
 import numpy as np
-import msgspec
 import pytest
 
 import flowmap_server.core.session as session_mod
@@ -183,36 +182,42 @@ def _prerecord_tail(root: Recorder, cfg: GridCfg, n_cols: int = 20):
     return cols
 
 
-@pytest.mark.parametrize("finite_prices", [False, True])
-def test_keyless_equity_legacy_missing_price_tail_rebuilds_without_adopting_recording_id(
-    tmp_path, finite_prices,
-):
+@pytest.mark.parametrize(
+    ("recorded", "continues"),
+    [
+        # Recorded under the tier that is live now: the run is continued.
+        ({"depth": "L2-snapshot", "tape": "poll"}, True),
+        # A synthetic volume profile must never become live displayed depth.
+        ({"depth": "SYNTH", "tape": "poll"}, False),
+        # No stored capability: the recording predates it, and was synthetic.
+        (None, False),
+        # Another real tier (a key was added or removed since) is still other data.
+        ({"depth": "L1", "tape": "tick"}, False),
+    ],
+)
+def test_equity_tail_from_another_depth_tier_starts_cold(tmp_path, recorded, continues):
     cfg = _cfg()
     source = Grid(cfg)
     source.on_book(0, *_book(100.0))
-    if finite_prices:
-        source.on_bar_sample(0, 100.0, 100.0, 100.0, 100.0, 1.0)
+    source.on_bar_sample(0, 100.0, 100.0, 100.0, 100.0, 1.0)
     columns = source.on_book(DT, *_book(100.0))
-    old = TailData([source.current_epoch_params()], columns, [], [], 0, recording_id="old-id")
-    root = Recorder(tmp_path / "legacy-equity", 20.0)
-    sess = Session("eq-legacy", feed=EquityFeed("AAPL", Config()), grid=Grid(cfg), recorder=root)
+    old = TailData(
+        [source.current_epoch_params()], columns, [], [], 0,
+        recording_id="old-id", capability=recorded,
+    )
+    root = Recorder(tmp_path / "equity-tier", 20.0)
+    sess = Session("eq-tier", feed=EquityFeed("AAPL", Config()), grid=Grid(cfg), recorder=root)
     sess._rec = root.open_session("equity", "AAPL")
     new_id = sess._rec.recording_id
     assert new_id != "old-id"
-    assert sess._apply_tail(old) is finite_prices
-    if finite_prices:
+    assert sess._apply_tail(old) is continues
+    if continues:
         assert sess._rec.recording_id == "old-id"
         assert sess._grid.history(10**18, 10)[0].bar.c == 100.0
     else:
+        # The old files stay on disk under their own id; this run keeps its new one.
         assert sess._rec.recording_id == new_id
         assert sess._grid.history(10**18, 10) == []
-        assert np.isnan(old.columns[0].bar.c)
-    # A narrow guard: a valid price in even one column retains the recording.
-    if not finite_prices:
-        valid = msgspec.structs.replace(columns[0], bar=msgspec.structs.replace(columns[0].bar, c=100.0))
-        mixed = msgspec.structs.replace(old, columns=[valid])
-        assert sess._apply_tail(mixed)
-        assert sess._rec.recording_id == "old-id"
 
 
 async def test_closed_preparation_records_initial_epoch_before_any_reanchor(tmp_path):

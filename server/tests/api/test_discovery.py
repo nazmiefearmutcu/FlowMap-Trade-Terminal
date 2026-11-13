@@ -81,8 +81,10 @@ async def test_universe_capabilities_are_honest():
     async with _make_client(None) as c:
         r = await c.get("/api/universe", params={"q": "AAPL", "market": "equity"})
         entry = next(s for s in r.json()["symbols"] if s["symbol"] == "AAPL")
-        assert entry["capability"]["depth"] == "SYNTH"
-        assert entry["capability"]["cvd"] == "na"  # keyless equity: no honest CVD
+        # Keyless equity: real Cboe books, re-read whole, scoped to those books.
+        assert entry["capability"]["depth"] == "L2-snapshot"
+        assert entry["capability"]["depth_scope"] == "cboe-top5"
+        assert entry["capability"]["cvd"] == "na"  # prints carry no side: no honest CVD
         r = await c.get("/api/universe", params={"q": "ETHUSDT", "market": "crypto"})
         entry = next(s for s in r.json()["symbols"] if s["symbol"] == "ETHUSDT")
         assert entry["capability"]["cvd"] == "exchange"

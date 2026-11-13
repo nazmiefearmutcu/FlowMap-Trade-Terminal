@@ -64,6 +64,9 @@ class BookState(msgspec.Struct):
     provenance: str | None = None
     observed_ns: int | None = None
     revision: int = 0
+    # Price the grid stays centred on when this book has no level on either
+    # side (an equity feed with price history but no depth for that period).
+    anchor_px: float | None = None
 
 
 class BarSample(msgspec.Struct):

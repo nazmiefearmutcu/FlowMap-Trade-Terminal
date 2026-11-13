@@ -108,13 +108,16 @@ _EQUITY_P0_NOMINAL = 100.0
 # SYNTH_PROFILE kept for compatibility.
 _EQUITY_DEPTH_MODE: dict[object, int] = {
     "SYNTH": events.MODE_L1_BAND,
+    # Keyless equity: a real two-sided book (Cboe's four books), full L2 shape.
+    "L2-snapshot": events.MODE_L2,
     "L1": events.MODE_L1_BAND,
     "SYNTH_PROFILE": events.MODE_SYNTH_PROFILE,
     "L1_BAND": events.MODE_L1_BAND,
 }
 
-# Synthetic (keyless) depth tiers run the slower Yahoo-friendly cadence.
-_EQUITY_SYNTH_DEPTHS = frozenset({"SYNTH", "SYNTH_PROFILE"})
+# Keyless depth tiers run the keyless grid cadence: the polled Cboe book, and the
+# synthetic profiles older recordings carry.
+_EQUITY_KEYLESS_DEPTHS = frozenset({"L2-snapshot", "SYNTH", "SYNTH_PROFILE"})
 
 
 # Price-grid coverage presets, as (band_up, band_down) fractions of the
@@ -273,17 +276,17 @@ class SessionManager:
 
     def _equity_grid_for(self, feed: Feed, band: str = DEFAULT_BAND) -> Grid:
         """Equity-appropriate grid: mode and column cadence honestly
-        derived from the feed's capability. Keyless SYNTH_PROFILE runs at the
-        1 s keyless grid cadence (the feed re-asserts the resting profile every
-        ``dt_equity_keyless_grid_ns`` while polling price every 10 s); keyed
-        tiers (L1_BAND) run at the 1 s equity cadence. Cent tick; a nominal
-        $100 p0 that the grid re-anchors to the symbol's real price on the
-        first book (a >=$1 stock's profile near $180 pulls p0 up)."""
+        derived from the feed's capability. The keyless tier runs at the 1 s
+        keyless grid cadence (the feed re-asserts the last merged Cboe book
+        every ``dt_equity_keyless_grid_ns`` between its 5 s reads) as a full
+        two-sided L2 shape; keyed tiers (L1_BAND) run at the 1 s equity
+        cadence. Cent tick; a nominal $100 p0 that the grid re-anchors to the
+        symbol's real price on the first book or bar."""
         depth = feed.capability.get("depth")
         mode = _EQUITY_DEPTH_MODE.get(depth, events.MODE_L1_BAND)
         dt = (
             self._cfg.dt_equity_keyless_grid_ns
-            if depth in _EQUITY_SYNTH_DEPTHS
+            if depth in _EQUITY_KEYLESS_DEPTHS
             else self._cfg.dt_equity_keyed_ns
         )
         rows = min(_EQUITY_ROWS, self._cfg.max_rows)

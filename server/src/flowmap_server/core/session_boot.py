@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 
 import msgspec
 
@@ -324,18 +323,22 @@ class BootMixin:
         Returns True only when the grid actually took the tail; a False return
         (unusable recording) leaves the grid virgin so the caller still runs
         the candle backfill."""
-        if (
-            isinstance(self._feed, EquityFeed)
-            and self._feed.tier == "keyless"
-            and self._feed.capability.get("depth") == "SYNTH"
-            and tail.columns
-            and not any(math.isfinite(col.bar.c) and col.bar.c > 0.0 for col in tail.columns)
-        ):
-            # Old keyless recordings contain synthetic density but no sampled
-            # prices. Regenerate that derived view, retaining the old files and
-            # the new recorder UUID so restarted seq 0 cannot collide with it.
-            logger.info("legacy equity tail has no price bars; rebuilding %s", self.session_id)
-            return False
+        if isinstance(self._feed, EquityFeed) and tail.columns:
+            # An equity recording made under another depth tier is a different
+            # kind of data: a synthetic volume profile (the keyless tier before
+            # it read real books) must never be continued as live displayed
+            # depth. Start cold, retaining the old files and the new recorder
+            # UUID so restarted seq 0 cannot collide with them. A recording
+            # that predates the stored capability was synthetic.
+            recorded = (tail.capability or {}).get("depth", "SYNTH")
+            if recorded != self._feed.capability.get("depth"):
+                logger.info(
+                    "equity tail was recorded as %s depth, live is %s; cold start for %s",
+                    recorded,
+                    self._feed.capability.get("depth"),
+                    self.session_id,
+                )
+                return False
         try:
             self._grid.preload(tail.columns, tail.epochs)
         except Exception:

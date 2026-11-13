@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 import msgspec
 import numpy as np
@@ -168,6 +169,10 @@ class BookMixin:
             return (float(np.min(ev.bid_px)) + float(np.max(ev.bid_px))) / 2.0
         if len(ev.ask_px):
             return (float(np.min(ev.ask_px)) + float(np.max(ev.ask_px))) / 2.0
+        # An empty book names its own anchor (equity price history with no depth).
+        anchor = ev.anchor_px
+        if anchor is not None and math.isfinite(anchor) and anchor > 0.0:
+            return float(anchor)
         return None
 
     def _emit_finalized(self, cols: list[FinalizedColumn]) -> None:

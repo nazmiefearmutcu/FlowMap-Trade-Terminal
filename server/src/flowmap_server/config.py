@@ -35,6 +35,9 @@ _BOOK_TOP_N_RANGE = (1, 200_000)
 # at most one hour per column (anything larger is a unit mixup — seconds/ms
 # pasted into an ns field — not a cadence).
 _DT_NS_RANGE = (1_000_000, 3_600 * 1_000_000_000)
+# Keyless equity book reads go to a public web endpoint that reloads itself
+# every 5 s. Nothing faster than 2 s is accepted.
+_DT_EQUITY_BOOK_NS_RANGE = (2 * 1_000_000_000, 3_600 * 1_000_000_000)
 # Crypto grid tick override (FLOWMAP_CRYPTO_TICK): 0 = auto; anything absurd
 # above this is a unit mixup, not a tick.
 _CRYPTO_TICK_RANGE = (0.0, 1e12)
@@ -127,10 +130,13 @@ class Config(msgspec.Struct, frozen=True):
     finnhub_key: str | None = None
     dt_crypto_ns: int = 250_000_000
     dt_equity_keyed_ns: int = 10**9
-    # Keyless (SYNTH) equity: last-price POLL cadence (10 s) vs the grid's
-    # COLUMN cadence (1 s). The grid re-asserts the resting profile every
-    # dt_equity_keyless_grid_ns so the heatmap's right edge keeps advancing
-    # (1 col/s) between the slow Yahoo-friendly price polls.
+    # Keyless equity. dt_equity_book_ns is how often the four Cboe books are
+    # read (5 s, the cadence Cboe's own book viewer reloads at).
+    # dt_equity_keyless_grid_ns is the grid's COLUMN cadence (1 s): the last
+    # merged book is re-asserted every column so the heatmap's right edge keeps
+    # advancing between reads. dt_equity_keyless_ns is how long a symbol may go
+    # without a Cboe print before the last-price fallback is polled (10 s).
+    dt_equity_book_ns: int = 5 * 10**9
     dt_equity_keyless_ns: int = 10 * 10**9
     dt_equity_keyless_grid_ns: int = 10**9
     max_rows: int = 4096
@@ -229,6 +235,9 @@ class Config(msgspec.Struct, frozen=True):
             # client's full-res budget in seconds. Default 250 ms (4 cols/s).
             dt_crypto_ns=_int_in_range(
                 env, "FLOWMAP_DT_CRYPTO_NS", str(250_000_000), *_DT_NS_RANGE
+            ),
+            dt_equity_book_ns=_int_in_range(
+                env, "FLOWMAP_DT_EQUITY_BOOK_NS", str(5 * 10**9), *_DT_EQUITY_BOOK_NS_RANGE
             ),
             dt_equity_keyless_ns=_int_in_range(
                 env, "FLOWMAP_DT_EQUITY_KEYLESS_NS", str(10 * 10**9), *_DT_NS_RANGE

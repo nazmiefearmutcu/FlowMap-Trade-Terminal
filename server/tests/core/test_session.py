@@ -1016,7 +1016,7 @@ async def _eq_nosleep(_s: float) -> None:
 
 def _closed_equity_feed(price: float) -> EquityFeed:
     """Keyless EquityFeed pinned to a Saturday: warms up the last session's
-    SYNTH profile at ``price``, then reports the market closed. No price_fn ->
+    price history at ``price``, then reports the market closed. No price_fn ->
     the closed path never polls, so pytest never touches the network."""
     sat = _eq_et_ns(2026, 7, 18, 12, 0)
 
@@ -1032,7 +1032,7 @@ def _closed_equity_feed(price: float) -> EquityFeed:
     )
 
 
-async def test_equity_subscribe_synth_grid_and_closed_status():
+async def test_equity_subscribe_grid_and_closed_status():
     cfg = Config(max_sessions=4, ring_columns=4096, max_rows=4096)
     feed = _closed_equity_feed(100.0)
     mgr = SessionManager(cfg, timer=FakeTimer(), feed_factory=lambda sub: feed)
@@ -1040,10 +1040,10 @@ async def test_equity_subscribe_synth_grid_and_closed_status():
     client = ClientTx()
     sess = await mgr.subscribe(sub, client)
 
-    # (c) grid is equity-appropriate: two-sided L1_BAND mode, cent tick, and
-    # the keyless GRID dt (1 s columns) — the 10 s poll cadence stays a feed
+    # (c) grid is equity-appropriate: a full two-sided L2 shape, cent tick, and
+    # the keyless GRID dt (1 s columns) — the 5 s book read stays a feed
     # concern, the heatmap right edge must advance every second.
-    assert sess._grid.cfg.mode == MODE_L1_BAND
+    assert sess._grid.cfg.mode == MODE_L2
     assert sess._grid.cfg.tick == 0.01
     assert sess._grid.cfg.dt_ns == cfg.dt_equity_keyless_grid_ns
     assert cfg.dt_equity_keyless_grid_ns < cfg.dt_equity_keyless_ns
@@ -1052,24 +1052,26 @@ async def test_equity_subscribe_synth_grid_and_closed_status():
     await asyncio.wait_for(sess.run_task, timeout=5)  # warms up, then closes
     msgs = _drain_all(client)
 
-    # (a) Hello capability is the keyless SYNTH descriptor.
+    # (a) Hello capability is the keyless descriptor: real Cboe books.
     hello = msgs[0]
     assert isinstance(hello, Hello)
-    assert hello.capability["depth"] == "SYNTH"
+    assert hello.capability["depth"] == "L2-snapshot"
+    assert hello.capability["depth_scope"] == "cboe-top5"
     assert hello.capability["tape"] == "poll"
 
-    # (a) depth columns render two-sided (L1_BAND keeps the ask channel on the
-    # wire; here every bar sits at one price <= ref so the ask side is empty but
-    # present — an honest "no volume above the price" rather than a dropped axis).
+    # (a) the price-history columns keep both channels on the wire and carry no
+    # depth: nothing was observed for that period, so nothing is drawn.
     depths = [m for m in msgs if isinstance(m, DepthColumn)]
-    assert depths, "warmup SYNTH profile produced no depth columns"
-    assert all(d.mode == MODE_L1_BAND and d.ask is not None for d in depths)
+    assert depths, "warmup produced no columns"
+    assert all(d.mode == MODE_L2 and d.ask is not None for d in depths)
+    assert all(float(d.bid.max()) == 0.0 and float(d.ask.max()) == 0.0 for d in depths)
 
-    # (b) a terminal closed Status surfaces the next RTH open (Mon 2026-07-20).
+    # (b) a terminal closed Status surfaces the next keyless open: the pre-market
+    # of Mon 2026-07-20.
     closed = [m for m in msgs if isinstance(m, Status) and m.feed_state == "closed"]
     assert len(closed) == 1
-    assert closed[0].capability["depth"] == "SYNTH"
-    assert closed[0].next_open_ts == _eq_et_ns(2026, 7, 20, 9, 30)
+    assert closed[0].capability["depth"] == "L2-snapshot"
+    assert closed[0].next_open_ts == _eq_et_ns(2026, 7, 20, 4, 0)
 
     # session_break marker (order-flow-style compressed gap) from the last session.
     breaks = [m for m in msgs if isinstance(m, Marker) and m.kind == "session_break"]

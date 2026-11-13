@@ -1,18 +1,19 @@
-"""US-equity feed: Crocodile equity providers -> canonical FeedEvents.
+"""US-equity feed: Crocodile equity providers and Cboe's book viewer -> FeedEvents.
 
-Equities have **no free L2 depth**. This feed therefore auto-selects a tier
-from the credentials in :class:`~flowmap_server.config.Config` and expresses
-each tier's real capability honestly:
+The feed auto-selects a tier from the credentials in
+:class:`~flowmap_server.config.Config` and reports each tier's real capability:
 
 ============  ================================================================
 Tier          What ``events()`` emits
 ============  ================================================================
-keyless       SYNTH depth — a **two-sided** volume-at-price ladder from Yahoo 1 m
-              bars (bid below / ask above the reference price) — a display-only
-              last-price tape (``side_src=na``, ``venue='synthetic'``) polled
-              every ``dt_equity_keyless_ns``, gaps + session_break markers. **No
-              tick tape, no CVD** — the machine has no equity keys, so this is
-              the only genuinely-available tier and it must be honest.
+keyless       real displayed depth and real prints from Cboe's four US equity
+              books (BZX, BYX, EDGX, EDGA): the top five levels per side on each
+              book, read every ``dt_equity_book_ns``. Depth is ``L2-snapshot``
+              with ``depth_scope='cboe-top5'``: it is not the consolidated
+              national book. Prints carry no aggressor side (``side_src=na``),
+              so there is no CVD. Price history before the app started comes
+              from Yahoo 1 m bars; no depth is known for that period and none
+              is drawn.
 alpaca (keyed) real **L1** two-sided top-of-book depth (from the streamed BBO) +
               tick tape with side **inferred** (quote rule vs the streamed L1
               BBO), quotes as ``BBO``.
@@ -20,23 +21,27 @@ finnhub (keyed) tick tape with side **inferred** (tick rule); no depth / no
               quotes.
 ============  ================================================================
 
-**SYNTH volume-at-price** (keyless): each 1 m bar's whole volume is placed at
-its typical price ``(H+L+C)/3`` snapped to a cent bucket, accumulated into a
-*cumulative* profile. One :class:`BookState` is emitted per bar, its SHAPE
-rescaled so the **combined** peak == ``PROFILE_PEAK_TARGET`` and then split at a
-**reference price** (that bar's close during warmup, the live last price when
-running) into a bid channel (``price <= ref``) and an ask channel (``price >
-ref``) — engine ``split_ladder`` semantics. The grid, which time-weights the
-previous book over each interval, thus renders a **two-sided** depth-over-time
-whose bid/ask boundary walks with price (grid ``mode=L1_BAND``, two channels on
-the wire; the badge stays honestly ``SYNTH``). The emitted sizes are a bounded
-*relative* intensity, not a share count: a liquid name's cumulative shares (tens
-of millions) cast to the grid's float16 ring would overflow to ``inf``, so the
-single combined-peak scale bounds every texel while preserving between-bucket
-ratios (the point-of-control) and the cross-side bid/ask comparison exactly.
-Warmup uses **the most recent session's bars only**, so bar timestamps stay
+**Keyless depth.** Each cycle reads the four books together and merges them by
+price (sizes summed, in shares). A book that misses a cycle keeps its last read
+for a few cycles so the merged depth does not flicker; after
+``_BOOK_FAILURES_BEFORE_NOTICE`` cycles with no book at all the depth is
+withheld, a ``gap`` marker says so and the feed reports ``degraded``. The grid
+advances one column per ``dt_equity_keyless_grid_ns`` on the last merged book.
+
+**Keyless prints.** Each read returns a book's last ten prints. The new ones are
+found by overlap with the previous read (see
+:func:`~flowmap_server.feeds.equity_book.new_prints`) and emitted as trades
+stamped with the venue's own clock and tagged with the book they printed on.
+The tape is therefore a sample: prints on other venues, and prints beyond ten
+per book per cycle, are not in it (``tape='poll'``). A symbol with no fresh Cboe
+print for ``dt_equity_keyless_ns`` falls back to a Google Finance last price so
+the chart still moves; that fallback is a display-only price, tagged
+``venue='last-price'`` with size 0.
+
+**Warmup** uses the most recent session's bars only, so bar timestamps stay
 ~1 m apart and the grid never bridges an overnight gap into thousands of empty
-columns.
+columns. Each bar advances the grid with an empty book anchored at the bar's
+close.
 
 **Market-closed** — the :class:`~flowmap_server.feeds.base.Feed` protocol's
 ``FeedEvent`` union has no ``Status`` (that is a session/protocol message), so
@@ -47,18 +52,21 @@ this feed exposes the closed state two ways the session layer reads:
   ``Status{feed_state='closed', next_open_ts=...}``; and
 - an in-band ``Marker{kind='session_break', text='market closed — ...'}``.
 
-When closed, the warmup SYNTH profile from the last session still renders; the
-feed emits **no** live trades (a stale last price is not a print) and does NOT
-spam empty live columns — ``events()`` returns after the session_break so the session layer
-can schedule a restart at ``next_open_ts`` (``events()`` is re-callable per the
-Feed restart contract and re-fetches on the next call).
+When closed, the last session's price history still renders; the feed emits
+**no** live trades and no depth, and ``events()`` returns after the
+session_break so the session layer can schedule a restart at ``next_open_ts``
+(``events()`` is re-callable per the Feed restart contract and re-fetches on the
+next call).
 
 The session model authority is
 :class:`crocodile.core.scheduler.calendar.USMarketCalendar` (America/New_York,
-holiday-aware); live polling is gated on its RTH window. All time is UTC ns;
+holiday-aware). The keyed tiers are live in its regular session; the keyless
+tier is live from 04:00 to 20:00 New York time on its trading days, because the
+Cboe books trade before and after the regular session. All time is UTC ns;
 ``now_ns_fn`` is injected so tests can pin "closed" (a Saturday) vs "open" (a
-weekday RTH minute) with no wall-clock dependency, and ``bars_fn`` / ``price_fn``
-/ ``sleep_fn`` are injectable seams so pytest never touches the network.
+weekday RTH minute) with no wall-clock dependency, and ``bars_fn`` / ``book_fn``
+/ ``price_fn`` / ``sleep_fn`` are injectable seams so pytest never touches the
+network.
 """
 
 from __future__ import annotations
@@ -72,10 +80,11 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Protocol, cast
 
+import numpy as np
+
 from crocodile.core.schema.records import OHLCV as EqBar
 from crocodile.core.scheduler.calendar import MARKET_TZ, USMarketCalendar
 from crocodile.core.sink.base import Sink
-from crocodile.equity.depth.vap import reference_price as eq_reference_price
 
 from flowmap_server.config import Config
 from flowmap_server.feeds.base import (
@@ -86,14 +95,16 @@ from flowmap_server.feeds.base import (
     FeedEvent,
     ts_ns_sane,
 )
-from flowmap_server.feeds.equity_poll import _GooglePricePoller
-from flowmap_server.feeds.equity_profile import (
-    DEFAULT_PROFILE_TICK,
-    PROFILE_PEAK_TARGET,
-    _bar_finite,
-    _bar_ts,
-    _ProfileBuilder,
+from flowmap_server.feeds.equity_book import (
+    DEPTH_SCOPE,
+    CboeBookClient,
+    VenueBook,
+    VenuePrint,
+    extended_session_state,
+    merge_books,
+    prints_to_trades,
 )
+from flowmap_server.feeds.equity_poll import _GooglePricePoller
 from flowmap_server.feeds.equity_sink import _EquitySink
 from flowmap_server.proto.events import (
     SIDE_SRC_NA,
@@ -102,19 +113,21 @@ from flowmap_server.proto.events import (
     Trade,
 )
 
-__all__ = ["DEFAULT_PROFILE_TICK", "EQUITY_MARKET", "EQUITY_MARKETS", "EquityFeed", "PROFILE_PEAK_TARGET"]
+__all__ = ["EQUITY_MARKET", "EQUITY_MARKETS", "LAST_PRICE_VENUE", "EquityFeed"]
 
 logger = logging.getLogger(__name__)
 
 # Subscribe.market string routed to EquityFeed by the session feed factory.
 EQUITY_MARKET = "equity"
 EQUITY_MARKETS = frozenset({EQUITY_MARKET})
-# Keyless last-price display venue tag (not an exchange print or NBBO).
-SYNTH_VENUE = "synthetic"
-# Live keyless bar refresh cadence (Yahoo: at least 60 s per symbol).
-BAR_REFRESH_NS = 60 * 10**9
+# Venue tag of the keyless last-price fallback (not an exchange print or NBBO).
+LAST_PRICE_VENUE = "last-price"
 # Consecutive failed keyless price polls before the live tape says so (gap Marker).
 _POLL_FAILURES_BEFORE_NOTICE = 3
+# Consecutive cycles with no Cboe book at all before the depth is withheld.
+_BOOK_FAILURES_BEFORE_NOTICE = 3
+# A book that misses cycles keeps its last read for this many cycles.
+_BOOK_HOLD_CYCLES = 3
 # Keyed tiers: no provider event for this long is a silent socket or a stuck
 # provider, not a quiet name, so the feed fails and the session restarts it.
 # The check cadence bounds how quickly the calendar close is noticed.
@@ -123,9 +136,41 @@ _KEYED_CHECK_S = 5.0
 
 
 BarsFn = Callable[[], Awaitable[Sequence[EqBar]]]
+BookFn = Callable[[], Awaitable[Sequence[VenueBook]]]
 PriceFn = Callable[[], Awaitable[float | None]]
 SleepFn = Callable[[float], Awaitable[None]]
 NowFn = Callable[[], int]
+
+_EMPTY = np.empty(0, dtype=np.float64)
+
+
+def _bar_ts(bar: EqBar) -> int:
+    """A bar's canonical UTC-ns timestamp (source over local)."""
+    return int(bar.source_ts if bar.source_ts is not None else bar.local_ts)
+
+
+def _bar_finite(bar: EqBar) -> bool:
+    """True iff the bar's OHLCV are all finite and volume is non-negative.
+
+    Yahoo bars can carry gaps, and NaN/inf can still slip through resampling.
+    Such a bar would poison the price overlay, so it is skipped, never emitted."""
+    vals = (bar.open, bar.high, bar.low, bar.close, bar.volume)
+    return all(v is not None and math.isfinite(v) for v in vals) and bar.volume >= 0.0
+
+
+def _empty_book(ts_ns: int, anchor: float | None) -> BookState:
+    """A book with no levels: it advances the grid and draws nothing.
+
+    ``anchor`` is the price the grid should stay centred on while there is no
+    quote to centre on."""
+    return BookState(
+        ts_ns=int(ts_ns),
+        bid_px=_EMPTY,
+        bid_sz=_EMPTY,
+        ask_px=_EMPTY,
+        ask_sz=_EMPTY,
+        anchor_px=anchor,
+    )
 
 
 class _FeedEnd:
@@ -141,10 +186,10 @@ class _FeedEnd:
 _EquityItem = FeedEvent | _FeedEnd
 
 
-def _closed_marker_text(has_profile: bool) -> str:
-    """session_break text that says whether a profile is actually on screen."""
-    if has_profile:
-        return "market closed — SYNTH profile from last session"
+def _closed_marker_text(has_history: bool) -> str:
+    """session_break text that says whether price history is actually on screen."""
+    if has_history:
+        return "market closed — price history from the last session"
     return "market closed — no cached history available"
 
 
@@ -165,24 +210,22 @@ class EquityFeed:
         *,
         now_ns_fn: NowFn | None = None,
         bars_fn: BarsFn | None = None,
+        book_fn: BookFn | None = None,
         price_fn: PriceFn | None = None,
         sleep_fn: SleepFn | None = None,
         provider_factory: Callable[[_EquitySink], object] | None = None,
         calendar: USMarketCalendar | None = None,
-        profile_tick: float = DEFAULT_PROFILE_TICK,
-        bar_refresh_ns: int = BAR_REFRESH_NS,
         stats: DropCounters | None = None,
     ) -> None:
         self.symbol = symbol.upper()
         self._cfg = cfg
         self._now_ns: NowFn = now_ns_fn or time.time_ns
         self._bars_fn = bars_fn
+        self._book_fn = book_fn
         self._price_fn = price_fn
         self._sleep: SleepFn = sleep_fn or asyncio.sleep
         self._provider_factory = provider_factory
         self._calendar = calendar or USMarketCalendar()
-        self._profile_tick = profile_tick
-        self._bar_refresh_ns = bar_refresh_ns
 
         self._tier = self._select_tier()
         # A per-instance copy: a shared module-level dict would leak any per-feed write.
@@ -194,9 +237,12 @@ class EquityFeed:
         self.next_open_ts: int | None = None
         # Consecutive keyless price polls that returned no usable price.
         self.poll_failures = 0
+        # Consecutive keyless cycles in which no Cboe book answered.
+        self.book_failures = 0
 
-        # Lazily-created default keyless price poller (network; never in tests).
+        # Lazily-created default keyless clients (network; never in tests).
         self._poller: _GooglePricePoller | None = None
+        self._book_client: CboeBookClient | None = None
         # Server-wide telemetry aggregate (duck-typed). Feeds the
         # drop counters at the source: queue evictions + ts-gate drops.
         self._stats = stats
@@ -213,35 +259,6 @@ class EquityFeed:
     def tier(self) -> str:
         """Selected tier: ``"alpaca"`` | ``"finnhub"`` | ``"keyless"``."""
         return self._tier
-
-    # -- SYNTH profile (unit-testable in isolation) ----------------------------
-
-    @staticmethod
-    def synth_profile(
-        bars: Sequence[EqBar],
-        *,
-        tick: float = DEFAULT_PROFILE_TICK,
-        ref: float | None = None,
-    ) -> BookState:
-        """Aggregate ``bars`` into one **two-sided** volume-at-price BookState.
-
-        The profile's SHAPE is rescaled so its combined peak bucket ==
-        ``PROFILE_PEAK_TARGET`` (a bounded relative intensity, not a share count —
-        see :meth:`_ProfileBuilder.book_state`) then split at ``ref`` into bid
-        (``price <= ref``) and ask (``price > ref``) channels. ``ref`` defaults to
-        the last finite bar's close (``crocodile.equity.depth.vap.reference_price``); a
-        ``None`` result of that (no finite bars) yields an empty book. ``ts_ns``
-        is the newest bar's timestamp (0 if none)."""
-        builder = _ProfileBuilder(tick)
-        last_ts = 0
-        finite: list[EqBar] = []
-        for bar in bars:
-            if builder.add_bar(bar):
-                last_ts = max(last_ts, _bar_ts(bar))
-                finite.append(bar)
-        if ref is None and finite:
-            ref = eq_reference_price(finite)
-        return builder.book_state(last_ts, ref)
 
     def _select_warmup_bars(self, bars: Sequence[EqBar]) -> list[EqBar]:
         """The most recent session's finite, plausibly-stamped bars (grouped by
@@ -283,9 +300,13 @@ class EquityFeed:
             return "open", None
         return "closed", self._next_open_ns(dt)
 
+    def _keyless_state(self, now_ns: int) -> tuple[str, int | None]:
+        """(``"open"``|``"closed"``, next_open_ts) on the keyless trading window."""
+        return extended_session_state(self._calendar, now_ns)
+
     def is_closed_now(self) -> bool:
         """Whether a keyless warmup can terminate without entering live polling."""
-        return self._session_state(self._now_ns())[0] == "closed"
+        return self._keyless_state(self._now_ns())[0] == "closed"
 
     def _next_open_ns(self, now_dt: datetime.datetime) -> int | None:
         et = now_dt.astimezone(MARKET_TZ)
@@ -306,6 +327,7 @@ class EquityFeed:
         self.feed_state = "live"
         self.next_open_ts = None
         self.poll_failures = 0
+        self.book_failures = 0
         if self._tier == "keyless":
             async for ev in self._keyless_events():
                 yield ev
@@ -329,26 +351,29 @@ class EquityFeed:
             bars = await self._fetch_bars()
         except Exception:  # a 429 storm must degrade, not kill the feed
             logger.warning(
-                "keyless bar fetch failed for %s; starting with an empty profile "
-                "(refresh retries every %ds)",
+                "keyless bar fetch failed for %s; starting with no price history",
                 self.symbol,
-                self._bar_refresh_ns // 10**9,
                 exc_info=True,
             )
             bars = []
         warmup = self._select_warmup_bars(bars)
-        builder = _ProfileBuilder(self._profile_tick)
         last_bar_ts = 0
         ref: float | None = None
+        if warmup and not history_only and not self.is_closed_now():
+            # History further back than the grid can hold would be pushed out by
+            # the empty columns between it and now. Keep its last close as the
+            # anchor and draw nothing for it.
+            reach_ns = self._cfg.ring_columns * self._cfg.dt_equity_keyless_grid_ns
+            if self._now_ns() - _bar_ts(warmup[-1]) > reach_ns:
+                ref = float(warmup[-1].close)
+                warmup = []
         for i, bar in enumerate(warmup):
-            builder.add_bar(bar)
             ts = _bar_ts(bar)
             last_bar_ts = max(last_bar_ts, ts)
-            # Reference = this bar's close, so the two-sided split boundary walks
-            # with historical price: a genuine bid-below / ask-above depth-over-
-            # time as the cumulative volume-profile fills in.
             ref = float(bar.close)
-            yield builder.book_state(ts, ref)
+            # No depth is known for the time before this process read a book,
+            # so the grid advances on an empty one, centred on the bar's close.
+            yield _empty_book(ts, ref)
             # Real published bar prices drive the historical overlay. They
             # must not appear as received prints or invent an aggressor side.
             yield BarSample(ts, float(bar.open), float(bar.high), float(bar.low), ref, float(bar.volume))
@@ -358,117 +383,131 @@ class EquityFeed:
                 await asyncio.sleep(0)
 
         now = self._now_ns()
-        state, next_open = self._session_state(now)
+        state, next_open = self._keyless_state(now)
         if state == "closed" or history_only:
             self.feed_state = "closed"
             self.next_open_ts = next_open
-            # session_break at the end of the visible profile (last bar), or
-            # now when there were no warmup bars. Closed markets render the
-            # last session's SYNTH profile and emit NO stale live trades.
+            # session_break at the end of the visible history (last bar), or
+            # now when there were no warmup bars. A closed market emits no live
+            # trades and no depth.
             yield Marker(
                 ts_ns=last_bar_ts or now,
                 kind="session_break",
-                text=_closed_marker_text(builder.has_profile()),
+                text=_closed_marker_text(bool(warmup)),
             )
             return
 
         try:
-            async for ev in self._keyless_live(builder, last_bar_ts, ref):
+            async for ev in self._keyless_live(ref, has_history=bool(warmup)):
                 yield ev
         finally:
-            await self._close_poller()
+            await self._close_clients()
 
     async def _keyless_live(
-        self, builder: _ProfileBuilder, last_bar_ts: int, ref: float | None
+        self, ref: float | None, *, has_history: bool
     ) -> AsyncIterator[FeedEvent]:
-        """Live keyless loop: per ``dt_equity_keyless_ns`` poll the last price
-        (display-only Trade + the two-sided split reference) and re-assert the
-        resting SYNTH profile split at that price every
-        ``dt_equity_keyless_grid_ns`` (the grid's column cadence — the heatmap
-        right edge advances 1 col/s between the slow 10 s price polls); refresh
-        bars every ``bar_refresh_ns``. Stops with a session_break when the RTH
-        window closes. ``ref`` seeds from the last warmup bar's close and then
-        tracks each valid live price so the bid/ask boundary follows the market."""
-        grid_s = self._cfg.dt_equity_keyless_grid_ns / 1e9
-        next_refresh = self._now_ns() + self._bar_refresh_ns
-        next_poll = self._now_ns()
-        # The price scrape runs as its own task: a slow scrape (bounded by
-        # _HTTP_TIMEOUT_S) must not hold the one-column-per-grid-tick cadence.
-        poll: asyncio.Task | None = None
-        stale_announced = False
+        """Live keyless loop.
+
+        Every ``dt_equity_book_ns`` the four Cboe books are read together: their
+        new prints become trades and their merged levels become the book. The
+        grid advances one column per ``dt_equity_keyless_grid_ns`` on the last
+        merged book. A symbol with no fresh Cboe print for
+        ``dt_equity_keyless_ns`` polls a last price so the chart still moves.
+        Stops with a session_break when the extended trading window closes. ``ref`` seeds from
+        the last warmup bar's close and then tracks each print: it is where the
+        grid stays centred while the book is empty.
+        """
+        cfg = self._cfg
+        grid_s = cfg.dt_equity_keyless_grid_ns / 1e9
+        book_ns = cfg.dt_equity_book_ns
+        hold_ns = book_ns * _BOOK_HOLD_CYCLES
+        next_book = self._now_ns()
+        next_price = next_book
+        last_print_ns = next_book
+        # Both reads run as their own tasks: a slow response must not hold the
+        # one-column-per-grid-tick cadence.
+        book_task: asyncio.Task[Sequence[VenueBook]] | None = None
+        price_task: asyncio.Task[float | None] | None = None
+        held: dict[str, tuple[VenueBook, int]] = {}
+        seen: dict[str, tuple[VenuePrint, ...]] = {}
+        levels = (_EMPTY, _EMPTY, _EMPTY, _EMPTY)
         try:
             while True:
                 now = self._now_ns()
-                state, next_open = self._session_state(now)
+                state, next_open = self._keyless_state(now)
                 if state == "closed":
                     self.feed_state = "closed"
                     self.next_open_ts = next_open
                     yield Marker(
                         ts_ns=now,
                         kind="session_break",
-                        text=_closed_marker_text(builder.has_profile()),
+                        text=_closed_marker_text(has_history),
                     )
                     return
 
-                if now >= next_refresh:
-                    try:
-                        for bar in self._select_warmup_bars(await self._fetch_bars()):
-                            ts = _bar_ts(bar)
-                            if ts > last_bar_ts and builder.add_bar(bar):
-                                last_bar_ts = ts
-                    except Exception:  # stale profile survives a bad refresh
-                        logger.warning(
-                            "keyless bar refresh failed for %s; keeping the prior profile",
-                            self.symbol,
-                            exc_info=True,
-                        )
-                    next_refresh = now + self._bar_refresh_ns
+                if book_task is None and now >= next_book:
+                    book_task = asyncio.create_task(
+                        self._read_books_safe(now), name=f"equity-book:{self.symbol}"
+                    )
+                    # Integer-ns arithmetic ONLY: a float offset loses the whole
+                    # interval to float64 rounding at ns magnitudes (~1.8e18).
+                    next_book = now + book_ns
+                if book_task is not None and book_task.done():
+                    books = book_task.result()  # _read_books_safe never raises
+                    book_task = None
+                    if books:
+                        self.book_failures = 0
+                        self.feed_state = "live"
+                        for trade in prints_to_trades(books, seen, now, book_ns, self._stats):
+                            ref = trade.price
+                            last_print_ns = now
+                            yield trade
+                        for book in books:
+                            held[book.venue] = (book, now)
+                    else:
+                        self.book_failures += 1
+                        if self.book_failures == _BOOK_FAILURES_BEFORE_NOTICE:
+                            logger.warning(
+                                "order book unavailable for %s after %d failed reads",
+                                self.symbol,
+                                self.book_failures,
+                            )
+                            yield Marker(
+                                ts_ns=now,
+                                kind="gap",
+                                text=(
+                                    f"order book unavailable after {self.book_failures} "
+                                    "failed reads; depth is withheld until it returns"
+                                ),
+                            )
+                        if self.book_failures >= _BOOK_FAILURES_BEFORE_NOTICE:
+                            self.feed_state = "degraded"
+                    # A book that has not answered for hold_ns is dropped, never
+                    # re-drawn as if it were still resting.
+                    held = {v: e for v, e in held.items() if now - e[1] <= hold_ns}
+                    levels = merge_books(book for book, _read_ns in held.values())
 
-                # A profile from an earlier ET session must not be re-asserted as the
-                # live book (its bars are stamped with that session's clock). Withhold
-                # the depth, say which session it is from, and report degraded until a
-                # refresh brings the current session.
-                stale_date = self._stale_profile_date(last_bar_ts, now)
-                if stale_date is not None:
-                    self.feed_state = "degraded"
-                    if not stale_announced:
-                        stale_announced = True
-                        yield Marker(
-                            ts_ns=now,
-                            kind="gap",
-                            text=(
-                                f"stale profile from {stale_date.isoformat()}: "
-                                "live depth withheld until today's bars load"
-                            ),
-                        )
-                else:
-                    stale_announced = False
-                    self.feed_state = "live"
-
-                if poll is None and now >= next_poll:
-                    poll = asyncio.create_task(
+                quiet = now - last_print_ns >= cfg.dt_equity_keyless_ns
+                if price_task is None and quiet and now >= next_price:
+                    price_task = asyncio.create_task(
                         self._poll_price_safe(), name=f"equity-price-poll:{self.symbol}"
                     )
-                    # Integer-ns arithmetic ONLY: a float offset (now + 10.0) loses
-                    # the whole poll interval to float64 rounding at ns magnitudes
-                    # (~1.8e18, ulp 256 ns) and would poll every column instead.
-                    next_poll = now + self._cfg.dt_equity_keyless_ns
-                if poll is not None and poll.done():
-                    price = poll.result()  # _poll_price_safe never raises
-                    poll = None
+                    next_price = now + cfg.dt_equity_keyless_ns
+                if price_task is not None and price_task.done():
+                    price = price_task.result()  # _poll_price_safe never raises
+                    price_task = None
                     if price is not None and math.isfinite(price) and price > 0.0:
                         self.poll_failures = 0
-                        # Display-only tape: google last-price is not a print/NBBO.
-                        # The same price is the two-sided split reference so the
-                        # bid/ask boundary follows the live market.
+                        # Display-only: a scraped last price is not a print, so it
+                        # carries no size and no side.
                         ref = float(price)
                         yield Trade(
                             ts_ns=now,
                             price=float(price),
-                            size=1.0,
+                            size=0.0,
                             side=SIDE_UNKNOWN,
                             side_src=SIDE_SRC_NA,
-                            venue=SYNTH_VENUE,
+                            venue=LAST_PRICE_VENUE,
                         )
                     else:
                         self.poll_failures += 1
@@ -486,23 +525,23 @@ class EquityFeed:
                                     "failed polls; the last trade may be stale"
                                 ),
                             )
-                if stale_date is None:
-                    # Re-assert the resting profile so the grid advances a column and
-                    # the current column rolls with the (bar-refreshed) profile, split
-                    # two-sided at the latest reference price.
-                    yield builder.book_state(now, ref)
+                # One book per grid tick: the grid advances a column and the
+                # current column holds the last merged levels.
+                bid_px, bid_sz, ask_px, ask_sz = levels
+                yield BookState(
+                    ts_ns=now,
+                    bid_px=bid_px,
+                    bid_sz=bid_sz,
+                    ask_px=ask_px,
+                    ask_sz=ask_sz,
+                    source="cboe",
+                    anchor_px=ref,
+                )
                 await self._sleep(grid_s)
         finally:
-            if poll is not None and not poll.done():
-                poll.cancel()
-
-    def _stale_profile_date(self, last_bar_ts: int, now: int) -> datetime.date | None:
-        """ET date of the warmup profile when it belongs to an earlier session than
-        ``now``; None when the profile is current or there is no profile."""
-        if last_bar_ts <= 0:
-            return None
-        profile_date = self._et_date(last_bar_ts)
-        return profile_date if profile_date != self._et_date(now) else None
+            for task in (book_task, price_task):
+                if task is not None and not task.done():
+                    task.cancel()
 
     async def _fetch_bars(self) -> Sequence[EqBar]:
         if self._bars_fn is not None:
@@ -513,6 +552,17 @@ class EquityFeed:
         from flowmap_server.feeds._yahoo import equity_bars
 
         return await equity_bars(self.symbol)
+
+    async def _read_books_safe(self, now_ns: int) -> Sequence[VenueBook]:
+        try:
+            if self._book_fn is not None:
+                return await self._book_fn()
+            if self._book_client is None:
+                self._book_client = CboeBookClient(self.symbol)
+            return await self._book_client.fetch(now_ns)
+        except Exception:  # a missed cycle is reported by the loop; never kill it
+            logger.debug("keyless book read failed for %s", self.symbol, exc_info=True)
+            return []
 
     async def _poll_price_safe(self) -> float | None:
         try:
@@ -525,10 +575,13 @@ class EquityFeed:
             logger.debug("keyless price poll failed for %s", self.symbol, exc_info=True)
             return None
 
-    async def _close_poller(self) -> None:
+    async def _close_clients(self) -> None:
         if self._poller is not None:
             await self._poller.close()
             self._poller = None
+        if self._book_client is not None:
+            await self._book_client.close()
+            self._book_client = None
 
     # -- keyed (structured; lightly tested — no live keys on this machine) ------
 
@@ -694,15 +747,18 @@ class _WatchedProvider:
 
 # Per-tier capability descriptors (dual-market parity table).
 #
-# ``cvd`` is stated EXPLICITLY per tier so the client can badge it honestly
-# Keyless has NO aggressor side (SIDE_UNKNOWN is never counted
+# ``cvd`` is stated EXPLICITLY per tier so the client can badge it honestly.
+# Keyless prints carry NO aggressor side (SIDE_UNKNOWN is never counted
 # in grid.on_trade), so its cvd_cum is meaningless -> ``na``; the keyed tiers
 # infer side (quote/tick rule) so their CVD is honestly ``inferred`` — never the
 # exchange-true ``exchange`` that crypto/sim get. Unavailable capabilities use an
 # explicit value (finnhub ``depth: 'N/A'``) rather than omission.
 _CAPABILITY: dict[str, dict[str, object]] = {
     "keyless": {
-        "depth": "SYNTH",
+        # Real displayed depth, re-read whole each cycle, from Cboe's four books
+        # only: the scope says it is not the consolidated national book.
+        "depth": "L2-snapshot",
+        "depth_scope": DEPTH_SCOPE,
         "tape": "poll",
         "trade_side": "na",
         "cvd": "na",
