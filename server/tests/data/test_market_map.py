@@ -18,19 +18,29 @@ import pytest
 from flowmap_server.data.market_map import (
     CRYPTO_LIMIT,
     CRYPTO_SOURCE,
+    PAIRS_RETRY_S,
+    PAIRS_TTL_S,
     US_SOURCE,
     MarketMapService,
     MarketMapUnavailable,
     parse_crypto,
     parse_us,
+    parse_usdt_pairs,
     read_capped_json,
 )
-from flowmap_server.data.universe import CRYPTO_MARKET
+from flowmap_server.data.universe import CRYPTO_MARKET, CRYPTO_SYMBOLS
 
 FIXTURES = Path(__file__).resolve().parents[1] / "api" / "fixtures" / "market_map"
 NASDAQ = json.loads((FIXTURES / "nasdaq_screener.json").read_text(encoding="utf-8"))
 COINGECKO = json.loads((FIXTURES / "coingecko_markets.json").read_text(encoding="utf-8"))
 NOW_NS = 1_700_000_000_123_456_789
+# A slice of Binance's ticker list: USDT pairs, plus a BUSD pair that must be ignored.
+PAIRS_PAYLOAD = [
+    {"symbol": "BTCUSDT", "price": "68000.00"},
+    {"symbol": "ZECUSDT", "price": "40.00"},
+    {"symbol": "XMRUSDT", "price": "160.00"},
+    {"symbol": "ETHBUSD", "price": "3500.00"},
+]
 
 
 def _row(
@@ -300,10 +310,11 @@ class _Source:
 
 
 def _service(us: _Source | None = None, crypto: _Source | None = None,
-             mono: _Mono | None = None) -> MarketMapService:
+             mono: _Mono | None = None, pairs: _Source | None = None) -> MarketMapService:
     return MarketMapService(
         fetch_us=us or _Source(NASDAQ),
         fetch_crypto=crypto or _Source(COINGECKO),
+        fetch_pairs=pairs or _Source(PAIRS_PAYLOAD),
         clock=lambda: NOW_NS,
         monotonic=mono or _Mono(),
         ttl_s=60.0,
@@ -518,3 +529,138 @@ async def test_failed_refresh_logs_the_status_and_never_the_url(caplog):
     for text in (caplog.text, str(info.value)):
         assert "?" not in text
         assert "http" not in text
+
+
+# --- round 2: learned USDT pairs ------------------------------------------------
+
+
+def test_usdt_pairs_keeps_only_the_usdt_symbols():
+    payload = [
+        {"symbol": "ZECUSDT", "price": "1"},
+        {"symbol": "ETHBUSD", "price": "2"},
+        {"symbol": "ETHUSDT", "price": "3"},
+    ]
+    assert parse_usdt_pairs(payload) == frozenset({"ZECUSDT", "ETHUSDT"})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, {}, "BTCUSDT", ["BTCUSDT"], [{"symbol": 5}], [{"price": "1"}],
+     [{"symbol": "ETHBUSD"}]],
+)
+def test_usdt_pairs_bad_payload_raises_value_error(payload):
+    with pytest.raises(ValueError):
+        parse_usdt_pairs(payload)
+
+
+async def test_coin_outside_the_bundled_shortlist_charts_from_the_learned_pairs():
+    assert "ZECUSDT" not in CRYPTO_SYMBOLS  # the case under test
+    svc = _service(crypto=_Source([_coin(symbol="zec", name="Zcash", cap=1e9),
+                                   _coin(symbol="foo", name="Foo", cap=1e8)]))
+    charts = {i.symbol: i.chart for i in (await svc.get("crypto")).items}
+    assert charts["ZEC"] == {"market": CRYPTO_MARKET, "symbol": "ZECUSDT"}
+    assert charts["FOO"] is None
+
+
+async def test_pairs_are_fetched_once_across_two_crypto_refreshes_inside_six_hours():
+    pairs = _Source(PAIRS_PAYLOAD)
+    crypto = _Source(COINGECKO)
+    mono = _Mono()
+    svc = _service(crypto=crypto, pairs=pairs, mono=mono)
+    await svc.get("crypto")
+    mono.t += 61.0  # the coin map expires; the pair list does not
+    await svc.get("crypto")
+    assert crypto.calls == 2
+    assert pairs.calls == 1
+    mono.t += PAIRS_TTL_S  # now past six hours since the pair list was fetched
+    await svc.get("crypto")
+    assert pairs.calls == 2
+
+
+async def test_failing_pairs_fetch_falls_back_to_the_bundled_list_and_still_answers():
+    pairs = _Source(None)
+    pairs.fail = True
+    svc = _service(crypto=_Source(COINGECKO), pairs=pairs)
+    answer = await svc.get("crypto")
+    assert answer.stale is False
+    assert answer.items[0].symbol == "BTC"
+    assert answer.items[0].chart == {"market": CRYPTO_MARKET, "symbol": "BTCUSDT"}
+    assert pairs.calls == 1
+
+
+async def test_failed_pairs_refresh_keeps_the_previous_set():
+    pairs = _Source(PAIRS_PAYLOAD)
+    mono = _Mono()
+    svc = _service(crypto=_Source([_coin(symbol="zec", name="Zcash", cap=1e9)]),
+                   pairs=pairs, mono=mono)
+    await svc.get("crypto")
+    mono.t += PAIRS_TTL_S + 1.0
+    pairs.fail = True
+    answer = await svc.get("crypto")
+    assert pairs.calls == 2
+    assert answer.items[0].chart == {"market": CRYPTO_MARKET, "symbol": "ZECUSDT"}
+
+
+async def test_failed_pairs_refresh_is_not_retried_within_five_minutes():
+    pairs = _Source(None)
+    pairs.fail = True
+    mono = _Mono()
+    crypto = _Source(COINGECKO)
+    svc = _service(crypto=crypto, pairs=pairs, mono=mono)
+    await svc.get("crypto")  # the pair refresh fails at t=1000
+    assert pairs.calls == 1
+    mono.t += 61.0  # the coin map expires; still inside the five-minute floor
+    await svc.get("crypto")
+    assert pairs.calls == 1
+    assert crypto.calls == 2
+    mono.t += 240.0  # 301 s after the failure
+    await svc.get("crypto")
+    assert pairs.calls == 2
+    assert PAIRS_RETRY_S == 300.0
+
+
+@pytest.mark.parametrize("payload", [{"not": "a list"}, "text", [{"symbol": 5}]])
+async def test_malformed_pairs_payload_is_a_failure_not_a_crash(payload):
+    pairs = _Source(payload)
+    svc = _service(crypto=_Source(COINGECKO), pairs=pairs)
+    answer = await svc.get("crypto")
+    assert answer.items[0].chart == {"market": CRYPTO_MARKET, "symbol": "BTCUSDT"}
+    assert pairs.calls == 1
+
+
+# --- round 2: more stablecoins and the dollar-price rule -------------------------
+
+
+@pytest.mark.parametrize("symbol", ["USDY", "USYC", "EURS", "GHO", "WBNB", "TBTC"])
+def test_listed_stable_and_wrapped_coins_are_excluded(symbol):
+    rows = [_coin(symbol=symbol.lower(), name="Listed"), _coin()]
+    assert [i.symbol for i in parse_crypto(rows)] == ["BTC"]
+
+
+def test_gold_tokens_are_kept():
+    rows = [_coin(symbol="PAXG", name="PAX Gold", price=2600.0),
+            _coin(symbol="XAUT", name="Tether Gold", price=2600.0, cap=5e9)]
+    assert {i.symbol for i in parse_crypto(rows)} == {"PAXG", "XAUT"}
+
+
+def test_unlisted_usd_named_coin_at_one_dollar_is_skipped():
+    rows = [_coin(symbol="fusd2", name="Foo USD", price=1.001, cap=1e9), _coin()]
+    assert [i.symbol for i in parse_crypto(rows)] == ["BTC"]
+
+
+def test_coin_at_one_dollar_without_usd_in_its_name_is_kept():
+    rows = [_coin(symbol="mup", name="Made Up", price=1.00, cap=1e9)]
+    assert [i.symbol for i in parse_crypto(rows)] == ["MUP"]
+
+
+def test_usd_named_coins_far_from_one_dollar_are_kept():
+    rows = [
+        _coin(symbol="uxc", name="USD Coin", price=2.5, cap=2e9),
+        _coin(symbol="uxd", name="USD Coin", price=0.5, cap=1e9),
+    ]
+    assert {i.symbol for i in parse_crypto(rows)} == {"UXC", "UXD"}
+
+
+def test_usd_inside_a_longer_word_does_not_trigger_the_rule():
+    rows = [_coin(symbol="ulk", name="USDLike Token", price=1.00, cap=1e9)]
+    assert [i.symbol for i in parse_crypto(rows)] == ["ULK"]

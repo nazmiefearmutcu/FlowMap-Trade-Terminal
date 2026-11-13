@@ -32,6 +32,10 @@ async def _ok_crypto() -> object:
     return COINGECKO
 
 
+async def _ok_pairs() -> object:
+    return [{"symbol": "BTCUSDT", "price": "68000.00"}]
+
+
 async def _down() -> object:
     raise RuntimeError("https://api.example.test/feed?token=secret down")
 
@@ -39,7 +43,7 @@ async def _down() -> object:
 def _client(us=_ok_us, crypto=_ok_crypto) -> httpx.AsyncClient:
     app = create_app(Config())
     app.state.market_map = MarketMapService(
-        fetch_us=us, fetch_crypto=crypto, clock=lambda: NOW_NS
+        fetch_us=us, fetch_crypto=crypto, fetch_pairs=_ok_pairs, clock=lambda: NOW_NS
     )
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8720")
@@ -140,7 +144,7 @@ class _ParkedCache:
 
 class _RecordingService(MarketMapService):
     def __init__(self, *, fail_close: bool = False) -> None:
-        super().__init__(fetch_us=_ok_us, fetch_crypto=_ok_crypto)
+        super().__init__(fetch_us=_ok_us, fetch_crypto=_ok_crypto, fetch_pairs=_ok_pairs)
         self.closed = 0
         self.fail_close = fail_close
 

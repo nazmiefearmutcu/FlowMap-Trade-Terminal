@@ -61,6 +61,14 @@ _US_HEADERS = {
     "Accept": "application/json",
 }
 _US_TIMEOUT_S = 12.0
+# Binance's list of spot prices, used to tell which coins have a USDT chart pair.
+_BINANCE_PAIRS_URL = "https://api.binance.com/api/v3/ticker/price"
+_BINANCE_TIMEOUT_S = 8.0
+BINANCE_BODY_LIMIT = 2 * 1024 * 1024
+# The pair list changes slowly, so it is kept for six hours. A failed refresh is
+# not retried for five minutes.
+PAIRS_TTL_S = 6 * 3600.0
+PAIRS_RETRY_S = 300.0
 # Largest response body the parsers will read. The Nasdaq list is about 2 MB
 # today; the cap leaves room for growth and refuses anything runaway.
 US_BODY_LIMIT = 8 * 1024 * 1024
@@ -82,13 +90,25 @@ _US_NAME_CUT = re.compile(
 )
 _CHART_SYMBOL = re.compile(r"[A-Z0-9.\-]+")
 
-# Stablecoins and wrapped or staked duplicates of a coin that is already listed.
+# Stablecoins, tokenised cash funds and wrapped or staked duplicates of a coin
+# that is already listed. Gold tokens (PAXG, XAUT) are not dollar-pegged, so they
+# stay in.
 EXCLUDED_COINS: frozenset[str] = frozenset({
     "USDT", "USDC", "DAI", "USDS", "USDE", "FDUSD", "PYUSD", "TUSD", "USD1", "USDD",
     "BUSD", "USDT0", "RLUSD", "USDF", "USDG", "BSC-USD", "WBTC", "WETH", "WEETH",
     "STETH", "WSTETH", "CBBTC", "CBETH", "RETH", "WBETH", "LBTC", "JITOSOL", "BNSOL",
     "MSOL", "SUSDE", "SUSDS", "BUIDL", "USDTB",
+    "USDY", "USYC", "EURC", "EURS", "EURT", "USD0", "USDX", "USDB", "BFUSD", "GHO",
+    "CRVUSD", "FRAX", "FRXUSD", "LUSD", "USDP", "GUSD", "USTB", "OUSG", "USDO", "USX",
+    "SYRUPUSDC", "SYRUPUSDT", "USDA", "USR", "DOLA", "MIM", "USDL", "AUSD", "FRXETH",
+    "SFRXETH", "METH", "EZETH", "RSETH", "OSETH", "SWETH", "ETHX", "SOLVBTC", "TBTC",
+    "FBTC", "WBNB", "STKAAVE",
 })
+# A dollar stablecoin the list does not know yet: a "USD" word in the name and a
+# price this close to one dollar.
+_USD_WORD = re.compile(r"\bUSD\b", re.IGNORECASE)
+_DOLLAR_PRICE_LOW = 0.98
+_DOLLAR_PRICE_HIGH = 1.02
 _CRYPTO_PERIODS = (
     ("1h", "price_change_percentage_1h_in_currency"),
     ("24h", "price_change_percentage_24h_in_currency"),
@@ -250,15 +270,37 @@ def parse_us(payload: object, *, limit: int = US_LIMIT) -> tuple[MapItem, ...]:
     return tuple(items[:limit])
 
 
+def parse_usdt_pairs(payload: object) -> frozenset[str]:
+    """The ``*USDT`` symbols from Binance's ticker list, e.g. ``BTCUSDT``.
+
+    Raises ``ValueError`` when the payload is not a list, a row has no string
+    symbol, or no USDT pair is present.
+    """
+    if not isinstance(payload, list):
+        raise ValueError("Binance ticker payload is not a list")
+    pairs: set[str] = set()
+    for row in payload:
+        if not isinstance(row, dict) or not isinstance(row.get("symbol"), str):
+            raise ValueError("Binance ticker row has no string symbol")
+        if row["symbol"].endswith("USDT"):
+            pairs.add(row["symbol"])
+    if not pairs:
+        raise ValueError("Binance ticker payload has no USDT pairs")
+    return frozenset(pairs)
+
+
 def _coin_item(row: object, known_pairs: Collection[str]) -> MapItem | None:
     if not isinstance(row, dict):
         return None
     symbol = _text(row.get("symbol")).upper()
     if not symbol or symbol in EXCLUDED_COINS:
         return None
+    name = _text(row.get("name"))
     market_cap = _number(row.get("market_cap"))
     price = _number(row.get("current_price"))
     if market_cap is None or market_cap <= 0 or price is None or price <= 0:
+        return None
+    if _DOLLAR_PRICE_LOW <= price <= _DOLLAR_PRICE_HIGH and _USD_WORD.search(name):
         return None
     change: dict[str, float] = {}
     for period, field in _CRYPTO_PERIODS:
@@ -268,7 +310,7 @@ def _coin_item(row: object, known_pairs: Collection[str]) -> MapItem | None:
     pair = f"{symbol}USDT"
     return MapItem(
         symbol=symbol,
-        name=_text(row.get("name")) or symbol,
+        name=name or symbol,
         group="Crypto",
         market_cap=market_cap,
         price=price,
@@ -311,6 +353,7 @@ class MarketMapService:
         *,
         fetch_us: Callable[[], Awaitable[object]] | None = None,
         fetch_crypto: Callable[[], Awaitable[object]] | None = None,
+        fetch_pairs: Callable[[], Awaitable[object]] | None = None,
         clock: Callable[[], int] = time.time_ns,
         monotonic: Callable[[], float] = time.monotonic,
         ttl_s: float = CACHE_TTL_S,
@@ -319,6 +362,7 @@ class MarketMapService:
             "us": fetch_us or self._fetch_us,
             "crypto": fetch_crypto or self._fetch_crypto,
         }
+        self._pairs_fetcher = fetch_pairs or self._fetch_binance_pairs
         self._clock = clock
         self._monotonic = monotonic
         self._ttl_s = ttl_s
@@ -326,6 +370,11 @@ class MarketMapService:
         self._answers: dict[str, tuple[MarketMap, float]] = {}
         self._failed_at: dict[str, float] = {}
         self._locks = {market: asyncio.Lock() for market in _SOURCE_NAMES}
+        # The learned USDT pair set, when it was fetched, and when a refresh last failed.
+        self._pairs: frozenset[str] | None = None
+        self._pairs_fetched_at: float | None = None
+        self._pairs_failed_at: float | None = None
+        self._pairs_lock = asyncio.Lock()
         self._session: aiohttp.ClientSession | None = None
 
     async def get(self, market: str) -> MarketMap:
@@ -387,7 +436,43 @@ class MarketMapService:
         payload = await self._fetchers[market]()
         if market == "us":
             return parse_us(payload)
-        return parse_crypto(payload)
+        return parse_crypto(payload, known_pairs=await self._usdt_pairs())
+
+    async def _usdt_pairs(self) -> frozenset[str]:
+        """The USDT pairs a coin can chart against. Never raises.
+
+        The list is refreshed every ``PAIRS_TTL_S``. A failed refresh keeps the
+        previous list, or the bundled shortlist when there is none, and is not
+        retried for ``PAIRS_RETRY_S``.
+        """
+        if self._pairs is not None and self._pairs_fresh():
+            return self._pairs
+        async with self._pairs_lock:
+            if self._pairs is not None and self._pairs_fresh():
+                return self._pairs
+            failed_at = self._pairs_failed_at
+            if failed_at is None or self._monotonic() - failed_at >= PAIRS_RETRY_S:
+                try:
+                    pairs = parse_usdt_pairs(await self._pairs_fetcher())
+                except Exception as exc:
+                    self._pairs_failed_at = self._monotonic()
+                    logger.warning("binance pair list refresh failed: %s", _describe(exc))
+                else:
+                    self._pairs = pairs
+                    self._pairs_fetched_at = self._monotonic()
+                    self._pairs_failed_at = None
+                    return pairs
+            return self._pairs if self._pairs is not None else frozenset(CRYPTO_SYMBOLS)
+
+    def _pairs_fresh(self) -> bool:
+        fetched_at = self._pairs_fetched_at
+        return fetched_at is not None and self._monotonic() - fetched_at < PAIRS_TTL_S
+
+    async def _fetch_binance_pairs(self) -> object:
+        return await self._get_json(
+            _BINANCE_PAIRS_URL, headers=_CRYPTO_HEADERS, timeout_s=_BINANCE_TIMEOUT_S,
+            limit=BINANCE_BODY_LIMIT,
+        )
 
     async def _fetch_us(self) -> object:
         return await self._get_json(
