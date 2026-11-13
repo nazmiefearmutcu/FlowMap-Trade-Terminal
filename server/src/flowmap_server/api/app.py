@@ -29,7 +29,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from flowmap_server import __version__
-from flowmap_server.api import _env, discovery, export, lifecycle, rest, ws
+from flowmap_server.api import _env, discovery, export, lifecycle, market_map, rest, ws
 from flowmap_server.api.market_cache import (
     MarketDataCache,
     default_movers_fn,
@@ -326,6 +326,7 @@ def create_app(
     app.add_middleware(_LoopbackGuard)
     app.include_router(rest.router)
     app.include_router(discovery.router)
+    app.include_router(market_map.router)
     app.include_router(export.router)
     app.include_router(ws.router)
     return app
