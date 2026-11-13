@@ -7,6 +7,41 @@ Unreleased work sits on top of the newest listed commit.
 
 ## [Unreleased]
 
+### Added
+
+- Real order-book depth for US equities. Without any key, an equity now reads displayed depth and prints
+  from Cboe's public book viewer for its four exchanges (BZX, BYX, EDGX, EDGA): the top five price levels
+  per side on each, read every 5 s and merged by price, sizes in shares. The depth tier reads `L2-SNAPSHOT`
+  and its tooltip names the scope, because this is not the consolidated US book (NYSE, Nasdaq and the other
+  venues are absent). Prints carry the venue and no aggressor side, so there is still no CVD for equities.
+  Equities are live from 04:00 to 20:00 New York time on trading days (`server/src/flowmap_server/feeds/equity_book.py`).
+  `FLOWMAP_DT_EQUITY_BOOK_NS` sets the read cadence (default 5 s, minimum 2 s).
+- Market map. A *Map* button in the top bar opens a full-window map with two tabs. *US stocks* shows the 500
+  largest listed companies grouped by sector (Nasdaq screener). *Crypto* shows the 100 largest coins without
+  stablecoins and wrapped duplicates (CoinGecko), with a 1 h / 24 h / 7 d switch. Tile area is market value and
+  colour is price change. A click opens that instrument's chart (`client/src/ui/marketMap/`,
+  `GET /api/market-map`).
+- Cursor tags on the axes. The pointer now shows a price tag on the price axis and a date-and-time tag on the
+  time axis (weekday, day, month, `HH:MM:SS` in the chosen time zone), and the readout box uses words instead
+  of abbreviations.
+
+### Changed
+
+- History before the app was watching is price history only: price line, volume and, for crypto, CVD. No depth
+  is drawn for that period. The volume-derived "reconstructed" density is gone.
+
+### Fixed
+
+- History did not load on the default price band. The first-launch history was skipped on every banded price
+  range, and the default range (*deep*) is banded, so a newly opened symbol started with a few seconds of
+  data whatever the *History depth* setting said. It now loads on every price range.
+
+### Removed
+
+- The synthetic equity heatmap. Live equities no longer draw depth, a DOM or a Bid/Ask derived from bar
+  volume. Recordings made by earlier versions still replay as recorded, labelled SYNTH.
+- `FLOWMAP_BACKFILL_STRETCH` and `FLOWMAP_BACKFILL_SHAPE`, which shaped the removed reconstructed density.
+
 ## [1.6.2] — 2026-11-12
 
 Release notes: [docs/release-notes-1.6.2.md](docs/release-notes-1.6.2.md).

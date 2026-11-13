@@ -31,9 +31,10 @@
  * and offers a retry, and neither looks like an empty search.
  *
  * Symmetry / honesty: capability chips are shown verbatim off the feed's
- * descriptor, so an equity symbol that cannot reach L2 depth or a true CVD reads
- * `SYNTH` / `SIDE NA` rather than pretending parity with crypto, and a ccxt-served
- * venue reads `L2-SNAPSHOT` rather than borrowing a native feed's `L2`. A symbol
+ * descriptor, so an equity symbol, whose book is re-read from Cboe's four
+ * exchanges and whose prints carry no side, reads `L2-SNAPSHOT` / `SIDE NA` rather
+ * than pretending parity with crypto, and a ccxt-served venue reads `L2-SNAPSHOT`
+ * rather than borrowing a native feed's `L2`. A symbol
  * whose quote provider is unreachable shows "data unavailable".
  *
  * The parts live beside this file: data hooks in SymbolSearchHooks.ts, the state

@@ -26,7 +26,7 @@ import './About.css';
  * producer in this build, so their providers are not listed.
  */
 export const DATA_SOURCES =
-  'Binance, Bybit, Coinbase, Deribit, OKX (and CCXT venues), Yahoo Finance, Google Finance';
+  'Binance, Bybit, Coinbase, Deribit, OKX (and CCXT venues), Cboe (BZX, BYX, EDGX, EDGA book viewer), Yahoo Finance, Google Finance, Nasdaq (stock screener), CoinGecko';
 
 /** Licence of the FlowMap source code (see the LICENSE file). */
 export const APP_LICENSE = 'Apache-2.0';

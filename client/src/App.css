@@ -2387,12 +2387,12 @@ body,
    SIDE capability chips, then the search width + ⌘K hint, then the wordmark,
    then the Settings word and the SIM chip, and the secondary clock lines. The depth-tier chip (the fidelity claim, also
    carried by the venue title) stays visible; the pending placeholder too. --- */
-@media (max-width: 1680px) {
+@media (max-width: 1860px) {
   .topbar .macro-ticker {
     display: none;
   }
 }
-@media (max-width: 1400px) {
+@media (max-width: 1500px) {
   .caps .cap:not(.cap--depth):not(.cap--synth):not(.cap--na):not(.cap--pending) {
     display: none;
   }
@@ -2405,7 +2405,7 @@ body,
     display: none;
   }
 }
-@media (max-width: 960px) {
+@media (max-width: 1080px) {
   .clock__et,
   .clock__zone,
   .clock__stream {
@@ -2415,14 +2415,14 @@ body,
     font-size: var(--fs-sm);
   }
 }
-@media (max-width: 1230px) {
+@media (max-width: 1260px) {
   .topbar__brand {
     display: none;
   }
 }
 /* The Settings button keeps its gear and its accessible name; only the visible
    word goes. The SIM chip repeats the venue pill and the banner on the chart. */
-@media (max-width: 1080px) {
+@media (max-width: 1160px) {
   .tbtn__label {
     position: absolute;
     width: 1px;
@@ -2432,6 +2432,12 @@ body,
     white-space: nowrap;
   }
   .topbar__sim {
+    display: none;
+  }
+}
+@media (max-width: 1010px) {
+  /* The search box already names the market and the symbol. */
+  .topbar .venue {
     display: none;
   }
 }
