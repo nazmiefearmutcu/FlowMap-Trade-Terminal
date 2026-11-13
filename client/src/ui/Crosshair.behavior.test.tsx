@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Crosshair } from './Crosshair';
 import { lastProbeSpot, resetProbeSpotForTest } from './lastProbe';
+import { getCrosshairProbe } from './crosshairStore';
 import type { CrosshairReadout, Renderer } from '../gl/renderer';
 import { useFlowMapStore } from '../state/store';
 import { getTimeZonePref, setTimeZonePref } from '../i18n/format';
@@ -110,7 +111,7 @@ it('labels a replayed synthetic recording SYNTH and marks its sizes, even when i
 });
 
 /** Mounts a crosshair with one probe, returning the readout box and a teardown. */
-function mountProbedCrosshair(readout: Partial<CrosshairReadout>): { container: HTMLElement; done: () => void } {
+function mountProbedCrosshair(readout: Partial<CrosshairReadout>): { container: HTMLElement; canvas: HTMLCanvasElement; done: () => void } {
   vi.useFakeTimers();
   const callbacks = new Map<number, FrameRequestCallback>(); let seq = 0;
   vi.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => { callbacks.set(++seq, cb); return seq; });
@@ -125,7 +126,7 @@ function mountProbedCrosshair(readout: Partial<CrosshairReadout>): { container: 
   canvas.dispatchEvent(event);
   const pending = [...callbacks.values()]; callbacks.clear();
   act(() => pending.forEach(cb => cb(0)));
-  return { container, done: () => { act(() => root.unmount()); vi.useRealTimers(); } };
+  return { container, canvas, done: () => { act(() => root.unmount()); vi.useRealTimers(); } };
 }
 
 it('reads a sim readout as the session-relative clock, not a zoned wall time', () => {
@@ -184,5 +185,73 @@ it('records the probe under the market and symbol it was read on', () => {
   } finally {
     mounted.done();
     useFlowMapStore.setState({ subscription: null });
+  }
+});
+
+it('publishes the probe under the pointer to the axis tags, and clears it when the pointer leaves', () => {
+  const mounted = mountProbedCrosshair({ price: 156.75, priceDecimals: 2, timeNs: 0n });
+  try {
+    expect(getCrosshairProbe()).toMatchObject({ x: 10, y: 20, price: 156.75, priceDecimals: 2, timeNs: 0n, sessionRelative: false });
+    act(() => mounted.canvas.dispatchEvent(new Event('pointerleave')));
+    expect(getCrosshairProbe()).toBeNull();
+  } finally {
+    mounted.done();
+  }
+});
+
+it('clears the published probe when the crosshair unmounts', () => {
+  const mounted = mountProbedCrosshair({ price: 100 });
+  expect(getCrosshairProbe()).not.toBeNull();
+  mounted.done();
+  expect(getCrosshairProbe()).toBeNull();
+});
+
+it('publishes the session-relative flag for a sim readout', () => {
+  useFlowMapStore.setState({ subscription: { market: 'sim', symbol: 'SIM-DEMO', band: 'native', mode: 'live' } });
+  const mounted = mountProbedCrosshair({ timeNs: 5_000_000_000n });
+  try {
+    expect(getCrosshairProbe()?.sessionRelative).toBe(true);
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ subscription: null });
+  }
+});
+
+it('omits the bid and ask rows when the depth source is N/A', () => {
+  useFlowMapStore.setState({ capability: { depth: 'N/A' } });
+  const mounted = mountProbedCrosshair({});
+  try {
+    expect(mounted.container.querySelector('[data-testid="crosshair-bid"]')).toBeNull();
+    expect(mounted.container.querySelector('[data-testid="crosshair-ask"]')).toBeNull();
+    expect(mounted.container.querySelector('[data-testid="crosshair-time"]')).not.toBeNull();
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ capability: null });
+  }
+});
+
+it('labels the rows with words, not abbreviations', () => {
+  useFlowMapStore.setState({ capability: { depth: 'L2' } });
+  const mounted = mountProbedCrosshair({ bid: 1, ask: 2 });
+  try {
+    const labels = [...mounted.container.querySelectorAll('.crosshair__key')].map(el => el.textContent);
+    expect(labels).toEqual(['Source', 'Time', 'Price', 'Bid orders', 'Ask orders']);
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ capability: null });
+  }
+});
+
+it('reads a grouped cell as its price band and level count, and an averaged cell as its window', () => {
+  const mounted = mountProbedCrosshair({
+    group: 4, price: 156.77, priceLo: 156.75, priceHi: 156.79, priceDecimals: 2, averageMs: 64_000,
+  });
+  try {
+    const group = mounted.container.querySelector('[data-testid="crosshair-group"]');
+    expect(group?.parentElement?.textContent).toBe('Price band156.75–156.79 (4 levels)');
+    const average = mounted.container.querySelector('.crosshair__line--dim:last-child');
+    expect(average?.textContent).toBe('Averaged over64.0 s');
+  } finally {
+    mounted.done();
   }
 });

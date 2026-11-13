@@ -21,6 +21,7 @@ import { setSingleKeyShortcutsEnabled } from '../input/shortcutPrefs';
 import type { PriceFollow } from '../gl/camera';
 import type { Renderer } from '../gl/renderer';
 import { PriceAxis } from './PriceAxis';
+import { setCrosshairProbe, type CrosshairProbe } from './crosshairStore';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -257,5 +258,42 @@ describe('PriceAxis auto-scale copy follows the single-key preference', () => {
     expect(chip(container).getAttribute('title')).toContain('(P)');
     act(() => setSingleKeyShortcutsEnabled(false));
     expect(chip(container).getAttribute('title')).not.toContain('(P)');
+  });
+});
+
+describe('PriceAxis crosshair price tag', () => {
+  const probe = (over: Partial<CrosshairProbe> = {}): CrosshairProbe => ({
+    x: 30,
+    y: 88,
+    price: 161.25,
+    priceDecimals: 2,
+    timeNs: null,
+    sessionRelative: false,
+    ...over,
+  });
+
+  afterEach(() => {
+    setCrosshairProbe(null);
+  });
+
+  it('is absent while no probe is published', () => {
+    const { container } = render(<PriceAxis canvasRef={{ current: null }} rendererRef={{ current: null }} />);
+    expect(container.querySelector('[data-testid="crosshair-price-tag"]')).toBeNull();
+  });
+
+  it('sits at the probe y and shows the price at the venue precision', () => {
+    setCrosshairProbe(probe());
+    const { container } = render(<PriceAxis canvasRef={{ current: null }} rendererRef={{ current: null }} />);
+    const tag = container.querySelector<HTMLElement>('[data-testid="crosshair-price-tag"]');
+    expect(tag).not.toBeNull();
+    expect(tag?.textContent).toBe('161.25');
+    expect(tag?.style.top).toBe('88px');
+    expect(tag?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('is absent when the probe has no price', () => {
+    setCrosshairProbe(probe({ price: null }));
+    const { container } = render(<PriceAxis canvasRef={{ current: null }} rendererRef={{ current: null }} />);
+    expect(container.querySelector('[data-testid="crosshair-price-tag"]')).toBeNull();
   });
 });

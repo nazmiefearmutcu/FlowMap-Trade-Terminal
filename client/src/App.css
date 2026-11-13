@@ -1033,6 +1033,8 @@ body,
 
 .time-axis {
   grid-area: time;
+  /* Anchors the crosshair time tag, which is placed by its x in the gutter. */
+  position: relative;
   border-top: 1px solid var(--chart-chip-border);
   background: var(--chart-gutter-bg);
 }
@@ -1048,6 +1050,34 @@ body,
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* Crosshair tags on the axes: the cursor's price and time, as a solid plate in
+   the chart's ink colour with the gutter colour as text. Non-interactive, so
+   they never take a gutter gesture. */
+.axis-tag {
+  position: absolute;
+  z-index: 1;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--chart-gutter-bg);
+  background: var(--chart-ink);
+  border-radius: var(--r-1);
+  pointer-events: none;
+}
+
+.axis-tag--price {
+  right: 2px;
+  transform: translateY(-50%);
+}
+
+.axis-tag--time {
+  top: 3px;
+  transform: translateX(-50%);
 }
 
 .gl-canvas {

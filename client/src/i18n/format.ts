@@ -252,6 +252,30 @@ export function formatClock(ms: number, pref: TimeZonePref, exchangeZone = 'UTC'
   return `${clock}.${String(frac).padStart(3, '0')}`;
 }
 
+/** One weekday-day-month formatter per (locale, zone): the time axis asks on every probe. */
+const dayFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * Weekday, day, short month and `HH:MM:SS` of an epoch-millisecond instant in
+ * the zone the preference resolves to, e.g. `Fri 13 Nov 20:45:18` (English) or
+ * `Cum 13 Kas 20:45:18` (Turkish). The clock part is {@link formatClock}, so a
+ * tag and a clock on the same instant always agree.
+ */
+export function formatZonedDayTime(ms: number, pref: TimeZonePref, exchangeZone = 'UTC'): string {
+  if (!Number.isFinite(ms)) return '—';
+  const zone = resolveTimeZone(pref, exchangeZone);
+  const locale = intlLocale();
+  const key = `${locale}|${zone ?? ''}`;
+  let format = dayFormatters.get(key);
+  if (format === undefined) {
+    format = new Intl.DateTimeFormat(locale, { timeZone: zone, weekday: 'short', day: 'numeric', month: 'short' });
+    dayFormatters.set(key, format);
+  }
+  const parts = format.formatToParts(new Date(ms));
+  const pick = (type: Intl.DateTimeFormatPartTypes): string => parts.find((p) => p.type === type)?.value ?? '';
+  return `${pick('weekday')} ${pick('day')} ${pick('month')} ${formatClock(ms, pref, exchangeZone)}`;
+}
+
 /** Two-digit or fixed-width zero padding for wall-clock fields. */
 const pad = (n: number, width = 2): string => String(n).padStart(width, '0');
 

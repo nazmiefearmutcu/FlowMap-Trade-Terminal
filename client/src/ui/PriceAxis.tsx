@@ -34,8 +34,10 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { PriceFollow } from '../gl/camera';
 import type { Renderer } from '../gl/renderer';
 import { observeCanvasBox } from '../gl/canvasBox';
+import { formatPrice } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
+import { useCrosshairProbe } from './crosshairStore';
 
 /** Poll interval (ms) for the chip's state. Short: the chip must not visibly lag
  *  the gesture that changed it (a wheel over the gutter changes it instantly). */
@@ -75,6 +77,7 @@ interface PriceAxisProps {
 
 export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxisProps): JSX.Element {
   const t = useT();
+  const probe = useCrosshairProbe();
   const [mode, setMode] = useState<PriceFollow>('fit');
   const [edgeVisible, setEdgeVisible] = useState(true);
   const healedAtRef = useRef(0);
@@ -195,6 +198,12 @@ export function PriceAxis({ canvasRef, rendererRef, onSetPriceFollow }: PriceAxi
       >
         {label}
       </button>
+      {probe !== null && probe.price !== null && (
+        // Shows the price under the crosshair on the axis, as the readout box does.
+        <div className="axis-tag axis-tag--price" data-testid="crosshair-price-tag" aria-hidden="true" style={{ top: `${probe.y}px` }}>
+          {formatPrice(probe.price, probe.priceDecimals)}
+        </div>
+      )}
     </div>
   );
 }

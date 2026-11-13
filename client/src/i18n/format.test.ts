@@ -16,6 +16,7 @@ import {
   formatPrice,
   formatSizeCompact,
   formatSizeReadout,
+  formatZonedDayTime,
   getTimeZonePref,
   initTimeZonePref,
   setTimeZonePref,
@@ -275,5 +276,28 @@ describe('zoned wall-clock text for datetime-local inputs', () => {
     }
     // 02:30 on 8 March 2026 does not exist in New York: the clocks jump from 02:00 to 03:00.
     expect(zonedWallToNs('2026-03-08T02:30', 'America/New_York')).toBeNull();
+  });
+});
+
+describe('formatZonedDayTime — the time-axis tag', () => {
+  // 2026-11-13T20:45:18Z is a Friday.
+  const instant = Date.UTC(2026, 10, 13, 20, 45, 18);
+
+  it('reads weekday, day, month and the clock in the UTC preference', () => {
+    expect(formatZonedDayTime(instant, 'utc')).toBe('Fri 13 Nov 20:45:18');
+  });
+
+  it('follows the exchange zone for the exchange preference', () => {
+    // New York is UTC-5 in mid-November: 15:45:18 on the same Friday.
+    expect(formatZonedDayTime(instant, 'exchange', 'America/New_York')).toBe('Fri 13 Nov 15:45:18');
+  });
+
+  it('uses the Turkish weekday and month names in Turkish', () => {
+    setLocale('tr');
+    expect(formatZonedDayTime(instant, 'utc')).toBe('Cum 13 Kas 20:45:18');
+  });
+
+  it('returns an em dash for a non-finite instant', () => {
+    expect(formatZonedDayTime(Number.NaN, 'utc')).toBe('—');
   });
 });

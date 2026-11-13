@@ -52,6 +52,10 @@ html:root[data-ui-style='pixel'] *::after {
   border-radius: 0 !important;
   transition-timing-function: steps(2, end) !important;
 }
+/* Axis crosshair tags: square plates with the pixel edge, as the readout box has. */
+html:root[data-ui-style='pixel'] .axis-tag {
+  border: 1px solid var(--px-edge);
+}
 html:root[data-ui-style='pixel'] ::-webkit-scrollbar-thumb {
   border-radius: 0;
 }

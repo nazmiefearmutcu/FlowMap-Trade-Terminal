@@ -35,7 +35,8 @@
 /* Compact readout box on the theme chip tokens, monospace numerics. */
 .crosshair__box {
   position: absolute;
-  min-width: 132px;
+  /* Wide enough for the longest label and the price band on one line, Turkish included. */
+  min-width: 260px;
   padding: 6px 8px;
   background: var(--chart-chip-bg);
   border: 1px solid var(--chart-chip-border);

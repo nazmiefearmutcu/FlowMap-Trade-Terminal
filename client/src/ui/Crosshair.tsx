@@ -32,6 +32,7 @@ import { useFlowMapStore } from '../state/store';
 import { exchangeZoneFor, formatClock, formatFixed, formatNumber, formatPrice, formatSizeReadout, useTimeZone, zoneLabel, type TimeZonePref } from '../i18n/format';
 import { useT } from '../i18n/useT';
 import { clearProbeSpot, recordProbeSpot } from './lastProbe';
+import { setCrosshairProbe } from './crosshairStore';
 import { depthIsSynthetic, depthReadoutTier } from './heatLegendModel';
 import { marketGroup } from './symbols';
 import { fmtClockMs } from '../gl/overlays/axisTicks';
@@ -58,18 +59,24 @@ function fmtPrice(r: CrosshairReadout): string {
 }
 
 /**
- * The grouped cell's true price EXTENT, e.g. ` 59488.0–59490.0`.
+ * The grouped cell's true price EXTENT, e.g. `59488.0–59490.0`.
  *
  * A group of N covers N ROWS, and on a non-uniform price grid that is not
  * `N × step` of price — in the log wings one row can be worth hundreds of ticks.
- * Printing just `N×` there would imply a uniform width the grid does not have,
- * so the real span is shown alongside it. Empty when the extent is unknown or
- * the grid is uniform enough that the span is exactly the obvious one.
+ * Printing just the level count there would imply a uniform width the grid does
+ * not have, so the real span is shown alongside it. Empty when the extent is
+ * unknown.
  */
 function fmtBand(r: CrosshairReadout): string {
   if (r.priceLo === null || r.priceHi === null) return '';
   const d = r.priceDecimals;
-  return `  ${formatPrice(r.priceLo, d)}–${formatPrice(r.priceHi, d)}`;
+  return `${formatPrice(r.priceLo, d)}–${formatPrice(r.priceHi, d)}`;
+}
+
+/** The grouped row's value: the price band and the level count, e.g. `156.75–156.79 (4 levels)`. */
+function fmtGroup(r: CrosshairReadout, levels: string): string {
+  const band = fmtBand(r);
+  return band === '' ? levels : `${band} (${levels})`;
 }
 
 /**
@@ -150,6 +157,7 @@ useEffect(() => {
     // The A alert key must not anchor on the price left behind by a pointer that
     // has already gone.
     clearProbeSpot();
+    setCrosshairProbe(null);
     clearReprobe();
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
@@ -166,6 +174,7 @@ useEffect(() => {
     canvas.removeEventListener('pointerleave', onLeave);
     clearReprobe();
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    setCrosshairProbe(null);
   };
 }, [canvasRef, rendererRef, probeKeyRef, setHover]);
 }
@@ -188,11 +197,27 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
 
   useCrosshairProbe(canvasRef, rendererRef, probeKeyRef, setHover);
 
-  if (!hover) return null;
-  const { x, y, readout } = hover;
   // A session-relative (sim) timestamp is elapsed time from the session start, not
   // wall time: it reads the same T+ clock as the time axis, with no zone label.
-  const sessionRelative = readout?.sessionClock === true || group === 'sim';
+  const sessionRelative = hover?.readout?.sessionClock === true || group === 'sim';
+  // The axis tags read the same probe as the box, so they never disagree with it.
+  useEffect(() => {
+    if (!hover) {
+      setCrosshairProbe(null);
+      return;
+    }
+    setCrosshairProbe({
+      x: hover.x,
+      y: hover.y,
+      price: hover.readout?.price ?? null,
+      priceDecimals: hover.readout?.priceDecimals ?? 2,
+      timeNs: hover.readout?.timeNs ?? null,
+      sessionRelative,
+    });
+  }, [hover, sessionRelative]);
+
+  if (!hover) return null;
+  const { x, y, readout } = hover;
 
   // Depth-source provenance for the readout header. SYNTH must never read as real:
   // its size values are marked amber alongside the SYNTH tag. The verdict matches
@@ -209,8 +234,12 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   const canvas = canvasRef.current;
   const cw = canvas?.clientWidth ?? 0;
   const ch = canvas?.clientHeight ?? 0;
-  const flipX = x > cw - 180;
-  const flipY = y > ch - 110;
+  // The box is sized to its widest row (the price band); these thresholds keep
+  // a flipped box inside the chart for that width and the seven-row height.
+  const flipX = x > cw - 280;
+  const flipY = y > ch - 150;
+  // A venue with no depth feed has no bid or ask sizes to show.
+  const depthRows = capability?.depth !== 'N/A';
   const boxStyle: React.CSSProperties = {
     left: flipX ? undefined : `${x + 14}px`,
     right: flipX ? `${cw - x + 14}px` : undefined,
@@ -243,11 +272,12 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
             </span>
           </div>
           <div className="crosshair__line">
-            <span className="crosshair__key">px</span>
+            <span className="crosshair__key">{t('crosshair.price')}</span>
             <span className="crosshair__val crosshair__val--price" data-testid="crosshair-price">
               {fmtPrice(readout)}
             </span>
           </div>
+          {depthRows && (<>
           <div className="crosshair__line">
             <span className="crosshair__key crosshair__key--bid">{t('crosshair.bid')}</span>
             <span
@@ -266,11 +296,12 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
               {formatSizeReadout(readout.ask)}
             </span>
           </div>
+          </>)}
           {readout.group > 1 && (
             <div className="crosshair__line crosshair__line--dim">
               <span className="crosshair__key">{t('crosshair.group')}</span>
               <span className="crosshair__val" data-testid="crosshair-group">
-                {formatNumber(readout.group)}×{fmtBand(readout)}
+                {fmtGroup(readout, t('crosshair.levels', { count: formatNumber(readout.group) }))}
               </span>
             </div>
           )}
