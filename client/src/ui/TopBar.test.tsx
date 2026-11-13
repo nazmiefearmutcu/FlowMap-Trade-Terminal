@@ -40,6 +40,7 @@ function topbar(
     exportNotice?: string | null;
     onDismissExportNotice?: () => void;
     onToggleIntel?: () => void;
+    onOpenMarketMap?: () => void;
   } = {},
 ): JSX.Element {
   return (
@@ -50,6 +51,7 @@ function topbar(
       railVisible={false}
       onToggleRail={noop}
       onOpenSettings={noop}
+      onOpenMarketMap={exportProps.onOpenMarketMap ?? noop}
       onToggleIntel={exportProps.onToggleIntel}
       onExportPng={exportProps.onExportPng ?? noop}
       exportNotice={exportProps.exportNotice ?? null}
@@ -325,6 +327,22 @@ describe('TopBar clock + status a11y', () => {
     expect(status.getAttribute('role')).toBe('status');
     expect(status.getAttribute('aria-live')).toBe('polite');
     expect(status.getAttribute('aria-label')).toContain('Degraded feed');
+  });
+});
+
+describe('TopBar market map button', () => {
+  it('shows a Map button with its label that opens the market map', () => {
+    const onOpenMarketMap = vi.fn();
+    const { container } = render(topbar(null, { onOpenMarketMap }));
+
+    const btn = container.querySelector<HTMLButtonElement>('[data-testid="market-map-open"]');
+    expect(btn).not.toBeNull();
+    expect(btn!.textContent).toContain('Map');
+    expect(btn!.getAttribute('title')).toBe('Open the market map');
+    act(() => {
+      btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenMarketMap).toHaveBeenCalledTimes(1);
   });
 });
 

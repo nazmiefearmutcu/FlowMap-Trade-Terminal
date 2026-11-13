@@ -31,6 +31,7 @@ import { MarketStrip } from './ui/MarketStrip';
 import { DeskToolbar } from './ui/DeskToolbar';
 import { Timeline } from './ui/Timeline';
 import { TopBar } from './ui/TopBar';
+import { MarketMap } from './ui/marketMap/MarketMap';
 import type { SymbolSearchHandle } from './ui/SymbolSearch';
 import { DEPTH_CHANNELS, loadSettings, type FlowMapSettings } from './ui/settings';
 import { useAlertMonitor } from './state/alertMonitor';
@@ -108,6 +109,7 @@ export function App() {
   const [rendererAttempt, setRendererAttempt] = useState(0);
   // The About and legal dialog: from settings, or from the research drawer.
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
   // True while the server's recording writer is stalled (Status.capability.recording_health).
   const recordingDegraded = useFlowMapStore((s) => s.recordingDegraded);
   // True while the server's market overview runs past its own deadline (Status.capability.overview_degraded).
@@ -204,6 +206,7 @@ export function App() {
         railVisible={settings.railVisible}
         onToggleRail={toggleRail}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenMarketMap={() => setMapOpen(true)}
         onToggleIntel={toggleIntelDrawer}
         onExportPng={exportPng}
         exportNotice={exportNotice}
@@ -280,6 +283,11 @@ export function App() {
         replayPicker={replayPicker}
         onCloseReplayPicker={closeReplayPicker}
         onReplayConfirm={onReplayConfirm}
+      />
+      <MarketMap
+        open={mapOpen}
+        onClose={() => setMapOpen(false)}
+        onOpenChart={onSelectSymbol}
       />
     </div>
   );

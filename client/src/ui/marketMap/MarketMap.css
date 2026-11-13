@@ -1,0 +1,260 @@
+/* The market map overlay. Colours come only from theme tokens; the tile fill is
+   mixed in CSS from the change strength, so the fill follows the active theme. */
+
+.market-map {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.market-map__header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+
+.market-map__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  min-width: 0;
+}
+
+.market-map__title {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.market-map__tabs,
+.market-map__periods {
+  display: flex;
+  gap: 4px;
+}
+
+.market-map__tab,
+.market-map__period,
+.market-map__close,
+.market-map__retry {
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  padding: 4px 9px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  cursor: pointer;
+}
+
+.market-map__tab:hover,
+.market-map__period:hover,
+.market-map__close:hover,
+.market-map__retry:hover {
+  color: var(--text);
+  border-color: var(--line-2);
+}
+
+.market-map__tab.is-active,
+.market-map__period.is-active {
+  color: var(--selection-ink);
+  border-color: var(--ui-accent);
+  background: var(--selection-bg);
+}
+
+.market-map__close {
+  margin-left: auto;
+}
+
+.market-map__tab:focus-visible,
+.market-map__period:focus-visible,
+.market-map__close:focus-visible,
+.market-map__retry:focus-visible,
+.market-map__tile:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.market-map__meta {
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+}
+
+.market-map__legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+}
+
+.market-map__swatches {
+  display: flex;
+  gap: 2px;
+}
+
+.market-map__swatch {
+  display: block;
+  width: 14px;
+  height: 10px;
+  background: var(--bg-2);
+}
+
+.market-map__asof {
+  font-family: var(--font-mono);
+}
+
+.market-map__notice {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--warn);
+}
+
+.market-map__body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-inset);
+}
+
+.market-map__state {
+  margin: 0;
+  padding: 16px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+.market-map__state p {
+  margin: 0 0 8px;
+}
+
+.market-map__reason {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+
+.market-map__retry {
+  margin-top: 4px;
+}
+
+/* A tile's fill: the up or down token mixed over the neutral surface by the
+   strength. The strength stops at 0.85 so the text never sits on the pure colour. */
+.market-map__tile,
+.market-map__swatch {
+  --fill-level: min(var(--strength, 0), 0.85);
+  background: var(--bg-2);
+}
+
+.market-map__tile[data-side='up'],
+.market-map__swatch[data-side='up'] {
+  background: color-mix(in srgb, var(--accent) calc(var(--fill-level) * 100%), var(--bg-2));
+}
+
+.market-map__tile[data-side='down'],
+.market-map__swatch[data-side='down'] {
+  background: color-mix(in srgb, var(--sell) calc(var(--fill-level) * 100%), var(--bg-2));
+}
+
+.market-map__tile {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow: hidden;
+  margin: 0;
+  padding: 3px 4px;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+}
+
+button.market-map__tile {
+  cursor: pointer;
+}
+
+.market-map__tile[data-side='unknown'] {
+  outline: 1px dashed var(--line-2);
+  outline-offset: -1px;
+}
+
+.market-map__symbol {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.market-map__change {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.2;
+}
+
+.market-map__group {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 6px;
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.market-map__card {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 220px;
+  padding: 8px 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  pointer-events: none;
+}
+
+.market-map__card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.market-map__card-symbol {
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  color: var(--text-3);
+}
+
+.market-map__card-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+}
+
+.market-map__card-row span:first-child {
+  font-family: var(--font-ui);
+  color: var(--text-3);
+}

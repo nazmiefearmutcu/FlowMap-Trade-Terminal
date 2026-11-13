@@ -129,6 +129,30 @@ html:root[data-ui-style='pixel'] .timeline__version {
   border: 1px solid var(--px-edge);
 }
 
+/* --- Market map: tiles and sector strips get a solid edge; the detail card gets the
+   hard drop shadow; the header carries the same checker as the top bar. --- */
+html:root[data-ui-style='pixel'] .market-map__tile,
+html:root[data-ui-style='pixel'] .market-map__group {
+  border: 1px solid var(--px-edge);
+}
+html:root[data-ui-style='pixel'] .market-map__tile[data-side='unknown'] {
+  border-style: dashed;
+}
+html:root[data-ui-style='pixel'] .market-map__card {
+  box-shadow: var(--shadow-drop);
+}
+html:root[data-ui-style='pixel'] .market-map__header {
+  background-color: var(--bg-1);
+  background-image: conic-gradient(
+    color-mix(in srgb, var(--line) 45%, transparent) 25%,
+    transparent 0 50%,
+    color-mix(in srgb, var(--line) 45%, transparent) 0 75%,
+    transparent 0
+  );
+  background-size: 4px 4px;
+  border-bottom: var(--px) solid var(--px-edge);
+}
+
 @media (prefers-reduced-motion: reduce) {
   html:root[data-ui-style='pixel'] .tbtn:active,
   html:root[data-ui-style='pixel'] .symsearch__trigger:active,

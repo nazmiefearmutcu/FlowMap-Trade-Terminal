@@ -53,6 +53,8 @@ interface TopBarProps {
   railVisible: boolean;
   onToggleRail: () => void;
   onOpenSettings: () => void;
+  /** Opens the market map screen. */
+  onOpenMarketMap: () => void;
   onToggleIntel?: () => void;
   /** Export the chart canvas as a PNG download (renderer snapshot; `E` shares it). */
   onExportPng: () => void;
@@ -74,6 +76,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
     exportNotice,
     onDismissExportNotice,
     streamClock,
+    onOpenMarketMap,
     onToggleIntel,
   },
   searchRef,
@@ -172,6 +175,16 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         title={t('topbar.toggleRail')}
       >
         {t('topbar.rail')}
+      </button>
+
+      <button
+        type="button"
+        className="tbtn"
+        data-testid="market-map-open"
+        onClick={onOpenMarketMap}
+        title={t('marketMap.open.title')}
+      >
+        <span aria-hidden="true">▦</span> <span className="tbtn__label">{t('topbar.mapLabel')}</span>
       </button>
 
       {onToggleIntel && (
