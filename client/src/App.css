@@ -2382,11 +2382,13 @@ body,
 /* --- Topbar at narrow widths. The natural bar width is ~1.6–1.8k px with the
    macro ticker and every capability chip. `.topbar` wraps when its items do
    not fit, so nothing clips off-window; the steps below keep it on one row for
-   as long as possible. Stepped de-scoping: the macro ticker first (the MACRO
-   footer of the Research drawer carries the same values), then the TAPE and
-   SIDE capability chips, then the search width + ⌘K hint, then the wordmark,
-   then the Settings word and the SIM chip, and the secondary clock lines. The depth-tier chip (the fidelity claim, also
-   carried by the venue title) stays visible; the pending placeholder too. --- */
+   as long as possible. Stepped de-scoping, from the widest window down: the
+   macro ticker at 1860px and below (the MACRO footer of the Research drawer
+   carries the same values); the extra capability chips at 1500px; the compact
+   search at 1360px; the wordmark at 1260px; the button words and the SIM chip
+   at 1160px; the compact clock at 1080px; the venue chip at 1010px. The
+   depth-tier chip (the fidelity claim, also carried by the venue title) stays
+   visible; the pending placeholder too. --- */
 @media (max-width: 1860px) {
   .topbar .macro-ticker {
     display: none;

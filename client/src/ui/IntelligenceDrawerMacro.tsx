@@ -1,21 +1,13 @@
 import { formatDateTime, formatFixed } from '../i18n/format';
-import { type TFn, useT } from '../i18n/useT';
-import type { MacroStressData } from '../state/intelligenceStore';
+import { useT } from '../i18n/useT';
+import { DEMO_INTELLIGENCE, type MacroStressData } from '../state/intelligenceStore';
 import { macroHyNote } from './TopBarParts';
 import { stressRegimeLabel } from './TopBarLabels';
 
 interface IntelMacroBarProps {
   macro: MacroStressData | null;
-  /** The SIM-DEMO fixture is on screen, so the regime badge says so. */
+  /** The SIM-DEMO fixture is on screen. The label shows only when the fixture is the reading shown. */
   demo: boolean;
-}
-
-/**
- * The stress regime word in the active locale. UNKNOWN reads as unavailable, the
- * same as a missing feed on the top bar.
- */
-function regimeWord(regime: MacroStressData['stressRegime'], t: TFn): string {
-  return regime === 'UNKNOWN' ? t('topbar.unavailable') : stressRegimeLabel(regime, t);
 }
 
 /**
@@ -28,6 +20,14 @@ export function IntelMacroBar({ macro, demo }: IntelMacroBarProps): JSX.Element 
     ? formatDateTime(macro.updatedAt, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
     : '';
   const curve = macro?.yieldCurve10Y2Y ?? null;
+  const showingFixture = demo && macro === DEMO_INTELLIGENCE.macro;
+  // With a reading but no regime (the high-yield spread is missing), the regime is a dash, not UNAVAILABLE.
+  const regimeKnown = macro !== null && macro.stressRegime !== 'UNKNOWN';
+  const regimeText = macro === null
+    ? t('intel.macroNotConnected')
+    : regimeKnown
+      ? t('intel.stressRegime', { regime: stressRegimeLabel(macro.stressRegime, t) })
+      : '—';
   return (
     <div className="intel-drawer__macro-bar" data-testid="intel-macro-bar">
       <div className="macro-chip">
@@ -53,13 +53,19 @@ export function IntelMacroBar({ macro, demo }: IntelMacroBarProps): JSX.Element 
         className={`macro-regime-badge is-${macro?.stressRegime.toLowerCase() ?? 'unavailable'}`}
         title={macro ? undefined : t('intel.macroNotConnected')}
       >
-        {demo ? `${t('intel.demoBadge')} · ` : ''}
-        {macro ? t('intel.stressRegime', { regime: regimeWord(macro.stressRegime, t) }) : t('intel.macroNotConnected')}
+        {showingFixture ? `${t('intel.demoBadge')} · ` : ''}
+        {regimeText}
       </div>
+      {macro !== null && macro.stressRegime === 'UNKNOWN' && macro.hySpreadBps === null && (
+        <span className="macro-chip__lbl" data-testid="intel-macro-regime-note">{macroHyNote(macro, t)}</span>
+      )}
       {macro && (
         <span className="macro-chip__lbl" data-testid="intel-macro-received">
           {t('intel.received', { time: receivedAt })}
         </span>
+      )}
+      {macro?.stale === true && (
+        <span className="macro-chip__lbl" data-testid="intel-macro-stale">{t('macro.stale')}</span>
       )}
     </div>
   );

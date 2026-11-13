@@ -168,18 +168,20 @@ function macroTitle(macro: MacroStressData, t: TFn): string {
     line('10Y-2Y', 'T10Y2Y', macro.yieldCurve10Y2Y === null ? null : `${macro.yieldCurve10Y2Y < 0 ? '' : '+'}${formatFixed(macro.yieldCurve10Y2Y, 2)}%`),
   ];
   if (macro.hySpreadBps === null) lines.push(macroHyNote(macro, t));
+  if (macro.stale) lines.unshift(t('macro.stale'));
   return lines.join('\n');
 }
 
 /**
- * Why the high-yield spread has no value, in words. Without a FRED key the spread
- * is never fetched, so that hint names the key. A key that is set but refused or
- * unreachable gets the plainer line, so the hint never blames a missing key.
+ * Why the high-yield spread has no value, in words, chosen by its source status:
+ * a missing FRED key, a key FRED refused, or any other failure to reach FRED.
+ * Without a status the spread is treated as unreachable, never as a missing key.
  */
 export function macroHyNote(macro: MacroStressData, t: TFn): string {
   const reason = macro.sourceStatus?.BAMLH0A0HYM2;
-  const needsKey = reason === undefined || reason === 'fred_api_key_missing' || reason === 'rejected';
-  return t(needsKey ? 'macro.hyNeedsKey' : 'macro.hyMissing');
+  if (reason === 'fred_api_key_missing') return t('macro.hyNeedsKey');
+  if (reason === 'rejected') return t('macro.hyRejected');
+  return t('macro.hyUnreachable');
 }
 
 /** The macro stress ticker (SOFR, HY OAS, the 10Y-2Y curve and the stress regime). */
@@ -193,6 +195,7 @@ export function MacroTicker({ macro }: { macro: MacroStressData | null }) {
     <div
       className="macro-ticker"
       data-available={hasValue}
+      data-stale={macro?.stale === true}
       data-testid="institutional-stress-ticker"
       title={macro ? macroTitle(macro, t) : t('topbar.macroUnavailable')}
     >

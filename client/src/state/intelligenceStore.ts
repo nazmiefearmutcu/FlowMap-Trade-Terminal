@@ -114,6 +114,8 @@ export interface MacroStressData {
   sourceStatus?: Readonly<Record<string, string>>;
   /** The publisher's name per series, as the server names it. */
   sources?: Readonly<Record<string, string>>;
+  /** True when a shown value was carried over from an earlier successful read. */
+  stale?: boolean;
   updatedAt: number;
 }
 
@@ -523,7 +525,6 @@ function detailObject(detail: string): Record<string, unknown> {
 
 const OBSERVATION_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** The per-series observation dates that are real calendar-style dates; anything else is dropped. */
 /** The regime word for a server status; anything unrecognised is UNKNOWN, never guessed from a score. */
 function regimeOfStatus(status: string | null): MacroStressData['stressRegime'] {
   if (status === null) return 'UNKNOWN';
@@ -534,6 +535,7 @@ function regimeOfStatus(status: string | null): MacroStressData['stressRegime'] 
   return 'UNKNOWN';
 }
 
+/** The per-series observation dates that are real calendar-style dates; anything else is dropped. */
 function observationDates(dates: Record<string, string>): Record<string, string> {
   const kept: Record<string, string> = {};
   for (const [series, date] of Object.entries(dates)) {
@@ -717,6 +719,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
         asOf: observationDates(dates),
         sourceStatus: { ...reading.sourceStatus },
         sources: { ...reading.sources },
+        stale: reading.stale,
         updatedAt: Date.now(),
       },
     });

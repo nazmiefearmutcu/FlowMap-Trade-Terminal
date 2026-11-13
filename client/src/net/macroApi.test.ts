@@ -63,7 +63,14 @@ describe('parseMacroReading', () => {
   it('returns null for a body that is not an object', () => {
     expect(parseMacroReading(null)).toBeNull();
     expect(parseMacroReading('macro')).toBeNull();
-    expect(parseMacroReading([])).not.toBeNull();
+    expect(parseMacroReading(42)).toBeNull();
+  });
+
+  it('returns null for an array or another non-plain object', () => {
+    expect(parseMacroReading([])).toBeNull();
+    expect(parseMacroReading([wire])).toBeNull();
+    expect(parseMacroReading(new Map())).toBeNull();
+    expect(parseMacroReading(new Date())).toBeNull();
   });
 });
 

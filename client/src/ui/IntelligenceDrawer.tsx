@@ -84,7 +84,8 @@ export function IntelligenceDrawer({ activeSymbol, activeMarket = null, onOpenSo
   const contracts = fixtures ? fixtures.contracts : liveContracts;
   const capitolTrades = fixtures ? fixtures.capitolTrades : liveTrades;
   const corporateJets = fixtures ? fixtures.corporateJets : liveJets;
-  const macro = fixtures ? fixtures.macro : liveMacro;
+  // The live reading wins over the SIM-DEMO seed, so the drawer and the top bar show the same figures.
+  const macro = liveMacro ?? (fixtures ? fixtures.macro : null);
 
   // A module is "connected" once its source has delivered anything (for the
   // per-symbol modules: anything for any symbol). Unconnected modules are hidden.

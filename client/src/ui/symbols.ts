@@ -369,7 +369,10 @@ export function capabilityChips(capability: Record<string, unknown> | null | und
  *                           ccxt venue must never look like a native L2 feed —
  *                           and it is not fabricated data either.
  * - `cap--synth`            FABRICATED: `SYNTH` / `SYNTH_PROFILE`, equity depth
- *                           reconstructed from a price+volume print. Two
+ *                           reconstructed from a price+volume print. It appears
+ *                           only when replaying a recording made before live
+ *                           equities read real Cboe books; live keyless equity
+ *                           is `L2-SNAPSHOT`. Two
  *                           spellings of one thing (server core/session.py keeps
  *                           `SYNTH_PROFILE` for compatibility), so they MUST
  *                           classify identically.

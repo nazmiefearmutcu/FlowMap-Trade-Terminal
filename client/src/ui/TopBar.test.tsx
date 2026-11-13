@@ -566,6 +566,44 @@ describe('TopBar macro ticker from the REST reading', () => {
     expect(lines[3]).toContain('FRED_API_KEY');
   });
 
+  it('names a refused key in the hover text, not the key hint', () => {
+    const { container } = render(topbar());
+    act(() => useIntelligenceStore.getState().setMacroReading(macroReading({
+      hySpread: null, hyDate: null, stressScore: null, status: null,
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'rejected', T10Y2Y: 'ok' },
+    })));
+    const title = container.querySelector('[data-testid="institutional-stress-ticker"]')?.getAttribute('title') ?? '';
+    expect(title.split('\n')[3]).toBe(tFor('en', 'macro.hyRejected'));
+    expect(title).not.toContain('FRED_API_KEY. The');
+  });
+
+  it('says FRED could not be reached in the hover text for any other status', () => {
+    const { container } = render(topbar());
+    act(() => useIntelligenceStore.getState().setMacroReading(macroReading({
+      hySpread: null, hyDate: null, stressScore: null, status: null,
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'unreachable', T10Y2Y: 'ok' },
+    })));
+    const title = container.querySelector('[data-testid="institutional-stress-ticker"]')?.getAttribute('title') ?? '';
+    expect(title.split('\n')[3]).toBe(tFor('en', 'macro.hyUnreachable'));
+    expect(title).not.toContain('FRED_API_KEY');
+  });
+
+  it('marks a stale reading with data-stale and a leading line in the hover text', () => {
+    const { container } = render(topbar());
+    act(() => useIntelligenceStore.getState().setMacroReading(macroReading({ stale: true })));
+    const ticker = container.querySelector('[data-testid="institutional-stress-ticker"]');
+    expect(ticker?.getAttribute('data-stale')).toBe('true');
+    expect(ticker?.getAttribute('title')?.split('\n')[0]).toBe(tFor('en', 'macro.stale'));
+  });
+
+  it('does not mark a fresh reading as stale', () => {
+    const { container } = render(topbar());
+    act(() => useIntelligenceStore.getState().setMacroReading(macroReading()));
+    const ticker = container.querySelector('[data-testid="institutional-stress-ticker"]');
+    expect(ticker?.getAttribute('data-stale')).toBe('false');
+    expect(ticker?.getAttribute('title')).not.toContain(tFor('en', 'macro.stale'));
+  });
+
   it('shows the unavailable badge only when nothing has been received', () => {
     const { container } = render(topbar());
     const ticker = container.querySelector('[data-testid="institutional-stress-ticker"]');

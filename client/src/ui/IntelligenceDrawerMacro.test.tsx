@@ -52,12 +52,46 @@ describe('IntelMacroBar with the REST reading', () => {
     expect(note?.textContent).toBe(tFor('en', 'macro.hyNeedsKey'));
   });
 
-  it('shows the plainer line when a set key was refused, not the key hint', () => {
+  it('says FRED refused a set key, not that a key is needed', () => {
+    const el = render({
+      ...full, hySpreadBps: null,
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'rejected', T10Y2Y: 'ok' },
+    });
+    expect(el.querySelector('[data-testid="intel-macro-hy-note"]')?.textContent).toBe(tFor('en', 'macro.hyRejected'));
+  });
+
+  it('says FRED could not be reached for an unreachable source', () => {
     const el = render({
       ...full, hySpreadBps: null,
       sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'unreachable', T10Y2Y: 'ok' },
     });
-    expect(el.querySelector('[data-testid="intel-macro-hy-note"]')?.textContent).toBe(tFor('en', 'macro.hyMissing'));
+    expect(el.querySelector('[data-testid="intel-macro-hy-note"]')?.textContent).toBe(tFor('en', 'macro.hyUnreachable'));
+  });
+
+  it('shows an em dash for the regime when the spread is missing, never UNAVAILABLE', () => {
+    const el = render({
+      ...full, hySpreadBps: null, stressRegime: 'UNKNOWN', stressScore: undefined, status: undefined,
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'fred_api_key_missing', T10Y2Y: 'ok' },
+    });
+    const badge = el.querySelector('.macro-regime-badge');
+    expect(badge?.textContent).toBe('—');
+    expect(el.textContent).not.toContain(tFor('en', 'topbar.unavailable'));
+    expect(el.querySelector('[data-testid="intel-macro-regime-note"]')?.textContent).toBe(tFor('en', 'macro.hyNeedsKey'));
+  });
+
+  it('shows no stale note for a fresh reading', () => {
+    const el = render({ ...full, stale: false });
+    expect(el.querySelector('[data-testid="intel-macro-stale"]')).toBeNull();
+  });
+
+  it('shows the stale sentence when the reading is an earlier one', () => {
+    const el = render({ ...full, stale: true });
+    expect(el.querySelector('[data-testid="intel-macro-stale"]')?.textContent).toBe(tFor('en', 'macro.stale'));
+  });
+
+  it('shows the unavailable word only when nothing has been received', () => {
+    const el = render(null);
+    expect(el.querySelector('.macro-regime-badge')?.textContent).toBe(tFor('en', 'intel.macroNotConnected'));
   });
 
   it('shows dashes for every figure when nothing has been received', () => {

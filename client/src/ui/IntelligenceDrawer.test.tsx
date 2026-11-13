@@ -199,6 +199,27 @@ describe('IntelligenceDrawer', () => {
     expect(useIntelligenceStore.getState().macro).toBeNull();
   });
 
+  it('shows the live macro reading on SIM-DEMO instead of the seed when one is held', () => {
+    useIntelligenceStore.setState({ activeTab: 'FLOW' });
+    useIntelligenceStore.getState().setMacroReading({
+      sofr: 3.9, sofrDate: '2026-11-12', yield10y2y: 0.24, curveDate: '2026-11-12',
+      hySpread: 3.5, hyDate: '2026-11-11', stressScore: 0.1, status: 'NORMAL_LIQUIDITY',
+      sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'ok', T10Y2Y: 'ok' },
+      sources: {}, asOf: 1_700_000_000_000, stale: false,
+    });
+    const { container } = render(<IntelligenceDrawer activeSymbol="SIM-DEMO" onClose={vi.fn()} />);
+    const bar = container.querySelector('[data-testid="intel-macro-bar"]')?.textContent ?? '';
+    expect(bar).toContain('3.90%');
+    expect(bar).not.toContain('4.82%');
+    expect(bar).not.toContain('DEMO');
+  });
+
+  it('shows the SIM-DEMO seed macro only while no live reading is held', () => {
+    useIntelligenceStore.setState({ activeTab: 'FLOW', macro: null });
+    const { container } = render(<IntelligenceDrawer activeSymbol="SIM-DEMO" onClose={vi.fn()} />);
+    expect(container.querySelector('[data-testid="intel-macro-bar"]')?.textContent).toContain('4.82%');
+  });
+
   it('ships no invented subpoena or filing text in the synthetic fixtures', () => {
     const text = JSON.stringify(DEMO_INTELLIGENCE.secDiffs);
     expect(text).not.toContain('subpoena');
@@ -237,7 +258,7 @@ describe('IntelligenceDrawer', () => {
     }
   });
 
-  it('shows an UNKNOWN stress regime as unavailable, never as the raw token', () => {
+  it('shows an UNKNOWN stress regime as a dash, never as the raw token or UNAVAILABLE', () => {
     const store = useIntelligenceStore.getState();
     store.setActiveTab('FLOW');
     store.ingestMacro({ type: MsgType.MACRO_STRESS, ts_ns: 1n, sofr: 5.32, hy_spread: 3.42, yield_10y2y: -0.18, stress_score: 0.4, status: 'SOMETHING_NEW' });
@@ -245,7 +266,8 @@ describe('IntelligenceDrawer', () => {
     try {
       const { container } = render(<IntelligenceDrawer activeSymbol="NVDA" onClose={vi.fn()} />);
       const badge = container.querySelector('.macro-regime-badge');
-      expect(badge?.textContent).toContain(t('topbar.unavailable'));
+      expect(badge?.textContent).toBe('—');
+      expect(badge?.textContent).not.toContain(t('topbar.unavailable'));
       expect(badge?.textContent).not.toContain('UNKNOWN');
       expect(badge?.getAttribute('title')).toBeNull();
     } finally {

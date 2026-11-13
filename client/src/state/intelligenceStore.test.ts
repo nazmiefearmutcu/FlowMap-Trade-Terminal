@@ -198,6 +198,25 @@ describe('synthetic fixtures are development-only (state-16)', () => {
   });
 });
 
+describe('setMacroReading keeps the stale flag', () => {
+  const base: MacroReadingData = {
+    sofr: 3.9, sofrDate: '2026-11-12', yield10y2y: 0.24, curveDate: '2026-11-12',
+    hySpread: 3.5, hyDate: '2026-11-11', stressScore: 0.1, status: 'NORMAL_LIQUIDITY',
+    sourceStatus: { SOFR: 'ok', BAMLH0A0HYM2: 'ok', T10Y2Y: 'ok' },
+    sources: {}, asOf: 1_700_000_000_000, stale: false,
+  };
+
+  it('stores stale true when the server serves an earlier reading', () => {
+    useIntelligenceStore.getState().setMacroReading({ ...base, stale: true });
+    expect(useIntelligenceStore.getState().macro?.stale).toBe(true);
+  });
+
+  it('stores stale false for a fresh reading', () => {
+    useIntelligenceStore.getState().setMacroReading(base);
+    expect(useIntelligenceStore.getState().macro?.stale).toBe(false);
+  });
+});
+
 describe('setMacroReading holds a reading from GET /api/macro', () => {
   const full: MacroReadingData = {
     sofr: 3.9, sofrDate: '2026-11-12', yield10y2y: 0.24, curveDate: '2026-11-12',

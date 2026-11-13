@@ -51,9 +51,11 @@ function textMap(value: unknown): Record<string, string> {
   return out;
 }
 
-/** The reading from a response body, or null when the body is not an object. */
+/** The reading from a response body, or null when the body is not a plain object (arrays included). */
 export function parseMacroReading(raw: unknown): MacroReadingData | null {
   if (typeof raw !== 'object' || raw === null) return null;
+  const proto = Object.getPrototypeOf(raw);
+  if (proto !== Object.prototype && proto !== null) return null;
   const r = raw as Record<string, unknown>;
   return {
     sofr: finiteOrNull(r.sofr),
