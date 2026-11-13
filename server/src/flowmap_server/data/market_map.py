@@ -10,12 +10,14 @@ answer marked stale instead of an error.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import re
 import ssl
 import time
 from collections.abc import Awaitable, Callable, Collection
+from typing import Protocol
 
 import aiohttp
 import certifi
@@ -59,6 +61,11 @@ _US_HEADERS = {
     "Accept": "application/json",
 }
 _US_TIMEOUT_S = 12.0
+# Largest response body the parsers will read. The Nasdaq list is about 2 MB
+# today; the cap leaves room for growth and refuses anything runaway.
+US_BODY_LIMIT = 8 * 1024 * 1024
+CRYPTO_BODY_LIMIT = 2 * 1024 * 1024
+_READ_CHUNK = 64_000
 _CRYPTO_URL = (
     "https://api.coingecko.com/api/v3/coins/markets"
     "?vs_currency=usd&order=market_cap_desc&per_page=250&page=1"
@@ -68,15 +75,10 @@ _CRYPTO_HEADERS = {"Accept": "application/json"}
 _CRYPTO_TIMEOUT_S = 8.0
 
 # Share-class and listing descriptions that make a tile label noisy. The name is
-# cut at the earliest one that appears.
-_US_NAME_CUTS = (
-    " Common Stock",
-    " Class A",
-    " Class B",
-    " Class C",
-    " American Depositary",
-    " Ordinary Shares",
-    " Depositary Shares",
+# cut at the first one that appears as a whole word, so "Class Assets" survives.
+_US_NAME_CUT = re.compile(
+    r" (?:Common Stock|Class [ABC]|American Depositary|Ordinary Shares|Depositary Shares)"
+    r"(?![A-Za-z])"
 )
 _CHART_SYMBOL = re.compile(r"[A-Z0-9.\-]+")
 
@@ -118,20 +120,24 @@ class MarketMapUnavailable(Exception):
 
 
 def _number(value: object) -> float | None:
-    """A finite float from a number or a string such as ``"$1,234.50"``, else None."""
+    """A finite float from a number or a string such as ``"$1,234.50"``, else None.
+
+    A JSON integer too large for a float (OverflowError) counts as unusable, so
+    one bad cell skips only its own value.
+    """
     if isinstance(value, bool):
         return None
-    if isinstance(value, str):
-        text = value.strip().replace("$", "").replace(",", "").replace("%", "")
-        if not text:
-            return None
-        try:
+    try:
+        if isinstance(value, str):
+            text = value.strip().replace("$", "").replace(",", "").replace("%", "")
+            if not text:
+                return None
             number = float(text)
-        except ValueError:
+        elif isinstance(value, (int, float)):
+            number = float(value)
+        else:
             return None
-    elif isinstance(value, (int, float)):
-        number = float(value)
-    else:
+    except (ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
 
@@ -141,12 +147,58 @@ def _text(value: object) -> str:
 
 
 def _clean_name(name: str, symbol: str) -> str:
-    cut = len(name)
-    for marker in _US_NAME_CUTS:
-        at = name.find(marker)
-        if at != -1:
-            cut = min(cut, at)
-    return name[:cut].strip() or symbol
+    match = _US_NAME_CUT.search(name)
+    cut = name[: match.start()] if match else name
+    return cut.strip() or symbol
+
+
+class _Stream(Protocol):
+    async def read(self, n: int = -1) -> bytes: ...
+
+
+class _Body(Protocol):
+    """The part of an aiohttp response the bounded reader needs."""
+
+    @property
+    def content_length(self) -> int | None: ...
+
+    @property
+    def content(self) -> _Stream: ...
+
+
+async def read_capped_json(response: _Body, *, limit: int) -> object:
+    """Decode a JSON body no larger than ``limit`` bytes.
+
+    A declared Content-Length above the limit is refused before anything is read.
+    Otherwise the body is read in chunks and the read stops as soon as it passes
+    the limit, so an undeclared or lying length cannot buffer more than that.
+    """
+    declared = response.content_length
+    if declared is not None and declared > limit:
+        raise ValueError(f"response declares {declared} bytes, over the {limit} byte limit")
+    body = bytearray()
+    while True:
+        chunk = await response.content.read(_READ_CHUNK)
+        if not chunk:
+            break
+        body += chunk
+        if len(body) > limit:
+            raise ValueError(f"response body is over the {limit} byte limit")
+    return json.loads(bytes(body))
+
+
+def _describe(exc: Exception) -> str:
+    """The exception type, plus the HTTP status for an HTTP error.
+
+    An aiohttp error's text carries the full request URL, query string included,
+    so it is never logged. Other exceptions keep their message, which this module
+    writes itself.
+    """
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return f"{type(exc).__name__} (HTTP {exc.status})"
+    if isinstance(exc, aiohttp.ClientError):
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _us_item(row: object) -> MapItem | None:
@@ -292,10 +344,7 @@ class MarketMapService:
                     items = await self._load(market)
                 except Exception as exc:
                     self._failed_at[market] = self._monotonic()
-                    logger.warning(
-                        "market map refresh for %s failed: %s: %s",
-                        market, type(exc).__name__, exc,
-                    )
+                    logger.warning("market map refresh for %s failed: %s", market, _describe(exc))
                 else:
                     answer = MarketMap(
                         market=market,
@@ -341,20 +390,25 @@ class MarketMapService:
         return parse_crypto(payload)
 
     async def _fetch_us(self) -> object:
-        return await self._get_json(_US_URL, headers=_US_HEADERS, timeout_s=_US_TIMEOUT_S)
+        return await self._get_json(
+            _US_URL, headers=_US_HEADERS, timeout_s=_US_TIMEOUT_S, limit=US_BODY_LIMIT
+        )
 
     async def _fetch_crypto(self) -> object:
         return await self._get_json(
-            _CRYPTO_URL, headers=_CRYPTO_HEADERS, timeout_s=_CRYPTO_TIMEOUT_S
+            _CRYPTO_URL, headers=_CRYPTO_HEADERS, timeout_s=_CRYPTO_TIMEOUT_S,
+            limit=CRYPTO_BODY_LIMIT,
         )
 
-    async def _get_json(self, url: str, *, headers: dict[str, str], timeout_s: float) -> object:
+    async def _get_json(
+        self, url: str, *, headers: dict[str, str], timeout_s: float, limit: int
+    ) -> object:
         session = self._http()
         async with session.get(
             url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout_s)
         ) as response:
             response.raise_for_status()
-            return await response.json(content_type=None)
+            return await read_capped_json(response, limit=limit)
 
     def _http(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:

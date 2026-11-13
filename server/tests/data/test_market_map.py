@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
+import aiohttp
 import pytest
 
 from flowmap_server.data.market_map import (
@@ -21,6 +23,7 @@ from flowmap_server.data.market_map import (
     MarketMapUnavailable,
     parse_crypto,
     parse_us,
+    read_capped_json,
 )
 from flowmap_server.data.universe import CRYPTO_MARKET
 
@@ -418,3 +421,100 @@ async def test_service_does_not_retry_a_failed_first_fetch_within_15_seconds():
 async def test_service_close_is_safe_without_a_session():
     svc = _service()
     await svc.close()
+
+
+# --- review round 1: names, overflow, body cap, log hygiene --------------------
+
+
+def test_us_name_cut_needs_a_whole_word():
+    rows = [
+        _row(symbol="HC", name="Hall Class Assets Inc", market_cap="2"),
+        _row(symbol="GOOG", name="Alphabet Inc. Class A Common Stock", market_cap="1"),
+    ]
+    got = {i.symbol: i.name for i in parse_us(_us(*rows))}
+    assert got == {"HC": "Hall Class Assets Inc", "GOOG": "Alphabet Inc."}
+
+
+def test_us_overflowing_number_skips_only_its_own_row_or_value():
+    huge = 10**400  # a JSON integer too large for a float
+    rows = [
+        {**_row(symbol="HUGECAP"), "marketCap": huge},
+        {**_row(symbol="HUGEPRICE"), "lastsale": huge},
+        {**_row(symbol="BIGVOL"), "volume": huge},
+        _row(symbol="GOOD"),
+    ]
+    items = {i.symbol: i for i in parse_us(_us(*rows))}
+    assert set(items) == {"BIGVOL", "GOOD"}
+    assert items["BIGVOL"].volume is None
+
+
+def test_crypto_overflowing_cap_skips_only_that_coin():
+    items = parse_crypto([_coin(symbol="big", cap=10**400), _coin()])
+    assert [i.symbol for i in items] == ["BTC"]
+
+
+class _FakeStream:
+    """Hands out at most ``piece`` bytes per read, like a real socket stream."""
+
+    def __init__(self, data: bytes, piece: int) -> None:
+        self._data = data
+        self._piece = piece
+        self.reads = 0
+
+    async def read(self, n: int = -1) -> bytes:
+        self.reads += 1
+        size = min(n, self._piece)
+        chunk, self._data = self._data[:size], self._data[size:]
+        return chunk
+
+
+class _FakeBody:
+    def __init__(self, data: bytes, *, declared: int | None = None, piece: int = 3) -> None:
+        self.content_length = declared
+        self.content = _FakeStream(data, piece)
+
+
+async def test_capped_read_decodes_a_body_under_the_cap():
+    body = _FakeBody(b'{"a": [1, 2, 3]}', declared=15)
+    assert await read_capped_json(body, limit=64) == {"a": [1, 2, 3]}
+
+
+async def test_capped_read_accepts_a_body_exactly_at_the_cap():
+    data = b"[1,2,3,4,5]"
+    assert await read_capped_json(_FakeBody(data), limit=len(data)) == [1, 2, 3, 4, 5]
+
+
+async def test_capped_read_refuses_a_declared_length_over_the_cap_without_reading():
+    body = _FakeBody(b"[1,2,3]", declared=500)
+    with pytest.raises(ValueError):
+        await read_capped_json(body, limit=10)
+    assert body.content.reads == 0
+
+
+async def test_capped_read_refuses_an_undeclared_body_over_the_cap():
+    body = _FakeBody(b"[" + b"1," * 50 + b"1]", declared=None)
+    with pytest.raises(ValueError):
+        await read_capped_json(body, limit=20)
+
+
+class _UpstreamError(aiohttp.ClientResponseError):
+    """Stands in for an aiohttp HTTP error, whose text carries the full URL."""
+
+    def __str__(self) -> str:
+        return "503, message='Service Unavailable', url='https://feed.test/list?key=abc123'"
+
+
+async def test_failed_refresh_logs_the_status_and_never_the_url(caplog):
+    async def fetch_us() -> object:
+        raise _UpstreamError(None, (), status=503, message="Service Unavailable")
+
+    svc = MarketMapService(
+        fetch_us=fetch_us, fetch_crypto=_Source(COINGECKO), clock=lambda: NOW_NS
+    )
+    with caplog.at_level(logging.WARNING, logger="flowmap_server.data.market_map"):
+        with pytest.raises(MarketMapUnavailable) as info:
+            await svc.get("us")
+    assert "HTTP 503" in caplog.text
+    for text in (caplog.text, str(info.value)):
+        assert "?" not in text
+        assert "http" not in text

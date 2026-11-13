@@ -60,7 +60,7 @@ async def market_map(request: Request, market: str = "us") -> dict[str, object]:
     """Tiles for one market: ``us`` (largest stocks) or ``crypto`` (largest coins)."""
     if market not in _MARKETS:
         raise ApiError(
-            400, "unknown_market",
+            422, "unknown_market",
             f"market must be one of {sorted(_MARKETS)}; got {market[:80]!r}",
         )
     try:

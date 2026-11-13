@@ -234,6 +234,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             task.cancel()
         if warmups:
             await asyncio.gather(*warmups, return_exceptions=True)
+        # The market map holds an HTTP session. A failed close is logged and
+        # contained so the rest of shutdown still runs.
+        market_map_service = getattr(app.state, "market_map", None)
+        close_market_map = getattr(market_map_service, "close", None)
+        if callable(close_market_map):
+            try:
+                await close_market_map()
+            except Exception as exc:
+                logger.warning("market map did not close cleanly: %s", type(exc).__name__)
         close_cache = getattr(market_cache, "aclose", None)
         if callable(close_cache):
             await close_cache()
