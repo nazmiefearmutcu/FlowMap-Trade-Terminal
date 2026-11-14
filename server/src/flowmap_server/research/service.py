@@ -34,7 +34,7 @@ from flowmap_server.research.short_volume import ShortVolumeSource
 
 __all__ = ["SECTIONS", "ResearchService", "SectionSpec", "UnknownSection", "sec_contact"]
 
-SEC_CONTACT_ENV = "FLOWMAP_SEC_CONTACT"
+SEC_CONTACT_ENV = "SEC_CONTACT_EMAIL"
 _EMAIL = re.compile(r"[^@\s<>\"']{1,64}@[^@\s<>\"']{1,190}\.[A-Za-z]{2,24}")
 # The key a market-wide section is cached under.
 MARKET_WIDE = "MARKET"
@@ -52,7 +52,8 @@ SECTIONS: dict[tuple[str, str], SectionSpec] = {
     ("us", "risk-factors"): SectionSpec("SEC EDGAR", 6 * 3600.0, needs_sec_contact=True),
     ("us", "language"): SectionSpec("SEC EDGAR", 6 * 3600.0, needs_sec_contact=True),
     ("us", "contracts"): SectionSpec("USAspending.gov", 6 * 3600.0),
-    ("us", "house-trades"): SectionSpec("House Clerk", 30 * 60.0),
+    # Read from memory; short so the coverage line follows the background reader.
+    ("us", "house-trades"): SectionSpec("House Clerk", 60.0),
     ("us", "gex"): SectionSpec("Cboe delayed options", 15 * 60.0),
     ("us", "short-volume"): SectionSpec("FINRA Reg SHO", 3600.0),
     ("us", "hiring"): SectionSpec("Public job boards", 12 * 3600.0),
@@ -68,7 +69,7 @@ class UnknownSection(ValueError):
 
 
 def sec_contact(header_value: str | None) -> str | None:
-    """The SEC contact e-mail: the request's, else ``FLOWMAP_SEC_CONTACT``; None when neither is an e-mail."""
+    """The SEC contact e-mail: the request's, else ``SEC_CONTACT_EMAIL``; None when neither is an e-mail."""
     for candidate in (header_value, os.environ.get(SEC_CONTACT_ENV)):
         value = (candidate or "").strip()
         if value and _EMAIL.fullmatch(value):

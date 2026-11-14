@@ -1,0 +1,65 @@
+{
+ "apiVersion": "1",
+ "jobs": [
+  {
+   "id": "57131f28-cdf8-4776-aa87-8f9339e494ab",
+   "title": "Staff Software Engineer - Compiler & Spark Runtime ",
+   "department": "Engineering",
+   "team": "Engineering",
+   "publishedAt": "2026-11-13T02:57:31.163+00:00",
+   "isListed": true,
+   "location": "US-CA-Menlo Park",
+   "jobUrl": "https://jobs.ashbyhq.com/snowflake/57131f28-cdf8-4776-aa87-8f9339e494ab"
+  },
+  {
+   "id": "db1375f0-ea5d-404a-b640-259f94dbc995",
+   "title": "Software Engineer - Database Engineering",
+   "department": "Engineering",
+   "team": "Engineering",
+   "publishedAt": "2026-07-28T22:20:47.028+00:00",
+   "isListed": true,
+   "location": "US-CA-Menlo Park",
+   "jobUrl": "https://jobs.ashbyhq.com/snowflake/db1375f0-ea5d-404a-b640-259f94dbc995"
+  },
+  {
+   "id": "3eb872af-0ab1-4986-8f72-e7321fcd1538",
+   "title": "Software Engineer - Backend",
+   "department": "Engineering",
+   "team": "Engineering",
+   "publishedAt": "2026-02-06T22:52:57.850+00:00",
+   "isListed": true,
+   "location": "US-CA-Menlo Park",
+   "jobUrl": "https://jobs.ashbyhq.com/snowflake/3eb872af-0ab1-4986-8f72-e7321fcd1538"
+  },
+  {
+   "id": "b9b85c1d-0760-4e28-9dfe-41724c8335a1",
+   "title": "Senior Data Scientist - Product",
+   "department": "Product Management",
+   "team": "Product Management",
+   "publishedAt": "2025-08-27T22:58:39.632+00:00",
+   "isListed": true,
+   "location": "US-CA-Menlo Park",
+   "jobUrl": "https://jobs.ashbyhq.com/snowflake/b9b85c1d-0760-4e28-9dfe-41724c8335a1"
+  },
+  {
+   "id": "45535603-aa9b-4fce-b3ac-6babf38da22b",
+   "title": "Sales Development Representative - German Speaker  ",
+   "department": "Sales Development",
+   "team": "Sales Development",
+   "publishedAt": "2026-10-29T16:43:09.666+00:00",
+   "isListed": true,
+   "location": "DE-Munich-MSO",
+   "jobUrl": "https://jobs.ashbyhq.com/snowflake/45535603-aa9b-4fce-b3ac-6babf38da22b"
+  },
+  {
+   "id": "440ec976-a307-4575-abab-554aef8151a4",
+   "title": "Solutions Architect",
+   "department": "Professional Services",
+   "team": "Professional Services",
+   "publishedAt": "2026-03-09T09:00:10.653+00:00",
+   "isListed": true,
+   "location": "IL-Israel-Remote",
+   "jobUrl": "https://jobs.ashbyhq.com/snowflake/440ec976-a307-4575-abab-554aef8151a4"
+  }
+ ]
+}

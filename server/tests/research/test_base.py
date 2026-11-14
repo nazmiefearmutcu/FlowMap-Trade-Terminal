@@ -71,6 +71,7 @@ def test_failure_reasons_never_carry_the_url() -> None:
     assert failure_reason(aiohttp.ClientConnectionError("https://x.test")) == "unreachable"
     assert failure_reason(TimeoutError()) == "unreachable"
     assert failure_reason(ValueError("over the limit")) == "malformed"
+    assert failure_reason(ValueError("response body is over the 100 byte limit")) == "too_large"
     assert failure_reason(SectionUnavailable("sec_contact_missing")) == "sec_contact_missing"
     assert failure_reason(RuntimeError("x")) == "failed"
 

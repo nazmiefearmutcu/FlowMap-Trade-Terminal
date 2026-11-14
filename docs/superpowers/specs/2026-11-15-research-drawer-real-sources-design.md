@@ -55,7 +55,7 @@ e-mail". The client keeps it in its settings and sends it to its own server in t
 `X-SEC-Contact` request header on the two SEC section requests only (never in a
 URL). The server checks it has an e-mail shape and uses
 `FlowMap/<version> <contact>` as the User-Agent for `sec.gov` hosts only. The
-environment variable `FLOWMAP_SEC_CONTACT` is the fallback (desktop shell passes
+environment variable `SEC_CONTACT_EMAIL` is the fallback (desktop shell passes
 it through like `FRED_API_KEY`). Without either, the two SEC sections answer
 `unavailable` with reason `sec_contact_missing`, and the drawer says where to set it.
 

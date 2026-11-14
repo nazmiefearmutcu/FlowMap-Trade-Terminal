@@ -27,6 +27,7 @@ import re
 import ssl
 import time
 from typing import Any
+import zipfile
 
 import aiohttp
 import certifi
@@ -147,7 +148,10 @@ def failure_reason(exc: BaseException) -> str:
         return f"http_{exc.status}"
     if isinstance(exc, (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, OSError)):
         return "unreachable"
-    if isinstance(exc, (ValueError, KeyError, TypeError, IndexError, json.JSONDecodeError)):
+    if isinstance(exc, ValueError) and "byte limit" in str(exc):
+        # read_capped_bytes refused a body over its cap: a size limit, not bad data.
+        return "too_large"
+    if isinstance(exc, (ValueError, KeyError, TypeError, IndexError, json.JSONDecodeError, zipfile.BadZipFile)):
         return "malformed"
     return "failed"
 

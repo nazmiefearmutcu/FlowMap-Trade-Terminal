@@ -1,0 +1,80 @@
+{
+ "spending_level": "awards",
+ "limit": 25,
+ "results": [
+  {
+   "internal_id": 295476065,
+   "Award ID": "DEAC0494AL85000",
+   "Recipient Name": "LOCKHEED MARTIN CORP",
+   "Awarding Agency": "Department of Energy",
+   "Awarding Sub Agency": "Department of Energy",
+   "Award Amount": 48063737196.35,
+   "Start Date": "1993-10-15",
+   "Description": null,
+   "generated_internal_id": "CONT_AWD_DEAC0494AL85000_8900_-NONE-_-NONE-",
+   "awarding_agency_id": 930,
+   "agency_slug": "department-of-energy"
+  },
+  {
+   "internal_id": 309494502,
+   "Award ID": "N0001917C0001",
+   "Recipient Name": "LOCKHEED MARTIN CORPORATION",
+   "Awarding Agency": "Department of Defense",
+   "Awarding Sub Agency": "Department of the Navy",
+   "Award Amount": 35135514910.2,
+   "Start Date": "2017-11-17",
+   "Description": "LRIP LOT 12 ADVANCE ACQUISITION CONTRACT",
+   "generated_internal_id": "CONT_AWD_N0001917C0001_9700_-NONE-_-NONE-",
+   "awarding_agency_id": 1173,
+   "agency_slug": "department-of-defense"
+  },
+  {
+   "internal_id": 295476177,
+   "Award ID": "DEAC0584OR21400",
+   "Recipient Name": "LOCKHEED MARTIN SERVICES, LLC",
+   "Awarding Agency": "Department of Energy",
+   "Awarding Sub Agency": "Department of Energy",
+   "Award Amount": 20646113720.09,
+   "Start Date": "1984-04-30",
+   "Description": "MANAGEMENT AND OPERATION OF Y-12 PLANT AND OTHER PROGRAMS",
+   "generated_internal_id": "CONT_AWD_DEAC0584OR21400_8900_-NONE-_-NONE-",
+   "awarding_agency_id": 930,
+   "agency_slug": "department-of-energy"
+  },
+  {
+   "internal_id": 311388067,
+   "Award ID": "NNJ06TA25C",
+   "Recipient Name": "LOCKHEED MARTIN CORP",
+   "Awarding Agency": "National Aeronautics and Space Administration",
+   "Awarding Sub Agency": "National Aeronautics and Space Administration",
+   "Award Amount": 15578682243.1,
+   "Start Date": "2006-09-06",
+   "Description": "TAS::80 0124::TAS DESIGN, DEVELOPMENT, TEST&EVALUATION OF PROJECT ORION",
+   "generated_internal_id": "CONT_AWD_NNJ06TA25C_8000_-NONE-_-NONE-",
+   "awarding_agency_id": 862,
+   "agency_slug": "national-aeronautics-and-space-administration"
+  },
+  {
+   "internal_id": 349072811,
+   "Award ID": "W58RGZ12C0008",
+   "Recipient Name": "SIKORSKY AIRCRAFT CORPORATION",
+   "Awarding Agency": "Department of Defense",
+   "Awarding Sub Agency": "Department of the Army",
+   "Award Amount": 11602480135.21,
+   "Start Date": "2012-06-06",
+   "Description": "MULTI SERVICE, 5 YR, MULTI-YR CONTRACT FOR H-60 HELICOPTERS.  FY2012   FY2016 PRODUCTION CONTRACT FOR ARMY/NAVY/FMS UH/HH/MH-60 HELICOPTERS TO INCLUDE PROCUREMENT OF UP TO 916 EACH AIRCRAFT AND RELATED SUPPORT, SERVICES, SYSTEMS/PROJECT MANAGEMENT, PUBLICATIONS, AND TECHNICAL DATA.  FMS COUNTRIES INCLUDE SAUDI ARABIAN NATIONAL GUARD (SANG), TAIWAN, THAILAND AND ROYAL AUSTRALIAN NAVY (RAN).",
+   "generated_internal_id": "CONT_AWD_W58RGZ12C0008_9700_-NONE-_-NONE-",
+   "awarding_agency_id": 1173,
+   "agency_slug": "department-of-defense"
+  }
+ ],
+ "page_metadata": {
+  "page": 1,
+  "hasNext": true,
+  "last_record_unique_id": 309495867,
+  "last_record_sort_value": "484084567777"
+ },
+ "messages": [
+  "For searches, time period start and end dates are currently limited to an earliest date of 2007-10-01.  For data going back to 2000-10-01, use either the Custom Award Download feature on the website or one of our download or bulk_download API endpoints as listed on https://api.usaspending.gov/docs/endpoints. "
+ ]
+}

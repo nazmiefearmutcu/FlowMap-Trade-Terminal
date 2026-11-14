@@ -78,6 +78,8 @@ const CHILD_ENV_ALLOWLIST: &[&str] = &[
     "ALPACA_API_SECRET",
     "FINNHUB_API_KEY",
     "FRED_API_KEY",
+    // The contact e-mail SEC EDGAR asks automated clients to send (research drawer).
+    "SEC_CONTACT_EMAIL",
     // Windows.
     "SYSTEMROOT",
     "SYSTEMDRIVE",
@@ -519,6 +521,7 @@ mod tests {
             "ALPACA_API_SECRET",
             "FINNHUB_API_KEY",
             "FRED_API_KEY",
+            "SEC_CONTACT_EMAIL",
         ] {
             assert!(
                 CHILD_ENV_ALLOWLIST.contains(&name),

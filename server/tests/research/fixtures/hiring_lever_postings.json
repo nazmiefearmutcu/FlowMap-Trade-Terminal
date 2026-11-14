@@ -1,0 +1,93 @@
+[
+ {
+  "id": "2a55d6c9-c564-443a-be3e-a3851db5a93b",
+  "text": "Account Executive - Commercial, Spotify Technology",
+  "createdAt": 1792767640768,
+  "categories": {
+   "commitment": "Permanent",
+   "department": "Operations and Business Support",
+   "location": "New York, NY",
+   "team": "Platform",
+   "allLocations": [
+    "New York, NY"
+   ]
+  },
+  "hostedUrl": "https://jobs.lever.co/spotify/2a55d6c9-c564-443a-be3e-a3851db5a93b"
+ },
+ {
+  "id": "a4651332-6400-40e8-8c22-5491e7a34161",
+  "text": "Analyst, Royalty Operations",
+  "createdAt": 1794254699733,
+  "categories": {
+   "department": "Finance",
+   "location": "Stockholm",
+   "team": "Accounting",
+   "allLocations": [
+    "Stockholm"
+   ]
+  },
+  "hostedUrl": "https://jobs.lever.co/spotify/a4651332-6400-40e8-8c22-5491e7a34161"
+ },
+ {
+  "id": "186b763a-2a61-4563-8813-ff6b40c9c8a7",
+  "text": "Backend Engineer - Data Platform",
+  "createdAt": 1790590791162,
+  "categories": {
+   "commitment": "Permanent",
+   "department": "Engineering",
+   "location": "Stockholm",
+   "team": "Platform",
+   "allLocations": [
+    "Stockholm",
+    "London"
+   ]
+  },
+  "hostedUrl": "https://jobs.lever.co/spotify/186b763a-2a61-4563-8813-ff6b40c9c8a7"
+ },
+ {
+  "id": "0eebb462-b5a2-4e3a-b830-d8ef7505b014",
+  "text": "Research Scientist - Generative Audio",
+  "createdAt": 1783694446886,
+  "categories": {
+   "commitment": "Permanent",
+   "department": "Data and Analytics",
+   "location": "New York, NY",
+   "team": "Music",
+   "allLocations": [
+    "New York, NY"
+   ]
+  },
+  "hostedUrl": "https://jobs.lever.co/spotify/0eebb462-b5a2-4e3a-b830-d8ef7505b014"
+ },
+ {
+  "id": "a9d581f9-1361-4227-b230-94a0d6ffdef4",
+  "text": "Product Designer",
+  "createdAt": 1793786448656,
+  "categories": {
+   "commitment": "Permanent",
+   "department": "Product",
+   "location": "Stockholm",
+   "team": "Platform",
+   "allLocations": [
+    "Stockholm",
+    "London"
+   ]
+  },
+  "hostedUrl": "https://jobs.lever.co/spotify/a9d581f9-1361-4227-b230-94a0d6ffdef4"
+ },
+ {
+  "id": "19c12e29-b6d4-4d97-9053-48238fb7c381",
+  "text": "Machine Learning Engineer - Subscriptions",
+  "createdAt": 1792774437686,
+  "categories": {
+   "commitment": "Permanent",
+   "department": "Engineering",
+   "location": "London",
+   "team": "Subscriptions R&D",
+   "allLocations": [
+    "London"
+   ]
+  },
+  "hostedUrl": "https://jobs.lever.co/spotify/19c12e29-b6d4-4d97-9053-48238fb7c381"
+ }
+]
