@@ -186,3 +186,18 @@ def test_the_route_answers_camel_case_and_refuses_unknown_sections(monkeypatch: 
         ).json()
         assert with_contact["status"] == "ok"
     assert ("risk-factors", "NVDA", "me@example.com") in fake.calls
+
+
+def test_a_cross_origin_page_may_send_the_sec_contact_header() -> None:
+    app = create_app(Config())
+    with TestClient(app) as client:
+        reply = client.options(
+            "/api/research/us/language?symbol=NVDA",
+            headers={
+                "Origin": "http://127.0.0.1:5173",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "x-sec-contact",
+            },
+        )
+    assert reply.status_code == 200
+    assert "x-sec-contact" in reply.headers.get("access-control-allow-headers", "").lower()

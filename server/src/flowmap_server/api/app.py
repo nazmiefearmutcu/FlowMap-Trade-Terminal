@@ -53,7 +53,8 @@ logger = logging.getLogger(__name__)
 # packaged webview (`tauri://localhost`, `http://tauri.localhost`) fetches the
 # directory cross-origin from the loopback sidecar, and loopback dev servers on
 # any port are trusted by both surfaces alike, so the two can no longer disagree.
-_CORS_ALLOW_HEADERS = ["X-FlowMap-Token"]
+# X-SEC-Contact carries the e-mail the two SEC research sections send to sec.gov.
+_CORS_ALLOW_HEADERS = ["X-FlowMap-Token", "X-SEC-Contact"]
 
 
 def _error_response(code: str, message: str, status_code: int) -> JSONResponse:
