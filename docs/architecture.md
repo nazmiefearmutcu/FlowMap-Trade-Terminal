@@ -58,6 +58,21 @@ with a specific crypto venue enumerates that venue live, behind a cache. The tab
 | `GET /api/recordings`, `GET /api/recordings/availability`, `GET /api/recordings/window` | List recorded sessions, report recorded hours, and preview a recorded window for the replay picker | `api/rest.py` |
 | `GET /api/previews` | Replay preview listing (see `api/discovery.py`) | `api/discovery.py` |
 | `WS /ws` | The binary event stream, guarded by an origin gate and a connection cap (see below) | `api/ws.py` |
+| `GET /api/research/{market}/{section}?symbol=` | One Research drawer section for one symbol. `market` is `us` (`risk-factors`, `language`, `contracts`, `house-trades`, `gex`, `short-volume`, `hiring`) or `crypto` (`derivatives`, `options`, `market`, `sentiment`). The body is camelCase `SectionResult`. A source failure is `status: "unavailable"` in the body, never a 5xx. The SEC sections read the optional `X-SEC-Contact` header. A malformed symbol or an unknown market or section is a 422 | `api/research.py` |
+
+### Research package (`server/src/flowmap_server/research/`)
+
+The Research drawer's data, one module per source family. `service.py` holds the section table (publisher and cache time) and the cache.
+
+- `base.py`: the `SectionResult` shape, the TTL cache with stale results, the 60 s retry floor and the shared HTTP helper.
+- `sec.py`: SEC EDGAR risk-factor changes and earnings-release language (`www.sec.gov`, `data.sec.gov`).
+- `contracts.py`: USAspending.gov government contract awards (`api.usaspending.gov`).
+- `congress.py`: House members' trades from the Clerk's PDF reports, read in the background (`disclosures-clerk.house.gov`, `unitedstates.github.io`).
+- `options.py`: gamma exposure and put/call open interest from Cboe delayed quotes and Deribit, fed to `core/gex.py`.
+- `short_volume.py`: FINRA Reg SHO daily short-sale volume (`cdn.finra.org`).
+- `hiring.py`: open positions on public Greenhouse, Lever and Ashby boards.
+- `crypto.py`: Binance Futures, CoinGecko, DefiLlama and the alternative.me Fear & Greed index.
+- `names.py`: company names by ticker, from the Nasdaq screener, for the name-search sections.
 
 ### Session statistics (`/api/health` v3)
 

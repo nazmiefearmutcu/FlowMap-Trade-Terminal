@@ -150,7 +150,7 @@ dev server is not under this policy, because it is not the packaged app.
 
 ## Where it connects
 
-Outbound traffic is market data. It comes from three paths, and only the first needs a subscription:
+Outbound traffic is market data. It comes from four paths, and only the first needs a subscription:
 
 - **A subscribed feed** contacts the hosts in its row of the table below while the session runs.
 - **Display quotes and movers** need no subscription. The watchlist rows, the background alert monitor
@@ -161,9 +161,11 @@ Outbound traffic is market data. It comes from three paths, and only the first n
   movers candidates (the crypto shortlist and the first 40 equity tickers) about every 30 seconds, and it
   makes one pass over the bundled crypto and equity symbol lists to fill the symbol palette's previews.
   These calls use the same hosts as the display rows below.
+- **Research drawer** contacts the hosts in its rows below when you open a section for a symbol. Nothing is
+  requested at launch for it.
 
-The table lists every host these paths can contact. The feed you subscribe to, the display quotes you look at
-and the launch warm-up decide which hosts are contacted.
+The table lists every host these paths can contact. The feed you subscribe to, the display quotes you look at,
+the launch warm-up and the sections you open in the Research drawer decide which hosts are contacted.
 
 | Feed | Host(s) | Notes |
 |---|---|---|
@@ -173,10 +175,15 @@ and the launch warm-up decide which hosts are contacted.
 | US equities, keyless last price | `www.google.com/finance` page scrape (default when no keyed source is configured) | Unofficial page scrape, used only by a subscribed keyless equity feed; display quotes use Yahoo. Its terms of use may not permit this use, and the maintainer has not confirmed them. Treat the price as informational |
 | US equities, keyless history and display quotes | `query1.finance.yahoo.com` / `query2.finance.yahoo.com` chart endpoint | Unofficial, undocumented endpoint with a generic `User-Agent`; history can stop without an error on screen. Watchlist, alert, equity-movers and warm-up quotes use it without a subscription |
 | US equities, depth and prints (subscribed keyless feed) | `www.cboe.com` (Cboe's public book viewer) | Public, no key. Covers four exchanges only: BZX, BYX, EDGX and EDGA. The books are read every 5 seconds |
-| Market map | `api.nasdaq.com` (stock screener), `api.coingecko.com` (coin markets) | Public, no key. Used by the market map |
+| Market map | `api.nasdaq.com` (stock screener), `api.coingecko.com` (coin markets) | Public, no key. Used by the market map, and by the Research drawer for US company names and CoinGecko's coin list |
 | US equities, optional upgrades | Alpaca (`ALPACA_API_KEY` + `ALPACA_API_SECRET`), Finnhub (`FINNHUB_API_KEY`) | **Market-data** credentials, read from your environment. A source run reads them from its shell. The installed app forwards these three variables from the environment that launches it to its server, through the shell's fixed allowlist ([`sidecar.rs`](app/src-tauri/src/sidecar.rs)). Both Alpaca variables are needed as a pair, and the webview never receives them |
 | Macro (SOFR, 10Y-2Y curve, high-yield spread) | `markets.newyorkfed.org` (SOFR), `home.treasury.gov` (Treasury par yield curve), `api.stlouisfed.org` (FRED, only when `FRED_API_KEY` is set) | Public, no key, except the FRED series, which needs a free FRED API key read from your environment. A source run reads it from its shell; the installed app forwards it from the environment that launches it to its server, and the webview never receives it. Without the key the high-yield spread and the stress regime stay missing. Used by the macro ticker and the research drawer's macro pane |
-| Dark pool, politics, aviation, contracts, headcount | `cdn.finra.org`, the House Stock Watcher S3 bucket, `opensky-network.org`, `api.usaspending.gov`, `boards-api.greenhouse.io` | Public data sources. Their feed modules exist, but no producer is started in this build, so these hosts are not contacted today. The EDGAR and vocal-stress modules are likewise not connected |
+| Research drawer, US stocks: SEC EDGAR (risk factors, earnings releases) | `www.sec.gov`, `data.sec.gov` | Public, no key. SEC asks automated clients to name a contact e-mail. The one you enter under Settings → Data (or the `SEC_CONTACT_EMAIL` variable) is sent only in the User-Agent to these two hosts, and only when you have entered one. Without it, the two SEC sections make no request and say where to set it. The field is sent to the local server in the `X-SEC-Contact` header on those two requests, never in a URL or to any other host |
+| Research drawer, US stocks: contracts and House trades | `api.usaspending.gov`, `disclosures-clerk.house.gov`, `unitedstates.github.io` | Public, no key. House trades come from the Clerk's yearly index and Periodic Transaction Report PDFs, read in the background after the first request. Committees come from the public congress-legislators dataset |
+| Research drawer, US stocks: option gamma and short-sale volume | `cdn.cboe.com` (redirects to `cdn-api.cboe.com`), `cdn.finra.org` | Public, no key. Cboe delayed option quotes and FINRA's daily Reg SHO files |
+| Research drawer, US stocks: hiring | `boards-api.greenhouse.io`, `api.lever.co`, `api.ashbyhq.com` | Public, no key. Only companies that publish on these job boards. Company names come from the Nasdaq screener (`api.nasdaq.com`, listed above) |
+| Research drawer, crypto | `fapi.binance.com`, `www.deribit.com`, `api.coingecko.com`, `api.llama.fi`, `api.alternative.me` | Public, no key. Binance USDⓈ-M perpetual futures, Deribit BTC and ETH options, CoinGecko markets, DefiLlama TVL, and the alternative.me Fear & Greed index |
+| Aviation (OpenSky) module, unwired | `opensky-network.org` | The feed module exists, but no producer is started in this build, so this host is not contacted today. The Research drawer's jets section makes no request |
 | `sim:SIM-DEMO` feed | none | No network at all. Use it to watch what the app does before giving it a live source |
 
 The WebGL2 client loads **no** external origin: no CDN, no web fonts, no analytics. Its typefaces

@@ -65,6 +65,8 @@ describe('AboutDialog', () => {
     expect(DATA_SOURCES).toContain('Google Finance');
     expect(DATA_SOURCES).toContain('Cboe');
     expect(DATA_SOURCES).toContain('FRED');
+    expect(DATA_SOURCES).toContain('SEC EDGAR');
+    expect(DATA_SOURCES).toContain('alternative.me');
     expect(el.querySelector('[data-testid="about-not-advice"]')?.textContent).toBe(t('about.notAdvice'));
   });
 

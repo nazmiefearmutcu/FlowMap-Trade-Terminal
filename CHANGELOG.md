@@ -24,6 +24,14 @@ Unreleased work sits on top of the newest listed commit.
 - Cursor tags on the axes. The pointer now shows a price tag on the price axis and a date-and-time tag on the
   time axis (weekday, day, month, `HH:MM:SS` in the chosen time zone), and the readout box uses words instead
   of abbreviations.
+- Research drawer on real sources. Its US-stock sections read free public sources without a key: risk-factor
+  changes and earnings-release language (SEC EDGAR), government contracts (USAspending.gov), House members'
+  trades (House Clerk reports), option gamma and short-sale volume (Cboe, FINRA) and hiring on public
+  Greenhouse, Lever and Ashby boards. Corporate jets have no source, and the section says so.
+- Research drawer crypto tabs: PERP (Binance Futures), OPTIONS (Deribit, BTC and ETH), MARKET (CoinGecko and
+  DefiLlama) and SENTIMENT (alternative.me Fear & Greed index).
+- SEC contact e-mail under Settings → Data. SEC EDGAR asks automated clients to name a contact; the address is
+  sent only to SEC's hosts, in the User-Agent, and only when entered. `SEC_CONTACT_EMAIL` is the fallback.
 
 ### Fixed
 
@@ -37,6 +45,8 @@ Unreleased work sits on top of the newest listed commit.
   data whatever the *History depth* setting said. It now loads on every price range.
 - Turkish: "spread" is translated as *makas* everywhere. The DOM ladder said *fark*, the high-yield notes
   said *tahvil farkı* and the Research drawer's macro bar was untranslated.
+- The Research drawer never showed data. No part of the server sent the messages it listened for, so every
+  section stayed empty. Its sections now answer over REST (`GET /api/research/{market}/{section}`).
 
 ### Changed
 
@@ -44,10 +54,15 @@ Unreleased work sits on top of the newest listed commit.
   is drawn for that period. The volume-derived "reconstructed" density is gone.
 - The whole window is drawn in the pixel style, and the chart always in the smooth style. The chart's axes,
   crosshair readout, legends, measure tool, drawings, alert lines, indicators and CVD pane stay smooth too.
+- The vocal-stress card in the Research drawer is now management language: hedging and uncertainty words per
+  1,000 words of the written earnings release, with the change from the previous release. It is measured from
+  the release text, not from the call audio.
 
 ### Removed
 
 - Settings → Display → Interface style (Normal / Pixel). A pixel choice saved by an earlier version is ignored.
+- The unwired collectors `feeds/capitol.py`, `feeds/contracts.py`, `feeds/darkpool.py` and `feeds/headcount.py`.
+  The House Stock Watcher source they read no longer answers, so it is no longer read.
 - The synthetic equity heatmap. Live equities no longer draw depth, a DOM or a Bid/Ask derived from bar
   volume. Recordings made by earlier versions still replay as recorded, labelled SYNTH.
 - `FLOWMAP_BACKFILL_STRETCH` and `FLOWMAP_BACKFILL_SHAPE`, which shaped the removed reconstructed density.

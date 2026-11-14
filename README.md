@@ -14,6 +14,7 @@ FlowMap Trade Terminal is a desktop application for studying liquidity and order
 - Records sessions to Parquet and replays the recorded data with seeking, pause, and speed controls. Recording is on by default in the installed app; turn it off under Settings > Data, or set `"enabled": false` in `recording.json` in the app data folder before launch (see [SECURITY.md](SECURITY.md#what-it-writes)). From source, `FLOWMAP_RECORDING_ENABLED=0` turns it off. The default soft limit is 20 GB; the oldest recording parts are removed as it is exceeded, except the `*-epochs-*` parts, which are kept.
 - Draws the window in a pixel style in the theme colours, while the chart keeps the smooth heatmap.
 - Exports chart images and finalized depth columns as CSV or JSON.
+- Research drawer, with real public sources. On a US stock: risk-factor changes and earnings-release language (SEC EDGAR), government contract awards (USAspending.gov), House members' trades (House Clerk reports), option gamma levels (Cboe delayed quotes), short-sale volume (FINRA Reg SHO) and hiring (public Greenhouse, Lever and Ashby job boards). On a crypto coin: perpetual futures (Binance Futures), BTC and ETH options (Deribit), market data (CoinGecko, DefiLlama) and the Fear & Greed index (alternative.me). Corporate jets have no source; the section says so.
 - Runs in a Tauri desktop shell or as a local browser client. The interface supports English and Turkish, themes, and keyboard controls. Settings > Keyboard can turn off the single-key shortcuts; Ctrl and Cmd chords and the arrow keys keep working. Its typefaces are bundled, so the client loads nothing from the web. Settings > About and legal shows the version, the licence and the data-source attribution.
 
 ### Live market example
@@ -47,6 +48,7 @@ When a US equity is closed, the chart shows its last session's price history whe
 - Equity price history: Yahoo Finance.
 - Market map: Nasdaq's screener and CoinGecko.
 - Macro ticker: the New York Fed (SOFR), the US Treasury (10Y-2Y yield curve) and FRED (high-yield spread, only with a FRED API key).
+- Research drawer: SEC EDGAR (risk factors and earnings releases), USAspending.gov, the House Clerk, Cboe (delayed quotes), FINRA (Reg SHO), Greenhouse, Lever and Ashby (job boards), Binance Futures, Deribit, CoinGecko, DefiLlama and alternative.me.
 
 ### Data providers, attribution and limits
 
@@ -58,7 +60,7 @@ Yahoo Finance endpoints. US equity depth and prints come from Cboe's public book
 and EDGA). The keyless last price, the fallback for a symbol with no recent Cboe print, comes from an
 unofficial Google Finance page. The market map uses Nasdaq's stock screener and CoinGecko. The macro
 ticker uses the New York Fed, the US Treasury and, with a FRED API key, FRED.
-The dark-pool (FINRA), politics (House Stock Watcher), aviation (OpenSky Network), contract (USAspending) and job-board (Greenhouse) feed modules, and the EDGAR and vocal-stress modules, exist, but no producer runs in this build, so those sources are not connected and not contacted today. Each provider's terms of use apply to the data you view through FlowMap. Check them
+The Research drawer reads the sources listed in the features above, and only when you open a section for a symbol. The aviation (OpenSky Network) feed module exists, but no producer runs for it in this build, so OpenSky is not contacted. The jets section makes no request. Each provider's terms of use apply to the data you view through FlowMap. Check them
 before you rely on the data, redistribute a screenshot, or build on the same endpoints.
 
 Data can be delayed, incomplete or unavailable. Keyless sources can stop without notice. **FlowMap
@@ -149,6 +151,7 @@ Set environment variables before starting the service. Common settings are:
 | `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Optional equity market-data credentials; supply both, because one alone is ignored. A source run reads them from its environment. The installed app forwards them from the environment that launches it to its server (a fixed allowlist in `app/src-tauri/src/sidecar.rs`); the webview never receives them. |
 | `FINNHUB_API_KEY` | Optional equity tape access. A source run reads it from its environment. The installed app forwards it from the environment that launches it to its server; the webview never receives it. |
 | `FRED_API_KEY` | Optional; a free FRED API key. Adds the high-yield spread and the stress regime to the macro ticker. |
+| `SEC_CONTACT_EMAIL` | Optional; the contact e-mail SEC EDGAR asks automated clients to send. It is used in the User-Agent for `sec.gov` hosts only, for the Research drawer's risk-factor and language sections. The SEC contact field in Settings → Data wins over it when both are set. |
 | `FLOWMAP_SESSION_TOKEN` | Set by the desktop shell at each launch; when present, every request (except `/api/health` and CORS preflight) must send it in `X-FlowMap-Token`, and every WebSocket connection must offer it as the `flowmap.auth.<token>` subprotocol (on a WebSocket, the `token` query parameter is accepted for tools). Leave it unset for source runs. |
 
 Logs in the installed app go to the app data folder: `flowmap-server.log` (the server's output, moved to `flowmap-server.previous.log` at 20 MB) and `shell.log` (the shell's lifecycle messages, moved to `shell.previous.log` at 1 MB, at the next launch). The per-OS paths are in the [security guide](SECURITY.md#what-it-writes).

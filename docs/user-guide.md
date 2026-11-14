@@ -314,21 +314,118 @@ exactly the column data the server delivered.
 
 ## Intelligence drawer
 
-The intelligence drawer holds four research tabs: **FLOW**, **GOV**, **DOCS** and **GEO**. Open it from the
-**Research** button in the top bar, or press `J`. **MACRO** is a footer bar at the bottom of the drawer, with
-SOFR, HY OAS, 10Y-2Y and a heuristic stress regime.
+The Research drawer shows real data from free public sources, with no key needed for any of them. Open it
+from the **Research** button in the top bar, or press `J`. The tabs follow the active symbol's market:
 
-- Every view shows only what its connected sources supply. When no source supplies data, the view
-  says it is unavailable; it never fills the gap with sample figures. Demo content comes only from
-  `sim:SIM-DEMO`.
-- **GEX** (gamma exposure) is a model, shown in millions of dollars per 100% move in the underlying.
-  Its sign convention (calls positive, puts negative) is an assumption and does not establish dealer
-  positioning. The gamma flip appears only when a sign change exists in observed option data.
-- Text sources are summarized, not scored. A filing without a risk section does not produce a risk
-  warning.
-- The feed modules for these sources exist, but no server producer runs for them in this build. Their
-  sources are not connected, so the drawer lists them as "Not connected, hidden" and their modules do not appear.
-- Feed names and tab labels are English-only in this release.
+- **US stock:** four tabs, **DOCS**, **GOV**, **FLOW** and **GEO**.
+- **Crypto coin:** four tabs, **PERP**, **OPTIONS**, **MARKET** and **SENTIMENT**.
+- **Other markets:** a note that the drawer does not cover them.
+
+**MACRO** is a footer bar at the bottom of the drawer, with SOFR, HY OAS, 10Y-2Y and a heuristic stress
+regime.
+
+### US stock tabs
+
+- **DOCS**
+  - *Risk factor changes* (SEC EDGAR): the two newest 10-K or 10-Q filings that have a Risk Factors section
+    (Item 1A) of at least 500 characters. The drawer lists the paragraphs added in the newer filing and the
+    paragraphs it dropped. Paragraphs that contain a term from a fixed list (going concern, material weakness,
+    restatement, investigation, subpoena, default, impairment, cybersecurity incident) are marked as triggers.
+    The list shows changed text only; it does not rate how much a change matters.
+  - *Management language* (SEC EDGAR): the two newest earnings releases, filed on Form 8-K under Item 2.02 with
+    an Exhibit 99 attached. The drawer shows how often hedging words and uncertainty words appear per 1,000
+    words, for the newest release and the one before it, the change between them, and the two release dates.
+    The word lists are the app's own short lists. The safe-harbour paragraphs that repeat in every release
+    (those that mention forward-looking statements) are left out. This measures the written release, not the
+    audio of the call.
+- **GOV**
+  - *Government contracts* (USAspending.gov): award recipients matching the company's name, contract award
+    types A to D, over the last 365 days. The drawer shows up to 10 awards, largest first, with recipient,
+    agency, amount, date and description. The total shown is the total of those listed awards, not the
+    company's total. A company with no matching award shows an empty result.
+  - *House trades* (House Clerk): Periodic Transaction Reports filed by House members, for this ticker,
+    newest transaction first, up to 25 rows. Each row shows the member's name, state and district, the
+    member's committees, the transaction type, the amount range and the date. See
+    [House reports](#house-reports) for the coverage line.
+- **FLOW**
+  - *Gamma exposure* (Cboe delayed quotes): the model described under GEX below, with the call wall, the put
+    wall, the gamma flip and the put/call open-interest ratio.
+  - *Short-sale volume* (FINRA Reg SHO): the newest daily file and the four before it, with short volume,
+    short-exempt volume, total volume, the short ratio and the 5-day average ratio.
+- **GEO**
+  - *Hiring* (public Greenhouse, Lever and Ashby job boards): the provider named, total open positions,
+    open research and development positions, positions first published in the last 30 days and in the 30 days
+    before that, and the change between the two, with a status of expanding (more than +10 %), slowing (less
+    than -10 %) or steady. The app reads only companies that publish on one of these three boards. Companies
+    on other systems show "not applicable". The app does not read Workday.
+  - *Corporate jets*: no source. The section says so and makes no request. No free registry maps aircraft
+    to listed companies.
+
+### Crypto tabs
+
+- **PERP** (Binance USDⓈ-M perpetual futures): the funding rate and its annualized figure, the next funding
+  time, open interest in coins and in USD, the long/short account ratio and the taker buy/sell ratio. Only
+  coins with a USDT perpetual on Binance have this tab's data.
+- **OPTIONS** (Deribit, BTC and ETH only): gamma levels (net GEX, call and put walls, gamma flip), the
+  put/call open-interest ratio and max pain for the nearest monthly expiry. Other coins show "not applicable",
+  because Deribit lists no options on them.
+- **MARKET** (CoinGecko, and DefiLlama for TVL): price change over 24 hours, 7 days and 30 days, market-cap rank,
+  circulating, total and maximum supply, the distance from the all-time high, and total value locked (TVL)
+  when DefiLlama lists the coin. Only the 250 largest coins by market cap are covered; a smaller coin shows
+  "not applicable".
+- **SENTIMENT** (alternative.me Fear & Greed index): the current value and label, and the 7-day and 30-day
+  path. The index covers the whole crypto market, not one coin, so the same figures show on every coin.
+
+### Section statuses
+
+Each section shows one of these states:
+
+- **Data:** the figures from the source, with the source's name.
+- **Nothing for this symbol:** the source answered and has no record for this symbol (for example no
+  award, or no filing with enough risk-factor text). The drawer says so; it does not show a zero.
+- **Not applicable:** the section cannot apply to this symbol, and the drawer gives the reason (for example
+  no public job board, no perpetual futures, or no options market).
+- **Source unavailable:** the source could not be read, and the drawer gives the reason. A reason that the
+  SEC contact is missing names the place to set it (see below).
+- **Last successful read:** when a refresh fails and an earlier result exists, the drawer shows that earlier
+  result with the time it was read.
+
+A dash means no value, and the reason for it is shown next to the dash. The drawer never fills a gap with
+an estimate.
+
+### SEC contact e-mail
+
+The two SEC sections (risk factor changes and management language) need a contact e-mail. SEC EDGAR asks
+automated clients to name a contact in each request, and it refuses requests that do not. Enter one under
+**Settings → Data**, in the field **SEC contact e-mail**. The app sends it only in the request's User-Agent
+header to SEC's hosts (`www.sec.gov` and `data.sec.gov`), and only when you have entered one. The field goes
+from the app to its own local server in a request header, never in a web address. Without a contact e-mail,
+the two SEC sections show "source unavailable" with the reason and make no request. The
+`SEC_CONTACT_EMAIL` environment variable can supply the same value when the field is empty; the field wins
+when both are set.
+
+### House reports
+
+The House Clerk publishes each Periodic Transaction Report as a PDF. On first use the app starts reading the
+current and previous year's reports in the background, newest first, and keeps the parsed rows on disk under
+the app data folder (the PDFs themselves are not kept). The GOV tab answers from the reports read so far, and
+its coverage line says how many reports have been read, for example "read 120 of 468 reports". Reports that
+have no text (scanned paper filings) cannot be read and are counted as unreadable. A ticker that appears in a
+report not yet read will show only after that report is read.
+
+### GEX
+
+- **GEX** (gamma exposure) is a model. Its sign convention (calls positive, puts negative) is an assumption
+  and does not establish dealer positioning. The gamma flip appears only when a sign change exists in
+  observed option data.
+
+### Other notes
+
+- Text sources are summarized and measured, not scored. A filing without a risk section does not produce a
+  risk warning.
+- Every view shows only what its connected sources supply. It never fills a gap with sample figures. Demo
+  content comes only from `sim:SIM-DEMO`.
+- The Research drawer's tab labels and source names are English-only in this release.
 
 ## Keyboard & pointer reference
 
