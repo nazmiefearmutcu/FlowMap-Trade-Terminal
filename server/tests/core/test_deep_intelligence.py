@@ -8,10 +8,7 @@ import pytest
 
 from flowmap_server.core.gex import OptionContract, calculate_gex, bs_gamma
 from flowmap_server.data.warehouse import DuckWarehouse
-from flowmap_server.feeds.contracts import DefenseContractsListener
-from flowmap_server.feeds.capitol import CapitolTradesWatcher
 from flowmap_server.feeds.aviation import CorporateJetTracker
-from flowmap_server.feeds.headcount import HeadcountVelocityTracker
 from flowmap_server.feeds.macro import MacroStressPoller
 from flowmap_server.nlp.edgar_diff import compute_risk_delta, extract_risk_factors
 from flowmap_server.nlp.vocal_stress import compute_vocal_stress_score, analyze_transcript_qa_segment
@@ -118,19 +115,6 @@ async def test_unavailable_feeds_never_persist_fabricated_data(monkeypatch, sour
     # Real warehouse makes accidental inserts observable; no test performs HTTP.
     with tempfile.TemporaryDirectory() as tmpdir:
         wh = DuckWarehouse(f"{tmpdir}/wh.duckdb")
-        listener = DefenseContractsListener(wh)
-        monkeypatch.setattr(listener, "_get_session", AsyncMock(return_value=Session()))
-        awards = await listener.fetch_recent_contracts()
-        assert awards == []
-        await listener.close()
-
-        # Capitol
-        capitol = CapitolTradesWatcher(wh)
-        monkeypatch.setattr(capitol, "_get_session", AsyncMock(return_value=Session()))
-        trades = await capitol.fetch_recent_trades()
-        assert trades == []
-        await capitol.close()
-
         # Aviation
         aero = CorporateJetTracker(verified_registry={
             "abcdef": {"symbol": "TEST", "company": "Test fixture", "tail": "TEST-1"},
@@ -139,14 +123,6 @@ async def test_unavailable_feeds_never_persist_fabricated_data(monkeypatch, sour
         flights = await aero.check_aircraft_states()
         assert flights == []
         await aero.close()
-
-        # Headcount
-        hc = HeadcountVelocityTracker()
-        monkeypatch.setattr(hc, "_get_session", AsyncMock(return_value=Session()))
-        talent = await hc.fetch_company_headcount("PLTR")
-        assert talent["total_openings"] is None
-        assert talent["talent_index_delta_pct"] is None
-        await hc.close()
 
         # Macro
         macro = MacroStressPoller(api_key="test-key", warehouse=wh)

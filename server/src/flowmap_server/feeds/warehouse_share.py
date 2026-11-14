@@ -1,7 +1,7 @@
 """One process-wide DuckWarehouse for the intelligence collectors.
 
-Darkpool, capitol, contracts and macro share one DuckDB handle when built without
-an explicit warehouse, so they do not each open their own connection. The handle
+Collectors built without an explicit warehouse (today: macro) share one DuckDB
+handle, so they do not each open their own connection. The handle
 is closed at interpreter exit. The collectors write from the
 event-loop thread, so the single DuckDB connection is never used concurrently.
 """

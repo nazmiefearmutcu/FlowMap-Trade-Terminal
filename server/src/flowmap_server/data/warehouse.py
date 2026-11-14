@@ -110,7 +110,7 @@ class DuckWarehouse:
     def _migrate_darkpool_column(self) -> None:
         """Rename the legacy divergence column to its honest name.
 
-        The column is a short-share threshold flag (feeds/darkpool.py), not an
+        The column is a short-share threshold flag (from a removed collector), not an
         institutional-divergence measure. Existing stores keep their rows.
         """
         columns = self._columns("darkpool_volume")
