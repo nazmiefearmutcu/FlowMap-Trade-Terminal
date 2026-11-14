@@ -101,6 +101,8 @@ _WORD = re.compile(r"[a-z][a-z']*")
 _TOKEN = re.compile(r"[a-z0-9']+")
 
 _ITEM_1A = re.compile(r"^item\s*1a\b[.:\s-]*", re.IGNORECASE)
+# Page numbers and the table-of-contents link repeated on every page.
+_PAGE_FURNITURE = re.compile(r"(?i)(?:page\s*)?\d{1,4}|[ivxlc]{1,6}|table of contents|\d{1,4}\s*\|.*")
 _ITEM_END = re.compile(r"^item\s*(1b|1c|2|3)\b[.:\s-]*", re.IGNORECASE)
 _EXHIBIT_ROW = re.compile(
     r'<a href="(?P<href>/Archives/edgar/data/[^"]+\.html?)"[^>]*>[^<]*</a>[^<]*</td>\s*'
@@ -187,7 +189,7 @@ def item_1a(paragraphs: list[str]) -> list[str]:
         while end < len(paragraphs) and not _ITEM_END.match(paragraphs[end]):
             end += 1
         # Page headers repeat the Item 1A heading inside the section: not risk text.
-        span = [p for p in paragraphs[start + 1:end] if not _ITEM_1A.match(p)]
+        span = [p for p in paragraphs[start + 1:end] if not _ITEM_1A.match(p) and not _PAGE_FURNITURE.fullmatch(p)]
         if sum(map(len, span)) > sum(map(len, best)):
             best = span
     return best

@@ -265,3 +265,8 @@ async def test_a_failed_ticker_map_refresh_waits_before_trying_again() -> None:
 
 def test_trigger_plurals_count() -> None:
     assert risk_diff([], ["Several government investigations are ongoing."])["triggers"] == ["investigation"]
+
+
+def test_page_numbers_and_contents_links_are_not_risk_text() -> None:
+    paragraphs = ["Item 1A. Risk Factors", "First risk.", "34", "Table of Contents", "ii", "Second risk.", "Item 2. Other"]
+    assert item_1a(paragraphs) == ["First risk.", "Second risk."]
