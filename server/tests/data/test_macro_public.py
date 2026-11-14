@@ -443,20 +443,20 @@ class _FakeResponse:
 
 
 async def test_capped_read_returns_a_body_within_the_limit():
-    from flowmap_server.data.macro_public import _read_capped
+    from flowmap_server.data.market_map import read_capped_bytes as _read_capped
 
     assert await _read_capped(_FakeResponse(b"abc"), limit=10) == b"abc"
 
 
 async def test_capped_read_refuses_a_declared_length_over_the_limit():
-    from flowmap_server.data.macro_public import _read_capped
+    from flowmap_server.data.market_map import read_capped_bytes as _read_capped
 
     with pytest.raises(ValueError):
         await _read_capped(_FakeResponse(b"abc", declared=500), limit=10)
 
 
 async def test_capped_read_stops_an_undeclared_body_over_the_limit():
-    from flowmap_server.data.macro_public import _read_capped
+    from flowmap_server.data.market_map import read_capped_bytes as _read_capped
 
     with pytest.raises(ValueError):
         await _read_capped(_FakeResponse(b"x" * 200_000), limit=100_000)

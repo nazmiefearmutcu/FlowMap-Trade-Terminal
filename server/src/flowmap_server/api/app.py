@@ -29,7 +29,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from flowmap_server import __version__
-from flowmap_server.api import _env, discovery, export, lifecycle, macro, market_map, rest, ws
+from flowmap_server.api import _env, discovery, export, lifecycle, macro, market_map, research, rest, ws
 from flowmap_server.api.market_cache import (
     MarketDataCache,
     default_movers_fn,
@@ -251,6 +251,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await close_macro()
             except Exception as exc:
                 logger.warning("macro data did not close cleanly: %s", type(exc).__name__)
+        # The Research service holds an HTTP session and, once used, the House
+        # reports background task; both stop here.
+        research_service = getattr(app.state, "research", None)
+        close_research = getattr(research_service, "close", None)
+        if callable(close_research):
+            try:
+                await close_research()
+            except Exception as exc:
+                logger.warning("research data did not close cleanly: %s", type(exc).__name__)
         close_cache = getattr(market_cache, "aclose", None)
         if callable(close_cache):
             await close_cache()
@@ -326,6 +335,8 @@ def create_app(
     app.state.cfg = cfg
     app.state.manager = manager
     app.state.market_cache = market_cache
+    # The Research drawer's on-disk cache (House reports) sits beside the recordings.
+    app.state.research_dir = Path(cfg.data_dir).expanduser().parent / "research"
     # Per-process WS connection cap counter (api/ws.py; per-app == per-process
     # under the single-app uvicorn sidecar).
     app.state.ws_live_connections = 0
@@ -345,6 +356,7 @@ def create_app(
     app.include_router(discovery.router)
     app.include_router(market_map.router)
     app.include_router(macro.router)
+    app.include_router(research.router)
     app.include_router(export.router)
     app.include_router(ws.router)
     return app

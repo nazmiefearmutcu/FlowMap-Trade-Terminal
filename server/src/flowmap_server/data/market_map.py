@@ -166,7 +166,7 @@ def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _clean_name(name: str, symbol: str) -> str:
+def clean_company_name(name: str, symbol: str) -> str:
     match = _US_NAME_CUT.search(name)
     cut = name[: match.start()] if match else name
     return cut.strip() or symbol
@@ -186,8 +186,8 @@ class _Body(Protocol):
     def content(self) -> _Stream: ...
 
 
-async def read_capped_json(response: _Body, *, limit: int) -> object:
-    """Decode a JSON body no larger than ``limit`` bytes.
+async def read_capped_bytes(response: _Body, *, limit: int) -> bytes:
+    """Read a body no larger than ``limit`` bytes.
 
     A declared Content-Length above the limit is refused before anything is read.
     Otherwise the body is read in chunks and the read stops as soon as it passes
@@ -204,7 +204,12 @@ async def read_capped_json(response: _Body, *, limit: int) -> object:
         body += chunk
         if len(body) > limit:
             raise ValueError(f"response body is over the {limit} byte limit")
-    return json.loads(bytes(body))
+    return bytes(body)
+
+
+async def read_capped_json(response: _Body, *, limit: int) -> object:
+    """Decode a JSON body no larger than ``limit`` bytes (see ``read_capped_bytes``)."""
+    return json.loads(await read_capped_bytes(response, limit=limit))
 
 
 def _describe(exc: Exception) -> str:
@@ -242,7 +247,7 @@ def _us_item(row: object) -> MapItem | None:
     )
     return MapItem(
         symbol=symbol,
-        name=_clean_name(_text(row.get("name")), symbol),
+        name=clean_company_name(_text(row.get("name")), symbol),
         group=_text(row.get("sector")) or "Other",
         market_cap=market_cap,
         price=price,

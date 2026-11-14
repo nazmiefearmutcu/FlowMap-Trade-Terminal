@@ -22,6 +22,7 @@ dependencies = [
   "polars>=1.0",
   "fastapi>=0.111",
   "uvicorn>=0.30",
+  "pypdf>=6,<7",
 ]
 
 [dependency-groups]
@@ -64,6 +65,7 @@ files = [
   "src/flowmap_server/nlp",
   "src/flowmap_server/proto",
   "src/flowmap_server/api",
+  "src/flowmap_server/research",
   "src/flowmap_server/logging_setup.py",
   "src/flowmap_server/benchmark_provenance.py",
   "src/flowmap_server/_compat.py",

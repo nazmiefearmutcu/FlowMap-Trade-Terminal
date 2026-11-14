@@ -25,13 +25,13 @@ import os
 import ssl
 import time
 from collections.abc import Awaitable, Callable
-from typing import Protocol
 
 import aiohttp
 import certifi
 import msgspec
 
 from flowmap_server import __version__
+from flowmap_server.data.market_map import read_capped_bytes
 from flowmap_server.feeds.macro import MacroStressPoller, score_reading
 
 __all__ = [
@@ -69,7 +69,6 @@ _TIMEOUT_S = 10.0
 _SOFR_BODY_LIMIT = 256 * 1024
 # One year of the Treasury file is about 250 rows of roughly 120 bytes.
 _CURVE_BODY_LIMIT = 2 * 1024 * 1024
-_READ_CHUNK = 64_000
 _HEADERS = {"User-Agent": f"FlowMap/{__version__}"}
 _JSON_HEADERS = {**_HEADERS, "Accept": "application/json"}
 _CSV_HEADERS = {**_HEADERS, "Accept": "text/csv"}
@@ -212,36 +211,6 @@ def parse_treasury_curve_csv(text: str) -> Observation:
         # A missing column name raises ValueError from list.index.
         raise MacroSourceError("malformed") from None
     raise MacroSourceError("no_observation")
-
-
-class _Stream(Protocol):
-    async def read(self, n: int = -1) -> bytes: ...
-
-
-class _Body(Protocol):
-    """The part of an aiohttp response the bounded reader needs."""
-
-    @property
-    def content_length(self) -> int | None: ...
-
-    @property
-    def content(self) -> _Stream: ...
-
-
-async def _read_capped(response: _Body, *, limit: int) -> bytes:
-    """The body, read in chunks and refused past ``limit`` bytes (a declared length is checked first)."""
-    declared = response.content_length
-    if declared is not None and declared > limit:
-        raise ValueError(f"response declares {declared} bytes, over the {limit} byte limit")
-    body = bytearray()
-    while True:
-        chunk = await response.content.read(_READ_CHUNK)
-        if not chunk:
-            break
-        body += chunk
-        if len(body) > limit:
-            raise ValueError(f"response body is over the {limit} byte limit")
-    return bytes(body)
 
 
 def _fred_reason(reason: str) -> str:
@@ -444,7 +413,7 @@ class MacroPublicService:
             ) as response:
                 if response.status != 200:
                     raise MacroSourceError(f"http_{response.status}")
-                return await _read_capped(response, limit=limit)
+                return await read_capped_bytes(response, limit=limit)
         except MacroSourceError:
             raise
         except ValueError:
