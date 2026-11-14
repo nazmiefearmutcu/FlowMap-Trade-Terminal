@@ -140,37 +140,12 @@ describe('SettingsDrawer range accessibility', () => {
   });
 });
 
-describe('SettingsDrawer chart style', () => {
-  it('renders Normal and Pixel as a two-option radio group, normal checked by default', () => {
+describe('SettingsDrawer interface style', () => {
+  it('offers no Normal / Pixel choice: the window is always pixel and the chart smooth', () => {
     setLocale('en');
     const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
-    const group = container.querySelector('[data-testid="setting-chartStyle"]');
-    expect(group?.getAttribute('role')).toBe('radiogroup');
-    const normal = container.querySelector('[data-testid="chartStyle-normal"]') as HTMLButtonElement;
-    const pixel = container.querySelector('[data-testid="chartStyle-pixel"]') as HTMLButtonElement;
-    expect(normal.textContent).toBe('Normal');
-    expect(pixel.textContent).toBe('Pixel');
-    expect(normal.getAttribute('aria-checked')).toBe('true');
-    expect(pixel.getAttribute('aria-checked')).toBe('false');
-  });
-
-  it('emits a chartStyle patch when the user picks Pixel', () => {
-    setLocale('en');
-    const onChange = vi.fn();
-    const { container } = render(<SettingsDrawer settings={settings()} onChange={onChange} onClose={() => {}} />);
-    click(container.querySelector('[data-testid="chartStyle-pixel"]')!);
-    expect(onChange).toHaveBeenCalledWith({ chartStyle: 'pixel' });
-  });
-
-  it('shows the Turkish labels under the Turkish locale', () => {
-    setLocale('tr');
-    try {
-      const { container } = render(<SettingsDrawer settings={settings()} onChange={() => {}} onClose={() => {}} />);
-      expect(container.querySelector('[data-testid="chartStyle-pixel"]')?.textContent).toBe('Piksel');
-      expect(container.querySelector('[data-testid="chartStyle-normal"]')?.textContent).toBe('Normal');
-    } finally {
-      setLocale('en');
-    }
+    expect(container.querySelector('[data-testid="setting-chartStyle"]')).toBeNull();
+    expect(container.querySelector('[data-testid^="chartStyle-"]')).toBeNull();
   });
 });
 

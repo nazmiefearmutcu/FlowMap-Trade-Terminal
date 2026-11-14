@@ -5,7 +5,7 @@ says so below.
 
 | Document | Status | What it covers |
 |---|---|---|
-| [user-guide.md](user-guide.md) | Current | Using the app: install, first run, heatmap, replay, drawings, chart style, intelligence drawer, shortcuts |
+| [user-guide.md](user-guide.md) | Current | Using the app: install, first run, heatmap, replay, drawings, interface style, intelligence drawer, shortcuts |
 | [architecture.md](architecture.md) | Current | Processes, HTTP routes, WebSocket and wire protocol, session token and origin policy |
 | [development.md](development.md) | Current | Dev environment, tests, CI and release workflows, repository layout |
 | [i18n-migration.md](i18n-migration.md) | Developer notes | Rules for UI strings, the English and Turkish tables, and number, price and time formatting |

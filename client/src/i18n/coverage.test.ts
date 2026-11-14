@@ -11,7 +11,6 @@ import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { CHART_STYLES } from '../gl/heatmap';
 import { COLORMAP_CATALOG } from '../theme/colormaps';
 import { THEME_IDS } from '../theme';
 import { FEED_KEY } from '../ui/MarketStrip';
@@ -85,7 +84,6 @@ describe('keys built at run time resolve in English', () => {
   const dynamicKeys = [
     ...THEME_IDS.flatMap((id) => [`theme.${id}.name`, `theme.${id}.hint`]),
     ...TIME_ZONE_PREFS.map((pref) => `settings.tz.${pref}`),
-    ...CHART_STYLES.map((style) => `settings.chartStyle.${style}`),
     ...COLORMAP_CATALOG.map((colormap) => `palette.${colormap.hint}`),
     ...COLORMAP_CATALOG.flatMap((colormap) => (colormap.nameKey ? [colormap.nameKey] : [])),
     // Trade side labels are chosen by a ternary in IntelligenceDrawerPanes.tsx, which the literal scan cannot see.

@@ -1,9 +1,12 @@
 /*
  * Pixel interface style.
  *
- * Settings > Display > Interface style = Pixel stamps `data-ui-style="pixel"` on
- * the root element (theme/uiStyle.ts). The chart then draws blocks, and this sheet
- * moves the rest of the window to the same language.
+ * The window is always drawn in this style: index.html carries
+ * `data-ui-style="pixel"` on the root element and there is no setting for it.
+ * The chart is the exception. The renderer draws the smooth heatmap, and the
+ * parts drawn on or beside it (axes, crosshair, legends, measure, drawings,
+ * alert lines, indicator overlay, CVD pane) keep the smooth faces and corners;
+ * see the "Chart" block below.
  *
  * It changes FORM only. Every colour still comes from the active theme's tokens,
  * so the style works with each theme and keeps that theme's contrast.
@@ -44,20 +47,34 @@ html:root[data-ui-style='pixel'] {
   font-smooth: never;
 }
 
-/* Square everything, including pills, dots, switches and scrollbar thumbs that set
-   their own radius. */
-html:root[data-ui-style='pixel'] *,
-html:root[data-ui-style='pixel'] *::before,
-html:root[data-ui-style='pixel'] *::after {
+/* Square everything outside the chart, including pills, dots, switches and
+   scrollbar thumbs that set their own radius. */
+html:root[data-ui-style='pixel'] *:not(:is(.gl-canvas, .crosshair, .price-axis, .time-axis, .cvd-pane, .chart-legend, .heat-legend, .measure, .alert-lines, .draw-layer, .indi-host), :is(.crosshair, .price-axis, .time-axis, .cvd-pane, .chart-legend, .heat-legend, .measure, .alert-lines, .draw-layer, .indi-host) *),
+html:root[data-ui-style='pixel'] *:not(:is(.gl-canvas, .crosshair, .price-axis, .time-axis, .cvd-pane, .chart-legend, .heat-legend, .measure, .alert-lines, .draw-layer, .indi-host), :is(.crosshair, .price-axis, .time-axis, .cvd-pane, .chart-legend, .heat-legend, .measure, .alert-lines, .draw-layer, .indi-host) *)::before,
+html:root[data-ui-style='pixel'] *:not(:is(.gl-canvas, .crosshair, .price-axis, .time-axis, .cvd-pane, .chart-legend, .heat-legend, .measure, .alert-lines, .draw-layer, .indi-host), :is(.crosshair, .price-axis, .time-axis, .cvd-pane, .chart-legend, .heat-legend, .measure, .alert-lines, .draw-layer, .indi-host) *)::after {
   border-radius: 0 !important;
   transition-timing-function: steps(2, end) !important;
 }
-/* Axis crosshair tags: square plates with the pixel edge, as the readout box has. */
-html:root[data-ui-style='pixel'] .axis-tag {
-  border: 1px solid var(--px-edge);
-}
 html:root[data-ui-style='pixel'] ::-webkit-scrollbar-thumb {
   border-radius: 0;
+}
+
+/* --- Chart: the chart and the parts drawn on or beside it keep the smooth style.
+   They take back the theme's text face, corner radii and font smoothing. The
+   face is the stack every theme in themes.css sets for --font-ui. --- */
+html:root[data-ui-style='pixel'] :is(.crosshair, .price-axis, .time-axis, .cvd-pane, .chart-legend, .heat-legend, .measure, .alert-lines, .draw-layer, .indi-host) {
+  --r-1: 4px;
+  --r-2: 6px;
+  --r-3: 8px;
+  --font-ui: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text',
+    'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: auto;
+  font-smooth: auto;
+}
+/* Each chart part restarts the inherited face from the restored token. No weight
+   on purpose, so a part that sets its own face (the monospace figures) keeps it. */
+:where(html:root[data-ui-style='pixel'] :is(.crosshair, .price-axis, .time-axis, .cvd-pane, .chart-legend, .heat-legend, .measure, .alert-lines, .draw-layer, .indi-host)) {
+  font-family: var(--font-ui);
 }
 
 /* --- Wordmark: the pixel mark replaces the script one. --- */

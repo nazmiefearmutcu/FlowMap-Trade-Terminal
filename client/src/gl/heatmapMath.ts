@@ -51,7 +51,7 @@ export type ChartStyle = 'normal' | 'pixel';
 export const CHART_STYLES: readonly ChartStyle[] = ['normal', 'pixel'] as const;
 export const DEFAULT_CHART_STYLE: ChartStyle = 'normal';
 
-/** Clamp an arbitrary (settings-persisted) value to a valid chart style. */
+/** Clamp an arbitrary value to a valid chart style (the app itself always draws `normal`). */
 export function chartStyleOf(value: unknown): ChartStyle {
   return value === 'pixel' ? 'pixel' : 'normal';
 }

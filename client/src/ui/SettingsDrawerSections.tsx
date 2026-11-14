@@ -6,7 +6,6 @@
 
 import { useState } from 'react';
 
-import { CHART_STYLES } from '../gl/heatmap';
 import type { OverlayVisibility } from '../gl/overlays/frame';
 import { LOCALES, getLocale, localeLabel, setLocale } from '../i18n';
 import { formatNumber, setTimeZonePref, TIME_ZONE_PREFS, useTimeZone } from '../i18n/format';
@@ -210,28 +209,6 @@ export function SettingsDisplaySection({
           ))}
         </div>
         <span className="setting__hint">{t('settings.colormapHint')}</span>
-      </div>
-
-      {/* chart style: normal is the default; pixel is
-          opt-in. Applied live via renderer.setChartStyle, with no reload. */}
-      <div className="setting">
-        <span className="setting__label" id="chart-style-label">{t('settings.chartStyle')}</span>
-        <div className="segrow" role="radiogroup" aria-labelledby="chart-style-label" data-testid="setting-chartStyle">
-          {CHART_STYLES.map((c) => (
-            <button
-              type="button"
-              key={c}
-              role="radio"
-              className={`segrow__btn${settings.chartStyle === c ? ' is-on' : ''}`}
-              aria-checked={settings.chartStyle === c}
-              data-testid={`chartStyle-${c}`}
-              onClick={() => onChange({ chartStyle: c })}
-            >
-              {t(`settings.chartStyle.${c}`)}
-            </button>
-          ))}
-        </div>
-        <span className="setting__hint">{t('settings.chartStyleHint')}</span>
       </div>
 
       {/* time zone: clock times follow this preference. format.ts owns the store, so the

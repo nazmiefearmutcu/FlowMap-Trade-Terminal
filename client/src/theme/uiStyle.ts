@@ -1,17 +1,11 @@
 /**
- * The interface style: `normal` or `pixel`.
+ * The interface style.
  *
- * One setting drives both the chart renderer and the window chrome. The renderer
- * takes it through `setChartStyle`; the chrome reads `data-ui-style` on the root
- * element, which theme/pixel.css keys off. This module is the single writer of
- * that attribute.
+ * The window is always drawn in the pixel style: index.html stamps
+ * `data-ui-style="pixel"` on the root element before the first paint, and
+ * theme/pixel.css keys off it. There is no setting. The chart keeps the smooth
+ * style (pixel.css exempts the chart parts; the renderer is never switched).
  */
 
-import type { ChartStyle } from '../gl/heatmapMath';
-
 export const UI_STYLE_ATTRIBUTE = 'data-ui-style';
-
-/** Stamp the style on the root element. Idempotent. */
-export function applyUiStyle(style: ChartStyle, root: HTMLElement = document.documentElement): void {
-  if (root.getAttribute(UI_STYLE_ATTRIBUTE) !== style) root.setAttribute(UI_STYLE_ATTRIBUTE, style);
-}
+export const UI_STYLE = 'pixel';

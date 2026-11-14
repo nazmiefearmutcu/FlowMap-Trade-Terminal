@@ -3,7 +3,6 @@ import { useEffect, type MutableRefObject } from 'react';
 import { gammaForContrast } from '../gl/heatmap';
 import type { Renderer } from '../gl/renderer';
 import { getTheme } from '../theme';
-import { applyUiStyle } from '../theme/uiStyle';
 import { safeLocalStorage } from '../state/safeStorage';
 import { useFlowMapStore } from '../state/store';
 import { historyDepthCols, saveSettings, type FlowMapSettings } from '../ui/settings';
@@ -25,7 +24,6 @@ export function useSettingsApply(
 ): void {
   useEffect(() => {
     saveSettings(settings, safeLocalStorage());
-    applyUiStyle(settings.chartStyle); // the window chrome follows the chart style
     const r = rendererRef.current;
     if (r) {
       r.setOverlayVisibility(settings.overlays); // idempotent
@@ -38,7 +36,6 @@ export function useSettingsApply(
       syncChartTheme(getTheme(), settings.colormap);
       r.setNormPercentile(settings.normPercentile); // idempotent
       r.setDepthChannel?.(settings.depthChannel); // idempotent
-      r.setChartStyle?.(settings.chartStyle); // idempotent
       r.setTickGrouping?.(settings.tickGrouping); // idempotent
       // Both follows are edge-triggered so they never fight a manual gesture,
       // and each compares against the renderer's LIVE state (a gesture changes

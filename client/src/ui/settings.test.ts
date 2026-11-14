@@ -232,23 +232,11 @@ describe('normalizeSettings', () => {
   });
 });
 
-describe('chart style', () => {
-  it('defaults to normal, and a payload without the field adopts it', () => {
-    expect(DEFAULT_SETTINGS.chartStyle).toBe('normal');
-    expect(normalizeSettings({}).chartStyle).toBe('normal');
-  });
-
-  it('persists the pixel choice and reloads it unchanged', () => {
-    const s = memStorage();
-    saveSettings({ ...DEFAULT_SETTINGS, chartStyle: 'pixel' }, s);
-    expect(loadSettings(s).chartStyle).toBe('pixel');
-    saveSettings({ ...DEFAULT_SETTINGS, chartStyle: 'normal' }, s);
-    expect(loadSettings(s).chartStyle).toBe('normal');
-  });
-
-  it('coerces junk to normal without touching the other fields', () => {
-    const out = normalizeSettings({ chartStyle: 'pixelated', contrast: 40 });
-    expect(out.chartStyle).toBe('normal');
+describe('removed chart style', () => {
+  it('has no style field, and a stored chartStyle from an older build is ignored', () => {
+    expect('chartStyle' in DEFAULT_SETTINGS).toBe(false);
+    const out = normalizeSettings({ chartStyle: 'pixel', contrast: 40 });
+    expect('chartStyle' in out).toBe(false);
     expect(out.contrast).toBe(40);
   });
 });

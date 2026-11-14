@@ -35,14 +35,19 @@ Unreleased work sits on top of the newest listed commit.
 - History did not load on the default price band. The first-launch history was skipped on every banded price
   range, and the default range (*deep*) is banded, so a newly opened symbol started with a few seconds of
   data whatever the *History depth* setting said. It now loads on every price range.
+- Turkish: "spread" is translated as *makas* everywhere. The DOM ladder said *fark*, the high-yield notes
+  said *tahvil farkı* and the Research drawer's macro bar was untranslated.
 
 ### Changed
 
 - History before the app was watching is price history only: price line, volume and, for crypto, CVD. No depth
   is drawn for that period. The volume-derived "reconstructed" density is gone.
+- The whole window is drawn in the pixel style, and the chart always in the smooth style. The chart's axes,
+  crosshair readout, legends, measure tool, drawings, alert lines, indicators and CVD pane stay smooth too.
 
 ### Removed
 
+- Settings → Display → Interface style (Normal / Pixel). A pixel choice saved by an earlier version is ignored.
 - The synthetic equity heatmap. Live equities no longer draw depth, a DOM or a Bid/Ask derived from bar
   volume. Recordings made by earlier versions still replay as recorded, labelled SYNTH.
 - `FLOWMAP_BACKFILL_STRETCH` and `FLOWMAP_BACKFILL_SHAPE`, which shaped the removed reconstructed density.

@@ -148,7 +148,7 @@ export const tr: Record<string, string> = {
   'intel.gex.net': 'NET GEX (MODEL)',
   'intel.gex.putWall': 'PUT DUVARI (TABAN)',
   'intel.macro.curve': '10Y-2Y GETİRİ EĞRİSİ',
-  'intel.macro.hy': 'HY SPREAD (OAS)',
+  'intel.macro.hy': 'HY MAKASI (OAS)',
   'intel.sourceDetails': 'Veri kaynakları ve koşullar',
   'intel.src.acoustics': 'Kazanç çağrısı akustiği',
   'intel.src.adsb': 'ADS-B uçakları',
@@ -287,7 +287,7 @@ export const tr: Record<string, string> = {
   'ladder.center': 'ORTALA',
   'ladder.centerTitle': 'Geçerli orta noktaya ortala ve piyasayı izle',
   'ladder.totalsTitle': 'Yalnızca gösterilen gruplu kademelerin miktar toplamı; tüm defter değil',
-  'ladder.spreadShort': 'fark',
+  'ladder.spreadShort': 'makas',
   'ladder.groupTitle': '{low} – {high}: gruplanmış bekleyen miktar',
   'ladder.bidShort': 'AL',
   'ladder.askShort': 'SA',
@@ -539,11 +539,6 @@ export const tr: Record<string, string> = {
   'settings.colormap': 'Renk haritası',
   'settings.colormapHint':
     'Renkler temanıza uyum sağlar. Yoğunluk soldan sağa artar.',
-  'settings.chartStyle': 'Arayüz stili',
-  'settings.chartStyle.normal': 'Normal',
-  'settings.chartStyle.pixel': 'Piksel',
-  'settings.chartStyleHint':
-    'Normal, pürüzsüz ısı haritası ve yuvarlak hatlı penceredir. Piksel, tüm uygulamayı temanızın renkleriyle piksel sanatına çevirir: bloklu ısı haritası, basamaklı fiyat çizgisi, kare işlem baloncukları, kare kontroller ve piksel FlowMap logosu.',
   'settings.contrast': 'Kontrast',
   'settings.contrastHint':
     'Orta yoğunluk alanını en parlak duvarlara göre karartır — yükseldikçe daha vurucu olur.',

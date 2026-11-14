@@ -26,13 +26,7 @@ import { isColormap } from '../theme/appearance';
  * on every mount but never applied to the renderer, so they carry no intent.
  */
 
-import {
-  DEFAULT_CHART_STYLE,
-  DEFAULT_CONTRAST,
-  DEFAULT_TOLERANCE,
-  chartStyleOf,
-  type ChartStyle,
-} from '../gl/heatmap';
+import { DEFAULT_CONTRAST, DEFAULT_TOLERANCE } from '../gl/heatmap';
 import { DEFAULT_COLORMAP, type Colormap } from '../gl/lut';
 import { DEFAULT_WHITE_PERCENTILE } from '../gl/normalize';
 import {
@@ -188,13 +182,6 @@ export interface FlowMapSettings {
   overlays: OverlayVisibility;
   /** Depth display channel: sum | bid | ask | imbalance. */
   depthChannel: DepthChannelMode;
-  /**
-   * Chart style: `normal` is the smooth heatmap; `pixel`
-   * draws posterized device-pixel blocks in the active theme and colormap.
-   * Added in settingsVersion 3: a blob without the key (or with junk) adopts the
-   * default, the same field-level policy as every other knob (see module doc).
-   */
-  chartStyle: ChartStyle;
   /** PerfHud diagnostics chip visibility (H toggles; polled off renderer.stats). */
   hudVisible: boolean;
   /** Play the alert chime on a fired alert batch. */
@@ -205,7 +192,8 @@ export const SETTINGS_KEY = 'flowmap.settings.v1';
 
 /**
  * Current persisted schema version. 2 = the chart-harmony migration; 3 = the
- * `chartStyle` field. Only the colormap migration reads a stored
+ * `chartStyle` field (since removed: the interface is always pixel and the chart
+ * always smooth, so a stored value is ignored). Only the colormap migration reads a stored
  * version, and it keeps its own threshold (COLORMAP_MIGRATED_VERSION), so this
  * bump never re-forces a colormap the user chose under version 2.
  */
@@ -237,8 +225,6 @@ export const DEFAULT_SETTINGS: FlowMapSettings = {
   overlays: { ...DEFAULT_OVERLAY_VISIBILITY },
   // The default is today's rendering, bit-identical.
   depthChannel: 'sum',
-  // Smooth by default. Pixel is opt-in from the drawer.
-  chartStyle: DEFAULT_CHART_STYLE,
   hudVisible: false,
   // On by default: an alert is useless when the user looks away.
   alertSound: true,
@@ -302,7 +288,6 @@ export function normalizeSettings(raw: unknown): FlowMapSettings {
     depthChannel: DEPTH_CHANNELS.includes(o.depthChannel as DepthChannelMode)
       ? (o.depthChannel as DepthChannelMode)
       : DEFAULT_SETTINGS.depthChannel,
-    chartStyle: chartStyleOf(o.chartStyle),
     hudVisible: typeof o.hudVisible === 'boolean' ? o.hudVisible : DEFAULT_SETTINGS.hudVisible,
     alertSound: typeof o.alertSound === 'boolean' ? o.alertSound : DEFAULT_SETTINGS.alertSound,
   };

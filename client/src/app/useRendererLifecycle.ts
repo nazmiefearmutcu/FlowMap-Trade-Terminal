@@ -130,8 +130,6 @@ export function useRendererLifecycle(deps: RendererLifecycleDeps): void {
     renderer.setPriceFollow(settingsRef.current.followPrice ? 'fit' : 'off');
     // Depth display channel (optional-chained: a build without it keeps 'sum').
     renderer.setDepthChannel?.(settingsRef.current.depthChannel);
-    // Chart style: normal is the default; pixel is opt-in.
-    renderer.setChartStyle?.(settingsRef.current.chartStyle);
     // Tick grouping (optional-chained for the same reason).
     renderer.setTickGrouping?.(settingsRef.current.tickGrouping);
 
