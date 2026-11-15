@@ -115,6 +115,13 @@ Release notes: [docs/release-notes-1.7.0.md](docs/release-notes-1.7.0.md).
   takes about fifteen seconds to replay, during which the chart waits.
   ([`core/session_core.py`](server/src/flowmap_server/core/session_core.py))
 
+### Security
+
+- The bundled `soupsieve` is 4.0.1 (was 2.9). Four advisories against 2.9 were published after
+  1.6.2 (GHSA-4j63-6c4x-wfg4, GHSA-mmhr-3c5m-f64f, GHSA-7g44-g9rc-x53w, GHSA-6655-6qjp-jx7x);
+  It comes in with `beautifulsoup4`, which parses the exchange board pages; the parsers use
+  no CSS selectors, so the affected code was not reached, but the gate no longer reports it.
+
 ## [1.6.2] — 2026-11-12
 
 Release notes: [docs/release-notes-1.6.2.md](docs/release-notes-1.6.2.md).
