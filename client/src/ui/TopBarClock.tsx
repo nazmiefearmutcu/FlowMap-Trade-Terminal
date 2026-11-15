@@ -9,15 +9,17 @@ import { useEffect, useState } from 'react';
 
 import { exchangeZoneFor, formatClock, useTimeZone, zoneLabel } from '../i18n/format';
 import { useT } from '../i18n/useT';
-import type { SymbolGroupKey } from './symbols';
+import { statesOwnZone, type SymbolGroupKey } from './symbols';
 
 interface TopBarClockProps {
   group: SymbolGroupKey;
+  /** The subscribed market, so a world exchange's clock reads in that exchange's zone. */
+  market?: string;
   /** Formatted latest-stream timestamp (or null before the first tick). */
   streamClock: string | null;
 }
 
-export function TopBarClock({ group, streamClock }: TopBarClockProps) {
+export function TopBarClock({ group, market, streamClock }: TopBarClockProps) {
   const t = useT();
   const zonePref = useTimeZone();
   const [wall, setWall] = useState(() => new Date());
@@ -26,14 +28,18 @@ export function TopBarClock({ group, streamClock }: TopBarClockProps) {
     return () => window.clearInterval(id);
   }, []);
 
-  const exchangeZone = exchangeZoneFor(group);
+  const exchangeZone = exchangeZoneFor(group, market);
   const wallMs = wall.getTime();
   const wallText = formatClock(wallMs, zonePref, exchangeZone);
   const zoneAbbrev = zoneLabel(zonePref, exchangeZone, wallMs);
-  // For equity sessions the reference clock is US-eastern; show it beside the stream ts
-  // unless the preference already reads exchange time.
+  // For equity sessions the reference clock is the exchange's own (US-eastern for the US
+  // market, the stated zone for a world exchange); show it beside the stream ts unless the
+  // preference already reads exchange time.
   const etText =
-    group === 'equity' && zonePref !== 'exchange' ? formatClock(wallMs, 'exchange', 'America/New_York') : null;
+    group === 'equity' && zonePref !== 'exchange' ? formatClock(wallMs, 'exchange', exchangeZone) : null;
+  // The US market's exchange clock is labelled ET; a world exchange's carries its own zone.
+  const world = market !== undefined && statesOwnZone(market);
+  const exchangeShort = world ? zoneLabel('exchange', exchangeZone, wallMs) : t('topbar.easternShort');
 
   return (
     <span
@@ -41,7 +47,7 @@ export function TopBarClock({ group, streamClock }: TopBarClockProps) {
       data-testid="clock"
       role="group"
       aria-label={`${t('topbar.wallClockAria', { time: wallText, zone: zoneAbbrev })}${
-        etText ? t('topbar.easternAria', { time: etText }) : ''
+        etText ? (world ? `, ${exchangeShort} ${etText}` : t('topbar.easternAria', { time: etText })) : ''
       }${t('topbar.streamAria', { stream: streamClock ?? t('topbar.streamNone') })}${
         streamClock ? (group === 'sim' ? t('topbar.sessionRelative') : t('topbar.utcSuffix')) : ''
       }`}
@@ -49,7 +55,7 @@ export function TopBarClock({ group, streamClock }: TopBarClockProps) {
       <span className="clock__wall">
         {wallText} <span className="clock__zone">{zoneAbbrev}</span>
       </span>
-      {etText ? <span className="clock__et">{etText} {t('topbar.easternShort')}</span> : null}
+      {etText ? <span className="clock__et">{etText} {exchangeShort}</span> : null}
       {/* The sim's stream ts is SESSION-RELATIVE (a T+ clock): it never gets a UTC label. */}
       <span className="clock__stream">
         {streamClock

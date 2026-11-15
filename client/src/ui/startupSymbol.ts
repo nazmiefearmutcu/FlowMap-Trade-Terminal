@@ -6,7 +6,7 @@ const DEMO: RecentPick = { market: 'sim', symbol: 'SIM-DEMO' };
 function valid(pick: unknown): pick is RecentPick {
   if (!pick || typeof pick !== 'object') return false;
   const p = pick as RecentPick;
-  return typeof p.market === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/i.test(p.market)
+  return typeof p.market === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(p.market)
     && typeof p.symbol === 'string' && p.symbol.length > 0 && p.symbol.length <= 128
     && !/[\x00-\x1f\x7f]/.test(p.symbol);
 }

@@ -21,6 +21,8 @@ import { useIntelligenceStore } from '../state/intelligenceStore';
 import { FEED_KEY } from './MarketStrip';
 import { SymbolSearch, type SymbolSearchHandle } from './SymbolSearch';
 import { Wordmark } from './Wordmark';
+import { hasOptionChains } from './optionChainModel';
+import { realBookOf } from './realBook';
 import { capabilityChips, marketGroup } from './symbols';
 import {
   CapabilityBadges,
@@ -31,6 +33,7 @@ import {
   VenueChip,
 } from './TopBarParts';
 import { TopBarClock } from './TopBarClock';
+import { EurexSourceStatus } from './EurexSourceStatus';
 import './TopBar.css';
 
 /** Connection state → its translation key (raw transport tokens never reach the screen). */
@@ -53,6 +56,8 @@ interface TopBarProps {
   onToggleRail: () => void;
   onOpenSettings: () => void;
   onToggleIntel?: () => void;
+  /** Opens the option chain of the instrument on the chart. */
+  onOpenOptions?: () => void;
   /** Export the chart canvas as a PNG download (renderer snapshot; `E` shares it). */
   onExportPng: () => void;
   /** Non-null when the last export attempt was refused (lost GL context). */
@@ -74,6 +79,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
     onDismissExportNotice,
     streamClock,
     onToggleIntel,
+    onOpenOptions,
   },
   searchRef,
 ) {
@@ -93,6 +99,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
   const mode: StreamMode = subscription?.mode ?? 'live';
   const group = marketGroup(market);
   const chips = capabilityChips(capability);
+  const realBook = realBookOf(capability);
   // The SIM badge follows the server's word: `synthetic` decides it once the
   // capability has arrived. Only before that does the market name stand in for it.
   const showSimBadge = capability ? capability.synthetic === true : market === 'sim';
@@ -102,7 +109,8 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
   const feedLabel = feedKey ? t(feedKey) : '';
 
   return (
-    <header className="topbar">
+    <header className="topbar" style={capability?.native_candles === true
+      ? { flexWrap: 'wrap', height: 'auto', minHeight: 44 } : undefined}>
       <span className="topbar__brand">
         <Wordmark height={24} />
       </span>
@@ -120,6 +128,25 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
       )}
 
       <CapabilityBadges pending={capability === null} chips={chips} />
+      <EurexSourceStatus capability={capability} />
+
+      {/* A synthetic instrument whose underlying has a real public book on another venue
+          this build streams: one click opens that venue's instrument. */}
+      {realBook && (
+        <button
+          type="button"
+          className="tbtn"
+          onClick={() => onSelectSymbol(realBook.market, realBook.symbol)}
+          data-testid="real-book-link"
+          title={t('topbar.realBookTitle', {
+            market: realBook.market,
+            symbol: realBook.symbol,
+            kind: t(realBook.kind === 'spot' ? 'topbar.realBook.spot' : 'topbar.realBook.perpetual'),
+          })}
+        >
+          {t('topbar.realBook', { market: realBook.market, symbol: realBook.symbol })}
+        </button>
+      )}
 
       {/* Institutional Macro & Liquidity Stress Ticker (MACRO <GO>) */}
       <MacroTicker macro={macro} />
@@ -139,7 +166,7 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
         recordingDegraded={recordingDegraded}
       />
 
-      <TopBarClock group={group} streamClock={streamClock} />
+      <TopBarClock group={group} market={market} streamClock={streamClock} />
 
       {/* A refused export (renderer snapshot null — lost GL context) says so
           plainly and stays dismissible; it never fakes a success. */}
@@ -170,6 +197,21 @@ export const TopBar = forwardRef<SymbolSearchHandle, TopBarProps>(function TopBa
       >
         {t('topbar.rail')}
       </button>
+
+      {/* Offered only where a chain can exist: the sim feed has none, and a button that
+          could only say so would be a dead control. */}
+      {onOpenOptions && hasOptionChains(market) && (
+        <button
+          type="button"
+          className="tbtn"
+          onClick={onOpenOptions}
+          data-testid="options-open"
+          title={singleKeys ? t('topbar.optionsTitle') : t('topbar.optionsTitleNoKey')}
+          aria-haspopup="dialog"
+        >
+          {t('topbar.options')}
+        </button>
+      )}
 
       {onToggleIntel && (
         <button

@@ -81,6 +81,15 @@ class _ProfileBuilder:
         self._buckets[idx] = self._buckets.get(idx, 0.0) + float(bar.volume)
         return True
 
+    def add_volume(self, price: float, volume: float) -> bool:
+        """Add a weight at a price directly (a polled volume change, a minute of time at
+        price). Returns False (skipped) unless both are finite and positive."""
+        if not (math.isfinite(price) and price > 0.0 and math.isfinite(volume) and volume > 0.0):
+            return False
+        idx = int(round(price / self._tick))
+        self._buckets[idx] = self._buckets.get(idx, 0.0) + float(volume)
+        return True
+
     def total_volume(self) -> float:
         return float(sum(self._buckets.values()))
 

@@ -86,6 +86,13 @@ class ClientTx:
     def __len__(self) -> int:
         return len(self._q)
 
+    def replace_snapshot(self, frames: list[bytes]) -> None:
+        """Supersede queued old-generation columns before an authoritative Hello."""
+        self._q.clear()
+        self._noncol = 0
+        for frame in frames:
+            self.offer(frame, col_msg=False, protected=True)
+
     def offer(
         self,
         msg_bytes: bytes,

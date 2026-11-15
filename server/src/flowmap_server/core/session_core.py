@@ -27,6 +27,8 @@ from flowmap_server.core.session_boot import BootMixin
 from flowmap_server.core.session_common import (
     _BACKOFF_CAP_S,
     _MARKERS_CAP,
+    _REPLAY_MAX_S,
+    _REPLAY_PAST_NS,
     _STABLE_EVENTS,
     _STABLE_NS,
     CAPABILITY_STATUS_INTERVAL_NS,
@@ -44,7 +46,8 @@ from flowmap_server.core.session_history import HistoryMixin
 from flowmap_server.core.session_queue import ClientTx
 from flowmap_server.core.session_recording import RecordingMixin
 from flowmap_server.core.stats import SessionStats
-from flowmap_server.feeds.base import BarSample, BookState, Feed
+from flowmap_server.feeds.base import BarSample, BookState, CandleSnapshot, Feed
+from flowmap_server.core.session_candles import apply_candle_snapshot
 from flowmap_server.feeds.crypto import is_crypto_market
 from flowmap_server.feeds.equity import EquityFeed
 from flowmap_server.feeds.replay import ReplayFeed
@@ -139,6 +142,7 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
         self._markers: deque[events.Marker] = deque(maxlen=_MARKERS_CAP)
         self._bbo: events.BBO | None = None
         self._instant_book: bytes | None = None
+        self._candle_signature: bytes | None = None
 
     def _init_recording(
         self,
@@ -246,6 +250,10 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
         self._equity_warmup_before_ns = 0
         self._preparing_closed_history = False
         self._closed_history_prepared = False
+        # An open keyless feed replays its session so far before it goes live (see
+        # ``_note_history_replay``). ``None`` until the first event decides.
+        self._history_replay: str | None = None
+        self._history_replay_guard: object | None = None
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -479,10 +487,93 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
             if self._closed:
                 await self._close_recording()
 
+    def _note_history_replay(self, ev: object) -> None:
+        """Keep a feed's replay of its session so far out of the subscribers' queues.
+
+        An open keyless feed begins with its warmup: every bar of the session as a book state,
+        stamped in the past. On a grid that could not be seeded from candles (a banded one)
+        those states finalize a column for every second since the session opened, tens of
+        thousands of them in one burst. Broadcast one by one they overrun every subscriber's
+        queue, the queue drops them, and the client is left with holes it cannot draw across.
+
+        So the replay fills the ring in silence, as the closed-market warmup does, and the
+        subscribers get ONE replacement snapshot when it is over; older columns are then read
+        from the ring on request. The first book or bar event decides: stamped more than
+        ``_REPLAY_PAST_NS`` ago, the feed is replaying. The replay is over once an event
+        stamped in the present has been handled (the snapshot goes out before the event after
+        it), or after ``_REPLAY_MAX_S``, whichever comes first. Any stamped event closes it,
+        a print or a marker too: a feed that withholds its depth still goes live. It never
+        starts twice.
+        """
+        if self._history_replay == "live":
+            return
+        stamp = getattr(ev, "ts_ns", None)
+        if not isinstance(stamp, int):
+            return
+        past = stamp < self._wall_clock() - _REPLAY_PAST_NS
+        if self._history_replay is None:
+            if not isinstance(ev, (BookState, BarSample)):
+                return
+            keyless = isinstance(self._feed, EquityFeed) and self._feed.tier == "keyless"
+            if not (keyless and past):
+                self._history_replay = "live"
+                return
+            self._history_replay = "replay"
+            self._history_replay_guard = self._timer(_REPLAY_MAX_S, self._end_history_replay)
+        elif self._history_replay == "ending":
+            self._end_history_replay()
+        elif not past:
+            # This event closes the gap to the present: it is handled in silence too, and
+            # the snapshot follows it.
+            self._history_replay = "ending"
+
+    def _end_history_replay(self) -> None:
+        """Hand every subscriber the snapshot of the replayed ring. Idempotent."""
+        if self._history_replay not in ("replay", "ending"):
+            return
+        self._history_replay = "live"
+        guard = self._history_replay_guard
+        self._history_replay_guard = None
+        cancel = getattr(guard, "cancel", None)
+        if callable(cancel):
+            cancel()
+        # The forming column was compared while nobody could hear it: send it again.
+        self._last_partial_depth = None
+        self._last_partial_bar = None
+        if self._clients and not self._closed:
+            frames = self._snapshot_frames()
+            # A state the feed reported during the replay (degraded, closed) was muted with
+            # everything else, and a Hello carries none: state it after the snapshot.
+            latency_ms, skew_ms = self._conn_latency_skew()
+            status = wire.encode(
+                events.Status(
+                    feed_state=self._feed_state,
+                    capability=self._capability(),
+                    latency_ms=latency_ms,
+                    clock_skew_ms=skew_ms,
+                )
+            )
+            for client in self._clients:
+                for frame in frames:
+                    client.offer(frame, col_msg=False, protected=True)
+                client.offer(status, col_msg=False, protected=True)
+
     async def _consume(self) -> None:
+        self._history_replay = None
+        try:
+            await self._consume_events()
+        finally:
+            # A feed that ends or fails mid-replay must not leave the subscribers muted.
+            self._end_history_replay()
+
+    async def _consume_events(self) -> None:
         async for ev in self._feed.events():
+            if isinstance(ev, CandleSnapshot):
+                apply_candle_snapshot(self, ev)
+                continue
             if isinstance(ev, (BookState, BarSample)) and ev.ts_ns < self._equity_warmup_before_ns:
                 continue
+            self._note_history_replay(ev)
             if self._stats is not None:
                 # Liveness: age of the last feed-event ARRIVAL (wall clock, so
                 # venue stamps can't fake freshness) feeds stats.staleness_ms.

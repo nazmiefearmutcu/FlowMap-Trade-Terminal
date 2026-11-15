@@ -33,7 +33,8 @@ export function useSessionResetBridge(
         || state.sessionRevision !== previous.sessionRevision;
       const newHello = state.sessionId !== null && state.sessionId !== previous.sessionId;
       const replayGeneration = newHello && state.subscription?.mode === 'replay';
-      if (identityChanged || replayGeneration) {
+      const nativeSnapshot = state.capability?.native_candles === true && state.attachEpoch !== previous.attachEpoch;
+      if (identityChanged || replayGeneration || nativeSnapshot) {
         const r = rendererRef.current;
         if (identityChanged && previous.subscription?.mode === 'live' && r) {
           // Canvas keys/gestures can change these just before the picker opens,
@@ -43,8 +44,13 @@ export function useSessionResetBridge(
           setSettings(prev => prev.follow === time && prev.followPrice === (price !== 'off')
             ? prev : { ...prev, follow: time, followPrice: price !== 'off' });
         }
-        r?.setFollowTime(state.subscription?.mode === 'replay' ? true : liveFollowRef.current.time);
-        r?.setPriceFollow(state.subscription?.mode === 'replay' ? 'fit' : liveFollowRef.current.price);
+        // A native candle snapshot of the same chart (new published minutes) replaces the
+        // columns but keeps the user's camera: re-applying the follow policy here would pull
+        // someone who scrolled back to the live edge every time a minute arrives.
+        if (identityChanged || replayGeneration) {
+          r?.setFollowTime(state.subscription?.mode === 'replay' ? true : liveFollowRef.current.time);
+          r?.setPriceFollow(state.subscription?.mode === 'replay' ? 'fit' : liveFollowRef.current.price);
+        }
         rendererRef.current?.resetForSession();
         bookStore.resetForSession();
       } else if (newHello) {

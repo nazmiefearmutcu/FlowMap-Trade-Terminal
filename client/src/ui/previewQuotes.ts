@@ -49,7 +49,7 @@ interface Active {
 }
 
 function identity(market: unknown, symbol: unknown): string | null {
-  return typeof market === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/i.test(market)
+  return typeof market === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(market)
     && typeof symbol === 'string' && symbol.length > 0 && symbol.length <= 128 && !/[\x00-\x1f\x7f]/.test(symbol)
     ? `${market}:${symbol}` : null;
 }

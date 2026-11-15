@@ -2,6 +2,7 @@ import type { Renderer } from '../gl/renderer';
 import { AboutDialog } from '../ui/About';
 import { IntelligenceDrawer } from '../ui/IntelligenceDrawer';
 import { OnboardingCard } from '../ui/OnboardingCard';
+import { OptionChainDialog } from '../ui/OptionChain';
 import { ReplayPicker } from '../ui/ReplayPicker';
 import { SettingsDrawer } from '../ui/SettingsDrawer';
 import { ShortcutsOverlay } from '../ui/ShortcutsOverlay';
@@ -24,6 +25,9 @@ export interface AppOverlaysProps {
   onCloseIntel: () => void;
   /** The research drawer's source list: close the drawer and open the About dialog. */
   onOpenSources: () => void;
+  /** The option chain of the active instrument is open. */
+  optionsOpen: boolean;
+  onCloseOptions: () => void;
   aboutOpen: boolean;
   onCloseAbout: () => void;
   helpOpen: boolean;
@@ -35,13 +39,14 @@ export interface AppOverlaysProps {
 
 /**
  * The modal surfaces and the global notices that float above the workspace: the
- * settings drawer, the research drawer, the About dialog, the shortcuts overlay,
- * the replay range picker, the toasts and the first-run tour. Each one mounts
+ * settings drawer, the research drawer, the option chain, the About dialog, the
+ * shortcuts overlay, the replay range picker, the toasts and the first-run tour. Each one mounts
  * only while open, so an idle app pays nothing for them.
  */
 export function AppOverlays({
   rendererRef, settings, replay, applyPatch, settingsOpen, onCloseSettings, onOpenAbout,
-  intelOpen, activeMarket, activeSymbol, onCloseIntel, onOpenSources, aboutOpen, onCloseAbout,
+  intelOpen, activeMarket, activeSymbol, onCloseIntel, onOpenSources, optionsOpen, onCloseOptions,
+  aboutOpen, onCloseAbout,
   helpOpen, onCloseHelp, replayPicker, onCloseReplayPicker, onReplayConfirm,
 }: AppOverlaysProps): JSX.Element {
   return (
@@ -67,6 +72,12 @@ export function AppOverlays({
           onOpenSources={onOpenSources}
           onClose={onCloseIntel}
         />
+      )}
+
+      {/* Keyed by instrument: a chain never outlives the symbol it was read for. */}
+      {optionsOpen && (
+        <OptionChainDialog key={`${activeMarket}:${activeSymbol}`} market={activeMarket} symbol={activeSymbol}
+          onClose={onCloseOptions} />
       )}
 
       {aboutOpen && <AboutDialog onClose={onCloseAbout} />}

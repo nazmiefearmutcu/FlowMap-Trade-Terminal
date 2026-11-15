@@ -149,7 +149,7 @@ export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
   // The Settings zone decides every clock here: the hour list, the typed edges and
   // the readouts. The request itself always uses exact nanoseconds.
   const pref = useTimeZone();
-  const exchange = exchangeZoneFor(marketGroup(market));
+  const exchange = exchangeZoneFor(marketGroup(market), market);
   const zone = resolveTimeZone(pref, exchange);
   const zoneText = zoneLabel(pref, exchange);
   // A typed edge is read again in the new zone; the instant it names is kept.

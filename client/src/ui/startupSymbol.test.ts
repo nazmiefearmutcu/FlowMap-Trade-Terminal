@@ -22,3 +22,9 @@ it('ignores a malformed ?symbol= silently and falls back to the saved pick', () 
   expect(loadStartupSymbol(localStorage, '?symbol=:BTCUSDT')).toEqual({ market: 'binance-spot', symbol: 'BTCUSDT' });
   expect(loadStartupSymbol(localStorage, '?symbol=bad%20market:BTC')).toEqual({ market: 'binance-spot', symbol: 'BTCUSDT' });
 });
+it('opens a futures deep link whose venue has an underscore and whose symbol has a bang', () => {
+  expect(loadStartupSymbol(localStorage, '?symbol=futures-cme_mini:ES1!')).toEqual({ market: 'futures-cme_mini', symbol: 'ES1!' });
+});
+it('keeps the full ticker of an index deep link (the symbol itself has a colon)', () => {
+  expect(loadStartupSymbol(localStorage, '?symbol=indices:SP:SPX')).toEqual({ market: 'indices', symbol: 'SP:SPX' });
+});

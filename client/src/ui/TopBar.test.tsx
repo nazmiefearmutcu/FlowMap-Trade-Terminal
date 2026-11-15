@@ -514,3 +514,131 @@ describe('TopBar SIM badge follows the server, not the market name', () => {
     expect(container.querySelector('[data-testid="sim-badge"]')).not.toBeNull();
   });
 });
+
+describe('TopBar option chain button', () => {
+  function topbarWithOptions(onOpenOptions?: () => void): JSX.Element {
+    return (
+      <TopBar
+        ref={{ current: null } as unknown as React.Ref<SymbolSearchHandle>}
+        onSelectSymbol={noop}
+        onSetMode={noop}
+        railVisible={false}
+        onToggleRail={noop}
+        onOpenSettings={noop}
+        onExportPng={noop}
+        exportNotice={null}
+        onDismissExportNotice={noop}
+        streamClock={null}
+        onOpenOptions={onOpenOptions}
+      />
+    );
+  }
+
+  const equity = { market: 'equity', symbol: 'AAPL', mode: 'live' as const, band: 'native' as const };
+
+  it('is absent when the top bar is not given an options handler', () => {
+    act(() => useFlowMapStore.setState({ subscription: equity }));
+    const { container } = render(topbarWithOptions(undefined));
+    expect(container.querySelector('[data-testid="options-open"]')).toBeNull();
+  });
+
+  it('is present for an equity subscription', () => {
+    act(() => useFlowMapStore.setState({ subscription: equity }));
+    const { container } = render(topbarWithOptions(noop));
+    expect(container.querySelector('[data-testid="options-open"]')).not.toBeNull();
+  });
+
+  it('is present for a crypto subscription: the coin can have options on a crypto venue', () => {
+    act(() => useFlowMapStore.setState({ subscription: { market: 'binance-usdm', symbol: 'BTCUSDT', mode: 'live', band: 'native' } }));
+    const { container } = render(topbarWithOptions(noop));
+    expect(container.querySelector('[data-testid="options-open"]')).not.toBeNull();
+  });
+
+  it('is absent on the default sim market (no subscription)', () => {
+    const { container } = render(topbarWithOptions(noop));
+    expect(container.querySelector('[data-testid="options-open"]')).toBeNull();
+  });
+
+  it('calls the handler when clicked', () => {
+    act(() => useFlowMapStore.setState({ subscription: equity }));
+    const onOpenOptions = vi.fn();
+    const { container } = render(topbarWithOptions(onOpenOptions));
+    const btn = container.querySelector('[data-testid="options-open"]')!;
+    act(() => {
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenOptions).toHaveBeenCalledOnce();
+  });
+
+  it('is labelled Options in English and Opsiyon in Turkish', () => {
+    act(() => useFlowMapStore.setState({ subscription: equity }));
+    const { container } = render(topbarWithOptions(noop));
+    expect(container.querySelector('[data-testid="options-open"]')!.textContent).toBe('Options');
+    act(() => setLocale('tr'));
+    expect(container.querySelector('[data-testid="options-open"]')!.textContent).toBe('Opsiyon');
+  });
+
+  it('marks itself as opening a dialog', () => {
+    act(() => useFlowMapStore.setState({ subscription: equity }));
+    const { container } = render(topbarWithOptions(noop));
+    expect(container.querySelector('[data-testid="options-open"]')!.getAttribute('aria-haspopup')).toBe('dialog');
+  });
+});
+
+describe('TopBar real order book link', () => {
+  function bar(onSelectSymbol: (market: string, symbol: string) => void): JSX.Element {
+    return (
+      <TopBar
+        ref={{ current: null } as unknown as React.Ref<SymbolSearchHandle>}
+        onSelectSymbol={onSelectSymbol}
+        onSetMode={noop}
+        railVisible={false}
+        onToggleRail={noop}
+        onOpenSettings={noop}
+        onExportPng={noop}
+        exportNotice={null}
+        onDismissExportNotice={noop}
+        streamClock={null}
+      />
+    );
+  }
+  const forex = { market: 'forex', symbol: 'EURUSD', mode: 'live' as const, band: 'native' };
+
+  afterEach(() => {
+    act(() => useFlowMapStore.setState({ capability: null, subscription: null }));
+  });
+
+  it('is absent when the capability names no real book', () => {
+    act(() => useFlowMapStore.setState({ subscription: forex, capability: { depth: 'SYNTH' } }));
+    const { container } = render(bar(noop));
+    expect(container.querySelector('[data-testid="real-book-link"]')).toBeNull();
+  });
+
+  it('names the venue and its instrument, says what it is, and opens it on a click', () => {
+    act(() => useFlowMapStore.setState({
+      subscription: forex,
+      capability: { depth: 'SYNTH', real_book: { market: 'kraken', symbol: 'EUR/USD', kind: 'spot' } },
+    }));
+    const onSelect = vi.fn();
+    const { container } = render(bar(onSelect));
+    const link = container.querySelector<HTMLButtonElement>('[data-testid="real-book-link"]')!;
+    expect(link.textContent).toBe('Book: kraken EUR/USD');
+    expect(link.title).toContain("kraken:EUR/USD is that venue's own spot market");
+    act(() => link.click());
+    expect(onSelect).toHaveBeenCalledWith('kraken', 'EUR/USD');
+  });
+
+  it('reads in Turkish', () => {
+    setLocale('tr');
+    act(() => useFlowMapStore.setState({
+      subscription: forex,
+      capability: { depth: 'SYNTH', real_book: { market: 'binance-usdm', symbol: 'XAUUSDT', kind: 'perpetual' } },
+    }));
+    const { container } = render(bar(noop));
+    const link = container.querySelector<HTMLButtonElement>('[data-testid="real-book-link"]')!;
+    expect(link.textContent).toBe('Defter: binance-usdm XAUUSDT');
+    expect(link.title).toContain('sürekli vadeli sözleşme');
+    setLocale('en');
+  });
+});
+

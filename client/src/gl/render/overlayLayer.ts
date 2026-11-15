@@ -132,7 +132,7 @@ export class OverlayLayer {
     const market = this.store.getState().subscription?.market ?? '';
     if (isSessionClockMarket(market)) return null;
     this.axisClock.pref = getTimeZonePref();
-    this.axisClock.exchangeZone = exchangeZoneFor(marketGroup(market));
+    this.axisClock.exchangeZone = exchangeZoneFor(marketGroup(market), market);
     return this.axisClock;
   }
 

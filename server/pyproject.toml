@@ -42,7 +42,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-crocodile = { path = "vendor/crocodile-0.3.2-py3-none-any.whl" }
+crocodile = { path = "vendor/crocodile-0.5.0-py3-none-any.whl" }
 
 # Dev-only transitive pins: the newest releases published at least 14 days before
 # the lock was resolved (2026-11-08), i.e. on or before 2026-10-25. mypy-extensions

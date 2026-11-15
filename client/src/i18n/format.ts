@@ -160,8 +160,44 @@ function readStoredZonePref(): TimeZonePref {
 let zonePref: TimeZonePref = readStoredZonePref();
 const zoneListeners = new Set<() => void>();
 
-/** The IANA zone an instrument's "exchange" clock reads in. */
-export function exchangeZoneFor(group: string): string {
+// Exchange zones the server stated for a market (`world-xist` → `Europe/Istanbul`), read off
+// a session's capability. A module-level map rather than store state: every clock already
+// re-renders on its own cadence, and the zone of a market never changes.
+const marketZones = new Map<string, string>();
+
+function isIanaZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remember the exchange zone a session's capability states for its market
+ * (`capability.exchange_tz`). Anything that is not a zone this runtime knows is ignored, so a
+ * malformed value can never break a clock.
+ */
+export function registerMarketZone(market: string | undefined, capability: Record<string, unknown> | null | undefined): void {
+  const zone = capability?.exchange_tz;
+  if (!market || typeof zone !== 'string' || zone === '' || !isIanaZone(zone)) return;
+  marketZones.set(market.toLowerCase(), zone);
+}
+
+/** Forget every stated zone. Exists for tests. */
+export function resetMarketZones(): void {
+  marketZones.clear();
+}
+
+/**
+ * The IANA zone an instrument's "exchange" clock reads in. A market whose session stated its
+ * own zone (every world-exchange market does) reads in that zone; otherwise US equities read
+ * in New York and everything else in UTC.
+ */
+export function exchangeZoneFor(group: string, market?: string): string {
+  const stated = market ? marketZones.get(market.toLowerCase()) : undefined;
+  if (stated) return stated;
   return group === 'equity' ? 'America/New_York' : 'UTC';
 }
 

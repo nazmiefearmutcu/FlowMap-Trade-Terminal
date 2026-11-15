@@ -14,15 +14,16 @@ export interface GlobalChartKeysDeps {
   exportPng: () => void;
   follow: Pick<FollowControls, 'onGoLive' | 'onToggleFollowKey' | 'onTogglePriceFollowKey' | 'onPriceAutoFitKey'>;
   toggleIntelDrawer: () => void;
+  openOptions: () => void;
 }
 
 /**
- * The bare-key workspace shortcuts (Space, `/`, `E`, F, P, Shift+P, R, J), bound
+ * The bare-key workspace shortcuts (Space, `/`, `E`, F, P, Shift+P, R, J, O), bound
  * once on the window. Declared after the handlers it routes to: every dependency
  * is stable, so the binder attaches exactly once.
  */
 export function useGlobalChartKeys({
-  rendererRef, searchRef, setSettings, exportPng, follow, toggleIntelDrawer,
+  rendererRef, searchRef, setSettings, exportPng, follow, toggleIntelDrawer, openOptions,
 }: GlobalChartKeysDeps): void {
   const { onGoLive, onToggleFollowKey, onTogglePriceFollowKey, onPriceAutoFitKey } = follow;
   useEffect(() => {
@@ -51,6 +52,7 @@ export function useGlobalChartKeys({
       onPriceAutoFit: onPriceAutoFitKey,
       onGoLive: onGoLive,
       onToggleIntel: toggleIntelDrawer,
+      onOpenOptions: openOptions,
     });
-  }, [rendererRef, searchRef, setSettings, exportPng, onGoLive, onPriceAutoFitKey, onToggleFollowKey, onTogglePriceFollowKey, toggleIntelDrawer]);
+  }, [rendererRef, searchRef, setSettings, exportPng, onGoLive, onPriceAutoFitKey, onToggleFollowKey, onTogglePriceFollowKey, toggleIntelDrawer, openOptions]);
 }

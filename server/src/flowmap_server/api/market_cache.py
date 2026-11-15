@@ -90,6 +90,19 @@ MoversFn = Callable[[str, int], Awaitable[list["QuoteData"]]]
 Clock = Callable[[], int]
 
 
+def _cache_symbol(market: str, symbol: str) -> str:
+    """The spelling a symbol is cached and fetched under.
+
+    Crypto and US tickers are case-insensitive and stored upper-case. A world-exchange local
+    symbol keeps the exchange's own case: Cboe Europe's ``RRl`` and ``RRL`` are not one symbol.
+    So does an asset market's symbol, which is the scanner's own spelling.
+    """
+    from flowmap_server.feeds.equity import EQUITY_MARKETS, is_equity_market
+
+    listed = is_equity_market(market) and market not in EQUITY_MARKETS
+    return symbol if listed else symbol.upper()
+
+
 class QuoteData(msgspec.Struct):
     """A display-only price snapshot for one symbol.
 
@@ -169,7 +182,9 @@ class MarketDataCache:
         self._quote_refresh_timeout_s = max(0.01, float(quote_refresh_timeout_s))
         self._quote_refreshes: dict[tuple[str, str], asyncio.Task] = {}
         self._closed = False
-        self._preview_catalog = tuple(dict.fromkeys((market, symbol.upper()) for market, symbol in preview_catalog))
+        self._preview_catalog = tuple(
+            dict.fromkeys((market, _cache_symbol(market, symbol)) for market, symbol in preview_catalog)
+        )
         self._preview_completed: set[tuple[str, str]] = set()
         self._preview_started = False
         self._preview_warming = bool(self._preview_catalog)
@@ -183,7 +198,7 @@ class MarketDataCache:
     # -- quotes ----------------------------------------------------------------
 
     async def quote(self, market: str, symbol: str, *, wait_for_refresh: bool = False) -> QuoteData:
-        key = (market, symbol.upper())
+        key = (market, _cache_symbol(market, symbol))
         cached = self._quotes.get(key)
         if cached is not None and self._fresh(cached[0]):
             return cached[1]
@@ -234,7 +249,7 @@ class MarketDataCache:
                     # answer the explicit empty quote without a provider call.
                     return self._fallback_quote(market, symbol, None)
                 try:
-                    q = await self._quote_fn(market, symbol.upper())
+                    q = await self._quote_fn(market, _cache_symbol(market, symbol))
                 except Exception:  # never raise into the handler
                     logger.debug("quote fetch failed for %s:%s", market, symbol, exc_info=True)
                     fallback = self._fallback_quote(market, symbol, cached)
@@ -475,7 +490,7 @@ class MarketDataCache:
 # Imported lazily; NEVER exercised by pytest (tests inject their own seams).
 
 
-async def default_quote_fn(market: str, symbol: str) -> QuoteData:
+async def default_quote_fn(market: str, symbol: str, *, eurex_service=None) -> QuoteData:
     """Production single-symbol quote seam (crypto klines / equity Yahoo).
 
     Outbound requests go to the Binance klines endpoint for crypto and to the
@@ -483,12 +498,31 @@ async def default_quote_fn(market: str, symbol: str) -> QuoteData:
     watchlist, alerts and symbol palette reach them through the same cache.
     """
     from flowmap_server.feeds.crypto import is_crypto_market
+    from flowmap_server.feeds.asset_markets import is_asset_market
     from flowmap_server.feeds.equity import EQUITY_MARKETS
+    from flowmap_server.feeds.global_equity import world_mic
 
+    from flowmap_server.feeds.eurex_official import MARKET, contract_for
+    if market == MARKET:
+        contract_for(symbol)
+        if eurex_service is None:
+            return QuoteData(market=market, symbol=symbol, reachable=False, stale=True)
+        snapshot = await eurex_service.snapshot(symbol)
+        candles = [bar for bar in snapshot.candles if math.isfinite(bar.c)]
+        return QuoteData(market=market, symbol=symbol,
+                         price=candles[-1].c if candles else None,
+                         spark=[bar.c for bar in candles[-SPARK_MAX:]],
+                         as_of_ns=candles[-1].ts_ns if candles else 0,
+                         stale=True, reachable=bool(candles))
     if market == "crypto" or is_crypto_market(market):
         return await _crypto_quote(market if market != "crypto" else "binance-spot", symbol)
     if market in EQUITY_MARKETS or market == "equity":
         return await _equity_quote(symbol)
+    mic = world_mic(market)
+    if mic is not None:
+        return await _world_quote(market, mic, symbol)
+    if is_asset_market(market):
+        return await _asset_quote(market, symbol)
     return QuoteData(market=market, symbol=symbol, reachable=False, stale=True, as_of_ns=time.time_ns())
 
 
@@ -553,7 +587,17 @@ async def default_movers_fn(market: str, limit: int, *, quote_fn: QuoteFn | None
     per refresh would be far too many calls).
     """
     from flowmap_server.data.universe import CRYPTO_SYMBOLS, EQUITY_TICKERS
+    from flowmap_server.feeds.asset_markets import is_asset_market
+    from flowmap_server.feeds.global_equity import world_mic
 
+    if market == 'futures-eurex-official':
+        return []
+
+    mic = world_mic(market)
+    if mic is not None:
+        return await _world_movers(market, mic, limit)
+    if is_asset_market(market):
+        return await _asset_movers(market, limit)
     fetch: Callable[[str], Awaitable[QuoteData]]
     if market == "equity":
         candidates = EQUITY_TICKERS[:40]
@@ -640,6 +684,97 @@ def daily_change_pct(bars: Sequence[OHLCV]) -> tuple[float, float | None] | None
     if base is None or base <= 0:
         return price, None
     return price, (price - base) / base * 100.0
+
+
+def _world_change_pct(last: float | None, prev_close: float | None) -> float | None:
+    if last is None or prev_close is None or not prev_close > 0.0:
+        return None
+    return (last - prev_close) / prev_close * 100.0
+
+
+def _world_quote_of(market: str, symbol: str, snapshot: object, now: int) -> QuoteData:
+    """A display quote from one Crocodile live snapshot (``None``: nothing answered)."""
+    from crocodile.equity.universal.live.model import LiveSnapshot
+
+    if not isinstance(snapshot, LiveSnapshot) or snapshot.last is None:
+        return QuoteData(market=market, symbol=symbol, reachable=snapshot is not None,
+                         stale=True, as_of_ns=now)
+    as_of = snapshot.source_ts_ns if snapshot.source_ts_ns is not None else snapshot.captured_ns
+    return QuoteData(
+        market=market,
+        symbol=symbol,
+        price=snapshot.last,
+        change_pct=_world_change_pct(snapshot.last, snapshot.prev_close),
+        as_of_ns=int(as_of),
+        # A publisher that declares a delay is showing an older price by its own statement.
+        stale=bool(snapshot.delay_s) or now - int(as_of) > 15 * 60 * 10**9,
+        reachable=True,
+    )
+
+
+async def _world_quote(market: str, mic: str, symbol: str) -> QuoteData:
+    """Display quote of one listing of one exchange, from Crocodile's live source chain."""
+    from crocodile.equity.universal.live.model import LiveListing
+
+    from flowmap_server.feeds.global_equity import live_feed
+
+    now = time.time_ns()
+    try:
+        snapshot = await live_feed().poll(LiveListing(mic=mic, local_symbol=symbol))
+    except Exception:  # a provider fault is an unreachable quote, never a 500
+        logger.debug("world quote failed for %s@%s", symbol, mic, exc_info=True)
+        return QuoteData(market=market, symbol=symbol, reachable=False, stale=True, as_of_ns=now)
+    return _world_quote_of(market, symbol, snapshot, now)
+
+
+async def _world_movers(market: str, mic: str, limit: int) -> list[QuoteData]:
+    """The exchange's board ranked by absolute change since the previous close (one request)."""
+    from flowmap_server.data.venues import WORLD_BOARD_LIMIT
+    from flowmap_server.feeds.global_equity import live_feed
+
+    now = time.time_ns()
+    rows = await live_feed().board(mic, limit=WORLD_BOARD_LIMIT)
+    quotes = [_world_quote_of(market, row.listing.local_symbol, row, now) for row in rows]
+    ranked = [quote for quote in quotes if quote.change_pct is not None]
+    ranked.sort(key=lambda quote: abs(quote.change_pct or 0.0), reverse=True)
+    return ranked[:limit]
+
+
+async def _asset_quote(market: str, symbol: str) -> QuoteData:
+    """Display quote of one future, currency pair, index or bond, from Crocodile's scanner."""
+    from flowmap_server.feeds.asset_markets import (
+        asset_feed,
+        asset_market,
+        asset_ticker,
+        snapshot_of,
+    )
+
+    now = time.time_ns()
+    named = asset_market(market)
+    try:
+        if named is None:
+            raise ValueError(f"{market!r} is not an asset market")
+        ticker = asset_ticker(named[0], named[1], symbol)
+        rows = await asset_feed().quotes([ticker])
+    except Exception:  # a provider fault or a refused symbol is an unreachable quote, never a 500
+        logger.debug("asset quote failed for %s:%s", market, symbol, exc_info=True)
+        return QuoteData(market=market, symbol=symbol, reachable=False, stale=True, as_of_ns=now)
+    row = next((item for item in rows if item.ticker == ticker), None)
+    # The scanner answered and has no such row: reached, no price, stale.
+    snapshot = snapshot_of(row) if row is not None else object()
+    return _world_quote_of(market, symbol, snapshot, now)
+
+
+async def _asset_movers(market: str, limit: int) -> list[QuoteData]:
+    """One asset market's board ranked by absolute change since the previous close."""
+    from flowmap_server.feeds.asset_markets import asset_board, asset_symbol, snapshot_of
+
+    now = time.time_ns()
+    rows = await asset_board(market)
+    quotes = [_world_quote_of(market, asset_symbol(row), snapshot_of(row), now) for row in rows]
+    ranked = [quote for quote in quotes if quote.change_pct is not None]
+    ranked.sort(key=lambda quote: abs(quote.change_pct or 0.0), reverse=True)
+    return ranked[:limit]
 
 
 async def _equity_quote(symbol: str) -> QuoteData:

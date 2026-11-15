@@ -15,6 +15,7 @@ from flowmap_server.core.pyramid import pyramid_for
 from flowmap_server.core.record import SessionRecorder, TailData
 from flowmap_server.core.session_capability import recorded_capability
 from flowmap_server.core.session_common import SESSION_LOGGER, SNAPSHOT_COLS
+from flowmap_server.data.real_books import real_book
 from flowmap_server.feeds.base import BarSample, BookState
 from flowmap_server.feeds.equity import EquityFeed
 from flowmap_server.feeds.replay import ReplayFeed
@@ -73,6 +74,11 @@ class BootMixin:
         seeded from the first-launch candle backfill.
         """
         tail_applied = False
+        native_snapshot = getattr(self._feed, 'native_snapshot', None)
+        if native_snapshot is not None:
+            from flowmap_server.core.session_candles import apply_candle_snapshot
+            apply_candle_snapshot(self, await native_snapshot())
+            return
         if self._recorder_root is not None:
             try:
                 rec, tail = await self._run_boot_blocking()
@@ -182,6 +188,19 @@ class BootMixin:
                     elif isinstance(ev, events.Marker):
                         self._markers.append(ev)
                         self._record(lambda r, m=ev: r.record_marker(m))
+                    elif isinstance(ev, events.Trade):
+                        # A closed feed may state the last trading of the session it shows
+                        # (the world feed does). It goes on the tape, stamped with its own
+                        # past time, and never into the grid: nothing is trading now. A
+                        # repeated preparation does not append the same print again.
+                        if not self._tape or self._tape[-1].ts_ns < ev.ts_ns:
+                            stamped = (
+                                msgspec.structs.replace(ev, seq=self._next_trade_seq())
+                                if ev.seq == 0
+                                else ev
+                            )
+                            self._tape.append(stamped)
+                            self._record(lambda r, t=stamped: r.record_trade(t))
                 self._emit_closed_if_needed()
                 self._closed_history_prepared = True
             except Exception:
@@ -282,7 +301,13 @@ class BootMixin:
         Always returns a fresh dict (never the feed's own object): the badges
         must not leak back into the feed descriptor."""
         cap: dict[str, object] = dict(self._feed.capability)
-        cap["replay"] = True
+        cap["replay"] = not bool(getattr(self._feed, 'native_candles', False))
+        if cap.get("depth") == "SYNTH":
+            # A synthetic instrument whose underlying has a real public book on a venue this
+            # build streams says where (data/real_books.py); the client offers it as a link.
+            linked = real_book(self._feed.market, self._feed.symbol)
+            if linked is not None:
+                cap["real_book"] = linked
         if isinstance(self._feed, ReplayFeed):
             cap["playback"] = self._feed.playback()
         if self._history_reconstructed:

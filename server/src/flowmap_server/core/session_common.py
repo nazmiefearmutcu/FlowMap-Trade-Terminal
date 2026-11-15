@@ -95,6 +95,11 @@ _REC_APPEND_FAIL_LIMIT = 5
 # for >=5 s (injectable clock) or delivered >=100 events, whichever first. A
 # yield-one-then-crash flapper therefore keeps escalating to the 30 s cap.
 _STABLE_NS = 5_000_000_000
+# A book or bar event stamped longer ago than this is a feed replaying its session, not the
+# market now. Wide enough that a publisher's own delayed stamp is never read as a replay.
+_REPLAY_PAST_NS = 60_000_000_000
+# The longest a replay may keep subscribers waiting for their snapshot.
+_REPLAY_MAX_S = 30.0
 
 _STABLE_EVENTS = 100
 

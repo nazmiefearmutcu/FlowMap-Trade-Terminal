@@ -7,7 +7,7 @@ describe('isBareKeyRow — the rows the single-key switch turns off', () => {
   it('flags every reference row that names a character key or Space', () => {
     const bare = KEYSHEET.filter((entry) => isBareKeyRow(entry.keys)).map((entry) => entry.keys);
     expect(bare).toEqual([
-      'Space', '/', 'E', 'M', 'A', 'H', 'C', 'T', 'D', 'I', 'J', '?', '+ / −', '] / [', 'F', 'P', 'Shift+P', 'R',
+      'Space', '/', 'E', 'M', 'A', 'H', 'C', 'T', 'D', 'I', 'J', 'O', '?', '+ / −', '] / [', 'F', 'P', 'Shift+P', 'R',
     ]);
   });
 

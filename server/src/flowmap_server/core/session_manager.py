@@ -34,7 +34,7 @@ from flowmap_server.core.session_core import Session
 from flowmap_server.core.session_queue import ClientTx
 from flowmap_server.core.stats import SessionStats
 from flowmap_server.feeds.base import Feed
-from flowmap_server.feeds.equity import EQUITY_MARKETS
+from flowmap_server.feeds.equity import is_equity_market
 from flowmap_server.feeds.replay import ReplayFeed
 from flowmap_server.feeds.router import build_feed
 from flowmap_server.proto import events
@@ -109,9 +109,18 @@ _EQUITY_P0_NOMINAL = 100.0
 _EQUITY_DEPTH_MODE: dict[object, int] = {
     "SYNTH": events.MODE_L1_BAND,
     "L1": events.MODE_L1_BAND,
+    # A world-exchange feed whose publisher exposes a real multi-level ladder (re-read each
+    # poll, like a ccxt book): drawn as a book, badged as the snapshot it is.
+    "L2-snapshot": events.MODE_L2,
     "SYNTH_PROFILE": events.MODE_SYNTH_PROFILE,
     "L1_BAND": events.MODE_L1_BAND,
 }
+
+# A feed that declares ``price_adaptive_tick`` (the world-exchange feed) cannot be given the
+# US cent tick: its listings range from sub-cent to six-figure prices. The grid starts from
+# this deliberately coarse tick, which ``adaptive_tick_for`` always replaces with the fifth
+# significant digit of the first real price (it is coarse for any price below 1e9).
+_EQUITY_ADAPTIVE_FALLBACK_TICK = 1e6
 
 # Synthetic (keyless) depth tiers run the slower Yahoo-friendly cadence.
 _EQUITY_SYNTH_DEPTHS = frozenset({"SYNTH", "SYNTH_PROFILE"})
@@ -241,7 +250,10 @@ class SessionManager:
         return build_feed(sub, self._cfg, realtime_sim=False, stats=self.stats)
 
     def _grid_for(self, feed: Feed, band: str = DEFAULT_BAND) -> Grid:
-        if feed.market in EQUITY_MARKETS:
+        if getattr(feed, 'native_candles', False):
+            from flowmap_server.core.session_candles import candle_grid
+            return candle_grid(rows=self._cfg.max_rows, ring_columns=self._cfg.ring_columns)
+        if is_equity_market(feed.market):
             return self._equity_grid_for(feed, band)
         tick = _crypto_tick_for(feed, self._cfg.crypto_tick)
         auto_tick = _crypto_tick_auto(feed, self._cfg.crypto_tick)
@@ -287,8 +299,11 @@ class SessionManager:
             else self._cfg.dt_equity_keyed_ns
         )
         rows = min(_EQUITY_ROWS, self._cfg.max_rows)
-        tick = _EQUITY_TICK
-        p0 = round((_EQUITY_P0_NOMINAL - rows * tick / 2.0) / tick) * tick
+        adaptive = bool(getattr(feed, "price_adaptive_tick", False))
+        tick = _EQUITY_ADAPTIVE_FALLBACK_TICK if adaptive else _EQUITY_TICK
+        # The adaptive frame is centred by the first real price; until then it starts at zero
+        # rather than at a negative price.
+        p0 = 0.0 if adaptive else round((_EQUITY_P0_NOMINAL - rows * tick / 2.0) / tick) * tick
         spec = BANDS.get(band)
         return Grid(
             GridCfg(
@@ -303,6 +318,7 @@ class SessionManager:
                 band_down=spec.down if spec else None,
                 band_hybrid=spec.hybrid if spec else False,
                 core_rows=spec.core_rows if spec else 0,
+                auto_tick=adaptive,
             )
         )
 
@@ -358,11 +374,11 @@ class SessionManager:
             clock=self._clock,
             timer=self._timer,
             # Live mode only: replay sessions never self-record.
-            recorder=self._recorder if sub.mode == "live" else None,
+            recorder=self._recorder if sub.mode == "live" and not getattr(feed, 'native_candles', False) else None,
             wall_clock=self._wall_clock,
             # Live mode only: a replay session reads its own recording, never
             # a live candle backfill.
-            backfill_fn=self._backfill_fn if sub.mode == "live" else None,
+            backfill_fn=self._backfill_fn if sub.mode == "live" and not getattr(feed, 'native_candles', False) else None,
             backfill_max_cols=self._cfg.backfill_max_cols if self._cfg.backfill_enabled else 0,
             backfill_stretch=self._cfg.backfill_stretch,
             stats=self.stats,

@@ -29,7 +29,7 @@ client/    React 18 + TypeScript + WebGL2 renderer. Vite dev server (:5173)
 server/    Python 3.13 sidecar (FastAPI + uvicorn, asyncio).
   src/flowmap_server/
     api/     REST (/api/health, /api/symbols, /api/venues, /api/universe,
-             /api/movers, /api/quote, /api/export) + the binary /ws WebSocket
+             /api/movers, /api/quote, /api/options, /api/export) + the binary /ws WebSocket
              (origin gate + connection cap) + _env.py (WS env knobs)
     core/    density grid, sessions, recorder, price scale, backfill, session stats
     data/    bundled symbol universe + venue catalog

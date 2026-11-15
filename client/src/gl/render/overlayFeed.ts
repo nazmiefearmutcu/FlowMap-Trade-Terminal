@@ -54,7 +54,7 @@ export class OverlayFeed {
         // changes no overlay state, so it is dropped before any redraw.
         if (isRepeatBar(this.lastBar, msg)) return false;
         this.lastBar = msg;
-        overlays.onBar(msg);
+        overlays.onBar(msg, this.host.store.getState().capability?.native_candles === true);
         // Snapshot pairs are depth→bar. Coalesce their price input changes
         // for the next presentation, including a paused final/only column.
         if (Number.isFinite(msg.c) && msg.c > 0) this.host.follow.barPriceFitPending = true;

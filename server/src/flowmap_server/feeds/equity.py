@@ -102,13 +102,44 @@ from flowmap_server.proto.events import (
     Trade,
 )
 
-__all__ = ["DEFAULT_PROFILE_TICK", "EQUITY_MARKET", "EQUITY_MARKETS", "EquityFeed", "PROFILE_PEAK_TARGET"]
+__all__ = [
+    "DEFAULT_PROFILE_TICK",
+    "EQUITY_MARKET",
+    "EQUITY_MARKETS",
+    "EquityFeed",
+    "PROFILE_PEAK_TARGET",
+    "is_equity_market",
+]
 
 logger = logging.getLogger(__name__)
 
 # Subscribe.market string routed to EquityFeed by the session feed factory.
 EQUITY_MARKET = "equity"
 EQUITY_MARKETS = frozenset({EQUITY_MARKET})
+# One exchange of the world venue: ``world-<mic>`` (see feeds.global_equity).
+_WORLD_PREFIX = "world-"
+# The asset venues (see feeds.asset_markets): one derivatives exchange, or a whole kind.
+_FUTURES_PREFIX = "futures-"
+_ASSET_MARKETS = frozenset({"forex", "indices", "bonds"})
+
+
+def is_equity_market(market: str) -> bool:
+    """True for the US ``equity`` market, every ``world-<mic>`` exchange market and the asset
+    markets (``futures-<venue>``, ``forex``, ``indices``, ``bonds``).
+
+    All are served by an :class:`EquityFeed` (the world and asset markets by subclasses), so
+    the session layer gives them the same grid and the same closed-market handling. The
+    prefix is the whole test here: whether the MIC or venue is one this build can reach is
+    the router's question, and an unknown one never gets as far as a grid.
+    """
+    lowered = market.lower()
+    return (
+        market in EQUITY_MARKETS
+        or lowered.startswith((_WORLD_PREFIX, _FUTURES_PREFIX))
+        or lowered in _ASSET_MARKETS
+    )
+
+
 # Keyless last-price display venue tag (not an exchange print or NBBO).
 SYNTH_VENUE = "synthetic"
 # Live keyless bar refresh cadence (Yahoo: at least 60 s per symbol).

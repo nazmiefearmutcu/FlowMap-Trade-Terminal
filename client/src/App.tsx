@@ -43,6 +43,7 @@ import { useChartExport } from './app/useChartExport';
 import { useGraphicsDiagnostics } from './app/useGraphicsDiagnostics';
 import { useWorkspaceActions } from './app/useWorkspaceActions';
 import { SIM_MARKET, SIM_SYMBOL } from './app/workspaceScope';
+import { hasOptionChains } from './ui/optionChainModel';
 import { useChartThemeBridge, useChartThemeSync } from './app/useChartThemeBridge';
 import { useDeskLayout } from './app/useDeskLayout';
 import { useEngineStatus } from './app/useEngineStatus';
@@ -108,6 +109,14 @@ export function App() {
   const [rendererAttempt, setRendererAttempt] = useState(0);
   // The About and legal dialog: from settings, or from the research drawer.
   const [aboutOpen, setAboutOpen] = useState(false);
+  // The option chain of the instrument on the chart (top bar button).
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  // The button and the `O` key both come here; a market without chains (the sim feed) opens nothing.
+  const openOptions = useCallback(() => {
+    const market = useFlowMapStore.getState().subscription?.market ?? SIM_MARKET;
+    if (hasOptionChains(market)) setOptionsOpen(true);
+  }, []);
+  const closeOptions = useCallback(() => setOptionsOpen(false), []);
   // True while the server's recording writer is stalled (Status.capability.recording_health).
   const recordingDegraded = useFlowMapStore((s) => s.recordingDegraded);
   // True while the server's market overview runs past its own deadline (Status.capability.overview_degraded).
@@ -172,9 +181,9 @@ export function App() {
   } = useWorkspaceActions(rendererRef, settingsRef, setSettings);
   const { exportNotice, exportPng, dismissExportNotice } = useChartExport(rendererRef, settingsRef);
 
-  // Bare-key workspace shortcuts (Space, `/`, `E`, F, P, Shift+P, R, J).
+  // Bare-key workspace shortcuts (Space, `/`, `E`, F, P, Shift+P, R, J, O).
   useGlobalChartKeys({
-    rendererRef, searchRef, setSettings, exportPng, toggleIntelDrawer, follow: {
+    rendererRef, searchRef, setSettings, exportPng, toggleIntelDrawer, openOptions, follow: {
       onGoLive, onToggleFollowKey, onTogglePriceFollowKey, onPriceAutoFitKey,
     },
   });
@@ -205,6 +214,7 @@ export function App() {
         onToggleRail={toggleRail}
         onOpenSettings={() => setSettingsOpen(true)}
         onToggleIntel={toggleIntelDrawer}
+        onOpenOptions={openOptions}
         onExportPng={exportPng}
         exportNotice={exportNotice}
         onDismissExportNotice={dismissExportNotice}
@@ -273,6 +283,8 @@ export function App() {
           setIntelDrawerOpen(false);
           setAboutOpen(true);
         }}
+        optionsOpen={optionsOpen}
+        onCloseOptions={closeOptions}
         aboutOpen={aboutOpen}
         onCloseAbout={() => setAboutOpen(false)}
         helpOpen={helpOpen}

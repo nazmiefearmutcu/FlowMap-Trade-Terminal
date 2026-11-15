@@ -42,10 +42,11 @@ handshake. A non-browser client may send the header on the handshake instead. On
 parameter is still accepted for command-line tools, and the server redacts its value from the logs.
 A WebSocket connection without a valid token closes with 4401. `GET /api/health` and CORS preflight
 (`OPTIONS`) are exempt. Source runs set no token,
-so only the Host check applies. Most routes read in-memory state and never wait on the network. Three can
+so only the Host check applies. Most routes read in-memory state and never wait on the network. Four can
 wait. `GET /api/quote` and `GET /api/movers` read market data through a TTL cache and, on a cache miss, may await one provider
 fetch on a cache miss (a failed fetch returns the last good value flagged stale), and `GET /api/universe`
-with a specific crypto venue enumerates that venue live, behind a cache. The table lists every route:
+with a specific crypto venue enumerates that venue live, behind a cache. `GET /api/options` reads an option
+chain behind a twenty-second cache and waits at most twelve seconds for the source. The table lists every route:
 
 | Route | Purpose | Source |
 |---|---|---|
@@ -54,6 +55,7 @@ with a specific crypto venue enumerates that venue live, behind a cache. The tab
 | `GET /api/venues` | Subscribable venue list | `api/discovery.py` |
 | `GET /api/universe` | Full bundled universe (same source as `/api/symbols`) | `api/discovery.py` |
 | `GET /api/movers`, `GET /api/quote` | Network-cached market data for the symbol palette | `api/discovery.py`, `api/market_cache.py` |
+| `GET /api/options` | The option chain of one instrument: the series it lists and the strikes of one of them. A provider fault is a `status` in the body, never an error status | `api/discovery.py`, `feeds/option_chains.py` |
 | `GET /api/export` | Stream the last-N finalized density columns of a session as CSV or JSON (see below) | `api/export.py` |
 | `GET /api/recordings`, `GET /api/recordings/availability`, `GET /api/recordings/window` | List recorded sessions, report recorded hours, and preview a recorded window for the replay picker | `api/rest.py` |
 | `GET /api/previews` | Replay preview listing (see `api/discovery.py`) | `api/discovery.py` |

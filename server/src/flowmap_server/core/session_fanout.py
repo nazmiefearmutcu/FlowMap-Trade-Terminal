@@ -73,7 +73,7 @@ class FanoutMixin:
         partial_kind: str = "",
         latest_key: str = "",
     ) -> None:
-        if self._preparing_closed_history:
+        if self._preparing_closed_history or self._history_replay in ("replay", "ending"):
             return
         for client in self._clients:
             client.offer(

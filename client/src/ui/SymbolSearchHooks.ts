@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BUNDLED_DIRECTORY } from './bundledDirectory';
 import type { RecentPick } from './recents';
 import { PreviewQuotes, type PreviewQuote } from './previewQuotes';
-import { ALL_VENUES, marketGroup, setVenueCatalog, type SymbolEntry, type VenueInfo } from './symbols';
+import { ALL_VENUES, marketGroup, setVenueCatalog, setVenueNames, type SymbolEntry, type VenueInfo } from './symbols';
 import {
   EMPTY_LISTING_TTL_MS,
   VENUE_LIMIT,
@@ -164,9 +164,11 @@ export function useVenueCatalog(open: boolean): VenueInfo[] | null {
   useEffect(() => {
     if (!open || venues !== null) return;
     const ctrl = new AbortController();
-    void getJson<{ venues: VenueInfo[] }>('/api/venues', ctrl.signal).then((b) => {
+    void getJson<{ venues: VenueInfo[]; labels?: Record<string, string> }>('/api/venues', ctrl.signal).then((b) => {
       if (!b) return; // leave `venues` null so the next open retries
       const list = b.venues ?? [];
+      // Names first: the venue rows are built from the catalog and read them.
+      setVenueNames(b.labels);
       setVenueCatalog(list);
       setVenues(list);
     });
