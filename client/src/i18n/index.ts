@@ -17,8 +17,7 @@
  * change); see docs/i18n-migration.md for any surface still to be migrated.
  */
 
-import { en } from './en';
-import { tr } from './tr';
+import { en, tr } from './tables';
 
 export type Locale = 'en' | 'tr';
 

@@ -202,7 +202,7 @@ class FinalizedColumn(msgspec.Struct):
 class Grid:
     """Per-session density grid: time-weighted accumulation, epochs, ring."""
 
-    def __init__(self, cfg: GridCfg) -> None:
+    def __init__(self, cfg: GridCfg, *, initial_epoch: int = 0) -> None:
         if cfg.rows <= 0 or cfg.ring_columns <= 0 or cfg.dt_ns <= 0:
             raise ValueError("rows, ring_columns and dt_ns must be positive")
         self._cfg = cfg
@@ -217,7 +217,7 @@ class Grid:
         self._tick_multiple = cfg.tick_multiple
         self._step = self._tick * cfg.tick_multiple
         self._p0 = cfg.p0
-        self._epoch = 0
+        self._epoch = initial_epoch
         # Band state. `_anchor_mid` is the mid the current frame was built for;
         # the ratio trip is measured against it. None until the first book.
         self._banded = cfg.band_up is not None and cfg.band_down is not None
@@ -242,8 +242,8 @@ class Grid:
         # one. Populated here (epoch 0) and on every re-anchor; kept for the
         # session lifetime (re-anchors are rare, entries are tiny).
         self._epoch_params: dict[int, EpochParams] = {
-            0: EpochParams(
-                epoch=0,
+            initial_epoch: EpochParams(
+                epoch=initial_epoch,
                 tick=self._tick,
                 tick_multiple=cfg.tick_multiple,
                 dt_ns=cfg.dt_ns,

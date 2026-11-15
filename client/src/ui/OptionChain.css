@@ -1,0 +1,257 @@
+/* Option chain dialog (ui/OptionChain.tsx). Colours and sizes come from theme tokens. */
+
+.option-chain__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-5);
+  background: var(--scrim);
+}
+
+.option-chain {
+  width: min(1080px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  color: var(--text);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-drop);
+}
+
+.option-chain__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.option-chain__title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  overflow-wrap: anywhere;
+}
+
+.option-chain__underlying {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: var(--fs-md);
+  white-space: nowrap;
+}
+
+.option-chain__underlying strong {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.option-chain__close {
+  margin-left: auto;
+}
+
+.option-chain__underlying + .option-chain__close {
+  margin-left: 0;
+}
+
+.option-chain__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--sp-4);
+}
+
+.option-chain__series {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+  flex: 1 1 280px;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+}
+
+.option-chain__series select {
+  min-width: 0;
+  width: 100%;
+}
+
+.option-chain__modes {
+  display: flex;
+  gap: var(--sp-1);
+}
+
+.option-chain button,
+.option-chain select {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text);
+  background: var(--bg-inset);
+  border: 1px solid var(--control-line);
+  border-radius: var(--r-1);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+
+.option-chain button {
+  cursor: pointer;
+}
+
+.option-chain button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.option-chain button[aria-pressed='true'] {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-bright);
+  /* The pressed state keeps a mark that does not rely on colour alone. */
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.option-chain button:focus-visible,
+.option-chain select:focus-visible,
+.option-chain__scroll:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.option-chain__meta,
+.option-chain__note,
+.option-chain__warn,
+.option-chain__error {
+  margin: 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.option-chain__meta:empty {
+  display: none;
+}
+
+.option-chain__note {
+  color: var(--text-3);
+}
+
+.option-chain__warn {
+  color: var(--warn);
+}
+
+.option-chain__error {
+  color: var(--sell);
+}
+
+.option-chain__scroll {
+  min-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-inset);
+}
+
+.option-chain__table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.option-chain__table thead th {
+  position: sticky;
+  z-index: 1;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+}
+
+.option-chain__table thead tr:first-child th {
+  top: 0;
+  text-align: center;
+  color: var(--text);
+}
+
+/* The second header row sits under the first: one line of text plus its padding. */
+.option-chain__table thead tr:nth-child(2) th {
+  top: calc(var(--fs-md) * 1.5 + var(--sp-2) * 2 + 1px);
+}
+
+.option-chain__table thead tr:first-child th,
+.option-chain__table thead tr:nth-child(2) th {
+  line-height: 1.5;
+}
+
+.option-chain__table thead th.option-chain__strike-head {
+  top: 0;
+  text-align: center;
+  background: var(--bg-3);
+}
+
+.option-chain__cell,
+.option-chain__strike {
+  padding: var(--sp-1) var(--sp-3);
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.option-chain__cell {
+  color: var(--text);
+}
+
+.option-chain__cell.is-itm {
+  background: var(--bg-2);
+}
+
+.option-chain__strike {
+  text-align: center;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-3);
+}
+
+.option-chain__table tr.is-atm .option-chain__strike {
+  color: var(--accent-bright);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.option-chain__table tr.is-atm .option-chain__cell {
+  border-bottom-color: var(--accent);
+}
+
+@media (max-width: 760px) {
+  .option-chain {
+    padding: var(--sp-4);
+  }
+
+  .option-chain__cell,
+  .option-chain__strike,
+  .option-chain__table thead th {
+    padding-inline: var(--sp-2);
+  }
+}
+
+@media (forced-colors: active) {
+  .option-chain button[aria-pressed='true'] {
+    border-color: Highlight;
+    color: Highlight;
+  }
+
+  .option-chain__table tr.is-atm .option-chain__strike {
+    outline-color: Highlight;
+  }
+
+  .option-chain__cell.is-itm {
+    background: Canvas;
+    font-style: italic;
+  }
+}

@@ -41,6 +41,7 @@ export const KEYSHEET: readonly KeysheetEntry[] = [
   { keys: 'D', actionKey: 'keysheet.draw' },
   { keys: 'I', actionKey: 'keysheet.indicator' },
   { keys: 'J', actionKey: 'keysheet.intel' },
+  { keys: 'O', actionKey: 'keysheet.options' },
   { keys: 'Del', actionKey: 'keysheet.delete' },
   { keys: 'Ctrl+Z', actionKey: 'keysheet.undo' },
   { keys: '?', actionKey: 'keysheet.help' },

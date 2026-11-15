@@ -11,18 +11,24 @@ import {
   fuzzyRank,
   fuzzyScore,
   getVenueCatalog,
+  isAssetMarket,
+  isWorldMarket,
   marketGroup,
   marketVenueId,
   rankVenueOptions,
   resetVenueCatalog,
   searchFold,
   setVenueCatalog,
+  setVenueNames,
+  statesOwnZone,
   venueGroupLabel,
   venueLabel,
   venueMarkets,
+  venueName,
   venueOptions,
   type SymbolEntry,
   type VenueInfo,
+  worldMic,
 } from './symbols';
 
 // The venue catalog is module state (see symbols.ts); every test starts pre-fetch.
@@ -560,5 +566,123 @@ describe('venueGroupLabel', () => {
     expect(venueGroupLabel('crypto')).toBe('Crypto');
     expect(venueGroupLabel('equity', (k) => tFor('tr', k))).toBe(tFor('tr', 'search.group.equity'));
     expect(venueGroupLabel('crypto', (k) => tFor('tr', k))).not.toBe('crypto');
+  });
+});
+
+describe('the world-equity venue', () => {
+  const WORLD: VenueInfo = {
+    id: 'world',
+    assetClass: 'equity',
+    depth: 'per-market',
+    native: true,
+    segments: ['xist', 'xtai'],
+  };
+
+  it('recognises a world market and reads its MIC', () => {
+    expect(isWorldMarket('world-xist')).toBe(true);
+    expect(isWorldMarket('WORLD-XIST')).toBe(true);
+    expect(isWorldMarket('equity')).toBe(false);
+    expect(isWorldMarket('binance-spot')).toBe(false);
+    expect(worldMic('world-xist')).toBe('XIST');
+  });
+
+  it('groups a world market as equity before the catalog has loaded', () => {
+    // The heuristic must not call an exchange a crypto venue while /api/venues is in flight.
+    expect(marketGroup('world-xist')).toBe('equity');
+  });
+
+  it('labels the top bar with the MIC, since "Equity" would not say which exchange', () => {
+    expect(venueLabel('world-xist')).toBe('XIST');
+    expect(venueLabel('equity')).toBe('Equity');
+  });
+
+  it('lists one option per exchange, named, with no single depth badge', () => {
+    setVenueNames({ 'world-xist': 'Borsa Istanbul (TR)' });
+    setVenueCatalog([WORLD]);
+    const options = venueOptions([WORLD]).filter((o) => o.market.startsWith('world-'));
+    expect(options.map((o) => o.market)).toEqual(['world-xist', 'world-xtai']);
+    expect(options[0].label).toBe('world-xist \u00b7 Borsa Istanbul (TR)');
+    // No name was reported for Taipei: the market string stands alone.
+    expect(options[1].label).toBe('world-xtai');
+    expect(options.every((o) => o.depth === '' && o.group === 'equity')).toBe(true);
+    expect(venueName('world-xist')).toBe('Borsa Istanbul (TR)');
+    expect(venueName('world-xtai')).toBe('');
+  });
+
+  it('finds an exchange by its name', () => {
+    setVenueNames({ 'world-xist': 'Borsa Istanbul (TR)' });
+    const ranked = rankVenueOptions(venueOptions([WORLD]), 'istanbul');
+    expect(ranked[0]?.market).toBe('world-xist');
+  });
+
+  it('forgets the names with the catalog', () => {
+    setVenueNames({ 'world-xist': 'Borsa Istanbul (TR)' });
+    resetVenueCatalog();
+    expect(venueName('world-xist')).toBe('');
+  });
+});
+
+describe('the asset venues (futures, forex, indices, bonds)', () => {
+  const FUTURES: VenueInfo = {
+    id: 'futures',
+    assetClass: 'equity',
+    depth: 'SYNTH',
+    native: true,
+    segments: ['cme_mini', 'eurex'],
+  };
+  const FOREX: VenueInfo = { id: 'forex', assetClass: 'equity', depth: 'SYNTH', native: true, segments: [] };
+
+  afterEach(() => {
+    resetVenueCatalog();
+  });
+
+  it('recognises the four asset markets and nothing else', () => {
+    expect(isAssetMarket('futures-cme_mini')).toBe(true);
+    expect(isAssetMarket('FUTURES-EUREX')).toBe(true);
+    expect(isAssetMarket('forex')).toBe(true);
+    expect(isAssetMarket('indices')).toBe(true);
+    expect(isAssetMarket('bonds')).toBe(true);
+    expect(isAssetMarket('equity')).toBe(false);
+    expect(isAssetMarket('world-xist')).toBe(false);
+    expect(isAssetMarket('binance-usdm')).toBe(false);
+    // A crypto venue's own futures segment is not the futures venue.
+    expect(isAssetMarket('binance-futures')).toBe(false);
+  });
+
+  it('groups them with the session-bound markets before and after the catalog loads', () => {
+    for (const market of ['futures-cme_mini', 'forex', 'indices', 'bonds']) {
+      expect(marketGroup(market)).toBe('equity');
+    }
+    setVenueCatalog([FUTURES, FOREX]);
+    expect(marketGroup('futures-eurex')).toBe('equity');
+    expect(marketGroup('forex')).toBe('equity');
+  });
+
+  it('names an asset market by its own string, never by the equity group word', () => {
+    expect(venueLabel('forex')).toBe('forex');
+    expect(venueLabel('futures-cme_mini')).toBe('futures-cme_mini');
+    expect(venueLabel('Futures-EUREX')).toBe('futures-eurex');
+    expect(venueLabel('forex', (k) => tFor('tr', k))).toBe('forex');
+    // The US market keeps its group word and a world exchange its MIC.
+    expect(venueLabel('equity')).toBe(tFor('en', 'search.group.equity'));
+    expect(venueLabel('world-xist')).toBe('XIST');
+  });
+
+  it('lists one option per derivatives exchange, badged SYNTH, with its label', () => {
+    setVenueNames({ 'futures-cme_mini': 'CME_MINI futures (319 contracts)', forex: 'Currency pairs (composite quotes)' });
+    const options = venueOptions([FUTURES, FOREX]).filter((o) => o.market !== ALL_VENUES);
+    expect(options.map((o) => o.market)).toEqual(['futures-cme_mini', 'futures-eurex', 'forex']);
+    expect(options.every((o) => o.depth === 'SYNTH' && o.group === 'equity')).toBe(true);
+    expect(options[0].label).toBe('futures-cme_mini \u00b7 CME_MINI futures (319 contracts)');
+    expect(options[1].label).toBe('futures-eurex');
+    expect(options[2].label).toBe('forex \u00b7 Currency pairs (composite quotes)');
+  });
+
+  it('says which markets state their own clock zone', () => {
+    expect(statesOwnZone('world-xist')).toBe(true);
+    expect(statesOwnZone('forex')).toBe(true);
+    expect(statesOwnZone('futures-eurex')).toBe(true);
+    expect(statesOwnZone('equity')).toBe(false);
+    expect(statesOwnZone('binance-spot')).toBe(false);
   });
 });

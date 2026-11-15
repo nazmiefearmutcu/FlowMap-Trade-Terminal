@@ -36,11 +36,12 @@ from flowmap_server.api.market_cache import (
     default_quote_fn,
 )
 from flowmap_server.config import Config
-from flowmap_server.core.backfill import default_backfill_fn
+from flowmap_server.feeds.asset_markets import asset_backfill_fn
 from flowmap_server.core.record import Recorder
 from flowmap_server.core.session import SessionManager
 from flowmap_server.core.session_common import SHUTDOWN_FLUSH_DEADLINE_S
 from flowmap_server.feeds.base import Feed
+from flowmap_server.feeds.option_chains import OptionChains
 from flowmap_server.feeds.router import feed_factory
 from flowmap_server.proto import events
 
@@ -186,7 +187,7 @@ def _install_error_handlers(app: FastAPI) -> None:
         return _error_response("internal_error", "internal server error", 500)
 
 
-def _server_feed_factory(cfg: Config) -> Callable[[events.Subscribe], Feed]:
+def _server_feed_factory(cfg: Config, eurex_service=None) -> Callable[[events.Subscribe], Feed]:
     """Server-path feed factory: realtime sim + live crypto/equity.
 
     Same routing as the test path (both go through ``feeds.router``); only the
@@ -194,7 +195,7 @@ def _server_feed_factory(cfg: Config) -> Callable[[events.Subscribe], Feed]:
     wall time, which keeps the event loop live and the demo stream watchable
     (4 columns/s at dt=250 ms).
     """
-    return feed_factory(cfg, realtime_sim=True)
+    return feed_factory(cfg, realtime_sim=True, eurex_service=eurex_service)
 
 
 @asynccontextmanager
@@ -264,6 +265,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         close_cache = getattr(market_cache, "aclose", None)
         if callable(close_cache):
             await close_cache()
+        eurex_service = getattr(app.state, 'eurex_service', None)
+        if eurex_service is not None:
+            await eurex_service.close()
         manager = getattr(app.state, "manager", None)
         flush_all = getattr(manager, "flush_all", None)
         if flush_all is not None:
@@ -284,7 +288,13 @@ def create_app(
     cfg: Config,
     manager: SessionManager | None = None,
     market_cache: MarketDataCache | None = None,
+    option_chains: OptionChains | None = None,
+    eurex_service=None,
 ) -> FastAPI:
+    from flowmap_server.feeds.eurex_service import EurexService, MARKET
+    from flowmap_server.api import eurex
+    if eurex_service is None:
+        eurex_service = EurexService(Path(cfg.data_dir), ring_columns=cfg.ring_columns)
     if manager is None:
         recorder = Recorder(
             # expanduser defensively: from_env already expands, but a Config
@@ -295,12 +305,12 @@ def create_app(
         )
         manager = SessionManager(
             cfg,
-            feed_factory=_server_feed_factory(cfg),
+            feed_factory=_server_feed_factory(cfg, eurex_service),
             recorder=recorder,
             # First-launch history backfill. The network seam dispatches
             # crypto -> klines, equity -> Yahoo, sim -> no-op; tests inject their
             # own manager (no backfill).
-            backfill_fn=default_backfill_fn,
+            backfill_fn=asset_backfill_fn,
         )
     # Discovery cache: all movers/quote network lives behind this
     # TTL-debounced cache. Tests inject a canned cache; the default wires the live
@@ -319,8 +329,13 @@ def create_app(
         async def shared_movers(market: str, limit: int):
             return await default_movers_fn(market, limit, quote_fn=shared_quote)
 
+        async def app_quote(market: str, symbol: str):
+            if market == MARKET:
+                return await default_quote_fn(market, symbol, eurex_service=eurex_service)
+            return await default_quote_fn(market, symbol)
+
         market_cache = MarketDataCache(
-            quote_fn=default_quote_fn, movers_fn=shared_movers,
+            quote_fn=app_quote, movers_fn=shared_movers,
             stale_while_revalidate=True,
             preview_catalog=tuple((CRYPTO_MARKET, symbol) for symbol in CRYPTO_SYMBOLS)
             + tuple(("equity", symbol) for symbol in EQUITY_TICKERS),
@@ -338,6 +353,10 @@ def create_app(
     app.state.market_cache = market_cache
     # The Research drawer's on-disk cache (House reports) sits beside the recordings.
     app.state.research_dir = Path(cfg.data_dir).expanduser().parent / "research"
+    app.state.eurex_service = eurex_service
+    # Option chains: read on request behind a short cache (api/discovery.py, /api/options).
+    # Tests inject one with canned readings.
+    app.state.option_chains = option_chains if option_chains is not None else OptionChains()
     # Per-process WS connection cap counter (api/ws.py; per-app == per-process
     # under the single-app uvicorn sidecar).
     app.state.ws_live_connections = 0
@@ -358,6 +377,7 @@ def create_app(
     app.include_router(market_map.router)
     app.include_router(macro.router)
     app.include_router(research.router)
+    app.include_router(eurex.router)
     app.include_router(export.router)
     app.include_router(ws.router)
     return app

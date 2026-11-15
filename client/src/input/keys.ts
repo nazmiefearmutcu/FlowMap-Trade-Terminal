@@ -38,7 +38,8 @@ export type GlobalKeyAction =
   | { type: 'toggle-price-follow' }
   | { type: 'price-auto-fit' }
   | { type: 'go-live' }
-  | { type: 'toggle-intel' };
+  | { type: 'toggle-intel' }
+  | { type: 'open-options' };
 
 /** How the event target is classified for routing (computed from the DOM by the caller). */
 export interface KeyTargetContext {
@@ -123,6 +124,8 @@ export function routeGlobalKey(
   if (key === 'h' || key === 'H') return { type: 'toggle-hud' };
   if (key === 'c' || key === 'C') return { type: 'cycle-depth-channel' };
   if (key === 'j' || key === 'J') return { type: 'toggle-intel' };
+  // `O` opens the option chain of the instrument on the chart (ui/OptionChain).
+  if (key === 'o' || key === 'O') return { type: 'open-options' };
   return null;
 }
 
@@ -168,6 +171,8 @@ export interface GlobalKeyHandlers {
   onGoLive?: () => void;
   /** `J` — toggle Research; `I` belongs to the indicator picker. */
   onToggleIntel?: () => void;
+  /** `O` — open the option chain of the active instrument. */
+  onOpenOptions?: () => void;
 }
 
 /**
@@ -230,6 +235,9 @@ export function attachGlobalKeys(
         break;
       case 'toggle-intel':
         handlers.onToggleIntel?.();
+        break;
+      case 'open-options':
+        handlers.onOpenOptions?.();
         break;
       default:
         handlers.onFocusSearch();

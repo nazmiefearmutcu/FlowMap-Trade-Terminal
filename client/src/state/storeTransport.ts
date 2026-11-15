@@ -7,6 +7,7 @@
  */
 
 import { pruneEpochs, type ConnectionOptions } from '../net/connection';
+import { registerMarketZone } from '../i18n/format';
 import { overviewDegraded } from '../net/overviewState';
 import { recordingDegraded } from '../net/recordingState';
 import { playbackFromCapability, type EpochParams } from '../proto/types';
@@ -41,8 +42,9 @@ export function transportHandlers(get: StoreGet, set: StoreSet): Partial<Connect
       // Hello is a RECONNECT (the first handshake has no drop behind it).
       const wasReconnect =
         get().lastClose !== null || get().reconnectAttempts > 0;
+      registerMarketZone(get().subscription?.market, hello.capability);
       const playback = playbackFromCapability(hello.capability);
-      const changed = get().sessionId !== hello.session_id;
+      const changed = get().sessionId !== hello.session_id || hello.capability.native_candles === true;
       const epochs = changed ? new Map<number, EpochParams>() : new Map(get().epochs);
       epochs.set(hello.epoch_params.epoch, hello.epoch_params);
       pruneEpochs(epochs, hello.grid_epoch);
@@ -103,6 +105,7 @@ export function transportHandlers(get: StoreGet, set: StoreSet): Partial<Connect
       set({ epochs, gridEpoch });
     },
     onStatus: (status) => {
+      registerMarketZone(get().subscription?.market, status.capability);
       const playback = playbackFromCapability(status.capability);
       set({
         // The server sends feed_state 'reconnecting' only as a pre-Hello progress

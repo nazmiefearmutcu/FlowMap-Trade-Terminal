@@ -22,7 +22,7 @@ LIMIT = 600
 # would move that surface rather than shrink it.
 CEILINGS = {
     "client/src/gl/heatmapMath.ts": 710,
-    "client/src/gl/overlays/manager.ts": 620,
+    "client/src/gl/overlays/manager.ts": 589,
     "client/src/gl/camera.ts": 767,
     "client/src/gl/shaders/heatmap.ts": 823,
     "client/src/gl/normalize.ts": 881,

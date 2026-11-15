@@ -418,7 +418,7 @@ export function composeExportLayers(
     ctx.font = `400 ${px(10)}px ${FONT_STACK}`;
     ctx.textBaseline = 'middle';
     if (opts.meta) {
-      const exchangeZone = exchangeZoneFor(marketGroup(opts.meta.market));
+      const exchangeZone = exchangeZoneFor(marketGroup(opts.meta.market), opts.meta.market);
       const left = `flowmap · ${opts.meta.market}:${opts.meta.symbol} · ${footerModeLabel(opts.meta.mode)} · ${pngDisplayStamp(opts.meta.at, getTimeZonePref(), exchangeZone)}`;
       ctx.textAlign = 'left';
       ctx.fillStyle = chrome.ink;

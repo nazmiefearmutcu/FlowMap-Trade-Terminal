@@ -12,7 +12,7 @@ Contents: [Install](#install) · [First run](#first-run) ·
 [Replay](#replay--seek) · [Measure tool](#measure-tool) ·
 [Price alerts](#price-alerts) · [Watchlist](#watchlist) · [Drawings](#drawings) ·
 [Indicators & candles](#indicators--candles) · [Themes & language](#themes--language) ·
-[Intelligence drawer](#intelligence-drawer) · [Keyboard reference](#keyboard--pointer-reference) ·
+[Option chain](#option-chain) · [Intelligence drawer](#intelligence-drawer) · [Keyboard reference](#keyboard--pointer-reference) ·
 [Export](#export) ·
 [Health endpoint](#health-endpoint) · [Troubleshooting](#troubleshooting)
 
@@ -96,6 +96,44 @@ Market grammar (what you can type into the search or the socket):
   or `FINNHUB_API_KEY` in the environment that starts FlowMap (the installed app
   forwards them to its server) it upgrades to real L1 top-of-book and tick tape
   during market hours.
+- `world-<mic>:<SYMBOL>` — one stock exchange anywhere, named by its ISO 10383 MIC, with the
+  exchange's own local symbol: `world-xist:THYAO` (Istanbul), `world-xtai:2330` (Taiwan),
+  `world-xetr:SAP` (Xetra). In the palette, pick the exchange from the venue list or type its name
+  ("istanbul"); the list then shows that exchange's board, most traded first. What you get depends on
+  what the exchange publishes without a key: a real 3 to 10 level book on ten exchanges
+  (`L2-SNAPSHOT`), the best bid and ask on sixteen (`L1`), and elsewhere a synthetic volume-at-price
+  profile from one-minute bars (`SYNTH`). A book is re-read every few seconds, and many publishers are delayed by
+  15 to 20 minutes. History before you subscribed is reconstructed from the session's one-minute
+  bars. A closed exchange shows its last session and when it opens, in the exchange's own time zone.
+- `futures-<venue>:<CONTRACT>`, `forex:<PAIR>`, `indices:<TICKER>`, `bonds:<SYMBOL>` — futures,
+  currency pairs, indices and government bonds. A futures market is one derivatives exchange, by the
+  aggregator's venue code: `futures-cme_mini:ES1!`, `futures-eurex:FDAX1!`, `futures-bist:XU030D1!`
+  (`ES1!` is the continuous front contract, `ESZ2026` a dated one). A currency pair is `forex:EURUSD`,
+  an index its full ticker (`indices:SP:SPX`, `indices:BIST:XU100`), a bond or its yield
+  `bonds:US10Y`. Pick the market from the venue list; its instruments are listed most traded first
+  for futures, major pairs and ten-year benchmarks first for the others. All of them are `SYNTH`:
+  no public source shows resting orders for these instruments. A future's profile is volume at
+  price. A currency pair, an index and a bond yield have no traded volume, so theirs is time at
+  price: each minute counts once at the price it traded around, and the VWAP line is a time-weighted
+  average. One-minute bars exist for currency pairs, continuous contracts of the US venues and 20
+  major indices; any other instrument starts from the session's figures and fills in from the
+  polls while it is open, with no history before that. These markets close from Friday 22:00 UTC to
+  Sunday 22:00 UTC; an index whose chart has been silent for ninety minutes is shown closed with
+  its last session. Prices are the aggregator's and most futures venues are delayed. A bond whose
+  yield is negative shows no price.
+- `futures-eurex-official:FDAXZ2026`, `futures-eurex-official:FGBLZ2026` — the December 2026 DAX and
+  Euro-Bund futures from Deutsche Börse's own delayed trade files, not from the aggregator. Only these
+  two dated contracts are offered; a continuous symbol such as `FDAX1!` is refused, and when the
+  contracts expire on 18 December 2026 the chart stops. The data is fifteen minutes behind the
+  market. The chart shows real one-minute candles (open, high, low, close) and the publisher's
+  quantity under them; there is no order book, no tape and no trade side, so the heatmap stays empty
+  and the volume bars are neutral. Coverage is what the publisher listed: a minute it published no
+  trade for is left empty, a gap longer than two hours is marked on the chart with its span, and the
+  badge reads *incomplete coverage* and *session unknown*. The files are downloaded only while a
+  chart of the market is open (the first open catches up about a day, which takes roughly an hour)
+  and kept on this computer; SECURITY.md says where and how large. Deutsche Börse publishes them free
+  of charge under terms that restrict commercial use, so treat this market as research use only
+  ([terms](https://mfs.deutsche-boerse.com/DEUR-posttrade)).
 
 **Capability badges, never silent downgrades.** The top bar shows what the
 active feed actually delivers — `L2` / `L2-SNAPSHOT` / `L1` / `SYNTH`, `TAPE TICK` / `TAPE
@@ -312,6 +350,53 @@ exactly the column data the server delivered.
   statement. In the desktop app it also opens the log folder, for attaching a log
   to a bug report.
 
+## Option chain
+
+The **Options** button in the top bar, or the `O` key, opens the option chain of the instrument
+on the chart. Every market has it except the sim feed, whose instruments are not real.
+
+- **Where the figures come from.** The chain is read from the publisher that states the most
+  for the instrument, and the note under the table names it:
+  - a US share, an ETF and the S&P 500, VIX and Russell 2000 indices: Cboe's own delayed quotes,
+    fifteen minutes behind, with bid and ask sizes, the last trade, the day's volume and open
+    interest;
+  - a crypto chart: the options of its coin on Bybit, or on Deribit when the chart is on
+    Deribit or Bybit lists none. `binance-spot:BTCUSDT` therefore shows Bybit's BTC options.
+    They are live. Deribit states no size and no greeks and quotes premiums in the coin;
+  - an NSE or Borsa Istanbul underlying (`indices:NSE:NIFTY`, `world-xist:THYAO`,
+    `indices:BIST:XU030`): the aggregator's scanner, which states a bid, an ask, a theoretical
+    price and its own model's volatility and greeks, and no size, volume or open interest.
+  Two publishers are never mixed in one chain. For any other instrument the dialog says the
+  source lists no options: no keyless source was found for European, Japanese or Hong Kong
+  underlyings, nor for options on CME and Eurex futures.
+- **Expiry** lists every series the publisher has: the expiry day, how far away it is, the
+  contract family and how many contracts it holds. An index can list two families on one day
+  (`SPX` and `SPXW`), so they are separate entries. The nearest expiry opens first.
+- The table has one row per strike, calls on the left and puts on the right. **Prices** shows
+  bid, ask, theoretical price, implied volatility and delta. **Activity** shows bid size, ask
+  size, the last trade, volume and open interest, and is there when the publisher states any of
+  them. **Greeks** shows delta, gamma, theta, vega and rho. A strike that lists only a call or
+  only a put leaves the other side empty. A dash is a figure the publisher did not state.
+- The strike nearest to the price on the chart is outlined, and in-the-money cells (calls below
+  that price, puts above it) are tinted. The line above the table says which price that is:
+  the chart's, or the underlying's price at the publisher when the chart has none yet or is not
+  the underlying itself (a coin charted against another coin).
+- The chain is read when the dialog opens, when you pick another expiry and every twenty
+  seconds while it stays open; **Refresh** reads it at once. The line above the table says when
+  the figures were read and how far behind the publisher is. If a refresh fails, the last
+  figures stay, marked with the time they were read.
+
+### A real order book for an instrument that has none
+
+A currency pair, a commodity future and a US share on the keyless tier are drawn as a `SYNTH`
+profile: no free source publishes the resting orders of their own market. For some of them a
+venue FlowMap already streams lists an instrument on the same underlying whose order book is
+public. The top bar then shows a **Book** link (`Book: kraken EUR/USD`); one click opens that
+instrument, with its real ladder and tape. It is that venue's own instrument, not the
+exchange's book: Kraken's EUR/USD is Kraken's spot market, and Binance's `XAUUSDT` is a
+perpetual contract that tracks gold. The link exists for EUR/USD and GBP/USD (Kraken), gold,
+silver and WTI (Binance perpetuals) and AAPL, TSLA, NVDA, SPY and QQQ (Binance perpetuals).
+
 ## Intelligence drawer
 
 The Research drawer shows real data from free public sources, with no key needed for any of them. Open it
@@ -451,6 +536,7 @@ from this table. Update both when a binding changes.
 | `D` | Toggle the draw toolbar (trendline · horizontal line · ray · rectangle · Fibonacci · text) |
 | `I` | Toggle the indicator picker |
 | `J` | Toggle the intelligence drawer |
+| `O` | Open the option chain of the instrument on the chart |
 | `Del` | Delete the selected drawing |
 | `Ctrl+Z` | Undo drawings · `Ctrl+Shift+Z` / `Ctrl+Y` redo |
 | `?` | Toggle the shortcuts overlay |
@@ -469,7 +555,7 @@ from this table. Update both when a binding changes.
 | Vertical drag on price gutter | Scale the price axis about the viewport centre |
 | Double-click on price gutter | Re-fit the price axis |
 
-**Single-key shortcuts.** Settings → *Keyboard* → *Single-key shortcuts* turns off the single-character shortcuts: `Space`, `/`, `E`, `M`, `A`, `H`, `C`, `D`, `I`, `J`, `F`, `P`, `R`, `T`, `?`, and the chart's `+`, `−`, `[` and `]`. Chords with Ctrl or Cmd (such as `Ctrl+K` and `Ctrl+Z`) keep working, and so do the mouse gestures and the arrow keys. The arrow keys are not characters, so with the switch off they still pan the chart, and `Shift`+`↑` and `Shift`+`↓` still zoom the price axis. While the switch is off, the rows that need a single key are marked off in the `?` overlay and in the Settings keysheet. The choice is kept in this browser.
+**Single-key shortcuts.** Settings → *Keyboard* → *Single-key shortcuts* turns off the single-character shortcuts: `Space`, `/`, `E`, `M`, `A`, `H`, `C`, `D`, `I`, `J`, `O`, `F`, `P`, `R`, `T`, `?`, and the chart's `+`, `−`, `[` and `]`. Chords with Ctrl or Cmd (such as `Ctrl+K` and `Ctrl+Z`) keep working, and so do the mouse gestures and the arrow keys. The arrow keys are not characters, so with the switch off they still pan the chart, and `Shift`+`↑` and `Shift`+`↓` still zoom the price axis. While the switch is off, the rows that need a single key are marked off in the `?` overlay and in the Settings keysheet. The choice is kept in this browser.
 
 ## Export
 

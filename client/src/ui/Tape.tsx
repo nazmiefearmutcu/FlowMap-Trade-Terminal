@@ -325,7 +325,7 @@ export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element
   // Sim timestamps are SESSION-RELATIVE: no wall zone applies, so they stay UTC digits.
   const sessionClock = (subMarket ?? 'sim') === 'sim';
   const tapePref: TimeZonePref = sessionClock ? 'utc' : zonePref;
-  const tapeZone = exchangeZoneFor(marketGroup(subMarket ?? 'sim'));
+  const tapeZone = exchangeZoneFor(marketGroup(subMarket ?? 'sim'), subMarket);
   // The zone abbreviation follows daylight saving, so it is re-read once a minute.
   const [zoneNow, setZoneNow] = useState(() => Date.now());
   useEffect(() => {

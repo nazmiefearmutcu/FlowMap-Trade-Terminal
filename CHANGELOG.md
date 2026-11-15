@@ -36,6 +36,84 @@ Release notes: [docs/release-notes-1.7.0.md](docs/release-notes-1.7.0.md).
   DefiLlama) and SENTIMENT (alternative.me Fear & Greed index).
 - SEC contact e-mail under Settings → Data. SEC EDGAR asks automated clients to name a contact; the address is
   sent only to SEC's hosts, in the User-Agent, and only when entered. `SEC_CONTACT_EMAIL` is the fallback.
+- World equities. A new venue, `world`, has one market per stock exchange, named by its ISO 10383
+  operating MIC (`world-xist`, `world-xtai`, `world-xetr`); the symbol is the exchange's own local
+  symbol. 131 exchanges are offered. What the chart shows depends on what a public source exposes for
+  that exchange, and the badge says which:
+  - `L2-SNAPSHOT`: the publisher's own resting ladder, 3 to 10 price levels per side with real
+    sizes, re-read every few seconds (Taiwan, Taipei Exchange, Shanghai, Shenzhen, Beijing, Korea,
+    India NSE, Ho Chi Minh, Hanoi, Xetra).
+  - `L1`: the best bid and ask with sizes (sixteen exchanges, among them Singapore, Zurich, Warsaw,
+    Dubai and Qatar).
+  - `SYNTH`: a two-sided volume-at-price profile from one-minute bars.
+  The tape shows the publisher's prints where it publishes them, with the side inferred by the quote
+  rule on the book tiers; otherwise the session-volume change between two polls as one print. History
+  before the subscribe is reconstructed from the session's bars and badged as such. A closed market
+  shows its last session and the last minute that traded.
+  ([`feeds/global_equity.py`](server/src/flowmap_server/feeds/global_equity.py))
+- The symbol picker lists the exchanges by name (`world-xist` reads "Borsa Istanbul (TR)"), so
+  "istanbul" finds it, and enumerates an exchange's board when it is chosen. `/api/quote` and
+  `/api/movers` answer for a world market, and `/api/venues` carries the exchange names.
+- Futures, currency pairs, indices and government bonds. Four more venues read Crocodile's asset
+  layer: `futures` (one market per derivatives exchange: `futures-cme_mini:ES1!`,
+  `futures-eurex:FDAX1!`, `futures-bist:XU030D1!`; 52 exchanges), `forex` (`forex:EURUSD`), `indices`
+  (by full ticker: `indices:SP:SPX`) and `bonds` (`bonds:US10Y`). All are `SYNTH`, because no public
+  source shows resting orders for them. A future's profile is volume at price. A currency pair, an
+  index and a bond yield have no traded volume, so theirs is time at price, and the capability says
+  which (`profile_basis`). An instrument the chart source does not cover (a Eurex or VIOP contract,
+  a bond yield) starts from the session's figures and grows from the polls. The markets close from
+  Friday 22:00 UTC to Sunday 22:00 UTC, and an instrument whose chart has been silent for ninety
+  minutes is shown closed with its last session. The picker lists the four venues with a label
+  each; `/api/universe`, `/api/quote` and `/api/movers` answer for them.
+  ([`feeds/asset_markets.py`](server/src/flowmap_server/feeds/asset_markets.py))
+- Option chain. The **Options** button in the top bar, or the `O` key, opens the chain of the
+  instrument on the chart: a picker of its series (each expiry and contract family, with its
+  size) and one row per strike, the call on the left and the put on the right. Three views share
+  the table: prices (bid, ask, theoretical price, implied volatility, delta), activity (bid size,
+  ask size, last trade, volume, open interest; shown when the publisher states any of them) and
+  greeks (delta, gamma, theta, vega, rho). The chain comes from the publisher that states the
+  most for the instrument, and the dialog names it: Cboe's own delayed file for US shares, ETFs
+  and the S&P 500, VIX and Russell 2000 indices (fifteen minutes behind, with sizes, volume and
+  open interest); Bybit or Deribit for the coin of a crypto chart (live; Deribit states no size
+  and no greeks and quotes premiums in the coin); the aggregator's scanner for NSE and Borsa
+  Istanbul underlyings (bid, ask and its own model, no size, volume or open interest). Two
+  publishers are never mixed in one chain. The strike nearest to the chart price is marked and
+  in-the-money cells are tinted; when the chart has no price, or is plainly not the underlying,
+  the price the publisher states is used and the dialog says so. A strike that lists one side
+  leaves the other empty, and a figure the publisher does not state is a dash. The dialog reads
+  the new `GET /api/options` when it opens, when a series is picked and every twenty seconds
+  while it is open; the server serves the last good reading, marked, when a refresh fails.
+  ([`feeds/option_chains.py`](server/src/flowmap_server/feeds/option_chains.py),
+  [`ui/OptionChain.tsx`](client/src/ui/OptionChain.tsx))
+- A real order book for an instrument that has none of its own. A currency pair, a commodity
+  future or a US share on the keyless tier is drawn as a `SYNTH` profile, because no free source
+  publishes its market's resting orders. Where a venue this build already streams lists an
+  instrument on the same underlying with a public book, the top bar now shows a link to it:
+  `forex:EURUSD` and `forex:GBPUSD` to Kraken's spot pairs, gold, silver and WTI to Binance's
+  USD-M perpetuals, and AAPL, TSLA, NVDA, SPY and QQQ to Binance's perpetuals on them. It is that
+  venue's own instrument, and the link says so. Each pair was read on 2026-11-12; a venue whose
+  book was stale is not offered. ([`data/real_books.py`](server/src/flowmap_server/data/real_books.py))
+- A `SYNTH` world or asset market draws its profile across the chart source's delay. The chart is
+  minutes behind the market, so the stretch between its last minute and the first live column used
+  to be empty, and that stretch is what the chart opens on. The profile as last known is now stated
+  once at the end of the last charted minute and carried to the present, up to thirty minutes.
+- `scripts/live_asset_smoke.py` runs the asset feed against the real sources and reads six option
+  chains, one per publisher path (manual, not a test).
+- A venue's board lists every instrument the aggregator has for it, not its 5,000 most traded:
+  the largest venue measured (Eurex, 19,385 contracts) answers whole in one request.
+- Eurex official minute candles. A new market, `futures-eurex-official`, draws the December 2026 DAX
+  (`FDAXZ2026`) and Euro-Bund (`FGBLZ2026`) futures from Deutsche Börse's own delayed trade files
+  (fifteen minutes behind), without the aggregator: real open, high, low, close and the publisher's
+  quantity per minute, built in exact decimals from each trade. There is no book, no tape and no
+  trade side, and the badge says so. A minute with no published trade is never filled: a gap of up
+  to two hours is drawn as empty minutes where it is, a longer one is marked with its span. A trade
+  the publisher states twice counts once; two different statements of one trade are both left out
+  and the minute is marked incomplete. The files are collected only while a chart of the market is
+  open and kept locally (see SECURITY.md); `GET /api/eurex/history` pages the stored minutes and
+  `GET /api/eurex/status` reports the collector. The publisher's free terms restrict commercial use.
+  ([`feeds/eurex_service.py`](server/src/flowmap_server/feeds/eurex_service.py))
+- Clocks of a world market read in the exchange's own time zone, which the session states.
+- `scripts/live_world_smoke.py` runs the feed against real exchanges (manual, not a test).
 
 ### Fixed
 
@@ -63,6 +141,14 @@ Release notes: [docs/release-notes-1.7.0.md](docs/release-notes-1.7.0.md).
   app-data folder cannot be written. The engine also writes every thread's stack to its log when it dies
   inside native code, so the cause of such a crash (seen as an access violation in `python313.dll`) can
   be found.
+- The session's history is on the chart when a keyless market opens on the default price band.
+  A banded grid cannot be seeded from candles, so the feed's replay of the session so far ran
+  through the live path: tens of thousands of columns in one burst, which overran the
+  subscriber's queue. The queue dropped them and the chart was left with the last few minutes
+  only. The replay now fills the ring in silence and the subscribers get one snapshot when it
+  is over; older columns are read on request, as for any other history. A full currency day
+  takes about fifteen seconds to replay, during which the chart waits.
+  ([`core/session_core.py`](server/src/flowmap_server/core/session_core.py))
 
 ### Changed
 
@@ -76,6 +162,15 @@ Release notes: [docs/release-notes-1.7.0.md](docs/release-notes-1.7.0.md).
 - The vocal-stress card in the Research drawer is now management language: hedging and uncertainty words per
   1,000 words of the written earnings release, with the change from the previous release. It is measured from
   the release text, not from the call audio.
+- The bundled Crocodile engine is 0.5.0 (was 0.3.2). It adds the live layer the world markets read
+  and the exchange reference data of 0.4.0. The engine's new dependency is `exchange-calendars`.
+- The equity grid takes a price-proportional tick for a world market (the fifth significant digit of
+  the first real price), because its listings range from sub-cent to six-figure prices. The US market
+  keeps its cent tick.
+- A local symbol of a world exchange keeps its case in the quote cache (`RRl` on Cboe Europe is not
+  `RRL`). So does an asset market's symbol.
+- A symbol may contain `!` after its first character (`ES1!`), and a market string an underscore
+  (`futures-cme_mini`), in the subscribe check, the discovery API and the client's saved picks.
 
 ### Removed
 

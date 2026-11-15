@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/nazmiefearmutcu/flowmap/actions/workflows/ci.yml/badge.svg)](https://github.com/nazmiefearmutcu/flowmap/actions/workflows/ci.yml)
 
-FlowMap Trade Terminal is a desktop application for studying liquidity and order flow in crypto and US equities. It combines a live liquidity heatmap, a depth-of-market ladder, time and sales, and recorded-session replay. It reads market data and supports visual analysis; it does not place orders or hold funds.
+FlowMap Trade Terminal is a desktop application for studying liquidity and order flow in crypto and equities: the US market and, one exchange at a time, about 130 stock exchanges worldwide, plus futures, currency pairs, indices and government bonds. It combines a live liquidity heatmap, a depth-of-market ladder, time and sales, and recorded-session replay. It reads market data and supports visual analysis; it does not place orders or hold funds.
 
 [Download releases](https://github.com/nazmiefearmutcu/flowmap/releases/latest) · [User guide](docs/user-guide.md) · [Architecture](docs/architecture.md)
 
@@ -36,6 +36,8 @@ FlowMap Trade Terminal is a desktop application for studying liquidity and order
 | Native crypto connectors | Incremental L2 books and trade events from supported Binance, Bybit, Coinbase, Deribit, and OKX markets | Channels and update cadence depend on the venue and market segment. |
 | Other supported CCXT venues | Order-book snapshots and available trade feeds | Snapshot or polling coverage is different from a native incremental feed. |
 | Keyless US equities | Depth and prints from Cboe's public book viewer, for the BZX, BYX, EDGX and EDGA exchanges: the top five displayed price levels per side, read every 5 seconds, in shares. Price history from Yahoo Finance. | This is not the consolidated US order book: NYSE, Nasdaq and other venues are absent. Prints carry no buyer or seller side, so there is no cumulative volume delta (CVD). The feed is live from 04:00 to 20:00 New York time on trading days. |
+| World equities (`world-<mic>`) | One stock exchange per market, named by its ISO 10383 MIC (`world-xist`, `world-xtai`), through Crocodile's live layer. Where a publisher exposes resting orders the heatmap and ladder show them: a 3 to 10 level book on ten exchanges, a top of book on sixteen. Elsewhere the same synthetic profile as US equities, from one-minute bars. The tape shows the publisher's prints, or the session-volume change between polls where it publishes none. | The badge states the tier: `L2-SNAPSHOT`, `L1` or `SYNTH`. A book is re-read every few seconds, never streamed, and holds only the levels the publisher shows. Many publishers are delayed by 15 to 20 minutes. A closed market shows its last session. |
+| Futures, currencies, indices, bonds (`futures-<venue>`, `forex`, `indices`, `bonds`) | The contracts of 52 derivatives venues (`futures-eurex:FDAX1!`, `futures-cme_mini:ES1!`, `futures-bist:XU030D1!`), the composite currency pairs (`forex:EURUSD`), indices by their full ticker (`indices:SP:SPX`) and government bonds and yields (`bonds:US10Y`), through Crocodile's asset layer. A synthetic profile from one-minute bars: volume at price for a future, time at price for the others, which have no traded volume. | Always `SYNTH`: no public source shows resting orders for these instruments. Prices are the aggregator's, and most futures venues are delayed. One-minute bars exist for currency pairs, continuous contracts of the US venues and 20 indices; anything else starts from the session's figures and fills in while it is open. The **Options** button (or `O`) opens the option chain of the instrument on the chart: Cboe's delayed file for US shares and indices, Bybit or Deribit for a crypto coin, the aggregator for NSE and Borsa Istanbul underlyings. Where another venue has a real order book on the same underlying (Kraken's EUR/USD, Binance's gold, oil and share perpetuals), the top bar links to it. |
 | Optional Alpaca / Finnhub credentials | Equity L1 quotes and/or trade tape, according to provider support | These feeds do not turn an equity session into an L2 order book. |
 | `sim:SIM-DEMO` | Deterministic demonstration data | Works offline; contains no live market observations. |
 
@@ -58,8 +60,11 @@ sources listed in the [security guide](SECURITY.md#where-it-connects). Crypto ve
 Binance, Bybit, Coinbase, Deribit and OKX (and CCXT venues). Equity price history comes from unofficial
 Yahoo Finance endpoints. US equity depth and prints come from Cboe's public book viewer (BZX, BYX, EDGX
 and EDGA). The keyless last price, the fallback for a symbol with no recent Cboe print, comes from an
-unofficial Google Finance page. The market map uses Nasdaq's stock screener and CoinGecko. The macro
-ticker uses the New York Fed, the US Treasury and, with a FRED API key, FRED.
+unofficial Google Finance page. World-exchange data comes from each exchange's own public service where
+one answers a plain request, and otherwise from Naver, Groww, VPS, Tencent, TradingView and Yahoo (the
+[security guide](SECURITY.md#where-it-connects) lists the hosts); futures, currency, index and bond prices
+come from TradingView's scanner and their one-minute bars from Yahoo. The market map uses Nasdaq's stock
+screener and CoinGecko. The macro ticker uses the New York Fed, the US Treasury and, with a FRED API key, FRED.
 The Research drawer reads the sources listed in the features above, and only when you open a section for a symbol. The aviation (OpenSky Network) feed module exists, but no producer runs for it in this build, so OpenSky is not contacted. The jets section makes no request. Each provider's terms of use apply to the data you view through FlowMap. Check them
 before you rely on the data, redistribute a screenshot, or build on the same endpoints.
 

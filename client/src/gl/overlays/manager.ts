@@ -18,10 +18,10 @@ import { t } from '../../i18n';
 import { drawGridlines, drawPriceAxis, drawTimeAxis, type TimeAxisClock } from './axes';
 import { observeCanvasBox } from '../canvasBox';
 import { Bbo, type BboState } from './bbo';
+import { deriveL2Bbo } from './l2Bbo';
 import { Bubbles } from './bubbles';
 import {
   GridMap,
-  mapScale,
   type PriceMap,
   type SurfaceDims,
   type TimeMap,
@@ -36,10 +36,10 @@ import { Profile } from './profile';
 import { Cvd } from './cvd';
 import { Vwap } from './vwap';
 import { VolBars, volumeStripHeight, VOLBAR_HEIGHT_FRAC } from './volbars';
+import { NativeCandles } from './nativeCandles';
 import { GexOverlay } from './gexLevels';
 import { DEFAULT_TEXT_SIZE, TextLayer } from '../textLayer';
 import type { HeatmapView } from '../heatmap';
-import { rowToPrice as scaleRowToPrice } from '../priceScale';
 import type { BarColumn, BBO, BookUpdate, Marker, Trade, GexLevelUpdate } from '../../proto/types';
 
 /** Everything one overlay frame needs from the renderer. */
@@ -98,6 +98,7 @@ export class OverlayManager {
   /** Traded-volume bars in a dedicated bottom strip, sharing the price
    *  chart's horizontal camera without sharing its pixels. */
   private readonly volumeBars = new VolBars();
+  private readonly nativeCandles = new NativeCandles();
   private readonly gexLevels = new GexOverlay();
 
   private visibility: OverlayVisibility = { ...DEFAULT_OVERLAY_VISIBILITY };
@@ -257,7 +258,8 @@ export class OverlayManager {
     if (pending !== null && BigInt(pending.ts_ns) <= ts) this.pendingRecordedBbo = null;
   }
 
-  onBar(b: BarColumn): void {
+  onBar(b: BarColumn, native = false): void {
+    if (native) this.nativeCandles.add(b);
     this.vwap.add(b);
     this.priceLine.add(b);
     this.cvd.add(b);
@@ -295,6 +297,7 @@ export class OverlayManager {
     this.priceLine.prune(oldest, newest, pad);
     this.cvd.prune(oldest, newest, pad);
     this.volumeBars.prune(oldest, newest, pad);
+    this.nativeCandles.prune(oldest, newest, pad);
   }
 
   /** Drop all overlay data (context loss / go-live re-seed / test reset). */
@@ -306,6 +309,7 @@ export class OverlayManager {
     this.priceLine.reset();
     this.cvd.reset();
     this.volumeBars.reset();
+    this.nativeCandles.reset();
     this.markers.reset();
     this.gexLevels.reset();
     this.resetCursor();
@@ -463,7 +467,8 @@ export class OverlayManager {
       this.volumeGm.refill(ctx.view, this.volumeDims, ctx.time, ctx.price);
       frame.gm = this.volumeGm;
       frame.text = this.volumeText;
-      volumeBars.draw(frame, stripH - 1);
+      if (ctx.capability?.native_candles === true) this.nativeCandles.drawVolume(frame, stripH - 1);
+      else volumeBars.draw(frame, stripH - 1);
       frame.gm = this.gm;
       frame.text = this.text;
     }
@@ -478,7 +483,8 @@ export class OverlayManager {
       this.bbo.set(this.effectiveBbo(ctx));
       this.bbo.draw(frame);
     }
-    if (this.visibility.price) priceLine.draw(frame);
+    if (ctx.capability?.native_candles === true) this.nativeCandles.draw(frame);
+    else if (this.visibility.price) priceLine.draw(frame);
     if (this.visibility.gex ?? true) this.gexLevels.draw(frame);
     if (this.visibility.bubbles) this.bubbles.draw(frame);
     if (this.visibility.markers) this.markers.draw(frame);
@@ -538,7 +544,7 @@ export class OverlayManager {
     if (!cap) return;
     let n = 0;
     let y = 14;
-    if (this.visibility.bubbles && typeof cap.tape === 'string' && cap.tape !== 'tick') {
+    if (this.visibility.bubbles && cap.native_candles !== true && typeof cap.tape === 'string' && cap.tape !== 'tick') {
       const opts = this.badgeOpts[n++];
       opts.color = OVERLAY.event.css;
       // `badgeOpts.bg` copied the string at construction; `applyChartInk`
@@ -579,42 +585,5 @@ export class OverlayManager {
   }
 }
 
-/**
- * Inside quote from an L2 book column: best bid = highest row carrying bid
- * density (closest to the spread), best ask = lowest row carrying ask density.
- * Row→price goes through the SCALE accessor (gl/priceScale.ts), never the raw
- * `p0 + row·step` scalars — on a hybrid (non-uniform) grid a wing row's price
- * depends on where it sits, which is exactly the coords.ts contract. Pure —
- * exact reading of the book the server sent, not a fabricated quote.
- */
-export function deriveL2Bbo(
-  bid: Float32Array,
-  ask: Float32Array | null,
-  price: PriceMap,
-): BboState | null {
-  const scale = mapScale(price);
-  let bidRow = -1;
-  for (let r = bid.length - 1; r >= 0; r--) {
-    if (bid[r] > 0) {
-      bidRow = r;
-      break;
-    }
-  }
-  let askRow = -1;
-  if (ask !== null) {
-    for (let r = 0; r < ask.length; r++) {
-      if (ask[r] > 0) {
-        askRow = r;
-        break;
-      }
-    }
-  }
-  if (bidRow < 0 && askRow < 0) return null;
-  return {
-    bidPx: bidRow >= 0 ? scaleRowToPrice(scale, bidRow) : Number.NaN,
-    bidSz: bidRow >= 0 ? bid[bidRow] : 0,
-    askPx: askRow >= 0 ? scaleRowToPrice(scale, askRow) : Number.NaN,
-    askSz: askRow >= 0 && ask !== null ? ask[askRow] : 0,
-    source: 'l2',
-  };
-}
+// The inside quote of an L2 column lives in its own module; re-exported for its callers.
+export { deriveL2Bbo } from './l2Bbo';

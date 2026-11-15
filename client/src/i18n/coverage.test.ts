@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { COLORMAP_CATALOG } from '../theme/colormaps';
 import { THEME_IDS } from '../theme';
 import { FEED_KEY } from '../ui/MarketStrip';
+import { OPTION_CHAIN_COLUMN_KEYS } from '../ui/OptionChain';
 import { STATUS_KEY } from '../ui/TopBar';
 import {
   DEPTH_CHANNEL_HINT_KEY,
@@ -25,9 +26,8 @@ import {
   PRICE_BAND_LABEL_KEY,
   PRICE_BANDS,
 } from '../ui/settings';
-import { en } from './en';
 import { TIME_ZONE_PREFS } from './format';
-import { tr } from './tr';
+import { en, tr } from './tables';
 
 const SRC_ROOT = resolve(process.cwd(), 'src');
 
@@ -42,7 +42,7 @@ function sourceFiles(dir: string): string[] {
     if (!/\.(ts|tsx)$/.test(name)) continue;
     if (/\.test\.(ts|tsx)$/.test(name)) continue;
     // The tables themselves are the source of keys, not consumers of them.
-    if (dir === join(SRC_ROOT, 'i18n') && /^(en|tr)\.ts$/.test(name)) continue;
+    if (dir === join(SRC_ROOT, 'i18n') && /^(en|tr|optionChainText|realBookText|tables)\.ts$/.test(name)) continue;
     out.push(path);
   }
   return out;
@@ -97,6 +97,16 @@ describe('keys built at run time resolve in English', () => {
     ...PRICE_BANDS.flatMap((band) => [PRICE_BAND_LABEL_KEY[band], PRICE_BAND_HINT_KEY[band]]),
     ...DEPTH_CHANNELS.flatMap((channel) => [DEPTH_CHANNEL_LABEL_KEY[channel], DEPTH_CHANNEL_HINT_KEY[channel]]),
     ...HISTORY_DEPTHS.map((depth) => HISTORY_DEPTH_LABEL_KEY[depth]),
+    // The option chain builds its column headers, its view switch and its request errors from variables.
+    ...OPTION_CHAIN_COLUMN_KEYS,
+    'optionChain.viewPrices',
+    'optionChain.viewGreeks',
+    'optionChain.errorEngine',
+    'optionChain.errorResponse',
+    'optionChain.errorHttp',
+    // The real order book link names its kind from the capability.
+    'topbar.realBook.spot',
+    'topbar.realBook.perpetual',
   ];
 
   it('finds every built key in the English table', () => {

@@ -21,6 +21,7 @@ import asyncio
 
 import pytest
 from crocodile.crypto.exchanges.factory import is_ccxt_exchange
+from crocodile.equity.universal.live.assets import AssetKind, AssetQuote
 
 from flowmap_server.data import venues
 from flowmap_server.data.venues import (
@@ -29,8 +30,12 @@ from flowmap_server.data.venues import (
     ccxt_knows,
     resolve_symbol,
     venue_catalog,
+    venue_labels,
     venue_symbols,
+    world_venue_labels,
 )
+from flowmap_server.feeds import asset_markets
+from flowmap_server.feeds.asset_markets import asset_market_strings
 from flowmap_server.feeds.crypto import (
     CRYPTO_EXCHANGES,
     NATIVE_EXCHANGES,
@@ -67,12 +72,27 @@ def _by_id(catalog: list[VenueInfo]) -> dict[str, VenueInfo]:
 
 def test_catalog_leads_with_sim_and_equity() -> None:
     catalog = venue_catalog()
-    assert [v.id for v in catalog[:2]] == ["sim", "equity"]
+    assert [v.id for v in catalog[:7]] == [
+        "sim",
+        "equity",
+        "world",
+        "futures",
+        "forex",
+        "indices",
+        "bonds",
+    ]
     assert catalog[0].asset_class == "sim"
     assert catalog[1].asset_class == "equity"
-    assert all(v.asset_class == "crypto" for v in catalog[2:])
+    # The world venue is the equity market of every other exchange, one segment per MIC.
+    assert catalog[2].asset_class == "equity"
+    # The asset markets share the equity session model and state the SYNTH tier they are served at.
+    for asset_venue in catalog[3:7]:
+        assert asset_venue.asset_class == "equity"
+        assert asset_venue.native is True
+        assert asset_venue.depth == "SYNTH"
+    assert all(v.asset_class == "crypto" for v in catalog[7:])
     # Crypto ids are sorted, so the picker's order is stable across runs.
-    crypto_ids = [v.id for v in catalog[2:]]
+    crypto_ids = [v.id for v in catalog[7:]]
     assert crypto_ids == sorted(crypto_ids)
 
 
@@ -103,7 +123,9 @@ def test_catalog_native_flags_match_the_engines_connector_list() -> None:
 
 def test_catalog_segments_only_where_a_connector_takes_one() -> None:
     catalog = _by_id(venue_catalog())
-    with_segments = {v.id: v.segments for v in venue_catalog() if v.segments}
+    with_segments = {
+        v.id: v.segments for v in venue_catalog() if v.segments and v.asset_class == "crypto"
+    }
     assert with_segments == {
         "binance": ("spot", "usdm", "coinm"),
         "bybit": ("spot", "linear", "inverse", "option"),
@@ -409,3 +431,84 @@ async def test_resolve_symbol_is_a_no_op_when_the_spelling_already_fits(
 ) -> None:
     _serve_table(monkeypatch, {symbol: {}})
     assert await resolve_symbol(market, symbol) == symbol
+
+
+def test_the_world_venue_lists_one_segment_per_reachable_exchange() -> None:
+    world = _by_id(venue_catalog())["world"]
+    assert world.asset_class == "equity" and world.native is True
+    # Lower-case operating MICs, sorted; the depth differs per exchange, so the venue states none.
+    assert list(world.segments) == sorted(world.segments)
+    assert all(segment == segment.lower() and len(segment) == 4 for segment in world.segments)
+    assert {"xist", "xtai", "xetr", "xlon", "xjpx"} <= set(world.segments)
+    # Sanctioned markets are default-closed in the engine and never offered.
+    assert not {"misx", "xteh", "bcse"} & set(world.segments)
+    assert world.depth == "per-market"
+
+
+# --- asset markets (futures, forex, indices, bonds) ------------------------------
+
+
+
+
+def _asset_row(kind: AssetKind, venue: str, symbol: str) -> AssetQuote:
+    ticker = symbol if kind is AssetKind.INDEX else f"{venue}:{symbol}"
+    return AssetQuote(kind=kind, ticker=ticker, venue=venue, symbol=symbol, captured_ns=1)
+
+
+class _FakeAssetBoard:
+    """Stands in for Crocodile's AssetFeed: answers ``board`` from the rows it is given."""
+
+    def __init__(self, rows: list[AssetQuote]) -> None:
+        self.rows = rows
+        self.calls: list[tuple[AssetKind, str | None]] = []
+
+    async def board(self, kind, venue=None, *, limit=200):
+        self.calls.append((kind, venue))
+        return [row for row in self.rows if row.kind is kind]
+
+
+def _serve_asset_board(monkeypatch: pytest.MonkeyPatch, rows: list[AssetQuote]) -> _FakeAssetBoard:
+    fake = _FakeAssetBoard(rows)
+    monkeypatch.setattr(asset_markets, "asset_feed", lambda: fake)
+    return fake
+
+
+def test_futures_venue_segments_are_the_futures_markets_without_prefix() -> None:
+    futures = _by_id(venue_catalog())["futures"]
+    expected = tuple(
+        market.removeprefix("futures-") for market in asset_market_strings() if market.startswith("futures-")
+    )
+    assert futures.segments == (*expected, 'eurex-official')
+    assert {"cme_mini", "eurex"} <= set(futures.segments)
+    assert all(segment == segment.lower() for segment in futures.segments)
+    assert all("-" not in segment for segment in futures.segments if segment != 'eurex-official')
+
+
+def test_asset_venue_ids_do_not_collide_with_crypto_venues() -> None:
+    crypto_ids = {v.id for v in venue_catalog() if v.asset_class == "crypto"}
+    assert not {"futures", "forex", "indices", "bonds"} & crypto_ids
+
+
+def test_venue_labels_name_every_asset_market_and_keep_the_world_labels() -> None:
+    labels = venue_labels()
+    for market in asset_market_strings():
+        assert labels.get(market), market
+    assert set(world_venue_labels()) <= set(labels)
+
+
+async def test_forex_symbols_list_the_major_pairs_first(monkeypatch) -> None:
+    _serve_asset_board(
+        monkeypatch,
+        [
+            _asset_row(AssetKind.FOREX, "FX_IDC", "AUDCAD"),
+            _asset_row(AssetKind.FOREX, "FX_IDC", "USDJPY"),
+            _asset_row(AssetKind.FOREX, "FX_IDC", "EURUSD"),
+        ],
+    )
+    symbols = await venue_symbols("forex")
+    assert symbols == ["EURUSD", "USDJPY", "AUDCAD"]
+
+
+async def test_index_symbols_are_full_tickers(monkeypatch) -> None:
+    _serve_asset_board(monkeypatch, [_asset_row(AssetKind.INDEX, "SP", "SP:SPX")])
+    assert await venue_symbols("indices") == ["SP:SPX"]

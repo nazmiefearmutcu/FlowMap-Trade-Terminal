@@ -4,9 +4,8 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { en } from '../i18n/en';
 import { tFor, setLocale, t } from '../i18n';
-import { tr } from '../i18n/tr';
+import { en, tr } from '../i18n/tables';
 import { THEME_IDS } from '../theme/registry';
 import { KEYSHEET, themeNamesLine } from './keysheet';
 import { keyCapKey } from './keysheetList';

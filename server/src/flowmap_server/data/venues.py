@@ -51,6 +51,7 @@ __all__ = [
     "ccxt_knows",
     "resolve_symbol",
     "venue_catalog",
+    "venue_labels",
     "venue_symbols",
 ]
 
@@ -71,6 +72,9 @@ SYMBOL_TTL_NS = 15 * 60 * 10**9
 # calls at 10 s + 3 retries each, Bybit pages a cursor with no page cap. Cap it
 # here.
 LIST_TIMEOUT_S = 25.0
+
+# Rows asked of a ranked board (the scanner's most traded listings of one exchange).
+WORLD_BOARD_LIMIT = 500
 
 # A venue that just failed is not retried on the next keystroke, but neither is
 # the failure treated as a 15-minute answer: a short negative TTL debounces the
@@ -151,11 +155,72 @@ def _equity_depth() -> str:
     return _feed_depth(EquityFeed("AAPL", cfg).capability)
 
 
+def _world_venue() -> VenueInfo:
+    """The world-equity venue: one segment per exchange Crocodile's live layer can reach.
+
+    The depth tier differs per exchange (a ladder in Taipei, a top of book in Zurich, a
+    synthetic profile where no publisher exposes orders), so the venue states none: each
+    exchange's listing reports its own, read off the feed.
+    """
+    from flowmap_server.feeds.global_equity import WORLD_VENUE, world_mics
+
+    return VenueInfo(
+        WORLD_VENUE, "equity", True, tuple(mic.lower() for mic in sorted(world_mics())), depth="per-market"
+    )
+
+
+def world_venue_labels() -> dict[str, str]:
+    """``world-<mic>`` market string to the exchange's name and country, for the picker."""
+    from crocodile.core.markets.exchanges import ExchangeRegistry
+
+    from flowmap_server.feeds.global_equity import world_market, world_mics
+
+    registry = ExchangeRegistry()
+    out: dict[str, str] = {}
+    for mic in sorted(world_mics()):
+        info = registry.get(mic)
+        out[world_market(mic)] = f"{info.name.title()} ({info.country})"
+    return out
+
+
+def _asset_venues() -> list[VenueInfo]:
+    """Futures (one segment per derivatives exchange), currencies, indices and bonds.
+
+    None of them publishes an order book, so all four are the ``SYNTH`` tier. They sit in
+    the ``equity`` class because that is the session model they share: a market that closes,
+    a profile from bars. The label of each market says what it is.
+    """
+    from flowmap_server.feeds.asset_markets import ASSET_VENUES, asset_market_strings
+
+    futures = tuple(
+        market.partition("-")[2] for market in asset_market_strings() if market.startswith("futures-")
+    )
+    futures = (*futures, 'eurex-official')
+    out = [VenueInfo("futures", "equity", True, futures, depth="SYNTH")]
+    out.extend(
+        VenueInfo(venue, "equity", True, (), depth="SYNTH")
+        for venue in ASSET_VENUES
+        if venue != "futures"
+    )
+    return out
+
+
+def venue_labels() -> dict[str, str]:
+    """Readable names of the markets whose string alone says little: the world venue's
+    exchanges and the asset markets."""
+    from flowmap_server.feeds.asset_markets import asset_market_labels
+
+    from flowmap_server.feeds.eurex_official import MARKET, LABEL
+    return {**world_venue_labels(), **asset_market_labels(), MARKET: LABEL}
+
+
 def venue_catalog() -> list[VenueInfo]:
     """Every venue this build can actually stream. No network."""
     out = [
         VenueInfo("sim", "sim", True, (), depth=_sim_depth()),
         VenueInfo(EQUITY_MARKET, "equity", True, (), depth=_equity_depth()),
+        _world_venue(),
+        *_asset_venues(),
     ]
     for ex in sorted(CRYPTO_EXCHANGES):
         # CRYPTO_EXCHANGES already excludes the non-streamable readers — the
@@ -298,7 +363,26 @@ async def _load_tables(exchange: str, swap: bool) -> _VenueTables:
         await ex.close()
 
 
+async def _world_symbols(mic: str) -> list[str]:
+    """The exchange's board as Crocodile's live layer enumerates it, most traded first."""
+    from flowmap_server.feeds.global_equity import live_feed
+
+    rows = await live_feed().board(mic, limit=WORLD_BOARD_LIMIT)
+    return [row.listing.local_symbol for row in rows]
+
+
 async def _list_symbols(market: str) -> list[str]:
+    from flowmap_server.feeds.eurex_official import MARKET, SYMBOLS
+    if market == MARKET:
+        return list(SYMBOLS)
+    from flowmap_server.feeds.asset_markets import asset_board, asset_symbol, is_asset_market
+    from flowmap_server.feeds.global_equity import world_mic
+
+    mic = world_mic(market)
+    if mic is not None:
+        return await _world_symbols(mic)
+    if is_asset_market(market):
+        return [asset_symbol(row) for row in await asset_board(market)]
     exchange, segment = split_market(market)
     if exchange in NATIVE_EXCHANGES:
         native = await _native_symbols(exchange, segment)
@@ -436,6 +520,9 @@ async def resolve_symbol(market: str, symbol: str) -> str:
     input is returned untouched: the connector's own error is a better message
     than a guess, and a venue outage must not block a subscribe.
     """
+    from flowmap_server.feeds.eurex_official import MARKET, contract_for
+    if market == MARKET:
+        return contract_for(symbol).display_symbol
     exchange, segment = split_market(market)
     native = exchange in NATIVE_EXCHANGES
     already_native = (('/' in symbol and ':' not in symbol) if exchange == 'kraken'

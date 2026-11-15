@@ -3,7 +3,7 @@ import { enResearch } from './en.research';
 
 /**
  * English string table — the SOURCE OF TRUTH for every key.
- * Every key lives here; `tr.ts` may omit keys (lookup falls back to English).
+ * Every key lives here or in a feature table merged by `tables.ts`; `tr.ts` may omit keys.
  * Every visible string goes through t(), feature panes included: an English
  * label in a Turkish session is a defect. A new key lands here with its Turkish
  * entry in `tr.ts` in the same change.

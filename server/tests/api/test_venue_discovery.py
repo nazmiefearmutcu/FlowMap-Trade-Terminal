@@ -26,7 +26,7 @@ from flowmap_server.api import discovery
 from flowmap_server.api.app import create_app
 from flowmap_server.config import Config
 from flowmap_server.data.universe import CRYPTO_MARKET, CRYPTO_SYMBOLS
-from flowmap_server.data.venues import venue_catalog
+from flowmap_server.data.venues import venue_catalog, venue_labels
 from flowmap_server.feeds.crypto import CryptoFeed
 
 
@@ -57,7 +57,9 @@ async def test_venues_route_shape() -> None:
         r = await c.get("/api/venues")
         assert r.status_code == 200
         body = r.json()
-        assert set(body) == {"venues"}
+        # ``labels`` names the world venue's exchanges and the asset markets; the venue rows are unchanged.
+        assert set(body) == {"venues", "labels"}
+        assert body["labels"] == venue_labels()
         venues = body["venues"]
         assert venues == [v.as_dict() for v in venue_catalog()]
         for v in venues:
@@ -69,7 +71,7 @@ async def test_venues_route_carries_the_whole_engine_venue_set() -> None:
         venues = (await c.get("/api/venues")).json()["venues"]
     by_id = {v["id"]: v for v in venues}
 
-    assert [v["id"] for v in venues[:2]] == ["sim", "equity"]
+    assert [v["id"] for v in venues[:3]] == ["sim", "equity", "world"]
     assert len(venues) > 100, "the picker got a shortlist, not the engine's table"
     # Native connector vs ccxt-served: the badge the client renders.
     assert by_id["binance"]["native"] is True

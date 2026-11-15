@@ -305,7 +305,7 @@ async def test_failed_closed_market_warmup_degrades_to_cold_start(monkeypatch):
         def closed_history_events(self):
             raise RuntimeError("provider down")
 
-    monkeypatch.setattr(boot_mod, "EquityFeed", ClosedKeylessFeed)
+    monkeypatch.setattr(boot_mod, "EquityFeedBase", ClosedKeylessFeed)
     session = Session("closed-fail", feed=ClosedKeylessFeed(), grid=Grid(_cfg()), timer=FakeTimer())
     await session._prepare_closed_history()  # must not raise
     assert session._closed_history_prepared is False

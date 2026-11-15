@@ -80,6 +80,52 @@ const englishT: Translate = (key) => tFor('en', key);
 // ships — so a pre-fetch frame cannot show a group the catalog would contradict.
 let venueGroups: ReadonlyMap<string, SymbolGroupKey> = new Map();
 let venueCatalog: readonly VenueInfo[] = [];
+// Display names of the world venue's exchanges, keyed by market (`world-xist`).
+let venueNames: Readonly<Record<string, string>> = {};
+
+/** The market prefix of the world-equity venue: one segment per exchange, by MIC. */
+export const WORLD_PREFIX = 'world-';
+
+/** True for a `world-<mic>` market: one stock exchange, named by its ISO 10383 MIC. */
+export function isWorldMarket(market: string): boolean {
+  return market.toLowerCase().startsWith(WORLD_PREFIX);
+}
+
+/** The MIC a world market names, upper-case (`world-xist` → `XIST`). */
+export function worldMic(market: string): string {
+  return market.slice(WORLD_PREFIX.length).toUpperCase();
+}
+
+/** The market prefix of the futures venue: one segment per derivatives exchange. */
+export const FUTURES_PREFIX = 'futures-';
+/** The asset venues that are one market each: currencies, indices, government bonds. */
+const ASSET_MARKETS: ReadonlySet<string> = new Set(['forex', 'indices', 'bonds']);
+
+/**
+ * True for an asset market: `futures-<venue>` (one derivatives exchange), `forex`, `indices`
+ * or `bonds`. Like a world exchange it states its own clock zone and keeps its symbols'
+ * spelling, and its market string is its name.
+ */
+export function isAssetMarket(market: string): boolean {
+  const m = market.toLowerCase();
+  return m.startsWith(FUTURES_PREFIX) || ASSET_MARKETS.has(m);
+}
+
+/** True when the market's session states its own exchange zone (world and asset markets). */
+export function statesOwnZone(market: string): boolean {
+  return isWorldMarket(market) || isAssetMarket(market);
+}
+
+/** Install the exchange names `/api/venues` reports for the world venue's markets. */
+export function setVenueNames(names: Readonly<Record<string, string>> | undefined): void {
+  venueNames = names && typeof names === 'object' ? names : {};
+}
+
+/** The exchange's name for a world market (`Borsa Istanbul (TR)`), or '' before it is known. */
+export function venueName(market: string): string {
+  const name = venueNames[market.toLowerCase()];
+  return typeof name === 'string' ? name : '';
+}
 
 /** Narrow a wire `assetClass` to a display group, or null when it is unknown. */
 export function venueAssetGroup(assetClass: string | undefined): SymbolGroupKey | null {
@@ -109,6 +155,7 @@ export function getVenueCatalog(): readonly VenueInfo[] {
 export function resetVenueCatalog(): void {
   venueGroups = new Map();
   venueCatalog = [];
+  venueNames = {};
 }
 
 /** The exchange half of a market string: `binance-usdm` → `binance`, `okx` → `okx`. */
@@ -127,7 +174,7 @@ export function marketGroup(market: string): SymbolGroupKey {
   const known = venueGroups.get(marketVenueId(m));
   if (known) return known;
   if (m === 'sim') return 'sim';
-  if (m === 'equity' || m === 'stock' || m === 'us-equity') return 'equity';
+  if (m === 'equity' || m === 'stock' || m === 'us-equity' || isWorldMarket(m) || isAssetMarket(m)) return 'equity';
   // binance-spot / binance-futures / crypto / anything else → crypto.
   return 'crypto';
 }
@@ -139,6 +186,11 @@ export function marketGroup(market: string): SymbolGroupKey {
  */
 export function venueLabel(market: string, t: Translate = englishT): string {
   const group = marketGroup(market);
+  // A world exchange is named by its MIC: "Equity" alone would not say which of ~130.
+  if (isWorldMarket(market)) return worldMic(market);
+  // An asset market is not an equity venue: its own string says what it is (`forex`,
+  // `futures-eurex`), where the group word would call a currency pair a stock.
+  if (isAssetMarket(market)) return market.toLowerCase();
   return group === 'crypto' ? market : t(VENUE_GROUP_KEY[group]);
 }
 
@@ -174,9 +226,14 @@ export function venueOptions(venues: readonly VenueInfo[]): VenueOption[] {
   for (const v of venues) {
     if (typeof v?.id !== 'string' || v.id === '') continue;
     const group = venueAssetGroup(v.assetClass) ?? marketGroup(v.id);
-    const depth = typeof v.depth === 'string' ? v.depth : '';
+    // `per-market` is the world venue saying its exchanges differ: no single tier to badge.
+    const depth = typeof v.depth === 'string' && v.depth !== 'per-market' ? v.depth : '';
     for (const market of venueMarkets(v)) {
-      (v.native ? native : served).push({ market, label: market, group, depth, native: !!v.native });
+      // A world exchange carries its name beside the MIC, so "istanbul" finds `world-xist`.
+      const name = venueName(market);
+      const label = name ? `${market} · ${name}` : market;
+      (v.native ? native : served).push({ market, label, group,
+        depth: market === 'futures-eurex-official' ? 'N/A' : depth, native: !!v.native });
     }
   }
   return [

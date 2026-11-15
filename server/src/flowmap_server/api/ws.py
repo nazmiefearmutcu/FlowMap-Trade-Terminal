@@ -104,9 +104,10 @@ _CLOSE_INTERNAL = 1011  # unexpected server-side failure while serving the reque
 REASON_INVALID_SYMBOL = "invalid_symbol"
 REASON_SUBSCRIBE_TIMEOUT = "subscribe_timeout"
 # Venue spellings in use: equities (BRK.B, ^GSPC, ES=F), ccxt unified
-# (BTC/USDT:USDT) and native ids (BTCUSDT, tBTCUSD, BTC-PERP). The charset is
-# closed on purpose: anything else never reaches a session key or a path.
-_SYMBOL_RE = re.compile(r"[A-Za-z0-9^][A-Za-z0-9._\-/:=^+]{0,63}")
+# (BTC/USDT:USDT), native ids (BTCUSDT, tBTCUSD, BTC-PERP) and continuous futures
+# (ES1!, FDAX1!). The charset is closed on purpose: anything else never reaches a
+# session key or a path.
+_SYMBOL_RE = re.compile(r"[A-Za-z0-9^][A-Za-z0-9._\-/:=^+!]{0,63}")
 
 
 def normalize_symbol(raw: str) -> str | None:
@@ -752,7 +753,8 @@ class _Connection:
             # ValueError keeps the unreasoned refusal it always had. The refusal
             # contract is a Status frame + close, never a silent no-op. A crypto
             # venue's table that does not list the symbol is the same answer.
-            unknown = (UnknownSymbolError, UnlistedSymbolError)
+            from flowmap_server.feeds.eurex_service import NativeSymbolError
+            unknown = (UnknownSymbolError, UnlistedSymbolError, NativeSymbolError)
             reason = REASON_INVALID_SYMBOL if isinstance(exc, unknown) else None
             logger.warning(
                 "refused subscribe: rejected input (%r:%r: %r) -> 1003",

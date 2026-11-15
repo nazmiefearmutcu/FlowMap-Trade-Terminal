@@ -13,6 +13,10 @@
   is returned at once and refreshed in the background when it is stale.
 - ``/api/previews`` reads the bounded cache and startup-warmup progress only;
   it never starts provider work.
+- ``/api/options`` serves the option chain of one instrument: the series it lists and
+  the strikes of one series. Its network is behind the short-lived cache of
+  :class:`~flowmap_server.feeds.option_chains.OptionChains` on ``app.state.option_chains``
+  (injectable; canned in tests). A provider fault is a ``status`` in the body, never a 500.
 
 The cache absence is tolerated: if no cache is wired (should not happen in the
 real app), movers/quote degrade to empty/unreachable rather than 500.
@@ -21,6 +25,7 @@ real app), movers/quote degrade to empty/unreachable rather than 500.
 from __future__ import annotations
 
 import re
+from datetime import date
 
 from fastapi import APIRouter, Request
 
@@ -34,8 +39,12 @@ from flowmap_server.api.market_cache import (
 from flowmap_server.api.rest import current_directory
 from flowmap_server.config import Config
 from flowmap_server.data.universe import filter_directory
-from flowmap_server.data.venues import venue_catalog, venue_symbols
+from flowmap_server.data.venues import venue_catalog, venue_labels, venue_symbols
+from flowmap_server.feeds.asset_markets import AssetMarketFeed, is_asset_market
 from flowmap_server.feeds.crypto import CryptoFeed, is_crypto_market, split_market
+from flowmap_server.feeds.global_equity import GlobalEquityFeed, is_world_market, world_mic
+from flowmap_server.feeds.option_chains import OptionChains
+from flowmap_server.feeds.eurex_official import MARKET as EUREX_MARKET, SYMBOLS, contract_for, capability as eurex_capability
 
 __all__ = ["router"]
 
@@ -58,7 +67,10 @@ _QUOTE_SIMPLE_MARKETS = frozenset({"crypto", "equity", "sim"})
 # A symbol is a short ticker or pair: letters, digits and the separators venues
 # use (BRK.B, BTC/USDT, BTC-PERP, ^GSPC, ETH:USDC). Anything else is refused
 # before it can reach an upstream request or a cache key.
-_SYMBOL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:+=^-]{0,63}")
+_SYMBOL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:+=^!-]{0,63}")
+# An option series is named by its expiry day and its contract family (SPXW, XU030D).
+_EXPIRY_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+_ROOT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
 
 
 def _cache(request: Request) -> MarketDataCache | None:
@@ -71,25 +83,37 @@ def _invalid(detail: str, code: str = "invalid_params") -> ApiError:
 
 def _check_symbol(symbol: str) -> None:
     if not _SYMBOL_PATTERN.fullmatch(symbol):
-        raise _invalid(f"invalid symbol {symbol[:80]!r}: 1-64 letters, digits or . _ / : + = ^ -",
+        raise _invalid(f"invalid symbol {symbol[:80]!r}: 1-64 letters, digits or . _ / : + = ^ ! -",
                        code="invalid_symbol")
 
 
+def _is_listed_market(market: str) -> bool:
+    """A market whose symbols Crocodile's live layer enumerates: a world exchange or an asset
+    market. Their symbols keep the venue's own spelling and case."""
+    return market == EUREX_MARKET or is_world_market(market) or is_asset_market(market)
+
+
 def _check_quote_market(market: str) -> None:
-    if market in _QUOTE_SIMPLE_MARKETS or is_crypto_market(market):
+    if market in _QUOTE_SIMPLE_MARKETS or _is_listed_market(market) or is_crypto_market(market):
         return
     raise _invalid(f"unknown market {market[:80]!r}", code="unknown_market")
 
 
 @router.get("/venues")
-async def venues() -> dict[str, list[dict[str, object]]]:
+async def venues() -> dict[str, object]:
     """Every venue this build can stream. Pure — no network.
 
     This is what makes the picker's venue list the engine's list rather than a
     copy of it: the five native crypto connectors, every ccxt venue id, the
     equity market and the sim feed.
     """
-    return {"venues": [v.as_dict() for v in venue_catalog()]}
+    return {
+        "venues": [v.as_dict() for v in venue_catalog()],
+        # Display names of the markets whose string says little alone: the world venue's
+        # exchanges (``world-xist`` -> ``Borsa Istanbul (TR)``) and the asset markets
+        # (``futures-eurex``, ``forex``).
+        "labels": venue_labels(),
+    }
 
 
 @router.get("/universe")
@@ -105,6 +129,10 @@ async def universe(
     than to an error.
     """
     n = max(1, min(limit, _UNIVERSE_MAX))
+    if _is_listed_market(market):
+        # One exchange of the world venue, or one asset market. An unreachable board is an
+        # empty listing, never the bundled US shortlist under another market's name.
+        return {"symbols": await _world_entries(market, q=q, limit=n, cfg=_app_config(request))}
     if market not in ("", "all", "crypto", "equity", "sim") and is_crypto_market(market):
         entries = await _venue_entries(market, q=q, limit=n, cfg=_app_config(request))
         if entries is not None:
@@ -117,6 +145,35 @@ def _app_config(request: Request) -> Config:
     """The config the running app was built with (the one its subscribes use)."""
     cfg = getattr(request.app.state, "cfg", None)
     return cfg if isinstance(cfg, Config) else Config()
+
+
+async def _world_entries(
+    market: str, *, q: str, limit: int, cfg: Config
+) -> list[dict[str, object]]:
+    """Live-enumerated rows of one exchange or asset market, with the capability its feed
+    states."""
+    if market == EUREX_MARKET:
+        native_rows: list[dict[str, object]] = [
+            {'market': market, 'symbol': symbol, 'capability': eurex_capability()}
+            for symbol in SYMBOLS if q.lower() in symbol.lower()]
+        return native_rows[:limit]
+    mic = world_mic(market)
+    if mic is not None:
+        capability = GlobalEquityFeed("", mic, cfg).capability
+    elif is_asset_market(market):
+        capability = AssetMarketFeed("", market, cfg).capability
+    else:
+        return []
+    symbols = await venue_symbols(market)
+    needle = q.lower()
+    out: list[dict[str, object]] = []
+    for symbol in symbols:
+        if needle and needle not in symbol.lower():
+            continue
+        out.append({"market": market, "symbol": symbol, "capability": capability})
+        if len(out) >= limit:
+            break
+    return out
 
 
 async def _venue_entries(
@@ -153,7 +210,7 @@ async def movers(
     request: Request, market: str = "crypto", limit: int = _MOVERS_DEFAULT
 ) -> dict[str, list[dict[str, object]]]:
     """Top movers for a market, ranked by |24 h %change| (display-only)."""
-    if market not in _MOVERS_MARKETS:
+    if market not in _MOVERS_MARKETS and not _is_listed_market(market):
         raise _invalid(f"market must be one of {sorted(_MOVERS_MARKETS)}; got {market[:80]!r}",
                        code="unknown_market")
     n = max(1, min(limit, _MOVERS_MAX))
@@ -172,11 +229,62 @@ async def quote(request: Request, market: str, symbol: str) -> dict[str, object]
     """
     _check_quote_market(market)
     _check_symbol(symbol)
+    if market == EUREX_MARKET:
+        try:
+            contract_for(symbol)
+        except ValueError as exc:
+            raise _invalid(str(exc), 'invalid_symbol') from None
     cache = _cache(request)
     if cache is None:
-        q = QuoteData(market=market, symbol=symbol.upper(), reachable=False, stale=True)
+        shown = symbol if _is_listed_market(market) else symbol.upper()
+        q = QuoteData(market=market, symbol=shown, reachable=False, stale=True)
         return quote_to_json(q)
     return quote_to_json(await cache.quote(market, symbol))
+
+
+def _option_expiry(expiry: str | None) -> date | None:
+    if expiry is None or expiry == "":
+        return None
+    if _EXPIRY_PATTERN.fullmatch(expiry):
+        try:
+            return date.fromisoformat(expiry)
+        except ValueError:
+            pass
+    raise _invalid(f"invalid expiry {expiry[:40]!r}: a calendar day as YYYY-MM-DD")
+
+
+def _option_root(root: str | None) -> str | None:
+    if root is None or root == "":
+        return None
+    if not _ROOT_PATTERN.fullmatch(root):
+        raise _invalid(f"invalid root {root[:40]!r}: 1-32 letters, digits or . _ -")
+    return root
+
+
+@router.get("/options")
+async def options(
+    request: Request,
+    market: str,
+    symbol: str,
+    expiry: str | None = None,
+    root: str | None = None,
+) -> dict[str, object]:
+    """The option chain of one instrument: its series, and the strikes of one of them.
+
+    ``expiry`` (``YYYY-MM-DD``) and ``root`` name the series; without them the nearest expiry
+    is served, and ``selected`` in the answer says which. ``status`` is ``ok``, ``none`` (the
+    source lists no options for the instrument), ``unsupported`` (the market has no ticker the
+    source spells: a crypto venue, the sim feed) or ``unreachable``.
+    """
+    _check_quote_market(market)
+    _check_symbol(symbol)
+    day = _option_expiry(expiry)
+    family = _option_root(root)
+    chains = getattr(request.app.state, "option_chains", None)
+    if not isinstance(chains, OptionChains):
+        chains = OptionChains()
+        request.app.state.option_chains = chains
+    return await chains.view(market, symbol, expiry=day, root=family)
 
 
 @router.get("/previews")

@@ -88,12 +88,14 @@ describe('routeGlobalKey', () => {
     expect(routeGlobalKey('C', PLAIN)).toEqual({ type: 'cycle-depth-channel' });
     expect(routeGlobalKey('j', PLAIN)).toEqual({ type: 'toggle-intel' });
     expect(routeGlobalKey('J', PLAIN)).toEqual({ type: 'toggle-intel' });
+    expect(routeGlobalKey('o', PLAIN)).toEqual({ type: 'open-options' });
+    expect(routeGlobalKey('O', PLAIN)).toEqual({ type: 'open-options' });
     expect(routeGlobalKey('i', PLAIN)).toBeNull();
     expect(routeGlobalKey('I', PLAIN)).toBeNull();
   });
 
   it('never hijacks the feature keys while typing or inside a dialog', () => {
-    for (const k of ['m', 'a', 'h', 'c', 'j']) {
+    for (const k of ['m', 'a', 'h', 'c', 'j', 'o']) {
       expect(routeGlobalKey(k, { ...PLAIN, editable: true })).toBeNull();
       expect(routeGlobalKey(k, { ...PLAIN, dialog: true })).toBeNull();
       expect(routeGlobalKey(k, PLAIN, { meta: true, ctrl: false })).toBeNull();

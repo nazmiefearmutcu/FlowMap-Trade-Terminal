@@ -9,6 +9,8 @@ import { setLocale } from './index';
 import {
   TIME_ZONE_STORAGE_KEY,
   exchangeZoneFor,
+  registerMarketZone,
+  resetMarketZones,
   formatClock,
   formatDateTime,
   formatFixed,
@@ -299,5 +301,31 @@ describe('formatZonedDayTime — the time-axis tag', () => {
 
   it('returns an em dash for a non-finite instant', () => {
     expect(formatZonedDayTime(Number.NaN, 'utc')).toBe('—');
+  });
+});
+
+describe('exchange zone of a market that states its own', () => {
+  it('reads a world exchange in the zone its session stated', () => {
+    resetMarketZones();
+    // Before the session answers there is nothing to go on but the group.
+    expect(exchangeZoneFor('equity', 'world-xist')).toBe('America/New_York');
+    registerMarketZone('world-xist', { exchange_tz: 'Europe/Istanbul' });
+    expect(exchangeZoneFor('equity', 'world-xist')).toBe('Europe/Istanbul');
+    expect(exchangeZoneFor('equity', 'WORLD-XIST')).toBe('Europe/Istanbul');
+    // The US market and crypto are unaffected.
+    expect(exchangeZoneFor('equity', 'equity')).toBe('America/New_York');
+    expect(exchangeZoneFor('equity')).toBe('America/New_York');
+    expect(exchangeZoneFor('crypto', 'binance-spot')).toBe('UTC');
+    resetMarketZones();
+    expect(exchangeZoneFor('equity', 'world-xist')).toBe('America/New_York');
+  });
+
+  it('ignores a capability that states no usable zone', () => {
+    resetMarketZones();
+    registerMarketZone('world-xtai', { exchange_tz: 'Not/A_Zone' });
+    registerMarketZone('world-xtai', { exchange_tz: 42 });
+    registerMarketZone('world-xtai', null);
+    registerMarketZone(undefined, { exchange_tz: 'Asia/Taipei' });
+    expect(exchangeZoneFor('equity', 'world-xtai')).toBe('America/New_York');
   });
 });

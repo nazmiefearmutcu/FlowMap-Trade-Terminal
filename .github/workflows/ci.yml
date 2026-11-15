@@ -163,7 +163,7 @@ jobs:
 
       # Same pinned action as release.yml. uv installs exactly the versions
       # resolved in server/uv.lock — including the crocodile engine, which is a
-      # vendored wheel (server/vendor/crocodile-0.3.2-py3-none-any.whl, a path
+      # vendored wheel (server/vendor/crocodile-0.5.0-py3-none-any.whl, a path
       # source in server/pyproject.toml, pinned by sha256 in server/uv.lock).
       # server/pyproject.toml requires Python >= 3.13, which uv resolves (and
       # downloads if needed).

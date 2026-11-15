@@ -1134,7 +1134,7 @@ export class Connection {
     // responses do the same, so clearing the epoch map here is safe. An
     // in-flight history page belongs to the OLD grid — fail its waiters
     // rather than splice old-session columns into the new session's ring.
-    if (this.sessionId !== null && this.sessionId !== hello.session_id) {
+    if (this.sessionId !== null && (this.sessionId !== hello.session_id || hello.capability.native_candles === true)) {
       this.lastColSeq.clear();
       this.epochMap.clear();
       this.depthSeams.reset();

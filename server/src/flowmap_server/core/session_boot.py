@@ -14,8 +14,9 @@ from flowmap_server.core.pyramid import pyramid_for
 from flowmap_server.core.record import SessionRecorder, TailData
 from flowmap_server.core.session_capability import recorded_capability
 from flowmap_server.core.session_common import SESSION_LOGGER, SNAPSHOT_COLS
+from flowmap_server.data.real_books import real_book
 from flowmap_server.feeds.base import BarSample, BookState
-from flowmap_server.feeds.equity import EquityFeed
+from flowmap_server.feeds.equity_markets import EquityFeedBase
 from flowmap_server.feeds.replay import ReplayFeed
 from flowmap_server.proto import events
 
@@ -72,6 +73,11 @@ class BootMixin:
         seeded from the first-launch candle backfill.
         """
         tail_applied = False
+        native_snapshot = getattr(self._feed, 'native_snapshot', None)
+        if native_snapshot is not None:
+            from flowmap_server.core.session_candles import apply_candle_snapshot
+            apply_candle_snapshot(self, await native_snapshot())
+            return
         if self._recorder_root is not None:
             try:
                 rec, tail = await self._run_boot_blocking()
@@ -157,7 +163,7 @@ class BootMixin:
 
     async def _prepare_closed_history(self) -> None:
         if not (
-            isinstance(self._feed, EquityFeed)
+            isinstance(self._feed, EquityFeedBase)
             and self._feed.tier == "keyless"
             and self._feed.is_closed_now()
         ):
@@ -181,6 +187,19 @@ class BootMixin:
                     elif isinstance(ev, events.Marker):
                         self._markers.append(ev)
                         self._record(lambda r, m=ev: r.record_marker(m))
+                    elif isinstance(ev, events.Trade):
+                        # A closed feed may state the last trading of the session it shows
+                        # (the world feed does). It goes on the tape, stamped with its own
+                        # past time, and never into the grid: nothing is trading now. A
+                        # repeated preparation does not append the same print again.
+                        if not self._tape or self._tape[-1].ts_ns < ev.ts_ns:
+                            stamped = (
+                                msgspec.structs.replace(ev, seq=self._next_trade_seq())
+                                if ev.seq == 0
+                                else ev
+                            )
+                            self._tape.append(stamped)
+                            self._record(lambda r, t=stamped: r.record_trade(t))
                 self._emit_closed_if_needed()
                 self._closed_history_prepared = True
             except Exception:
@@ -213,7 +232,7 @@ class BootMixin:
         if self._backfill_fn is None or self._backfill_max_cols <= 0:
             return
         # A keyless equity feed supplies the last session's price history itself.
-        if isinstance(self._feed, EquityFeed) and self._feed.tier == "keyless":
+        if isinstance(self._feed, EquityFeedBase) and self._feed.tier == "keyless":
             return
         try:
             candles = await self._backfill_fn(
@@ -277,7 +296,13 @@ class BootMixin:
         Always returns a fresh dict (never the feed's own object): the badges
         must not leak back into the feed descriptor."""
         cap: dict[str, object] = dict(self._feed.capability)
-        cap["replay"] = True
+        cap["replay"] = not bool(getattr(self._feed, 'native_candles', False))
+        if cap.get("depth") == "SYNTH":
+            # A synthetic instrument whose underlying has a real public book on a venue this
+            # build streams says where (data/real_books.py); the client offers it as a link.
+            linked = real_book(self._feed.market, self._feed.symbol)
+            if linked is not None:
+                cap["real_book"] = linked
         if isinstance(self._feed, ReplayFeed):
             cap["playback"] = self._feed.playback()
         if self._recorder_root is not None:
@@ -317,7 +342,7 @@ class BootMixin:
         Returns True only when the grid actually took the tail; a False return
         (unusable recording) leaves the grid virgin so the caller still runs
         the candle backfill."""
-        if isinstance(self._feed, EquityFeed) and tail.columns:
+        if isinstance(self._feed, EquityFeedBase) and tail.columns:
             # An equity recording made under another depth tier is a different
             # kind of data, and must not be continued as live displayed depth.
             # Start cold, keeping the old files and the new recorder UUID so a
@@ -372,7 +397,7 @@ class BootMixin:
         self._markers.extend(tail.markers)
         dt = self._grid.cfg.dt_ns
         end_ns = tail.newest_t0_ns + dt
-        if isinstance(self._feed, EquityFeed) and self._feed.tier == "keyless":
+        if isinstance(self._feed, EquityFeedBase) and self._feed.tier == "keyless":
             self._equity_warmup_before_ns = end_ns
         # ts is the last ns of the recorded range so the marker is inside the
         # snapshot's [first_t0, last_t0+dt) marker window from the very first

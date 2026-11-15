@@ -199,7 +199,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   const zonePref = useTimeZone();
   const t = useT();
   const group = marketGroup(market);
-  const exchangeZone = exchangeZoneFor(group);
+  const exchangeZone = exchangeZoneFor(group, market);
   // The market:symbol the probe is read on, in the same form PriceAlerts keys its
   // alerts by. Held in a ref so the pointer loop never re-subscribes for a switch.
   const probeKeyRef = useRef('');

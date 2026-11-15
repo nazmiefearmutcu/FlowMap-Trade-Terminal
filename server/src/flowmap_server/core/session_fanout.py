@@ -6,7 +6,7 @@ import numpy as np
 
 from flowmap_server.core.session_common import _T_MAX, SNAPSHOT_CHUNK_COLS, SNAPSHOT_COLS
 from flowmap_server.core.session_queue import ClientTx
-from flowmap_server.feeds.equity import EquityFeed
+from flowmap_server.feeds.equity_markets import EquityFeedBase
 from flowmap_server.proto import events, wire
 
 
@@ -73,7 +73,7 @@ class FanoutMixin:
         partial_kind: str = "",
         latest_key: str = "",
     ) -> None:
-        if self._preparing_closed_history:
+        if self._preparing_closed_history or self._history_replay in ("replay", "ending"):
             return
         for client in self._clients:
             client.offer(
@@ -169,7 +169,7 @@ class FanoutMixin:
         tail: list[bytes] = []
         partial = None
         if (
-            isinstance(self._feed, EquityFeed)
+            isinstance(self._feed, EquityFeedBase)
             and self._feed.tier == "keyless"
             and self._feed_state == "closed"
         ):

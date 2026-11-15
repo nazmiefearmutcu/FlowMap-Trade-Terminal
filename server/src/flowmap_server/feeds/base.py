@@ -31,6 +31,8 @@ from flowmap_server.proto.events import BBO, Marker, Trade
 __all__ = [
     "BookState",
     "BarSample",
+    "CandleSample",
+    "CandleSnapshot",
     "BoundedFeedQueue",
     "DropCounters",
     "FEED_QUEUE_MAXSIZE",
@@ -84,7 +86,24 @@ class BarSample(msgspec.Struct):
     volume: float
 
 
-FeedEvent = BookState | BarSample | Trade | Marker | BBO
+class CandleSample(msgspec.Struct, frozen=True):
+    """One actual candle; volume has unknown aggressor direction."""
+    ts_ns: int
+    o: float
+    h: float
+    l: float
+    c: float
+    volume: float
+    vwap: float
+    revision: int
+
+
+class CandleSnapshot(msgspec.Struct, frozen=True):
+    """Bounded authoritative viewport replacement, including removals."""
+    candles: tuple[CandleSample, ...]
+
+
+FeedEvent = BookState | BarSample | CandleSnapshot | Trade | Marker | BBO
 
 
 # -- live-ingest timestamp sanity (venue clocks are hostile) --------------------

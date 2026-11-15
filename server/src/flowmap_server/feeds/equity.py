@@ -109,6 +109,7 @@ from flowmap_server.feeds.equity_book import (
 )
 from flowmap_server.feeds.equity_poll import _GooglePricePoller
 from flowmap_server.feeds.equity_sink import _EquitySink
+from flowmap_server.feeds.equity_markets import EQUITY_MARKET, EQUITY_MARKETS, EquityFeedBase
 from flowmap_server.proto.events import (
     SIDE_SRC_NA,
     SIDE_UNKNOWN,
@@ -116,13 +117,15 @@ from flowmap_server.proto.events import (
     Trade,
 )
 
-__all__ = ["EQUITY_MARKET", "EQUITY_MARKETS", "LAST_PRICE_VENUE", "EquityFeed"]
+__all__ = [
+    "EQUITY_MARKET",
+    "EQUITY_MARKETS",
+    "LAST_PRICE_VENUE",
+    "EquityFeed",
+]
 
 logger = logging.getLogger(__name__)
 
-# Subscribe.market string routed to EquityFeed by the session feed factory.
-EQUITY_MARKET = "equity"
-EQUITY_MARKETS = frozenset({EQUITY_MARKET})
 # Venue tag of the keyless last-price fallback (not an exchange print or NBBO).
 LAST_PRICE_VENUE = "last-price"
 # Consecutive failed keyless price polls before the live tape says so (gap Marker).
@@ -198,7 +201,7 @@ def _closed_marker_text(has_history: bool) -> str:
     return "market closed — no cached history available"
 
 
-class EquityFeed:
+class EquityFeed(EquityFeedBase):
     """Live US-equity feed (implements the Feed protocol).
 
     ``events()`` is re-callable (Feed restart contract): each call builds fresh
