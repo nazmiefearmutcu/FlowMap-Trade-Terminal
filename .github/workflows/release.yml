@@ -319,7 +319,7 @@ jobs:
 
       - name: Preserve macOS runtime minimum evidence
         if: always() && matrix.kind == 'macos'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-runtime-minimum-${{ matrix.triple }}
           path: |
@@ -484,7 +484,7 @@ jobs:
           fi
 
       - name: Upload this target's third-party notice part
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: third-party-notices-${{ matrix.triple }}
           path: notice-parts/THIRD-PARTY-NOTICES.${{ matrix.triple }}.json
@@ -557,7 +557,7 @@ jobs:
       # Hands the installers to the publish job. The publish job, not this leg,
       # attests, checksums and uploads them.
       - name: Upload the installers as workflow artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: installers-${{ matrix.triple }}
           path: ${{ steps.installers.outputs.files }}
