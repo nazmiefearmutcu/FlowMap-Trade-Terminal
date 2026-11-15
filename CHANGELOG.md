@@ -7,6 +7,10 @@ Unreleased work sits on top of the newest listed commit.
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-11-15
+
+Release notes: [docs/release-notes-1.7.0.md](docs/release-notes-1.7.0.md).
+
 ### Added
 
 - World equities. A new venue, `world`, has one market per stock exchange, named by its ISO 10383
