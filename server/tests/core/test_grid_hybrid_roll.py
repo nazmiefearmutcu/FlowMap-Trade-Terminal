@@ -10,6 +10,17 @@ from flowmap_server.core.price_scale import SCALE_HYBRID, row_to_price, step_at_
 from flowmap_server.proto.events import SIDE_BUY
 
 
+@pytest.fixture(autouse=True)
+def _half_dollar_btc_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise the roll and rebuild mechanics on BTC's $0.50 core.
+
+    The deep band's policy now asks for a core spanning 2% of the price ($1 rows
+    on BTC); the mechanics are the same at any step, so pin the 1% policy the
+    numbers below were derived from. ``test_grid_crypto_tick`` pins the policy.
+    """
+    monkeypatch.setattr("flowmap_server.core.grid.DEEP_CORE_MIN_SPAN_RATIO", 0.01)
+
+
 DT = 1_000_000_000
 
 

@@ -1383,7 +1383,10 @@ def test_deep_band_is_the_hybrid_preset_and_is_a_NEW_name():
     assert deep.core_rows == 2048
 
 
-def test_deep_band_builds_a_hybrid_grid_that_keeps_the_native_ladder():
+def test_deep_band_builds_a_hybrid_grid_that_keeps_the_native_ladder(monkeypatch: pytest.MonkeyPatch):
+    # At a $0.50 venue tick a 1% core keeps the native step; the 2% policy would
+    # group two ticks. This test is about the native ladder, so pin 1%.
+    monkeypatch.setattr("flowmap_server.core.grid.DEEP_CORE_MIN_SPAN_RATIO", 0.01)
     """End-to-end through the grid: the `deep` preset must give the SAME
     resolution near the money as `native`, and still cover the band."""
     from flowmap_server.core.price_scale import SCALE_HYBRID, row_to_price, step_at_row

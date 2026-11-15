@@ -13,11 +13,11 @@ This module adds a second scale kind that breaks that tie:
     rows [dn_rows+core_rows, rows)       upper LOG wing  -- core_hi -> hi_price
 
 continuous at both joins. The point is that resolution is spent where it is
-read: with ``rows=4096`` and ``core_rows=2048`` on BTC at $60k with a $0.50
-tick, the CORE is +/-0.853% at $0.50/row -- byte-for-byte the resolution AND
-coverage of the old narrow grid -- while the remaining 2048 rows reach
--99%/+1000% at ~0.34%/row. Nothing is lost near the money; the far field is
-gained.
+read: with ``rows=4096`` and ``core_rows=2048`` on BTC at $60k with a $1.00
+step (the deep band's core spans at least 2% of the price), the CORE is about
++/-1.7% at $1/row, while the remaining 2048 rows reach -99%/+1000% at
+~0.34%/row. The fine core covers a typical session's movement; the far field
+is gained.
 
 This is the exact mirror of ``client/src/gl/priceScale.ts``; the two must agree
 bit-for-bit on every mapping, because the server bins liquidity into rows and

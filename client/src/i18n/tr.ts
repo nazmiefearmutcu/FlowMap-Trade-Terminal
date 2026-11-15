@@ -594,7 +594,7 @@ export const tr: Record<string, string> = {
   'settings.bandHint.full':
     'Yalnızca aralık TARAMASI: satırlar öyle kabalaşır ki canlı defter birkaç satıra iner.',
   'settings.bandHint.deep':
-    'Fiyatın yanında ayrıntılı gruplu derinlik VE −99%/+1000% kapsama. Kotasyonlar ve işlemler borsanın gerçek fiyat adımını korur. Çerçeve oturum boyunca sabit kalır; kalıcı bir hareket, yeniden bağlanana kadar defteri kaba kanatlara taşır.',
+    'Fiyatın çevresinde en az %2’lik bölgede ayrıntılı gruplu derinlik (fiyatla birlikte kayar) VE −99%/+1000%’e kadar kaba kapsama. Kotasyonlar ve işlemler borsanın gerçek fiyat adımını korur. Geçmiş, kaydedildiği ayrıntıyı korur: o anki fiyattan uzak bölgeler geniş, soluk bantlar olarak görünür.',
   'settings.historyDepth': 'Açılışta geçmiş',
   'settings.history.off': 'Kapalı',
   'settings.history.1h': '1S',

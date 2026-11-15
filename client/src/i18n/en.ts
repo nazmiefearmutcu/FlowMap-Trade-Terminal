@@ -597,7 +597,7 @@ export const en: Record<string, string> = {
   'settings.bandHint.full':
     'Range SCAN only: rows get so coarse the live book collapses to a few of them.',
   'settings.bandHint.deep':
-    'Detailed grouped depth near the price AND coverage to −99%/+1000%. Quotes and trades retain the exchange tick. The frame is fixed for the session, so a sustained move walks the book out into the coarse wings until you reconnect.',
+    'Detailed grouped depth across at least 2% around the price (it moves with the price) AND coarse coverage to −99%/+1000%. Quotes and trades keep the exchange tick. History keeps the detail it was recorded with: far from that moment’s price it shows as broad, faint bands.',
   'settings.historyDepth': 'History on launch',
   'settings.history.off': 'Off',
   'settings.history.1h': '1H',

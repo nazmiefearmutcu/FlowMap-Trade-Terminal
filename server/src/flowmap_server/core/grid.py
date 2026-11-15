@@ -88,9 +88,9 @@ TICK_COARSE_RATIO = 1e-3
 # 1e-3, while every mid keeps a strictly positive frame at 2048 rows.
 TICK_SIG_DIGITS = 5
 
-# Native ticks give BTC only ~$20 of deep-core coverage at 2048 rows.
-# Group depth into venue-tick multiples; trade/quote prices stay exact.
-DEEP_CORE_MIN_SPAN_RATIO = 0.01
+# Group depth into venue-tick multiples so the fine core spans >= 2% of price (BTC: $1 rows; at
+# 1% normal hours of movement reached the ~0.34%-tall log-wing rows, drawn as faint blocks).
+DEEP_CORE_MIN_SPAN_RATIO = 0.02
 
 
 def deep_core_multiple(mid: float, tick: float, rows: int) -> int:

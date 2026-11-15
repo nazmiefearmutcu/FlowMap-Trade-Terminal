@@ -158,9 +158,9 @@ BANDS: dict[str, BandSpec | None] = {
     "native": None,
     "wide": BandSpec(up=0.5, down=0.5),
     "full": BandSpec(up=10.0, down=1.0),
-    # -99%/+1000% with the ladder INTACT: 4096 rows, half of them a native-step
-    # core. On BTC at $60k that is +/-0.853% at $0.50/row — the coverage AND
-    # resolution of the `native` grid — plus wings reaching -99%/+1000% at
+    # -99%/+1000% with the ladder INTACT: 4096 rows, half of them a fine core
+    # spanning at least 2% of the price (BTC at $60k: about +/-1.7% at $1/row;
+    # see grid.DEEP_CORE_MIN_SPAN_RATIO) — plus wings reaching -99%/+1000% at
     # ~0.34%/row. Registered as a NEW name rather than re-pointing `full`:
     # priceBand is persisted in localStorage, so re-pointing would silently move
     # every existing `full` user onto a piecewise scale on their next load.

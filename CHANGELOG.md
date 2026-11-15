@@ -43,6 +43,11 @@ Unreleased work sits on top of the newest listed commit.
 - History did not load on the default price band. The first-launch history was skipped on every banded price
   range, and the default range (*deep*) is banded, so a newly opened symbol started with a few seconds of
   data whatever the *History depth* setting said. It now loads on every price range.
+- A zoomed-out chart went blank — no heatmap, price line, trades or axes — each time the price moved far enough
+  to roll the grid, which happens many times over a few hours, and every overview page was read again. The
+  overview now survives a roll, and the close-up chart keeps drawing while an overview page loads.
+- Zoomed-out views could show stale blocks where one history page met the next: the shared texels were never
+  rebuilt. They are now.
 - Turkish: "spread" is translated as *makas* everywhere. The DOM ladder said *fark*, the high-yield notes
   said *tahvil farkı* and the Research drawer's macro bar was untranslated.
 - The Research drawer never showed data. No part of the server sent the messages it listened for, so every
@@ -50,6 +55,9 @@ Unreleased work sits on top of the newest listed commit.
 
 ### Changed
 
+- The *deep* price band's detailed core spans at least 2% of the price instead of 1% (BTC: about $2,048 at
+  $1 rows instead of $1,024 at $0.50). With 1%, a few hours of normal movement carried the view into the
+  coarse outer rows, drawn as large faint blocks. History keeps the resolution it was recorded with.
 - History before the app was watching is price history only: price line, volume and, for crypto, CVD. No depth
   is drawn for that period. The volume-derived "reconstructed" density is gone.
 - The whole window is drawn in the pixel style, and the chart always in the smooth style. The chart's axes,

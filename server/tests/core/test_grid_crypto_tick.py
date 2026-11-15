@@ -38,15 +38,27 @@ def test_deep_btc_core_keeps_a_thirty_dollar_move_in_detailed_rows():
     mgr = SessionManager(Config(recording_enabled=False, ring_columns=8), timer=FakeTimer())
     grid = mgr._grid_for(_adaptive_feed(symbol="BTCUSDT", preferred_tick=.01), "deep")
     _first_mid(grid, 85500, n=8, step=.01)
-    assert grid.scale.core_step == pytest.approx(.5)
+    assert grid.scale.core_step == pytest.approx(1.0)
     assert grid.current_epoch_params().tick == .01
-    assert grid.current_epoch_params().tick_multiple == 50
-    bids = 85530 - np.arange(8) * .5
-    asks = 85530.5 + np.arange(8) * .5
+    assert grid.current_epoch_params().tick_multiple == 100
+    bids = 85530 - np.arange(8) * 1.0
+    asks = 85531 + np.arange(8) * 1.0
     grid.on_book(grid.cfg.dt_ns, bids, np.ones(8), asks, np.ones(8))
     assert np.count_nonzero(grid._state[0]) == 8
     assert np.count_nonzero(grid._state[1]) == 8
-    assert grid.maybe_reanchor(85530.25) is None
+    assert grid.maybe_reanchor(85530.5) is None
+
+
+@pytest.mark.parametrize(
+    ("mid", "tick", "step"),
+    [(65_000.0, 0.01, 1.0), (85_500.0, 0.01, 1.0), (1_830.0, 0.01, 0.02), (0.5, 0.0001, 0.0001)],
+)
+def test_the_deep_core_spans_at_least_two_percent_of_the_price(mid: float, tick: float, step: float) -> None:
+    # A 1% core (~$1,024 on BTC) let a few hours of movement carry the view into
+    # the log wings, drawn as large faint blocks. The policy is now 2%.
+    multiple = deep_core_multiple(mid, tick, 2048)
+    assert multiple * tick == pytest.approx(step)
+    assert multiple * tick * 2048 >= min(mid * 0.02, 2048 * step)
 
 
 class FakeTimer:
