@@ -346,7 +346,7 @@ async def test_cboe_expired_rows_are_dropped() -> None:
     http = FakeHttp({f"{CBOE_URL}/NVDA.json": doc})
     section = await OptionsSource(http, clock=lambda: NOW_NS).equity_gex("NVDA")  # type: ignore[arg-type]
     assert section.status == "empty"
-    assert section.reason == "missing or invalid option chain"
+    assert section.reason == "no_usable_contracts"
 
 
 async def test_cboe_chain_with_no_open_interest_is_empty_with_the_model_reason() -> None:
@@ -354,7 +354,7 @@ async def test_cboe_chain_with_no_open_interest_is_empty_with_the_model_reason()
     http = FakeHttp({f"{CBOE_URL}/NVDA.json": doc})
     section = await OptionsSource(http, clock=lambda: NOW_NS).equity_gex("NVDA")  # type: ignore[arg-type]
     assert section.status == "empty"
-    assert section.reason == "missing or invalid option chain"
+    assert section.reason == "no_usable_contracts"
     assert section.data is None
 
 
@@ -461,3 +461,12 @@ async def test_deribit_http_failure_is_raised_for_the_cache_to_answer() -> None:
     with pytest.raises(aiohttp.ClientResponseError):
         await OptionsSource(http, clock=lambda: NOW_NS).crypto_gex("BTC")  # type: ignore[arg-type]
 
+
+
+def test_the_model_wording_becomes_a_reason_token() -> None:
+    from flowmap_server.research.options import _model_reason
+
+    assert _model_reason("missing or invalid option chain") == "no_usable_contracts"
+    assert _model_reason("invalid spot or risk-free-rate assumption") == "no_spot_price"
+    assert _model_reason("ZeroDivisionError") == "model_failed"
+    assert _model_reason(None) == "model_failed"

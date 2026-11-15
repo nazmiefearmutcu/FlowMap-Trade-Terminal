@@ -287,6 +287,15 @@ def _deribit_rows(items: list[Any], base: str, quote_at: datetime) -> list[_Row]
     return rows
 
 
+def _model_reason(text: str | None) -> str:
+    """A reason token for the drawer from the GEX model's own wording."""
+    if text and "chain" in text:
+        return "no_usable_contracts"
+    if text and "spot" in text:
+        return "no_spot_price"
+    return "model_failed"
+
+
 def _gex_result(
     venue: Venue,
     section: str,
@@ -303,7 +312,7 @@ def _gex_result(
     model = calculate_gex(symbol, spot, contracts)
     if not model.available:
         return result(section, symbol, "empty", source=venue.source, fetched_ns=fetched_ns,
-                      reason=model.unavailable_reason)
+                      reason=_model_reason(model.unavailable_reason))
     # The model applies MODEL_MULTIPLIER per contract; rescale to the venue's contract size.
     scale = venue.contract_size / float(model.model_provenance["contract_multiplier"])
     expiry = _nearest_monthly(venue, quote_at)

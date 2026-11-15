@@ -31,6 +31,8 @@ LISTING_HEADERS = {
 LISTING_LIMIT = 8 * 1024 * 1024
 LISTING_TTL_S = 24 * 3600.0
 LISTING_RETRY_S = 300.0
+# The full listing is about 2-3 MB and the Nasdaq API can be slow to send it.
+LISTING_TIMEOUT_S = 40.0
 
 # Legal-form words dropped to get the core of a company name, whole words only.
 _LEGAL_WORDS = frozenset({
@@ -119,4 +121,6 @@ class CompanyNames:
         return self._loaded_at is not None and self._monotonic() - self._loaded_at < LISTING_TTL_S
 
     async def _fetch_listing(self) -> object:
-        return await self._http.get_json(LISTING_URL, limit=LISTING_LIMIT, headers=LISTING_HEADERS)
+        return await self._http.get_json(
+            LISTING_URL, limit=LISTING_LIMIT, headers=LISTING_HEADERS, timeout_s=LISTING_TIMEOUT_S
+        )
