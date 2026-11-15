@@ -8,6 +8,7 @@ the explicit check below keeps the invariant visible at the entrypoint
 
 from __future__ import annotations
 
+import faulthandler
 import os
 import sys
 import threading
@@ -80,7 +81,22 @@ def _run_server(app: Any, *, exit_on_stdin_eof: bool, **kwargs: Any) -> None:
     server.run()
 
 
+def _enable_crash_traces() -> None:
+    """Write every thread's Python stack to stderr if the process dies in native code.
+
+    An access violation inside an extension module ends the process with no
+    traceback. The desktop shell copies stderr into the server log, so the stacks
+    show which call was running when it happened."""
+    if sys.stderr is None or faulthandler.is_enabled():
+        return
+    try:
+        faulthandler.enable(file=sys.stderr, all_threads=True)
+    except (AttributeError, OSError, ValueError):
+        pass  # a stderr without a file descriptor; the server runs without traces
+
+
 def main() -> None:
+    _enable_crash_traces()
     _benchmark_provenance()
     cfg = Config.from_env(os.environ)
     if cfg.host not in ("127.0.0.1", "localhost"):  # survives python -O, unlike assert

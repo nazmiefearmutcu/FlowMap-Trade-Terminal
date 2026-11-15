@@ -313,7 +313,7 @@ export const en: Record<string, string> = {
   'app.simBadge': 'SIM · DEMO — simulated data, not a market',
   'app.startFailed': 'FlowMap could not start in this WebView. Update the WebView runtime, then restart the app.',
   'app.heading': 'FlowMap trading heatmap',
-  'sidecar.failedTitle': 'The FlowMap engine stopped and did not restart.',
+  'sidecar.failedTitle': 'The FlowMap engine stopped; it is retried every minute.',
   'sidecar.failedBody': 'Details are in the engine log:',
   'sidecar.retry': 'Retry',
   'sidecar.retryHint': 'Restart the engine now',

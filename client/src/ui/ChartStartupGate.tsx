@@ -28,7 +28,8 @@ interface ChartStartupGateProps {
   /** Open the symbol search, so the user can pick another instrument. */
   onSearchSymbols?: () => void;
   /**
-   * The desktop engine has stopped and did not restart. The failed-engine notice
+   * The desktop engine has stopped and its quick restarts ran out (the shell then
+   * retries once a minute). The failed-engine notice
    * above the gate carries the Retry, so the gate names the state rather than
    * saying the chart is still connecting.
    */

@@ -97,6 +97,33 @@ impl Write for RotatingLog {
     }
 }
 
+/// The server log in the temp folder, used when the one in the app-data folder cannot
+/// be opened. The sidecar must not stay down only because its log is unwritable.
+pub(crate) fn open_sidecar_log_or_fallback(
+    path: &Path,
+    spawn_index: u32,
+) -> io::Result<RotatingLog> {
+    open_with_fallback(
+        path,
+        &std::env::temp_dir().join("flowmap-server.log"),
+        spawn_index,
+    )
+}
+
+fn open_with_fallback(path: &Path, fallback: &Path, spawn_index: u32) -> io::Result<RotatingLog> {
+    match open_sidecar_log(path, spawn_index) {
+        Ok(log) => Ok(log),
+        Err(err) => {
+            shell_log(&format!(
+                "could not open {}: {err}; the server log goes to {}",
+                path.display(),
+                fallback.display()
+            ));
+            open_sidecar_log(fallback, spawn_index)
+        }
+    }
+}
+
 /// Open the sidecar log for spawn number `spawn_index` (0 = the initial
 /// spawn of this app run, >=1 = a supervisor respawn).
 ///
@@ -182,6 +209,25 @@ mod tests {
         assert!(contents.contains("Traceback (most recent call last)"));
         assert!(contents.contains("--- respawn #1 ---"));
         assert!(contents.contains("--- respawn #2 ---"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unwritable_log_folder_falls_back_instead_of_failing_the_spawn() {
+        // The app-data folder is gone (moved, or on a drive that went away): the
+        // sidecar must still start, with its output in the fallback log.
+        let dir = std::env::temp_dir().join(format!("flowmap-log-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("no-such-folder").join("flowmap-server.log");
+        let fallback = dir.join("fallback.log");
+        {
+            let mut log = open_with_fallback(&missing, &fallback, 1).expect("fallback open");
+            log.write_all(b"server output\n").unwrap();
+        }
+        let contents = std::fs::read_to_string(&fallback).unwrap();
+        assert!(contents.contains("--- respawn #1 ---"));
+        assert!(contents.contains("server output"));
+        assert!(!missing.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

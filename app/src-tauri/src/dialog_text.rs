@@ -63,10 +63,10 @@ pub(crate) fn text(lang: Lang, key: Key) -> &'static str {
         (Lang::En, Key::Window) => "could not create the main window: {}",
         (Lang::Tr, Key::Window) => "ana pencere oluşturulamadı: {}",
         (Lang::En, Key::ServerGaveUp) => {
-            "The FlowMap server stopped and could not be restarted. Use Retry in the app, or see the log at: {}"
+            "The FlowMap server stopped and could not be restarted. FlowMap tries again every minute; Retry in the app tries at once. The log is at: {}"
         }
         (Lang::Tr, Key::ServerGaveUp) => {
-            "FlowMap sunucusu durdu ve yeniden başlatılamadı. Uygulamadaki Yeniden dene düğmesini kullanın veya şu günlüğe bakın: {}"
+            "FlowMap sunucusu durdu ve yeniden başlatılamadı. FlowMap her dakika yeniden deniyor; uygulamadaki Yeniden dene düğmesi hemen dener. Günlük: {}"
         }
         (Lang::En, Key::ExitNotice) => "FlowMap will now exit.",
         (Lang::Tr, Key::ExitNotice) => "FlowMap şimdi kapanacak.",

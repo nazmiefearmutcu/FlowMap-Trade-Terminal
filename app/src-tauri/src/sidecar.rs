@@ -22,7 +22,7 @@ use crate::dialog_text::Lang;
 use crate::lock_or_recover;
 use crate::recording::recording_env;
 use crate::redact::RedactingSink;
-use crate::server_log::{open_sidecar_log, pump_output};
+use crate::server_log::{open_sidecar_log_or_fallback, pump_output};
 use crate::shell_log;
 
 /// The server's whole shutdown flush budget, in whole seconds: `SHUTDOWN_FLUSH_DEADLINE_S`
@@ -332,7 +332,7 @@ pub(crate) fn spawn_sidecar(
     fs::create_dir_all(&recordings)?;
 
     let log = Arc::new(Mutex::new(RedactingSink::new(
-        open_sidecar_log(&launch.log_path, spawn_index)?,
+        open_sidecar_log_or_fallback(&launch.log_path, spawn_index)?,
         vec![launch.token.clone()],
     )));
     shell_log(&format!(

@@ -56,6 +56,13 @@ Release notes: [docs/release-notes-1.7.0.md](docs/release-notes-1.7.0.md).
   said *tahvil farkı* and the Research drawer's macro bar was untranslated.
 - The Research drawer never showed data. No part of the server sent the messages it listened for, so every
   section stayed empty. Its sections now answer over REST (`GET /api/research/{market}/{section}`).
+- The engine could stay down for hours after a crash ("The FlowMap engine stopped and did not restart").
+  Once its five quick restarts failed, the desktop app stopped trying, and its error dialog held up the
+  restart logic until it was closed. The app now tries again every minute until the engine is back, shows
+  the dialog once per outage without blocking, and keeps writing its logs to the temp folder when the
+  app-data folder cannot be written. The engine also writes every thread's stack to its log when it dies
+  inside native code, so the cause of such a crash (seen as an access violation in `python313.dll`) can
+  be found.
 
 ### Changed
 

@@ -341,7 +341,7 @@ export const tr: Record<string, string> = {
   'app.simBadge': 'SİM · DEMO — simüle edilmiş veri, gerçek piyasa değil',
   'app.startFailed': 'FlowMap bu WebView’da başlatılamadı. WebView çalışma zamanını güncelleyip uygulamayı yeniden başlatın.',
   'app.heading': 'FlowMap işlem ısı haritası',
-  'sidecar.failedTitle': 'FlowMap motoru durdu ve yeniden başlamadı.',
+  'sidecar.failedTitle': 'FlowMap motoru durdu; her dakika yeniden deneniyor.',
   'sidecar.failedBody': 'Ayrıntılar motor günlüğünde:',
   'sidecar.retry': 'Yeniden dene',
   'sidecar.retryHint': 'Motoru şimdi yeniden başlat',

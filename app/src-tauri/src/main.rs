@@ -141,7 +141,19 @@ fn init_shell_log(data_dir: &Path) {
 fn shell_log(message: &str) {
     eprintln!("[flowmap] {message}");
     let Some(path) = SHELL_LOG.get() else { return };
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+    // An unwritable app-data folder must not leave the shell without a log: the
+    // line then goes to the temp folder.
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .or_else(|_| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(std::env::temp_dir().join("flowmap-shell.log"))
+        });
+    if let Ok(mut file) = file {
         let _ = writeln!(file, "{} {message}", utc_timestamp(now_secs()));
     }
 }

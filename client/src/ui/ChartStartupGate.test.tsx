@@ -151,7 +151,7 @@ it('offers retry-now while the connection reconnects, and names a failed engine 
     expect(retryNow).toHaveBeenCalledOnce();
 
     act(() => root.render(<ChartStartupGate rendererRef={rendererRef} engineFailed />));
-    expect(element.querySelector('strong')?.textContent).toBe('The FlowMap engine stopped and did not restart.');
+    expect(element.querySelector('strong')?.textContent).toBe('The FlowMap engine stopped; it is retried every minute.');
     expect(element.textContent).not.toContain('Connecting to market data');
     expect(element.querySelector('[data-testid="chart-startup-reconnect"]')).toBeNull();
   } finally {

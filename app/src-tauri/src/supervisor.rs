@@ -31,6 +31,10 @@ const STABLE_AFTER_RESTART: Duration = Duration::from_secs(60);
 const MAX_RESTART_ATTEMPTS: u32 = 5;
 /// Longest wait between two restart attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Once the budget is spent the shell keeps trying, one spawn per this interval, so a
+/// cause that clears by itself (a busy disk, a port held for a while) does not leave
+/// the app without its engine until the user notices.
+const FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 /// Webview event carrying sidecar phase changes.
 const STATUS_EVENT: &str = "sidecar-status";
 
@@ -243,9 +247,21 @@ fn stop_grace(user_requested: bool) -> Duration {
     }
 }
 
+/// Whether a failed sidecar is due for its next automatic spawn. Pure, so the
+/// schedule is unit-tested without processes.
+fn failed_retry_due(failed_since: Option<Instant>, now: Instant) -> bool {
+    failed_since.is_some_and(|since| now.saturating_duration_since(since) >= FAILED_RETRY_INTERVAL)
+}
+
 /// Publish a phase change: log it, keep it for `sidecar_status`, emit it to the
-/// webview, and show a dialog when the shell gives up.
+/// webview, and show a dialog the first time the shell gives up in an outage
+/// (`announce`). The automatic retries that follow fail quietly, so a long outage
+/// does not stack a dialog every minute.
 pub(crate) fn publish(app: &AppHandle, launch: &Launch, phase: Phase, detail: &str) {
+    publish_with(app, launch, phase, detail, phase == Phase::Failed);
+}
+
+fn publish_with(app: &AppHandle, launch: &Launch, phase: Phase, detail: &str, announce: bool) {
     shell_log(&format!("sidecar {}: {detail}", phase.as_str()));
     let log_path = launch.log_path.display().to_string();
     let payload = serde_json::json!({
@@ -260,11 +276,11 @@ pub(crate) fn publish(app: &AppHandle, launch: &Launch, phase: Phase, detail: &s
     if let Err(err) = app.emit(STATUS_EVENT, payload) {
         shell_log(&format!("could not emit the sidecar status: {err}"));
     }
-    if phase == Phase::Failed {
-        alert(
-            "FlowMap",
-            &text(launch.lang, Key::ServerGaveUp).replace("{}", &log_path),
-        );
+    if phase == Phase::Failed && announce {
+        // The dialog is modal and waits for OK. On its own thread it does not hold
+        // up the supervisor, whose automatic retries go on while it is open.
+        let message = text(launch.lang, Key::ServerGaveUp).replace("{}", &log_path);
+        std::thread::spawn(move || alert("FlowMap", &message));
     }
 }
 
@@ -312,6 +328,7 @@ fn supervise_tick(
 /// sidecar when it exited, or when it stops answering /api/health (3 failed
 /// probes once live; 30 s without an answer while starting). Restarts use
 /// exponential backoff and a bounded budget; every phase change is published.
+/// A spent budget shows the failure once and then tries one spawn per minute.
 /// A `Retry` from the webview resets the budget and respawns at once; an
 /// `ApplySettings` respawns at once when the running sidecar predates the change.
 pub(crate) fn spawn_supervisor(
@@ -324,6 +341,10 @@ pub(crate) fn spawn_supervisor(
         let mut phase = Phase::Starting;
         let mut started = Instant::now();
         let mut spawns: u32 = 0; // spawn 0 was the launch in setup
+
+        // When the shell last gave up, and whether this outage already showed its dialog.
+        let mut failed_since: Option<Instant> = None;
+        let mut announced = false;
         loop {
             let poll = if phase == Phase::Starting {
                 STARTING_POLL
@@ -342,11 +363,15 @@ pub(crate) fn spawn_supervisor(
             let Some(state) = app.try_state::<SidecarState>() else {
                 return;
             };
-            if phase == Phase::Failed && !retry {
+            let slow_retry =
+                phase == Phase::Failed && !retry && failed_retry_due(failed_since, Instant::now());
+            if phase == Phase::Failed && !retry && !slow_retry {
                 continue;
             }
 
-            let reason: Option<&'static str> = if let Some(command) = command {
+            let reason: Option<&'static str> = if slow_retry {
+                Some("automatic retry after the restart budget was spent")
+            } else if let Some(command) = command {
                 let switch = launch.recording.load(Ordering::Relaxed);
                 if !command_restarts(command, phase, switch, child_recording(&state)) {
                     shell_log(&format!(
@@ -379,6 +404,8 @@ pub(crate) fn spawn_supervisor(
                     observation,
                 );
                 if phase == Phase::Live && before != Phase::Live {
+                    announced = false;
+                    failed_since = None;
                     publish(&app, &launch, phase, "healthy on /api/health");
                 }
                 reason
@@ -396,10 +423,12 @@ pub(crate) fn spawn_supervisor(
             phase = Phase::Restarting;
             publish(&app, &launch, phase, reason);
             policy.reset_for_new_child();
+            // A slow retry spawns once at once: the budget is spent, so a failed spawn
+            // returns to the failed phase until the next interval.
             let respawned = respawn_with_backoff(
                 &mut policy,
                 &mut spawns,
-                retry,
+                retry || slow_retry,
                 |delay| sleep_unless_shutdown(&app, delay),
                 || is_shutting_down(&app),
                 |n| {
@@ -430,7 +459,15 @@ pub(crate) fn spawn_supervisor(
                         return;
                     }
                     phase = Phase::Failed;
-                    publish(&app, &launch, phase, "restart budget spent");
+                    failed_since = Some(Instant::now());
+                    publish_with(
+                        &app,
+                        &launch,
+                        phase,
+                        "restart budget spent; retrying every minute",
+                        !announced,
+                    );
+                    announced = true;
                 }
             }
         }
@@ -675,6 +712,47 @@ mod tests {
         assert!(child.is_none());
         assert_eq!(spawns, MAX_RESTART_ATTEMPTS);
         assert_eq!(waits, [1, 2, 4, 8, 16]);
+    }
+
+    #[test]
+    fn a_failed_sidecar_is_retried_every_minute() {
+        let t0 = Instant::now();
+        assert!(
+            !failed_retry_due(None, t0),
+            "nothing failed, nothing to retry"
+        );
+        assert!(!failed_retry_due(Some(t0), t0 + Duration::from_secs(59)));
+        assert!(failed_retry_due(Some(t0), t0 + FAILED_RETRY_INTERVAL));
+        assert!(failed_retry_due(Some(t0), t0 + Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn a_slow_retry_spawns_once_while_the_budget_is_spent() {
+        // The budget ran out, so the slow retry (immediate) gets exactly one spawn and
+        // waits for nothing; a failure returns to the failed phase until the next minute.
+        let mut policy = RestartPolicy::default();
+        while policy.next_backoff().is_some() {}
+        let mut spawns = 0;
+        let child: Option<()> = respawn_with_backoff(
+            &mut policy,
+            &mut spawns,
+            true,
+            |_| panic!("a slow retry does not wait"),
+            || false,
+            |_| Err("still failing".to_string()),
+        );
+        assert!(child.is_none());
+        assert_eq!(spawns, 1);
+        // The cause cleared: the next slow retry brings the sidecar back.
+        let child = respawn_with_backoff(
+            &mut policy,
+            &mut spawns,
+            true,
+            |_| panic!("a slow retry does not wait"),
+            || false,
+            Ok,
+        );
+        assert_eq!(child, Some(2));
     }
 
     #[test]
