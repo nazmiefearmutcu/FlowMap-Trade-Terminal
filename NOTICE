@@ -14,7 +14,7 @@ Bundled in the installers
 - Tauri 2 desktop shell — MIT or Apache-2.0
 - Microsoft WebView2 runtime (Windows; bootstrapper downloaded at install time when missing) — Microsoft terms
 - Crocodile market-data engine 0.3.2, vendored as server/vendor/crocodile-0.3.2-py3-none-any.whl — Apache-2.0 as its wheel metadata declares; the licence file ships inside the wheel (dist-info/licenses/LICENSE)
-- Python dependencies: aiohttp (Apache-2.0), certifi (MPL-2.0), fastapi (MIT), msgspec (BSD-3-Clause), numpy (BSD-3-Clause), polars (MIT), uvicorn (BSD-3-Clause), ccxt (MIT)
+- Python dependencies: aiohttp (Apache-2.0), certifi (MPL-2.0), fastapi (MIT), msgspec (BSD-3-Clause), numpy (BSD-3-Clause), polars (MIT), uvicorn (BSD-3-Clause), ccxt (MIT), pypdf (BSD-3-Clause)
 - Packages that the market-data engine and ccxt install with them: pandas (BSD-3-Clause), pyarrow (Apache-2.0; not shipped in the Windows arm64 installer), yfinance (Apache-2.0), beautifulsoup4 (MIT), duckdb (MIT, used by the intelligence store), curl_cffi (MIT), cryptography (Apache-2.0 OR BSD-3-Clause)
 - Client libraries: React and React DOM (MIT), zustand (MIT)
 - Typefaces bundled with the client: Inter, JetBrains Mono and Pixelify Sans, under the SIL Open Font License 1.1.
