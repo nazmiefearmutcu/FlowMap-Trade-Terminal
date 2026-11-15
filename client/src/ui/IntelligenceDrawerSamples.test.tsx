@@ -84,7 +84,7 @@ const CASES: Case[] = [
       'us/contracts': 'us-contracts-LMT.json',
       'us/house-trades': 'us-house-trades-NVDA.json',
     },
-    en: ['Listed total $217.7B across 23 awards', 'LOCKHEED MARTIN CORP', '$48.1B'],
+    en: ['23 awards with activity in the last 365 days', 'total award value is $217.7B', 'LOCKHEED MARTIN CORP', '$48.1B'],
     tr: ['217,7', 'LOCKHEED MARTIN CORP', '48,1'],
   },
   {

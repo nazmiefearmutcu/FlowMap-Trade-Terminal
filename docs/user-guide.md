@@ -304,8 +304,8 @@ exactly the column data the server delivered.
 - **Language** — the interface ships in English with a Turkish translation of
   the shell (top bar, settings drawer, banners, shortcuts overlay, onboarding,
   toasts). The choice persists; missing translations fall back to English
-  text, never to raw key names. Feature panes are English-only for now (see
-  the [roadmap](../ROADMAP.md)). The typefaces (Inter and JetBrains Mono) are bundled with the
+  text, never to raw key names. The Research drawer is translated too; other feature panes are
+  English-only for now (see the [roadmap](../ROADMAP.md)). The typefaces (Inter and JetBrains Mono) are bundled with the
   app, so text renders the same offline.
 - **About** — Settings → *About and legal* shows the version, the Apache-2.0 licence, the
   data-source attribution, the data-delay notice and the not-investment-advice
@@ -329,9 +329,12 @@ regime.
 - **DOCS**
   - *Risk factor changes* (SEC EDGAR): the two newest 10-K or 10-Q filings that have a Risk Factors section
     (Item 1A) of at least 500 characters. The drawer lists the paragraphs added in the newer filing and the
-    paragraphs it dropped. Paragraphs that contain a term from a fixed list (going concern, material weakness,
-    restatement, investigation, subpoena, default, impairment, cybersecurity incident) are marked as triggers.
-    The list shows changed text only; it does not rate how much a change matters.
+    paragraphs it dropped; paragraphs reworded only slightly are counted as changed, not listed. Paragraphs
+    that contain a term from a fixed list (going concern, material weakness, restatement, restate,
+    investigation, subpoena, default, impairment, cybersecurity incident, export control, litigation,
+    bankruptcy; whole words, plurals included) are marked as triggers. A term can appear in ordinary text
+    ("a default on our notes" and "defaults" both count). The list shows changed text only; it does not
+    rate how much a change matters.
   - *Management language* (SEC EDGAR): the two newest earnings releases, filed on Form 8-K under Item 2.02 with
     an Exhibit 99 attached. The drawer shows how often hedging words and uncertainty words appear per 1,000
     words, for the newest release and the one before it, the change between them, and the two release dates.
@@ -425,7 +428,7 @@ report not yet read will show only after that report is read.
   risk warning.
 - Every view shows only what its connected sources supply. It never fills a gap with sample figures. Demo
   content comes only from `sim:SIM-DEMO`.
-- The Research drawer's tab labels and source names are English-only in this release.
+- Source and dataset names in the Research drawer stay as their publishers write them, in every language.
 
 ## Keyboard & pointer reference
 

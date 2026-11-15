@@ -99,6 +99,7 @@ _HEDGING = frozenset(HEDGING_TERMS)
 _UNCERTAINTY = frozenset(UNCERTAINTY_TERMS)
 _WORD = re.compile(r"[a-z][a-z']*")
 _TOKEN = re.compile(r"[a-z0-9']+")
+_MONTH_MAY = re.compile(r"\bMay(?=\s+\d)")
 
 _ITEM_1A = re.compile(r"^item\s*1a\b[.:\s-]*", re.IGNORECASE)
 # Page numbers and the table-of-contents link repeated on every page.
@@ -291,7 +292,9 @@ def risk_diff(previous: list[str], current: list[str]) -> dict[str, Any]:
 def language_rates(paragraphs: list[str]) -> dict[str, Any]:
     """Words, hedging and uncertainty terms per 1000 words, and the most used terms."""
     kept = [p for p in paragraphs if "forward-looking statement" not in p.lower()]
-    words = _WORD.findall(" ".join(kept).lower())
+    # "May 20" and "May 2026" are the month, not the hedge.
+    text = _MONTH_MAY.sub(" ", " ".join(kept))
+    words = _WORD.findall(text.lower())
     total = len(words)
     hedging = Counter(w for w in words if w in _HEDGING)
     uncertainty = Counter(w for w in words if w in _UNCERTAINTY)
@@ -445,7 +448,7 @@ class SecSource:
 
     async def _filings(self, cik: int, contact: str) -> list[dict[str, str]]:
         body = await self._fetch(SUBMISSIONS_URL.format(cik=cik), SUBMISSIONS_LIMIT, contact)
-        return parse_filings(json.loads(body))
+        return await asyncio.to_thread(lambda: parse_filings(json.loads(body)))
 
     async def _document(self, cik: int, filing: dict[str, str], name: str, contact: str) -> str:
         url = ARCHIVE_URL.format(cik=cik, folder=_folder(filing["accession"]), name=name)

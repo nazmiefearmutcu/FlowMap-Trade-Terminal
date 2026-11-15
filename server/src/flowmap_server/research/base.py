@@ -194,7 +194,7 @@ class Http:
         timeout_s: float = DEFAULT_TIMEOUT_S,
     ) -> object:
         body = await self.get_bytes(url, limit=limit, headers=headers, params=params, timeout_s=timeout_s)
-        return json.loads(body)
+        return await _parse_json(body)
 
     async def post_json(
         self,
@@ -210,12 +210,24 @@ class Http:
             url, data=json.dumps(payload), headers=merged, timeout=aiohttp.ClientTimeout(total=timeout_s)
         ) as response:
             response.raise_for_status()
-            return json.loads(await read_capped_bytes(response, limit=limit))
+            body = await read_capped_bytes(response, limit=limit)
+        return await _parse_json(body)
 
     async def close(self) -> None:
         session, self._session = self._session, None
         if session is not None and not session.closed:
             await session.close()
+
+
+# Bodies above this size are parsed in a worker thread, off the event loop that
+# also serves the live market WebSocket.
+JSON_THREAD_BYTES = 256 * 1024
+
+
+async def _parse_json(body: bytes) -> object:
+    if len(body) > JSON_THREAD_BYTES:
+        return await asyncio.to_thread(json.loads, body)
+    return json.loads(body)
 
 
 Loader = Callable[[], Awaitable[SectionResult]]

@@ -79,6 +79,7 @@ INDEX_TTL_S = 6 * 3600.0
 INDEX_RETRY_S = 300.0
 REPORT_PAUSE_S = 1.0
 REPORTS_PER_PASS = 40
+MAX_REPORT_ATTEMPTS = 3
 BATCH_PAUSE_S = 300.0
 MEMBERS_TTL_S = 24 * 3600.0
 # Saved rows record the parser that read them; rows of another version are read again.
@@ -273,6 +274,7 @@ class HouseTradesSource:
         self._members_at: float | None = None
         self._done: dict[str, bool] = {}  # DocID -> readable
         self._rows: dict[str, list[dict[str, Any]]] = {}  # DocID -> parsed rows
+        self._attempts: dict[str, int] = {}  # DocID -> failed reads so far
         self._by_ticker: dict[str, list[dict[str, Any]]] = {}
         self._members: dict[tuple[str, str, int], str] = {}
         self._committees: dict[str, list[str]] = {}
@@ -374,8 +376,16 @@ class HouseTradesSource:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # A report that cannot be fetched now is tried again on the next pass.
-            logger.warning("house report read failed: %s", failure_reason(exc))
+            # A report that cannot be read now is tried again on a later pass; after
+            # MAX_REPORT_ATTEMPTS failures (or at once when it is too large, malformed or
+            # gone) it counts as unreadable so it cannot hold up the reports behind it.
+            reason = failure_reason(exc)
+            logger.warning("house report read failed: %s", reason)
+            attempts = self._attempts.get(row.doc_id, 0) + 1
+            self._attempts[row.doc_id] = attempts
+            if attempts >= MAX_REPORT_ATTEMPTS or reason in ("too_large", "malformed", "http_404"):
+                self._done[row.doc_id] = False
+                self._save(row, [], False)
             return
         self._done[row.doc_id] = readable
         self._save(row, rows, readable)

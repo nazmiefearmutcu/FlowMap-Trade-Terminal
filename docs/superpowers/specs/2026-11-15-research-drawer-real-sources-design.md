@@ -206,3 +206,22 @@ each under the 800-line module budget:
 - House report parsing depends on the e-filed PDF layout; scanned paper filings
   give no text and are counted as unreadable in `coverage`.
 - Hiring covers only companies on Greenhouse, Lever or Ashby.
+
+## Changes made during implementation
+
+Decided while building, after review; the code and the user guide follow these.
+
+- SEC contact variable: `SEC_CONTACT_EMAIL` (the desktop shell passes no `FLOWMAP_*` variable to the server).
+- House reports: only the parsed rows are kept (no PDFs), with a parser version; the reader starts on the
+  first request, reads 40 reports per pass with a 5-minute pause between passes, and counts a report that
+  fails three times (or is too large, malformed or gone) as unreadable. The asset name and owner code are
+  not read; answers carry `ownerKnown: false`. The section is kept 60 s so the coverage line moves.
+- Risk factors: near-identical paragraphs count as `modifiedCount`; page numbers and contents links are
+  dropped; the trigger list adds restate, export control, litigation and bankruptcy, whole words with plurals.
+- Contracts: the award key is `startDate`; the total is `listedTotal`, the summed lifetime value of the listed
+  awards (USAspending's Award Amount), with `matchedCount`; awards are those with activity in the window.
+- Options: Cboe cap 40 MB; an unlisted ticker answers 403 at Cboe and shows as unavailable (`http_403`) with
+  its own sentence; 404 is `not_applicable`. Deribit max pain uses the last Friday of the month.
+- Short-sale volume: walk back up to 12 calendar days; kept 1 h; a missing day is remembered 6 h, and a
+  window with no file at all is a source failure.
+- Large JSON replies and the CPU-heavy parsers run in a worker thread.

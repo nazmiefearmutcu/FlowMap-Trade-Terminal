@@ -13,7 +13,8 @@ What the figures mean:
   ranking of the company's awards.
 - ``awards`` lists at most 10 of the matched awards, largest amount first. A matched
   award with no numeric amount is listed last with ``amount`` None.
-- ``listedTotal`` is the sum of the amounts of the awards in ``awards`` (None-amount
+- ``listedTotal`` is the sum of the award values (``Award Amount``: each award's value
+  over its life, not what was spent in the window) of the awards in ``awards`` (None-amount
   awards left out). It is None when no listed award has an amount. It is not the
   company's total.
 - ``matchedCount`` is how many of the rows read matched the company, before the cap

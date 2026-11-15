@@ -25,6 +25,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import UTC, date, datetime
 import json
+import logging
 import math
 import time
 from typing import Any
@@ -33,6 +34,8 @@ from flowmap_server.research.base import Http, SectionResult, failure_reason, re
 from flowmap_server.research.options import OptionsSource
 
 __all__ = ["CryptoSource"]
+
+logger = logging.getLogger(__name__)
 
 MB = 1024 * 1024
 SECOND_NS = 1_000_000_000
@@ -164,7 +167,7 @@ class CryptoSource:
             "indexPrice": _req_num(premium, "indexPrice"),
             "fundingRate": rate,
             "fundingIntervalHours": interval,
-            "fundingRateAnnualPct": rate * 24 / interval * 365 * 100,
+            "fundingRateAnnualPct": rate * 24 / interval * 365 * 100 if interval else None,
             "nextFundingTime": int(_req_num(premium, "nextFundingTime")),
             "openInterest": coins,
             "openInterestUsd": coins * mark,
@@ -298,9 +301,17 @@ class CryptoSource:
         body = await self._http.get_bytes(url, limit=limit, params=params)
         return await asyncio.to_thread(json.loads, body)
 
-    async def _funding_interval(self, pair: str) -> int:
-        """Funding hours for a pair: its listed interval, else 8 (the default when not listed)."""
-        intervals = await self._funding.get(self._load_funding)
+    async def _funding_interval(self, pair: str) -> int | None:
+        """Funding hours for a pair: its listed interval, else 8 (the default when not listed).
+
+        None when the interval list cannot be read: the rest of the section still shows,
+        and the annualized rate (which needs the interval) is left out.
+        """
+        try:
+            intervals = await self._funding.get(self._load_funding)
+        except Exception as exc:
+            logger.warning("binance funding intervals unavailable: %s", failure_reason(exc))
+            return None
         return intervals.get(pair, DEFAULT_FUNDING_HOURS)
 
     async def _load_perpetuals(self) -> frozenset[str]:

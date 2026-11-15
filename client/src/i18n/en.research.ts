@@ -77,7 +77,7 @@ export const enResearch: Record<string, string> = {
 
   'research.gov.title': 'Government contracts',
   'research.gov.desc': 'Federal award notices from USAspending.gov, matched on the company name. A match is a notice, not a business relationship.',
-  'research.gov.total': 'Listed total {total} across {matched} awards in the last {days} days.',
+  'research.gov.total': '{matched} awards with activity in the last {days} days. The {shown} largest are listed; their total award value is {total} (the value over each award\'s life, not spending in the window).',
   'research.gov.openAward': 'Open the award on USAspending',
 
   'research.house.title': 'House trades',

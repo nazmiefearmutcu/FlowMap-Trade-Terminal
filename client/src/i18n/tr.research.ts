@@ -77,7 +77,7 @@ export const trResearch: Record<string, string> = {
 
   'research.gov.title': 'Hükümet sözleşmeleri',
   'research.gov.desc': 'USAspending.gov\'dan federal ödül bildirimleri; şirket adıyla eşleştirilir. Eşleşme bir bildirimdir, iş ilişkisi değildir.',
-  'research.gov.total': 'Son {days} günde {matched} ödül; listelenen toplam {total}.',
+  'research.gov.total': 'Son {days} günde hareket gören {matched} ödül var. En büyük {shown} tanesi listelenir; toplam ödül değerleri {total} (her ödülün ömür boyu değeri, bu dönemdeki harcama değil).',
   'research.gov.openAward': 'Ödülü USAspending\'de aç',
 
   'research.house.title': 'Temsilciler Meclisi işlemleri',

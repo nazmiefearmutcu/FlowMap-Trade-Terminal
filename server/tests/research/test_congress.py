@@ -229,3 +229,18 @@ async def test_rows_saved_by_another_parser_version_are_read_again(tmp_path: Pat
     await _settle(source, fake, 1)
     await source.close()
     assert any(u.endswith("20034280.pdf") for u in fake.calls)
+
+
+async def test_a_report_that_keeps_failing_is_counted_unreadable_and_does_not_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("flowmap_server.research.congress.BATCH_PAUSE_S", 0.0)
+    fake = _Fake()
+    fake.pages["20039999.pdf"] = b"%PDF-1.4 not really a pdf"
+    source = HouseTradesSource(Http(), clock=lambda: NOW_NS, fetch=fake, pause_s=0)
+    await source.trades("IBP")
+    for _ in range(300):
+        if len(source._done) == 2:
+            break
+        await asyncio.sleep(0.01)
+    answer = await source.trades("IBP")
+    await source.close()
+    assert (answer.data or {})["coverage"] == {"parsed": 2, "total": 2, "unreadable": 1}

@@ -201,6 +201,9 @@ Where FlowMap writes depends on how you run it.
 | macOS | `~/Library/Application Support/com.nazmiefearmutcu.flowmap/` |
 | Linux | `~/.local/share/com.nazmiefearmutcu.flowmap/` |
 
+- `<data>/research/house-ptr/{year}/{DocID}.json` — the rows read from public House transaction
+  reports for the Research drawer (the PDFs are not kept). They are read again when the parser
+  changes and are never sent anywhere. Delete the folder to drop them.
 - `<data>/recordings/{market}/{symbol}/…parquet` — the session recordings that let you replay
   a session, and `<data>/recordings/warehouse.duckdb`, the local intelligence store (see below).
   **Recording is on by default in the installed app.** The first-run tour says so and says where the

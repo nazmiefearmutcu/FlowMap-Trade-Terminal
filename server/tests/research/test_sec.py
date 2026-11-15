@@ -270,3 +270,9 @@ def test_trigger_plurals_count() -> None:
 def test_page_numbers_and_contents_links_are_not_risk_text() -> None:
     paragraphs = ["Item 1A. Risk Factors", "First risk.", "34", "Table of Contents", "ii", "Second risk.", "Item 2. Other"]
     assert item_1a(paragraphs) == ["First risk.", "Second risk."]
+
+
+def test_the_month_may_is_not_a_hedge() -> None:
+    rates = language_rates(["On May 20, 2026 revenue grew; it may grow further."])
+    assert rates["hedgingPer1k"] is not None
+    assert {"term": "may", "count": 1} in rates["topTerms"]

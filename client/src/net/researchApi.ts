@@ -108,7 +108,7 @@ export interface ContractAward {
 export interface ContractsData {
   query: string | null;
   windowDays: number | null;
-  /** Sum of all matching awards in the window (dollars). */
+  /** Sum of the listed awards' total values (dollars, each award's life), not spending in the window. */
   listedTotal: number | null;
   matchedCount: number | null;
   awards: ContractAward[];

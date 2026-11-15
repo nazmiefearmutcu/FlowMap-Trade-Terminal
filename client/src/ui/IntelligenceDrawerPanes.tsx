@@ -232,6 +232,7 @@ export function ContractsCard({ symbol, onOpenSettings }: ResearchCardProps): JS
             {t('research.gov.total', {
               total: usdCompact(d.listedTotal),
               matched: countOrDash(d.matchedCount),
+              shown: countOrDash(d.awards.length),
               days: countOrDash(d.windowDays),
             })}
           </p>

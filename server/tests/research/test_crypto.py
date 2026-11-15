@@ -292,12 +292,16 @@ async def test_unlisted_funding_interval_defaults_to_eight_hours() -> None:
         {"symbol": 7, "fundingIntervalHours": 8},
     ],
 )
-async def test_malformed_funding_row_raises(row: dict[str, Any]) -> None:
+async def test_malformed_funding_row_leaves_only_the_interval_out(row: dict[str, Any]) -> None:
     routes = _binance_routes()
     routes[FUNDING_INFO] = [row]
     source, _, _ = _source(routes)
-    with pytest.raises(ValueError):
-        await source.derivatives("BTC")
+    answer = await source.derivatives("BTC")
+    assert answer.status == "ok"
+    assert answer.data is not None
+    assert answer.data["fundingIntervalHours"] is None
+    assert answer.data["fundingRateAnnualPct"] is None
+    assert answer.data["fundingRate"] is not None
 
 
 async def test_funding_list_is_kept_six_hours_on_the_clock() -> None:
@@ -327,10 +331,9 @@ async def test_failed_funding_refresh_is_not_repeated_for_sixty_seconds() -> Non
     routes = _binance_routes()
     routes[FUNDING_INFO] = aiohttp.ClientConnectionError("down")
     source, http, _ = _source(routes, clock)
-    with pytest.raises(aiohttp.ClientConnectionError):
-        await source.derivatives("BTC")
-    with pytest.raises(aiohttp.ClientConnectionError):
-        await source.derivatives("BTC")
+    first = await source.derivatives("BTC")
+    await source.derivatives("BTC")
+    assert first.data is not None and first.data["fundingIntervalHours"] is None
     assert http.count(FUNDING_INFO) == 1
     clock.advance(60 * SECOND_NS)
     http.routes[FUNDING_INFO] = _fixture("crypto_binance_fundinginfo.json")

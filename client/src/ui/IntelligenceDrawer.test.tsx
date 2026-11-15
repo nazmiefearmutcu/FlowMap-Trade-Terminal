@@ -321,7 +321,8 @@ describe('IntelligenceDrawer US sections', () => {
     click(testid(container, 'tab-gov')!);
     await settle();
     const card = testid(container, 'research-contracts')!;
-    expect(card.textContent).toContain('Listed total $10.2M across 4 awards in the last 365 days.');
+    expect(card.textContent).toContain('4 awards with activity in the last 365 days.');
+    expect(card.textContent).toContain('their total award value is $10.2M (the value over each award');
     expect(card.textContent).toContain('Apple Construction');
     expect(card.textContent).toContain('$525K');
   });

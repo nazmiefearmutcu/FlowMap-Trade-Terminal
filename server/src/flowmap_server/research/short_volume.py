@@ -170,7 +170,7 @@ class ShortVolumeSource:
             else:
                 self._missing.pop(day, None)
             return None
-        parsed = parse_short_volume_file(raw)
+        parsed = await asyncio.to_thread(parse_short_volume_file, raw)
         self._parsed[day] = parsed
         while len(self._parsed) > MAX_PARSED_DAYS:
             del self._parsed[min(self._parsed)]
