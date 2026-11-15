@@ -17,6 +17,7 @@ import { useFlowMapStore } from '../state/store';
 import { THEME_IDS, THEMES, useTheme } from '../theme';
 import { resolveAppearance } from '../theme/appearance';
 import { isTopOverlay, pushOverlay } from './overlayStack';
+import { ResearchContactSection } from './SettingsDrawerResearch';
 import { RecordingSection } from './SettingsDrawerRecording';
 import {
   SettingsAppearanceSection,
@@ -220,11 +221,12 @@ export function SettingsDrawer({ settings, onChange, onClose, onOpenAbout }: Set
 
           <SettingsOverlaysSection settings={settings} onChange={onChange} />
 
-          {/* data (desktop shell only): the recorder's switch and where it writes */}
+          {/* data: the recorder's switch (desktop shell only) and the SEC contact for Research */}
           <h3 className="drawer__section" data-testid="section-data">
             {t('drawer.sectionData')}
           </h3>
           <RecordingSection />
+          <ResearchContactSection secContact={settings.secContact} onChange={onChange} />
 
           <SettingsKeysSection />
 

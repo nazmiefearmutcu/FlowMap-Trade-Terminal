@@ -1,0 +1,40 @@
+{
+ "section": "language",
+ "symbol": "NVDA",
+ "status": "ok",
+ "reason": null,
+ "source": "SEC EDGAR",
+ "asOf": "2026-08-26",
+ "fetchedAt": 1794698391527,
+ "stale": false,
+ "data": {
+  "filedDate": "2026-08-26",
+  "previousFiledDate": "2026-05-20",
+  "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000073/q2fy27pr.htm",
+  "words": 2438,
+  "hedgingPer1k": 2.87,
+  "uncertaintyPer1k": 0.0,
+  "previousHedgingPer1k": 3.52,
+  "previousUncertaintyPer1k": 0.0,
+  "hedgingChange": -0.65,
+  "uncertaintyChange": 0.0,
+  "topTerms": [
+   {
+    "term": "approximately",
+    "count": 3
+   },
+   {
+    "term": "may",
+    "count": 2
+   },
+   {
+    "term": "expects",
+    "count": 1
+   },
+   {
+    "term": "believes",
+    "count": 1
+   }
+  ]
+ }
+}

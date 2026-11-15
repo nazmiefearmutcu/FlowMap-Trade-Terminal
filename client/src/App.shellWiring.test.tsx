@@ -66,8 +66,9 @@ it('gives the research drawer the active market and opens the sources dialog fro
     subscription: { market: 'binance-spot', symbol: 'BTCUSDT', band: 'deep', mode: 'live' },
   }));
   act(() => useIntelligenceStore.getState().setDrawerOpen(true));
-  // A crypto market gets the equity-only note, which needs the market to reach the drawer.
-  expect(container.querySelector('[data-testid="intel-equity-only"]')).not.toBeNull();
+  // A crypto market gets the crypto tabs, which needs the market to reach the drawer.
+  expect(container.querySelector('[data-testid="tab-perp"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="tab-docs"]')).toBeNull();
 
   click(container.querySelector('[data-testid="intel-open-sources"]')!);
   expect(container.querySelector('[data-testid="intelligence-drawer"]')).toBeNull();

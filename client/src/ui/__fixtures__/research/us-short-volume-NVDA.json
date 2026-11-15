@@ -1,0 +1,40 @@
+{
+ "section": "short-volume",
+ "symbol": "NVDA",
+ "status": "ok",
+ "reason": null,
+ "source": "FINRA Reg SHO",
+ "asOf": "2026-11-13",
+ "fetchedAt": 1794698406882,
+ "stale": false,
+ "data": {
+  "date": "2026-11-13",
+  "shortVolume": 55742971.223394,
+  "shortExemptVolume": 12851104.277599,
+  "totalVolume": 167018169.364091,
+  "shortRatio": 0.33375393489002503,
+  "avgShortRatio5d": 0.33254704052961914,
+  "days": [
+   {
+    "date": "2026-11-13",
+    "shortRatio": 0.33375393489002503
+   },
+   {
+    "date": "2026-11-12",
+    "shortRatio": 0.2991294214052207
+   },
+   {
+    "date": "2026-11-11",
+    "shortRatio": 0.3407667300014836
+   },
+   {
+    "date": "2026-11-10",
+    "shortRatio": 0.34135246228497285
+   },
+   {
+    "date": "2026-11-09",
+    "shortRatio": 0.34773265406639353
+   }
+  ]
+ }
+}

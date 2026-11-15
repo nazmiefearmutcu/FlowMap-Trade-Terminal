@@ -1,0 +1,25 @@
+{
+ "section": "derivatives",
+ "symbol": "ETH",
+ "status": "ok",
+ "reason": null,
+ "source": "Binance Futures",
+ "asOf": "2026-11-14",
+ "fetchedAt": 1794698415758,
+ "stale": false,
+ "data": {
+  "pair": "ETHUSDT",
+  "markPrice": 1748.0594186,
+  "indexPrice": 1748.92255814,
+  "fundingRate": -6.549e-05,
+  "fundingIntervalHours": 8,
+  "fundingRateAnnualPct": -7.171155,
+  "nextFundingTime": 1794700800000,
+  "openInterest": 2339172.37,
+  "openInterestUsd": 4089012293.1073847,
+  "longShortAccountRatio": 2.885,
+  "longAccountPct": 74.26,
+  "shortAccountPct": 25.740000000000002,
+  "takerBuySellRatio": 0.8086
+ }
+}

@@ -186,6 +186,12 @@ export interface FlowMapSettings {
   hudVisible: boolean;
   /** Play the alert chime on a fired alert batch. */
   alertSound: boolean;
+  /**
+   * Contact e-mail for SEC's fair-access rule (Research: risk factors and
+   * management language). Stored on this computer only; sent to the server in a
+   * header on those two SEC sections. Empty when not set.
+   */
+  secContact: string;
 }
 
 export const SETTINGS_KEY = 'flowmap.settings.v1';
@@ -228,7 +234,29 @@ export const DEFAULT_SETTINGS: FlowMapSettings = {
   hudVisible: false,
   // On by default: an alert is useless when the user looks away.
   alertSound: true,
+  secContact: '',
 };
+
+/** Longest e-mail address the SEC contact accepts. */
+const SEC_CONTACT_MAX = 254;
+/**
+ * Printable ASCII only (no spaces, no control characters, no non-ASCII), exactly
+ * one `@`, text on both sides of it, and a dot with text after it in the domain.
+ * The contact travels in an HTTP header, so anything outside this would break the request.
+ */
+const SEC_CONTACT_SHAPE = /^[^@\x00-\x20\x7f-￿]+@[^@\x00-\x20\x7f-￿]+\.[^@\x00-\x20\x7f-￿]+$/;
+
+/** True when `value` (already trimmed) is an e-mail shape the SEC contact accepts. */
+export function isValidSecContact(value: string): boolean {
+  return value.length <= SEC_CONTACT_MAX && SEC_CONTACT_SHAPE.test(value);
+}
+
+/** The stored SEC contact: trimmed when valid, otherwise empty. */
+function normalizeSecContact(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  return isValidSecContact(trimmed) ? trimmed : '';
+}
 
 /** Minimal structural subset of the Web Storage API these helpers need. */
 export interface StorageLike {
@@ -290,6 +318,7 @@ export function normalizeSettings(raw: unknown): FlowMapSettings {
       : DEFAULT_SETTINGS.depthChannel,
     hudVisible: typeof o.hudVisible === 'boolean' ? o.hudVisible : DEFAULT_SETTINGS.hudVisible,
     alertSound: typeof o.alertSound === 'boolean' ? o.alertSound : DEFAULT_SETTINGS.alertSound,
+    secContact: normalizeSecContact(o.secContact),
   };
 }
 

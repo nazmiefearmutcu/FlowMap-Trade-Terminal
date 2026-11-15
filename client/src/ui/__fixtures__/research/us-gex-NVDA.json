@@ -1,0 +1,23 @@
+{
+ "section": "gex",
+ "symbol": "NVDA",
+ "status": "ok",
+ "reason": null,
+ "source": "Cboe delayed options",
+ "asOf": "2026-11-14",
+ "fetchedAt": 1794698403803,
+ "stale": false,
+ "data": {
+  "spot": 161.01,
+  "netGex": -16885913913.774696,
+  "callWall": 200.0,
+  "putWall": 150.0,
+  "gammaFlip": 166.41630966216326,
+  "putCallOiRatio": 0.892235325159917,
+  "contracts": 3323,
+  "expiries": 24,
+  "maxPain": 190.0,
+  "maxPainExpiry": "2026-11-20",
+  "currency": "USD"
+ }
+}

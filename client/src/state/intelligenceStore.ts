@@ -119,7 +119,7 @@ export interface MacroStressData {
   updatedAt: number;
 }
 
-export type IntelTab = 'DOCS' | 'GOV' | 'FLOW' | 'GEO';
+export type IntelTab = 'DOCS' | 'GOV' | 'FLOW' | 'GEO' | 'PERP' | 'OPTIONS' | 'MARKET' | 'SENTIMENT';
 
 /**
  * The wire record is retained even when no supported structured detail exists.

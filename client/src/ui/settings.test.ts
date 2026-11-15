@@ -6,6 +6,7 @@ import {
   SETTINGS_KEY,
   SETTINGS_VERSION,
   historyDepthCols,
+  isValidSecContact,
   loadSettings,
   normalizeSettings,
   saveSettings,
@@ -229,6 +230,85 @@ describe('normalizeSettings', () => {
     expect(n.priceBand).toBe(DEFAULT_SETTINGS.priceBand);
     expect(n.colormap).toBe(DEFAULT_SETTINGS.colormap);
     expect(n.settingsVersion).toBe(SETTINGS_VERSION);
+  });
+});
+
+describe('SEC contact e-mail', () => {
+  it('defaults to empty', () => {
+    expect(DEFAULT_SETTINGS.secContact).toBe('');
+    expect(normalizeSettings({}).secContact).toBe('');
+  });
+
+  it('keeps a valid address, trimmed', () => {
+    expect(normalizeSettings({ secContact: '  analyst@example.com ' }).secContact).toBe('analyst@example.com');
+    expect(normalizeSettings({ secContact: 'a.b+tag@mail.example.co.uk' }).secContact).toBe('a.b+tag@mail.example.co.uk');
+  });
+
+  it('clears anything that is not an e-mail shape', () => {
+    for (const bad of [
+      'no-at-sign.example.com',
+      '@example.com',
+      'name@',
+      'name@nodot',
+      'name@example.',
+      'name@.com',
+      'two@@example.com',
+      'na me@example.com',
+      'name@exa mple.com',
+      42,
+      null,
+      { secContact: 'x@y.zz' },
+    ]) {
+      expect(normalizeSettings({ secContact: bad }).secContact).toBe('');
+    }
+  });
+
+  it('rejects control characters, DEL, tabs and spaces anywhere in the address', () => {
+    for (const bad of [
+      'a\u0000b@example.co',
+      'a\u0007b@example.com',
+      'a\tb@example.com',
+      'a\nb@example.com',
+      'a\u007fb@example.com',
+      'a@exa\u0001mple.com',
+      'a@example.co\u0000m',
+      'a b@example.com',
+      'a@ex ample.com',
+      'a@example.com\u0085',
+    ]) {
+      expect(isValidSecContact(bad), JSON.stringify(bad)).toBe(false);
+      expect(normalizeSettings({ secContact: bad }).secContact, JSON.stringify(bad)).toBe('');
+    }
+  });
+
+  it('accepts printable ASCII addresses with punctuation', () => {
+    expect(isValidSecContact('first.last+sec!#$%&\'*/=?^_`{|}~-@sub.example.org')).toBe(true);
+  });
+
+  it('rejects non-ASCII characters, which are not printable ASCII', () => {
+    expect(isValidSecContact('jöhn@example.com')).toBe(false);
+  });
+
+  it('caps the length at 254 characters', () => {
+    const local = 'a'.repeat(64);
+    const fits = `${local}@${'b'.repeat(180)}.com`;
+    expect(fits.length).toBeLessThanOrEqual(254);
+    expect(normalizeSettings({ secContact: fits }).secContact).toBe(fits);
+    const long = `${local}@${'b'.repeat(200)}.com`;
+    expect(long.length).toBeGreaterThan(254);
+    expect(normalizeSettings({ secContact: long }).secContact).toBe('');
+  });
+
+  it('isValidSecContact applies the same rule to an entry', () => {
+    expect(isValidSecContact('me@example.com')).toBe(true);
+    expect(isValidSecContact('me@example')).toBe(false);
+    expect(isValidSecContact('')).toBe(false);
+  });
+
+  it('round-trips through storage', () => {
+    const storage = memStorage();
+    saveSettings({ ...DEFAULT_SETTINGS, secContact: 'me@example.com' }, storage);
+    expect(loadSettings(storage).secContact).toBe('me@example.com');
   });
 });
 

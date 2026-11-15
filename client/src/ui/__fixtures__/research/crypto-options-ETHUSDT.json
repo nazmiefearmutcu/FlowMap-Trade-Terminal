@@ -1,0 +1,23 @@
+{
+ "section": "options",
+ "symbol": "ETH",
+ "status": "ok",
+ "reason": null,
+ "source": "Deribit",
+ "asOf": "2026-11-14",
+ "fetchedAt": 1794698416491,
+ "stale": false,
+ "data": {
+  "spot": 1747.86,
+  "netGex": -890564737.5036671,
+  "callWall": 2200.0,
+  "putWall": 1800.0,
+  "gammaFlip": 1968.9860231429338,
+  "putCallOiRatio": 0.5402153799194949,
+  "contracts": 666,
+  "expiries": 12,
+  "maxPain": 2300.0,
+  "maxPainExpiry": "2026-11-27",
+  "currency": "USD"
+ }
+}

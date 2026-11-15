@@ -1,0 +1,119 @@
+{
+ "section": "contracts",
+ "symbol": "LMT",
+ "status": "ok",
+ "reason": null,
+ "source": "USAspending.gov",
+ "asOf": "2026-11-14",
+ "fetchedAt": 1794698396892,
+ "stale": false,
+ "data": {
+  "query": "lockheed martin",
+  "windowDays": 365,
+  "listedTotal": 217671681809.74,
+  "matchedCount": 23,
+  "awards": [
+   {
+    "awardId": "DEAC0494AL85000",
+    "recipient": "LOCKHEED MARTIN CORP",
+    "agency": "Department of Energy",
+    "subAgency": "Department of Energy",
+    "amount": 48063737196.35,
+    "startDate": "1993-10-15",
+    "description": null,
+    "url": "https://www.usaspending.gov/award/CONT_AWD_DEAC0494AL85000_8900_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "N0001917C0001",
+    "recipient": "LOCKHEED MARTIN CORPORATION",
+    "agency": "Department of Defense",
+    "subAgency": "Department of the Navy",
+    "amount": 35135514910.2,
+    "startDate": "2017-11-17",
+    "description": "LRIP LOT 12 ADVANCE ACQUISITION CONTRACT",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_N0001917C0001_9700_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "N0001920C0009",
+    "recipient": "LOCKHEED MARTIN CORPORATION",
+    "agency": "Department of Defense",
+    "subAgency": "Department of the Navy",
+    "amount": 30154748689.06,
+    "startDate": "2019-11-26",
+    "description": "THE PURPOSE OF THIS MODIFICATION IS TO AWARD F-35A LRIP 15 USAF  AIRCRAFT* LONG LEAD FUNDING",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_N0001920C0009_9700_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "N0001923C0003",
+    "recipient": "LOCKHEED MARTIN CORPORATION",
+    "agency": "Department of Defense",
+    "subAgency": "Department of the Navy",
+    "amount": 24588054059.0,
+    "startDate": "2022-12-23",
+    "description": "THE PURPOSE OF THIS CONTRACT IS TO AWARD LONG LEAD FUNDING FOR F-35A, F-35B, AND F-35C AIRCRAFT FOR U.S. SERVICES, NON-DOD PARTNERS, AND FMS CUSTOMERS",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_N0001923C0003_9700_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "DEAC0584OR21400",
+    "recipient": "LOCKHEED MARTIN SERVICES, LLC",
+    "agency": "Department of Energy",
+    "subAgency": "Department of Energy",
+    "amount": 20646113720.09,
+    "startDate": "1984-04-30",
+    "description": "MANAGEMENT AND OPERATION OF Y-12 PLANT AND OTHER PROGRAMS",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_DEAC0584OR21400_8900_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "NNJ06TA25C",
+    "recipient": "LOCKHEED MARTIN CORP",
+    "agency": "National Aeronautics and Space Administration",
+    "subAgency": "National Aeronautics and Space Administration",
+    "amount": 15578682243.1,
+    "startDate": "2006-09-06",
+    "description": "TAS::80 0124::TAS DESIGN, DEVELOPMENT, TEST&EVALUATION OF PROJECT ORION",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_NNJ06TA25C_8000_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "N0001916C0033",
+    "recipient": "LOCKHEED MARTIN CORPORATION",
+    "agency": "Department of Defense",
+    "subAgency": "Defense Contract Management Agency",
+    "amount": 12269145508.23,
+    "startDate": "2015-12-21",
+    "description": "LRIP 11 AAC",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_N0001916C0033_9700_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "W31P4Q20C0023",
+    "recipient": "LOCKHEED MARTIN CORPORATION",
+    "agency": "Department of Defense",
+    "subAgency": "Department of the Army",
+    "amount": 10475265354.17,
+    "startDate": "2020-04-30",
+    "description": "THE CONTRACT AWARD IS FOR THE FY21/FY22/FY23 BASE AND OPTION PRICING FOR PHASE ARRAY TRACKING RADAR TO INTERCEPT ON TARGET (PATRIOT) ADVANCED CAPABILITY-3 (PAC-3) PRODUCTION REQUIREMENTS FOR THE UNITED STATES (US) AND FOREIGN MILITARY SALES (FMS).",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_W31P4Q20C0023_9700_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "HQ014717C0032",
+    "recipient": "LOCKHEED MARTIN CORPORATION",
+    "agency": "Department of Defense",
+    "subAgency": "Missile Defense Agency",
+    "amount": 10449417335.07,
+    "startDate": "2017-03-27",
+    "description": "HQ0147-17-C-0032 UNDEFINITIZED CONTRACT ACTION (UCA) FOR THAAD INTERCEPTOR LOT 9 PRODUCTION - QTY OF 23",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_HQ014717C0032_9700_-NONE-_-NONE-"
+   },
+   {
+    "awardId": "W31P4Q24C0022",
+    "recipient": "LOCKHEED MARTIN CORPORATION",
+    "agency": "Department of Defense",
+    "subAgency": "Department of the Army",
+    "amount": 10311002794.47,
+    "startDate": "2024-06-28",
+    "description": "EXECUTE PHASED ARRAY TRACKING RADAR TO INTERCEPT ON TARGET (PATRIOT) ADVANCED CAPABILITY-3 (PAC-3) MISSILE PRODUCTION BY PROVIDING INCIDENTAL SERVICES, HARDWARE, FACILITIES, EQUIPMENT, AND TECHNICAL, PLANNING, MANAGEMENT, AND MANUFACTURING EFFORTS.",
+    "url": "https://www.usaspending.gov/award/CONT_AWD_W31P4Q24C0022_9700_-NONE-_-NONE-"
+   }
+  ],
+  "source": "USAspending.gov"
+ }
+}

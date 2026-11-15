@@ -1,0 +1,30 @@
+{
+ "section": "market",
+ "symbol": "ETH",
+ "status": "ok",
+ "reason": null,
+ "source": "CoinGecko and DefiLlama",
+ "asOf": "2026-11-14",
+ "fetchedAt": 1794698417230,
+ "stale": false,
+ "data": {
+  "coinId": "ethereum",
+  "name": "Ethereum",
+  "rank": 2,
+  "price": 1741.37,
+  "change24hPct": -9.10621,
+  "change7dPct": -21.904,
+  "change30dPct": -29.175,
+  "marketCap": 212819180056.0,
+  "volume24h": 16748665854.0,
+  "circulatingSupply": 122218624.4003947,
+  "totalSupply": 122218624.4003947,
+  "maxSupply": null,
+  "ath": 4946.05,
+  "athChangePct": -64.79261,
+  "athDate": "2025-08-24",
+  "tvl": 37413358033.52614,
+  "tvlSource": "chain",
+  "tvlReason": null
+ }
+}

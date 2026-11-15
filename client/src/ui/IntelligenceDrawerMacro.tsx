@@ -1,26 +1,23 @@
 import { formatDateTime, formatFixed } from '../i18n/format';
 import { useT } from '../i18n/useT';
-import { DEMO_INTELLIGENCE, type MacroStressData } from '../state/intelligenceStore';
+import type { MacroStressData } from '../state/intelligenceStore';
 import { macroHyNote } from './TopBarParts';
 import { stressRegimeLabel } from './TopBarLabels';
 
 interface IntelMacroBarProps {
   macro: MacroStressData | null;
-  /** The SIM-DEMO fixture is on screen. The label shows only when the fixture is the reading shown. */
-  demo: boolean;
 }
 
 /**
  * The macro liquidity footer of the research drawer: SOFR, the high-yield spread,
  * the 10Y-2Y curve and the heuristic stress regime, with when the figures arrived.
  */
-export function IntelMacroBar({ macro, demo }: IntelMacroBarProps): JSX.Element {
+export function IntelMacroBar({ macro }: IntelMacroBarProps): JSX.Element {
   const t = useT();
   const receivedAt = macro
     ? formatDateTime(macro.updatedAt, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
     : '';
   const curve = macro?.yieldCurve10Y2Y ?? null;
-  const showingFixture = demo && macro === DEMO_INTELLIGENCE.macro;
   // With a reading but no regime (the high-yield spread is missing), the regime is a dash, not UNAVAILABLE.
   const regimeKnown = macro !== null && macro.stressRegime !== 'UNKNOWN';
   const regimeText = macro === null
@@ -53,7 +50,6 @@ export function IntelMacroBar({ macro, demo }: IntelMacroBarProps): JSX.Element 
         className={`macro-regime-badge is-${macro?.stressRegime.toLowerCase() ?? 'unavailable'}`}
         title={macro ? undefined : t('intel.macroNotConnected')}
       >
-        {showingFixture ? `${t('intel.demoBadge')} · ` : ''}
         {regimeText}
       </div>
       {macro !== null && macro.stressRegime === 'UNKNOWN' && macro.hySpreadBps === null && (

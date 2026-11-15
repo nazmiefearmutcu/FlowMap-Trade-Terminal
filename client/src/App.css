@@ -1923,6 +1923,25 @@ body,
 .setting__num:focus-visible {
   border-color: var(--accent-line);
 }
+/* Free-form text setting (SEC contact e-mail): the same well, full width. */
+.setting__text {
+  width: 100%;
+  padding: 3px 7px;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--bg-inset);
+  border: 1px solid var(--control-line);
+  border-radius: var(--r-2);
+  outline: none;
+  transition: border-color var(--t-fast);
+}
+.setting__text:focus-visible {
+  border-color: var(--accent-line);
+}
+.setting__text[aria-invalid="true"] {
+  border-color: var(--warn);
+}
 
 /* segmented radio group */
 .segrow {

@@ -1,0 +1,158 @@
+{
+ "section": "house-trades",
+ "symbol": "NVDA",
+ "status": "ok",
+ "reason": null,
+ "source": "House Clerk",
+ "asOf": "2026-11-12",
+ "fetchedAt": 1794698511544,
+ "stale": false,
+ "data": {
+  "trades": [
+   {
+    "ticker": "NVDA",
+    "assetType": "ST",
+    "type": "Purchase",
+    "transactionDate": "2026-10-23",
+    "notificationDate": "2026-11-01",
+    "amount": "$1,001 - $15,000",
+    "member": "Maria Elvira Salazar",
+    "state": "FL",
+    "district": 27,
+    "filedDate": "2026-11-05",
+    "reportUrl": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035778.pdf",
+    "committees": [
+     "Financial Services",
+     "Foreign Affairs"
+    ]
+   },
+   {
+    "ticker": "NVDA",
+    "assetType": "ST",
+    "type": "Purchase",
+    "transactionDate": "2026-10-23",
+    "notificationDate": "2026-11-01",
+    "amount": "$1,001 - $15,000",
+    "member": "Maria Elvira Salazar",
+    "state": "FL",
+    "district": 27,
+    "filedDate": "2026-11-05",
+    "reportUrl": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035778.pdf",
+    "committees": [
+     "Financial Services",
+     "Foreign Affairs"
+    ]
+   },
+   {
+    "ticker": "NVDA",
+    "assetType": "ST",
+    "type": "Partial sale",
+    "transactionDate": "2026-10-20",
+    "notificationDate": "2026-11-09",
+    "amount": "$1,001 - $15,000",
+    "member": "Gilbert Cisneros",
+    "state": "CA",
+    "district": 31,
+    "filedDate": "2026-11-10",
+    "reportUrl": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035788.pdf",
+    "committees": [
+     "Armed Services",
+     "Small Business"
+    ]
+   },
+   {
+    "ticker": "NVDA",
+    "assetType": "ST",
+    "type": "Sale",
+    "transactionDate": "2026-10-02",
+    "notificationDate": "2026-10-02",
+    "amount": "$15,001 - $50,000",
+    "member": "Pete Sessions",
+    "state": "TX",
+    "district": 17,
+    "filedDate": "2026-10-27",
+    "reportUrl": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035563.pdf",
+    "committees": [
+     "Financial Services",
+     "Oversight and Government Reform"
+    ]
+   },
+   {
+    "ticker": "NVDA",
+    "assetType": "ST",
+    "type": "Purchase",
+    "transactionDate": "2026-10-01",
+    "notificationDate": "2026-10-01",
+    "amount": "$1,001 - $15,000",
+    "member": "Cleo Fields",
+    "state": "LA",
+    "district": 6,
+    "filedDate": "2026-10-22",
+    "reportUrl": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035669.pdf",
+    "committees": [
+     "Financial Services"
+    ]
+   },
+   {
+    "ticker": "NVDA",
+    "assetType": "ST",
+    "type": "Purchase",
+    "transactionDate": "2026-10-01",
+    "notificationDate": "2026-10-01",
+    "amount": "$1,001 - $15,000",
+    "member": "Cleo Fields",
+    "state": "LA",
+    "district": 6,
+    "filedDate": "2026-10-22",
+    "reportUrl": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035669.pdf",
+    "committees": [
+     "Financial Services"
+    ]
+   },
+   {
+    "ticker": "NVDA",
+    "assetType": "ST",
+    "type": "Purchase",
+    "transactionDate": "2026-10-01",
+    "notificationDate": "2026-10-01",
+    "amount": "$1,001 - $15,000",
+    "member": "Cleo Fields",
+    "state": "LA",
+    "district": 6,
+    "filedDate": "2026-10-22",
+    "reportUrl": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035669.pdf",
+    "committees": [
+     "Financial Services"
+    ]
+   },
+   {
+    "ticker": "NVDA",
+    "assetType": "ST",
+    "type": "Partial sale",
+    "transactionDate": "2026-09-25",
+    "notificationDate": "2026-10-14",
+    "amount": "$1,001 - $15,000",
+    "member": "Daniel Meuser",
+    "state": "PA",
+    "district": 9,
+    "filedDate": "2026-11-05",
+    "reportUrl": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035662.pdf",
+    "committees": [
+     "Financial Services",
+     "Small Business"
+    ]
+   }
+  ],
+  "tradeCount": 8,
+  "coverage": {
+   "parsed": 40,
+   "total": 983,
+   "unreadable": 5
+  },
+  "years": [
+   2025,
+   2026
+  ],
+  "ownerKnown": false
+ }
+}

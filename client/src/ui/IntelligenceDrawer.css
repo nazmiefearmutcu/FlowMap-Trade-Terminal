@@ -693,6 +693,122 @@
   color: var(--text-2);
 }
 
+/* Small notes under a section: the stale, as-of, coverage and owner lines. */
+.intel-section__note {
+  margin: var(--sp-1) 0;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+/* Research sections: key-value rows, blocks, links, the short-sale bar and the sentiment path. */
+.research-line {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+.research-kv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0;
+}
+.research-kv__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-3);
+}
+.research-kv__lbl {
+  font-size: var(--fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.research-kv__val {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.research-kv__sub {
+  grid-column: 1 / -1;
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+}
+.research-block {
+  margin: var(--sp-2) 0;
+}
+.research-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.research-lines .research-line {
+  padding: var(--sp-1) var(--sp-2);
+  border-left: 2px solid var(--line);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.research-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-2);
+}
+.research-link {
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.research-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.research-reason {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.research-reason p {
+  margin: 0;
+}
+.research-bar {
+  height: 6px;
+  margin: var(--sp-1) 0 var(--sp-2);
+  background: var(--bg-3);
+  border-radius: var(--r-1);
+  overflow: hidden;
+}
+.research-bar__fill {
+  height: 100%;
+  background: var(--accent);
+}
+.research-spark {
+  display: block;
+  width: 100%;
+  height: 80px;
+  margin: var(--sp-2) 0;
+  background: var(--bg-inset);
+  border-radius: var(--r-1);
+}
+.research-spark__base {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.research-spark__line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
 /* Windows High Contrast (forced colors): the active tab and filter lose their
    author background, so they keep a system outline (WCAG 1.4.1). */
 @media (forced-colors: active) {

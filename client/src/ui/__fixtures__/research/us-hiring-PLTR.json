@@ -1,0 +1,22 @@
+{
+ "section": "hiring",
+ "symbol": "PLTR",
+ "status": "ok",
+ "reason": null,
+ "source": "Lever",
+ "asOf": "2026-11-14",
+ "fetchedAt": 1794698410333,
+ "stale": false,
+ "data": {
+  "provider": "lever",
+  "board": "palantir",
+  "boardName": null,
+  "boardUrl": "https://jobs.lever.co/palantir",
+  "totalOpenings": 302,
+  "rdOpenings": 192,
+  "newLast30d": 23,
+  "newPrior30d": 16,
+  "changePct": 43.8,
+  "status": "expanding"
+ }
+}

@@ -278,6 +278,10 @@ export function App() {
           setIntelDrawerOpen(false);
           setAboutOpen(true);
         }}
+        onOpenSettings={() => {
+          setIntelDrawerOpen(false);
+          setSettingsOpen(true);
+        }}
         aboutOpen={aboutOpen}
         onCloseAbout={() => setAboutOpen(false)}
         helpOpen={helpOpen}

@@ -16,7 +16,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 function render(macro: MacroStressData | null): HTMLDivElement {
-  act(() => root.render(<IntelMacroBar macro={macro} demo={false} />));
+  act(() => root.render(<IntelMacroBar macro={macro} />));
   return container;
 }
 

@@ -24,6 +24,8 @@ export interface AppOverlaysProps {
   onCloseIntel: () => void;
   /** The research drawer's source list: close the drawer and open the About dialog. */
   onOpenSources: () => void;
+  /** The research drawer's link to the settings drawer (for the SEC contact). */
+  onOpenSettings: () => void;
   aboutOpen: boolean;
   onCloseAbout: () => void;
   helpOpen: boolean;
@@ -41,7 +43,7 @@ export interface AppOverlaysProps {
  */
 export function AppOverlays({
   rendererRef, settings, replay, applyPatch, settingsOpen, onCloseSettings, onOpenAbout,
-  intelOpen, activeMarket, activeSymbol, onCloseIntel, onOpenSources, aboutOpen, onCloseAbout,
+  intelOpen, activeMarket, activeSymbol, onCloseIntel, onOpenSources, onOpenSettings, aboutOpen, onCloseAbout,
   helpOpen, onCloseHelp, replayPicker, onCloseReplayPicker, onReplayConfirm,
 }: AppOverlaysProps): JSX.Element {
   return (
@@ -64,6 +66,8 @@ export function AppOverlays({
         <IntelligenceDrawer
           activeSymbol={activeSymbol}
           activeMarket={activeMarket}
+          secContact={settings.secContact}
+          onOpenSettings={onOpenSettings}
           onOpenSources={onOpenSources}
           onClose={onCloseIntel}
         />

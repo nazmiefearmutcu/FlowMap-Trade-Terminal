@@ -1,0 +1,11 @@
+{
+ "section": "options",
+ "symbol": "SOL",
+ "status": "not_applicable",
+ "reason": "no_options_market",
+ "source": "Deribit",
+ "asOf": null,
+ "fetchedAt": 1794698416611,
+ "stale": false,
+ "data": null
+}
