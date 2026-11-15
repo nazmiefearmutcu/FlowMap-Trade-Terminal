@@ -5,6 +5,7 @@
  * of the palette component.
  */
 
+import type { MarketFilter } from './marketFilter';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { BUNDLED_DIRECTORY } from './bundledDirectory';
@@ -244,12 +245,17 @@ export function useScopeListing(open: boolean, scope: string, scopeAttempt: numb
 }
 
 /** Keeps the all-venues preview columns warm (the top movers), while the palette is closed too. */
-export function useMoversWarmup(previewQuotes: PreviewQuotes): void {
+export function useMoversWarmup(previewQuotes: PreviewQuotes, filter: MarketFilter): void {
+  // A pool is warmed only while its markets are on (Settings → Markets).
+  const warmCrypto = !filter.isGroupHidden('crypto');
+  const warmEquity = filter.isVisible('equity');
   useEffect(() => {
+    const pools = [...(warmCrypto ? ['crypto'] : []), ...(warmEquity ? ['equity'] : [])];
+    if (pools.length === 0) return undefined;
     const ctrl = new AbortController();
     const refresh = () => {
       const requestedAt = Date.now();
-      for (const market of ['crypto', 'equity'] as const) {
+      for (const market of pools) {
         void getJson<{ movers: PreviewQuote[] }>(`/api/movers?market=${market}&limit=100`, ctrl.signal).then((b) => {
           if (ctrl.signal.aborted || !b) return;
           for (const quote of b.movers ?? []) previewQuotes.put(quote, requestedAt);
@@ -262,5 +268,5 @@ export function useMoversWarmup(previewQuotes: PreviewQuotes): void {
       ctrl.abort();
       window.clearInterval(interval);
     };
-  }, [previewQuotes]);
+  }, [previewQuotes, warmCrypto, warmEquity]);
 }

@@ -49,6 +49,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -58,6 +59,7 @@ import { useSingleKeyShortcuts } from '../input/shortcutPrefs';
 
 import { loadRecents, pushRecent, type RecentPick } from './recents';
 import { safeLocalStorage } from '../state/safeStorage';
+import { useMarketFilter } from './marketFilter';
 import { pushOverlay } from './overlayStack';
 import { useMoversWarmup, usePreviewQuotes, usePreviewWarmup, useUniverse, useWarmSymbols } from './SymbolSearchHooks';
 import { searchChord, type Row } from './SymbolSearchModel';
@@ -69,6 +71,8 @@ export interface SymbolSearchHandle {
   open: () => void;
   /** Alias of `open`, for callers that focus the palette by name. */
   focus: () => void;
+  /** Open the palette on one market's own listing. */
+  openVenue: (market: string) => void;
 }
 
 interface SymbolSearchProps {
@@ -124,15 +128,20 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
     // Recent picks (localStorage, max 5, most recent first) — shown as their own
     // section above the directory when the query is empty. Read once at mount; a
     // pick rewrites both the persisted list and this state.
-    const [recents, setRecents] = useState<RecentPick[]>(() => loadRecents(safeLocalStorage()));
-    const universe = useUniverse(open);
+    const [allRecents, setRecents] = useState<RecentPick[]>(() => loadRecents(safeLocalStorage()));
+    // Markets switched off in Settings are left out of every list, so the palette asks
+    // for none of their previews either.
+    const filter = useMarketFilter();
+    const fullUniverse = useUniverse(open);
+    const universe = useMemo(() => fullUniverse.filter((entry) => filter.isVisible(entry.market)), [fullUniverse, filter]);
+    const recents = useMemo(() => allRecents.filter((pick) => filter.isVisible(pick.market)), [allRecents, filter]);
     useWarmSymbols(current, recents, universe, previewQuotes);
     const inputRef = useRef<HTMLInputElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
-    const venue = useVenueScope({ open, query, setQuery, setActive, inputRef });
+    const venue = useVenueScope({ open, query, setQuery, setActive, inputRef, filter });
     const { pickingVenue, setPickingVenue, chooseVenue } = venue;
-    useMoversWarmup(previewQuotes);
+    useMoversWarmup(previewQuotes, filter);
     const { rows, recentCount } = useSymbolRows({
       scope: venue.scope, query, scopeRows: venue.scopeRows, universe, recents, previewQuotes, quoteRevision,
     });
@@ -151,7 +160,13 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
       setPickingVenue(false);
     }, [setPickingVenue]);
 
-    useImperativeHandle(ref, () => ({ open: doOpen, focus: doOpen }), [doOpen]);
+    // Opened on one market's own listing (Settings → Markets → Browse).
+    const openVenue = useCallback((market: string) => {
+      doOpen();
+      chooseVenue(market);
+    }, [doOpen, chooseVenue]);
+
+    useImperativeHandle(ref, () => ({ open: doOpen, focus: doOpen, openVenue }), [doOpen, openVenue]);
 
     useEffect(() => {
       if (!open) return;
@@ -176,13 +191,13 @@ export const SymbolSearch = forwardRef<SymbolSearchHandle, SymbolSearchProps>(
         onSelect(row.entry.market, row.entry.symbol);
         // Record the pick as a recent (localStorage, max 5, deduped, MRU first)
         // so the next empty-query open surfaces it above the directory.
-        setRecents(pushRecent(safeLocalStorage(), row.entry.market, row.entry.symbol, recents));
+        setRecents(pushRecent(safeLocalStorage(), row.entry.market, row.entry.symbol, allRecents));
         // Route through close() so selecting restores focus to the trigger too —
         // otherwise the portal unmounts the focused input and focus drops to
         // <body>, losing a keyboard/screen-reader user's place.
         close();
       },
-      [onSelect, close, recents],
+      [onSelect, close, allRecents],
     );
 
     const onKeyDown = paletteKeyDown({

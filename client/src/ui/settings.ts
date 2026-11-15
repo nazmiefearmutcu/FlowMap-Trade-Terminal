@@ -29,6 +29,7 @@ import { isColormap } from '../theme/appearance';
 import { DEFAULT_CONTRAST, DEFAULT_TOLERANCE } from '../gl/heatmap';
 import { DEFAULT_COLORMAP, type Colormap } from '../gl/lut';
 import { DEFAULT_WHITE_PERCENTILE } from '../gl/normalize';
+import { normalizeHiddenMarkets } from './marketFilter';
 import {
   DEFAULT_OVERLAY_VISIBILITY,
   type OverlayVisibility,
@@ -192,6 +193,11 @@ export interface FlowMapSettings {
    * header on those two SEC sections. Empty when not set.
    */
   secContact: string;
+  /**
+   * Markets switched off in Settings → Markets: market strings and whole groups
+   * (`group:world`). See `marketFilter.ts`. Empty: every market is on.
+   */
+  hiddenMarkets: string[];
 }
 
 export const SETTINGS_KEY = 'flowmap.settings.v1';
@@ -235,6 +241,7 @@ export const DEFAULT_SETTINGS: FlowMapSettings = {
   // On by default: an alert is useless when the user looks away.
   alertSound: true,
   secContact: '',
+  hiddenMarkets: [],
 };
 
 /** Longest e-mail address the SEC contact accepts. */
@@ -319,6 +326,7 @@ export function normalizeSettings(raw: unknown): FlowMapSettings {
     hudVisible: typeof o.hudVisible === 'boolean' ? o.hudVisible : DEFAULT_SETTINGS.hudVisible,
     alertSound: typeof o.alertSound === 'boolean' ? o.alertSound : DEFAULT_SETTINGS.alertSound,
     secContact: normalizeSecContact(o.secContact),
+    hiddenMarkets: normalizeHiddenMarkets(o.hiddenMarkets),
   };
 }
 

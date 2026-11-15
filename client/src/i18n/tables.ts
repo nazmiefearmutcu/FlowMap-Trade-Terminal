@@ -12,9 +12,10 @@ import { optionChainEn, optionChainTr } from './optionChainText';
 import { realBookEn, realBookTr } from './realBookText';
 import { tr as baseTr } from './tr';
 import { eurexEn, eurexTr } from './eurexText';
+import { marketsEn, marketsTr } from './marketsText';
 
 /** English: the source of truth for every key. */
-export const en: Record<string, string> = { ...baseEn, ...optionChainEn, ...realBookEn, ...eurexEn };
+export const en: Record<string, string> = { ...baseEn, ...optionChainEn, ...realBookEn, ...eurexEn, ...marketsEn };
 
 /** Turkish: may omit a key (the lookup falls back to English). */
-export const tr: Record<string, string> = { ...baseTr, ...optionChainTr, ...realBookTr, ...eurexTr };
+export const tr: Record<string, string> = { ...baseTr, ...optionChainTr, ...realBookTr, ...eurexTr, ...marketsTr };

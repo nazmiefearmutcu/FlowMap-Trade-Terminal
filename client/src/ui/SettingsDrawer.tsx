@@ -17,6 +17,7 @@ import { useFlowMapStore } from '../state/store';
 import { THEME_IDS, THEMES, useTheme } from '../theme';
 import { resolveAppearance } from '../theme/appearance';
 import { isTopOverlay, pushOverlay } from './overlayStack';
+import { MarketsSection } from './SettingsDrawerMarkets';
 import { ResearchContactSection } from './SettingsDrawerResearch';
 import { RecordingSection } from './SettingsDrawerRecording';
 import {
@@ -38,9 +39,11 @@ interface SettingsDrawerProps {
   onClose: () => void;
   /** Opens the About and legal dialog. Omitted: the entry is not shown. */
   onOpenAbout?: () => void;
+  /** Settings → Markets → Browse: open the symbol search on one market. */
+  onBrowseMarket?: (market: string) => void;
 }
 
-export function SettingsDrawer({ settings, onChange, onClose, onOpenAbout }: SettingsDrawerProps): JSX.Element {
+export function SettingsDrawer({ settings, onChange, onClose, onOpenAbout, onBrowseMarket }: SettingsDrawerProps): JSX.Element {
   const t = useT(); // re-renders on locale change
   const { theme, setTheme } = useTheme();
   const depthTier = useFlowMapStore((s) => s.capability?.depth);
@@ -227,6 +230,12 @@ export function SettingsDrawer({ settings, onChange, onClose, onOpenAbout }: Set
           </h3>
           <RecordingSection />
           <ResearchContactSection secContact={settings.secContact} onChange={onChange} />
+
+          {/* markets: which ones the search and the map offer */}
+          <h3 className="drawer__section" data-testid="section-markets">
+            {t('drawer.sectionMarkets')}
+          </h3>
+          <MarketsSection hiddenMarkets={settings.hiddenMarkets} onChange={onChange} onBrowseMarket={onBrowseMarket} />
 
           <SettingsKeysSection />
 

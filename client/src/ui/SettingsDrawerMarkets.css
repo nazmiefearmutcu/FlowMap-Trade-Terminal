@@ -1,0 +1,83 @@
+/* Settings → Markets: one collapsible group per kind of market, a checkbox per market. */
+.markets-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.markets-group {
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--bg-inset);
+}
+.markets-group__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  list-style: none;
+}
+.markets-group__summary::-webkit-details-marker {
+  display: none;
+}
+.markets-group__summary::after {
+  content: '▸';
+  margin-left: 4px;
+  color: var(--text-3);
+}
+.markets-group[open] > .markets-group__summary::after {
+  content: '▾';
+}
+.markets-group__name {
+  flex: 1;
+}
+.markets-group__count {
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+}
+.markets-group__list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 2px 8px 6px;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.markets-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+.markets-row__label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.markets-row__label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markets-row__browse {
+  padding: 1px 6px;
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--control-line);
+  border-radius: var(--r-2);
+  cursor: pointer;
+}
+.markets-row__browse:hover,
+.markets-row__browse:focus-visible {
+  color: var(--text);
+  border-color: var(--accent-line);
+}

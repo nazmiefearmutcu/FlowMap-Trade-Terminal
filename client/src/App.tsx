@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 
 // Stylesheet order. The cascade follows module evaluation order, and several
 // shell stylesheets share selectors at equal specificity, so the order the
@@ -32,6 +32,7 @@ import { DeskToolbar } from './ui/DeskToolbar';
 import { Timeline } from './ui/Timeline';
 import { TopBar } from './ui/TopBar';
 import { MarketMap } from './ui/marketMap/MarketMap';
+import { setHiddenMarkets } from './ui/marketFilter';
 import type { SymbolSearchHandle } from './ui/SymbolSearch';
 import { DEPTH_CHANNELS, loadSettings, type FlowMapSettings } from './ui/settings';
 import { useAlertMonitor } from './state/alertMonitor';
@@ -172,6 +173,14 @@ export function App() {
   // Retry rebuilds the renderer on the same canvas and reconnects to the symbol
   // on screen (live). The renderer effect reads the target once on mount.
   const openSymbolSearch = useCallback(() => searchRef.current?.open(), []);
+  // Settings → Markets → Browse: the drawer closes first, so its focus return does
+  // not land after the palette has taken the focus.
+  const browseMarket = useCallback((market: string) => {
+    setSettingsOpen(false);
+    window.setTimeout(() => searchRef.current?.openVenue(market), 0);
+  }, []);
+  // The palette and the market map read the switched-off markets from marketFilter.
+  useLayoutEffect(() => setHiddenMarkets(settings.hiddenMarkets), [settings.hiddenMarkets]);
   const retryRenderer = useCallback(() => {
     const sub = useFlowMapStore.getState().subscription;
     retryTargetRef.current = sub ? { market: sub.market, symbol: sub.symbol } : null;
@@ -280,6 +289,7 @@ export function App() {
         settingsOpen={settingsOpen}
         onCloseSettings={() => setSettingsOpen(false)}
         onOpenAbout={() => setAboutOpen(true)}
+        onBrowseMarket={browseMarket}
         intelOpen={intelDrawerOpen}
         activeMarket={activeMarket}
         activeSymbol={activeSymbol}

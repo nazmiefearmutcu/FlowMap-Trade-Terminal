@@ -7,12 +7,14 @@ import { realBookEn, realBookTr } from './realBookText';
 import { en, tr } from './tables';
 import { tr as baseTr } from './tr';
 import { eurexEn, eurexTr } from './eurexText';
+import { marketsEn, marketsTr } from './marketsText';
 
 /** Every feature table merged by tables.ts, as [English, Turkish]. */
 const FEATURES: ReadonlyArray<readonly [Record<string, string>, Record<string, string>]> = [
   [optionChainEn, optionChainTr],
   [realBookEn, realBookTr],
   [eurexEn, eurexTr],
+  [marketsEn, marketsTr],
 ];
 
 describe('merged string tables', () => {

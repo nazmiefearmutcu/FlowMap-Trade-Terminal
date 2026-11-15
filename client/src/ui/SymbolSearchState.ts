@@ -11,6 +11,7 @@ import type { TFn } from '../i18n/useT';
 import type { PreviewQuotes } from './previewQuotes';
 import type { RecentPick } from './recents';
 import { ALL_VENUES, rankVenueOptions, venueOptions, fuzzyRank, type SymbolEntry, type VenueInfo, type VenueOption } from './symbols';
+import type { MarketFilter } from './marketFilter';
 import { useScopeListing, useVenueCatalog } from './SymbolSearchHooks';
 import { venueText, type PreviewWarmup, type Row, type ScopeState } from './SymbolSearchModel';
 
@@ -89,17 +90,24 @@ export function useVenueScope(input: {
   setQuery: (query: string) => void;
   setActive: (index: number) => void;
   inputRef: RefObject<HTMLInputElement>;
+  /** Markets switched off in Settings: their venue rows are left out of the list. */
+  filter: MarketFilter;
 }): VenueScope {
-  const { open, query, setQuery, setActive, inputRef } = input;
+  const { open, query, setQuery, setActive, inputRef, filter } = input;
   const venues = useVenueCatalog(open);
-  const [scope, setScope] = useState<string>(ALL_VENUES);
+  const [chosenScope, setScope] = useState<string>(ALL_VENUES);
+  // A scope whose market was switched off since it was chosen falls back to the directory.
+  const scope = filter.isVisible(chosenScope) ? chosenScope : ALL_VENUES;
   const [pickingVenue, setPickingVenue] = useState(false);
   // Bumped on every venue pick (even a re-pick of the CURRENT scope) and by the
   // retry control, so a failed listing is re-issuable without first switching
   // away to another venue and back — `scope` alone would be a no-op dep there.
   const [scopeAttempt, setScopeAttempt] = useState(0);
   const { scopeRows, scopeState, forgetScope } = useScopeListing(open, scope, scopeAttempt);
-  const allVenues = useMemo(() => venueOptions(venues ?? []), [venues]);
+  const allVenues = useMemo(
+    () => venueOptions(venues ?? []).filter((option) => filter.isVisible(option.market)),
+    [venues, filter],
+  );
   const venueRows = useMemo<VenueOption[]>(
     () => (pickingVenue ? rankVenueOptions(allVenues, query) : []),
     [pickingVenue, allVenues, query],

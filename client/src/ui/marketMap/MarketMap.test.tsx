@@ -7,6 +7,7 @@ import { setLocale } from '../../i18n';
 import { fetchMarketMap, type MarketMapData, type MapItem } from './marketMapApi';
 import { FILL_SHARES } from './marketMapModel';
 import { MarketMap } from './MarketMap';
+import { groupEntry, setHiddenMarkets } from '../marketFilter';
 
 vi.mock('./marketMapApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./marketMapApi')>();
@@ -407,5 +408,42 @@ describe('MarketMap', () => {
     setOpen(false);
     expect(dialog()).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MarketMap with markets switched off in Settings', () => {
+  afterEach(() => setHiddenMarkets([]));
+
+  it('offers only the tab whose markets are on, and fetches only it', async () => {
+    setHiddenMarkets(['equity']);
+    renderMap({ open: true });
+    await flush();
+
+    expect(document.querySelector('[data-testid="market-map-tab-us"]')).toBeNull();
+    expect(tab('crypto').getAttribute('aria-selected')).toBe('true');
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(['crypto']);
+  });
+
+  it('says so and fetches nothing when both markets are off', async () => {
+    setHiddenMarkets(['equity', groupEntry('crypto')]);
+    renderMap({ open: true });
+    await flush();
+
+    expect(document.querySelector('[data-testid="market-map-all-off"]')).not.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a tile whose chart market is off opens nothing', async () => {
+    setHiddenMarkets(['crypto']);
+    const { onOpenChart } = renderMap({ open: true });
+    await flush();
+    clickEl(tab('crypto'));
+    await flush();
+
+    const btc = tileFor('BTC');
+    expect(btc.tagName).toBe('DIV');
+    expect(btc.getAttribute('aria-label')).toContain('No chart for this one');
+    clickEl(btc);
+    expect(onOpenChart).not.toHaveBeenCalled();
   });
 });

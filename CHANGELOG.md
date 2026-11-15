@@ -34,6 +34,12 @@ Release notes: [docs/release-notes-1.7.0.md](docs/release-notes-1.7.0.md).
   Greenhouse, Lever and Ashby boards. Corporate jets have no source, and the section says so.
 - Research drawer crypto tabs: PERP (Binance Futures), OPTIONS (Deribit, BTC and ETH), MARKET (CoinGecko and
   DefiLlama) and SENTIMENT (alternative.me Fear & Greed index).
+- Settings → Markets. Every market the app can open is listed by group (crypto, US stocks, world stock
+  exchanges, futures, currencies, indices, government bonds, simulation), each with a checkbox, and each group
+  with one that switches the whole group. A market that is off is left out of the symbol search and the market
+  map, and the app requests none of its data (listings, previews, movers). A chart already open on it stays open.
+  *Browse* opens the symbol search on one market's listing. The choice is stored with the settings
+  (`hiddenMarkets`; `client/src/ui/marketFilter.ts`, `client/src/ui/SettingsDrawerMarkets.tsx`).
 - SEC contact e-mail under Settings → Data. SEC EDGAR asks automated clients to name a contact; the address is
   sent only to SEC's hosts, in the User-Agent, and only when entered. `SEC_CONTACT_EMAIL` is the fallback.
 - World equities. A new venue, `world`, has one market per stock exchange, named by its ISO 10383

@@ -22,6 +22,7 @@ import { createPortal } from 'react-dom';
 
 import { exchangeZoneFor, formatClock, formatPrice, useTimeZone } from '../../i18n/format';
 import { useT, type TFn } from '../../i18n/useT';
+import { useMarketFilter } from '../marketFilter';
 import { isTopOverlay, pushOverlay } from '../overlayStack';
 import { fetchMarketMap, type MapItem, type MapMarket, type MarketMapData } from './marketMapApi';
 import { tileCardPosition, pointerCardPosition, type Point } from './marketMapCard';
@@ -145,7 +146,15 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Partial<Record<MapMarket, HTMLButtonElement | null>>>({});
 
-  const [market, setMarket] = useState<MapMarket>('us');
+  // A tab whose markets are switched off in Settings → Markets is not offered.
+  const filter = useMarketFilter();
+  const tabs = useMemo(
+    () => MARKETS.filter((m) => (m === 'us' ? filter.isVisible('equity') : !filter.isGroupHidden('crypto'))),
+    [filter],
+  );
+  const [chosenMarket, setMarket] = useState<MapMarket>('us');
+  const market: MapMarket = tabs.includes(chosenMarket) ? chosenMarket : (tabs[0] ?? chosenMarket);
+  const allOff = tabs.length === 0;
   const [periods, setPeriods] = useState<Record<MapMarket, string>>(DEFAULT_PERIOD);
   // Each tab keeps its own last data, so switching back shows it at once.
   const [states, setStates] = useState<Record<MapMarket, MarketState>>({ us: EMPTY_STATE, crypto: EMPTY_STATE });
@@ -181,6 +190,7 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   // Fetch the visible tab when it changes and on each refresh. Changing the tab or
   // closing aborts the request in flight; an aborted request writes nothing.
   useEffect(() => {
+    if (allOff) return undefined;
     const controller = new AbortController();
     setStates((prev) =>
       prev[market].error === null ? prev : { ...prev, [market]: { ...prev[market], error: null } },
@@ -196,7 +206,7 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
       },
     );
     return () => controller.abort();
-  }, [market, reloadKey]);
+  }, [market, reloadKey, allOff]);
 
   useEffect(() => {
     const id = window.setInterval(() => setReloadKey((k) => k + 1), REFRESH_MS);
@@ -241,7 +251,7 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   const onTabKeyDown = (e: KeyboardEvent<HTMLButtonElement>): void => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
-    const next: MapMarket = market === 'us' ? 'crypto' : 'us';
+    const next = tabs[(tabs.indexOf(market) + 1) % tabs.length] ?? market;
     selectMarket(next);
     tabRefs.current[next]?.focus();
   };
@@ -281,7 +291,9 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   const showStale = data !== null && data.stale;
 
   let body: JSX.Element;
-  if (data === null && state.error !== null) {
+  if (allOff) {
+    body = <p className="market-map__state" role="status" data-testid="market-map-all-off">{t('marketMap.allOff')}</p>;
+  } else if (data === null && state.error !== null) {
     body = (
       <div className="market-map__state" role="alert">
         <p>{t('marketMap.error')}</p>
@@ -310,7 +322,9 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
               const tone = tileTone(changeLevel(change, period));
               const rows = detailRows(item, period, t);
               const facts = rows.map((r) => `${r.label} ${r.value}`).join(', ');
-              const noChart = item.chart === null ? `, ${t('marketMap.noChart')}` : '';
+              // A tile whose chart market is switched off opens nothing.
+              const chart = item.chart !== null && filter.isVisible(item.chart.market) ? item.chart : null;
+              const noChart = chart === null ? `, ${t('marketMap.noChart')}` : '';
               const label = `${item.name} (${item.symbol}), ${facts}${noChart}`;
               const tileLabel = labelFor(tile.rect);
               const text = tileLabel === 'none' ? null : (
@@ -334,14 +348,13 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
                 onFocus: () => setHovered((h) => (h?.symbol === item.symbol ? h : { symbol: item.symbol, pointer: null })),
                 onBlur: () => setHovered((h) => (h?.symbol === item.symbol ? null : h)),
               };
-              if (item.chart === null) {
+              if (chart === null) {
                 return (
                   <div key={tile.id} role="img" {...common}>
                     {text}
                   </div>
                 );
               }
-              const chart = item.chart;
               return (
                 <button
                   key={tile.id}
@@ -396,7 +409,7 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
         <div className="market-map__row">
           <h2 id="market-map-title" className="market-map__title">{t('marketMap.title')}</h2>
           <div className="market-map__tabs" role="tablist" aria-label={t('marketMap.title')}>
-            {MARKETS.map((m) => (
+            {tabs.map((m) => (
               <button
                 key={m}
                 ref={(el) => {

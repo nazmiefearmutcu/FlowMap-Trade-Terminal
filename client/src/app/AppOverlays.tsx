@@ -19,6 +19,8 @@ export interface AppOverlaysProps {
   settingsOpen: boolean;
   onCloseSettings: () => void;
   onOpenAbout: () => void;
+  /** Settings → Markets → Browse: close the drawer, open the search on that market. */
+  onBrowseMarket: (market: string) => void;
   intelOpen: boolean;
   activeMarket: string;
   activeSymbol: string;
@@ -46,7 +48,7 @@ export interface AppOverlaysProps {
  * only while open, so an idle app pays nothing for them.
  */
 export function AppOverlays({
-  rendererRef, settings, replay, applyPatch, settingsOpen, onCloseSettings, onOpenAbout,
+  rendererRef, settings, replay, applyPatch, settingsOpen, onCloseSettings, onOpenAbout, onBrowseMarket,
   intelOpen, activeMarket, activeSymbol, onCloseIntel, onOpenSources, onOpenSettings, optionsOpen, onCloseOptions,
   aboutOpen, onCloseAbout,
   helpOpen, onCloseHelp, replayPicker, onCloseReplayPicker, onReplayConfirm,
@@ -64,6 +66,7 @@ export function AppOverlays({
           onChange={applyPatch}
           onClose={onCloseSettings}
           onOpenAbout={onOpenAbout}
+          onBrowseMarket={onBrowseMarket}
         />
       )}
 
