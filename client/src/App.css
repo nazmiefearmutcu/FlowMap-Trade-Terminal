@@ -43,10 +43,15 @@ body,
   position: relative;
   flex: 0 0 auto;
   display: flex;
+  /* The bar wraps to a second row whenever its items do not fit, at any window
+     width, so no control is ever pushed off-window. The narrow-width block
+     further down drops secondary items first so that one row lasts as long as
+     it can. `min-height` keeps the one-row bar at its designed height. */
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-4);
-  height: var(--topbar-h);
-  padding: 0 var(--sp-4);
+  gap: 4px var(--sp-4);
+  min-height: var(--topbar-h);
+  padding: 4px var(--sp-4);
   /* Bezel wash: a theme-relative top stop. A fixed near-black stop smeared
      across every light shell, so the top stop mixes --line into --bg-1:
      midnight keeps its shipped stop (within one channel value) and light
@@ -1488,6 +1493,20 @@ body,
   user-select: none;
 }
 
+/* The app version: the first item of the strip, on its bottom edge. */
+.timeline__version {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  color: var(--text-3);
+  white-space: nowrap;
+  user-select: text;
+}
+
 /* --- transport cluster --- */
 .transport {
   display: flex;
@@ -2330,18 +2349,25 @@ body,
   background: var(--accent);
 }
 
-/* --- Topbar at narrow widths. Natural bar width is ~1.3k px; below that
-   the right-hand controls clipped off-window (Settings was UNREACHABLE at
-   900px). Stepped de-scoping: the TAPE and SIDE capability chips first, then
-   the search width + ⌘K hint, then the secondary clock lines, and finally a
-   wrap to a second row. The depth-tier chip (the fidelity claim, also carried
-   by the venue title) stays visible; the pending placeholder too. --- */
-@media (max-width: 1180px) {
+/* --- Topbar at narrow widths. The natural bar width is ~1.6–1.8k px with the
+   macro ticker and every capability chip. `.topbar` wraps when its items do
+   not fit, so nothing clips off-window; the steps below keep it on one row for
+   as long as possible. Stepped de-scoping: the macro ticker first (the MACRO
+   footer of the Research drawer carries the same values), then the TAPE and
+   SIDE capability chips, then the search width + ⌘K hint, then the wordmark,
+   then the Settings word and the SIM chip, and the secondary clock lines. The depth-tier chip (the fidelity claim, also
+   carried by the venue title) stays visible; the pending placeholder too. --- */
+@media (max-width: 1680px) {
+  .topbar .macro-ticker {
+    display: none;
+  }
+}
+@media (max-width: 1400px) {
   .caps .cap:not(.cap--depth):not(.cap--synth):not(.cap--na):not(.cap--pending) {
     display: none;
   }
 }
-@media (max-width: 1060px) {
+@media (max-width: 1360px) {
   .symsearch__trigger {
     width: 150px;
   }
@@ -2351,6 +2377,7 @@ body,
 }
 @media (max-width: 960px) {
   .clock__et,
+  .clock__zone,
   .clock__stream {
     display: none;
   }
@@ -2358,13 +2385,24 @@ body,
     font-size: var(--fs-sm);
   }
 }
-@media (max-width: 880px) {
-  .topbar {
-    flex-wrap: wrap;
-    height: auto;
-    min-height: var(--topbar-h);
-    padding: 4px var(--sp-4);
-    row-gap: 4px;
+@media (max-width: 1230px) {
+  .topbar__brand {
+    display: none;
+  }
+}
+/* The Settings button keeps its gear and its accessible name; only the visible
+   word goes. The SIM chip repeats the venue pill and the banner on the chart. */
+@media (max-width: 1080px) {
+  .tbtn__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .topbar__sim {
+    display: none;
   }
 }
 

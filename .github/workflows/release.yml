@@ -633,7 +633,7 @@ jobs:
           # The Apache-2.0 licence, the NOTICE text and the SIL OFL texts of the
           # bundled fonts travel with every release, as separate files.
           cp LICENSE NOTICE client/src/assets/fonts/LICENSE-inter.txt \
-            client/src/assets/fonts/LICENSE-jetbrains-mono.txt stage/
+            client/src/assets/fonts/LICENSE-jetbrains-mono.txt client/src/assets/fonts/LICENSE-pixelify-sans.txt stage/
           ls -l stage
 
       # Signs a SLSA provenance statement for every installer BEFORE it is
@@ -653,7 +653,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd stage && sha256sum FlowMap_* THIRD-PARTY-NOTICES.txt LICENSE NOTICE \
-            LICENSE-inter.txt LICENSE-jetbrains-mono.txt | sort -k2) > SHA256SUMS
+            LICENSE-inter.txt LICENSE-jetbrains-mono.txt LICENSE-pixelify-sans.txt | sort -k2) > SHA256SUMS
           if [ ! -s SHA256SUMS ]; then echo "no checksum lines collected"; exit 1; fi
           cat SHA256SUMS
 
@@ -719,7 +719,7 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC2046
           gh release upload "$TAG" stage/FlowMap_* stage/THIRD-PARTY-NOTICES.txt stage/LICENSE stage/NOTICE \
-            stage/LICENSE-inter.txt stage/LICENSE-jetbrains-mono.txt SHA256SUMS \
+            stage/LICENSE-inter.txt stage/LICENSE-jetbrains-mono.txt stage/LICENSE-pixelify-sans.txt SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --clobber
 
       # A stale installer from an earlier attempt must not survive into the
@@ -757,7 +757,7 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern 'FlowMap_*' --pattern 'THIRD-PARTY-NOTICES.txt' \
             --pattern LICENSE --pattern NOTICE \
-            --pattern LICENSE-inter.txt --pattern LICENSE-jetbrains-mono.txt --dir verify
+            --pattern LICENSE-inter.txt --pattern LICENSE-jetbrains-mono.txt --pattern LICENSE-pixelify-sans.txt --dir verify
           # The manifest is the one computed above from the built files, not the
           # copy that came back from the release.
           cp SHA256SUMS verify/SHA256SUMS

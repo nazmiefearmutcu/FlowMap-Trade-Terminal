@@ -17,9 +17,9 @@ Bundled in the installers
 - Python dependencies: aiohttp (Apache-2.0), certifi (MPL-2.0), fastapi (MIT), msgspec (BSD-3-Clause), numpy (BSD-3-Clause), polars (MIT), uvicorn (BSD-3-Clause), ccxt (MIT)
 - Packages that the market-data engine and ccxt install with them: pandas (BSD-3-Clause), pyarrow (Apache-2.0; not shipped in the Windows arm64 installer), yfinance (Apache-2.0), beautifulsoup4 (MIT), duckdb (MIT, used by the intelligence store), curl_cffi (MIT), cryptography (Apache-2.0 OR BSD-3-Clause)
 - Client libraries: React and React DOM (MIT), zustand (MIT)
-- Typefaces bundled with the client: Inter and JetBrains Mono, under the SIL Open Font License 1.1.
-  Their licence texts are in the source repository at client/src/assets/fonts/LICENSE-inter.txt and
-  client/src/assets/fonts/LICENSE-jetbrains-mono.txt, and each release's THIRD-PARTY-NOTICES.txt includes them.
+- Typefaces bundled with the client: Inter, JetBrains Mono and Pixelify Sans, under the SIL Open Font License 1.1.
+  Their licence texts are in the source repository at client/src/assets/fonts/LICENSE-inter.txt,
+  client/src/assets/fonts/LICENSE-jetbrains-mono.txt and client/src/assets/fonts/LICENSE-pixelify-sans.txt, and each release's THIRD-PARTY-NOTICES.txt includes them.
 
 Build and test tooling (not shipped)
 - Vite, Vitest, Playwright, TypeScript, ESLint and typescript-eslint, pytest, ruff

@@ -538,11 +538,11 @@ export const tr: Record<string, string> = {
   'settings.colormap': 'Renk haritası',
   'settings.colormapHint':
     'Renkler temanıza uyum sağlar. Yoğunluk soldan sağa artar.',
-  'settings.chartStyle': 'Grafik stili',
+  'settings.chartStyle': 'Arayüz stili',
   'settings.chartStyle.normal': 'Normal',
   'settings.chartStyle.pixel': 'Piksel',
   'settings.chartStyleHint':
-    'Normal, pürüzsüz ısı haritasıdır. Piksel, temanın renkleriyle bloklar çizer; fiyat çizgisi basamaklı, işlem baloncukları karedir.',
+    'Normal, pürüzsüz ısı haritası ve yuvarlak hatlı penceredir. Piksel, tüm uygulamayı temanızın renkleriyle piksel sanatına çevirir: bloklu ısı haritası, basamaklı fiyat çizgisi, kare işlem baloncukları, kare kontroller ve piksel FlowMap logosu.',
   'settings.contrast': 'Kontrast',
   'settings.contrastHint':
     'Orta yoğunluk alanını en parlak duvarlara göre karartır — yükseldikçe daha vurucu olur.',

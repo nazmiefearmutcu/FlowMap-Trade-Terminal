@@ -59,7 +59,7 @@ class FontLicence:
 
 
 # Display names for the licence files' slugs; an unlisted font falls back to title case.
-FONT_NAMES = {"inter": "Inter", "jetbrains-mono": "JetBrains Mono"}
+FONT_NAMES = {"inter": "Inter", "jetbrains-mono": "JetBrains Mono", "pixelify-sans": "Pixelify Sans"}
 
 
 def font_licences(fonts_dir):

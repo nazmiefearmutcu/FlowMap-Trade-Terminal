@@ -3,6 +3,7 @@ import { useEffect, type MutableRefObject } from 'react';
 import { gammaForContrast } from '../gl/heatmap';
 import type { Renderer } from '../gl/renderer';
 import { getTheme } from '../theme';
+import { applyUiStyle } from '../theme/uiStyle';
 import { safeLocalStorage } from '../state/safeStorage';
 import { useFlowMapStore } from '../state/store';
 import { historyDepthCols, saveSettings, type FlowMapSettings } from '../ui/settings';
@@ -24,6 +25,7 @@ export function useSettingsApply(
 ): void {
   useEffect(() => {
     saveSettings(settings, safeLocalStorage());
+    applyUiStyle(settings.chartStyle); // the window chrome follows the chart style
     const r = rendererRef.current;
     if (r) {
       r.setOverlayVisibility(settings.overlays); // idempotent

@@ -4,6 +4,7 @@ import { ErrorBoundary } from './ui/ErrorBoundary';
 import './ui/theme.css';
 import './theme/themes.css'; // theme blocks (AFTER ui/theme.css)
 import './App.css';
+import './theme/pixel.css'; // interface style (AFTER every other sheet)
 
 import { initLocale, t } from './i18n';
 import { initTheme } from './theme';

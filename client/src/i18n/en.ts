@@ -543,11 +543,11 @@ export const en: Record<string, string> = {
   'settings.colormap': 'Colormap',
   'settings.colormapHint':
     'Colors follow your theme. Density increases from left to right.',
-  'settings.chartStyle': 'Chart style',
+  'settings.chartStyle': 'Interface style',
   'settings.chartStyle.normal': 'Normal',
   'settings.chartStyle.pixel': 'Pixel',
   'settings.chartStyleHint':
-    'Normal is the smooth heatmap. Pixel draws blocks in your theme colours, with a stepped price line and square trade bubbles.',
+    'Normal is the smooth heatmap and the rounded window. Pixel turns the whole app to pixel art in your theme colours: a block heatmap, a stepped price line, square trade bubbles, square controls and the pixel FlowMap mark.',
   'settings.contrast': 'Contrast',
   'settings.contrastHint': 'Darkens the mid-density field against the brightest walls — higher is punchier.',
   'settings.tolerance': 'Tolerance',

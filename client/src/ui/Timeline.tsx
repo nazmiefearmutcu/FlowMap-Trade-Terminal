@@ -31,6 +31,7 @@
 
 import type { RefObject } from 'react';
 
+import { version as APP_VERSION } from '../../package.json';
 import type { Renderer } from '../gl/renderer';
 import { useT } from '../i18n/useT';
 import type { ConnStatus } from '../net/connection';
@@ -151,6 +152,10 @@ export function Timeline({ rendererRef }: TimelineProps): JSX.Element {
 
   return (
     <footer className="timeline" data-testid="timeline">
+      {/* The installed version, in the bottom-left corner of the window. */}
+      <span className="timeline__version" data-testid="app-version" title={t('about.version', { version: APP_VERSION })}>
+        v{APP_VERSION}
+      </span>
       <TransportButtons
         t={t}
         isReplay={isReplay}

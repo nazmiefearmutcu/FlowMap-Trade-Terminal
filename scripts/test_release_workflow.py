@@ -143,14 +143,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
         # The About panel and NOTICE point at these files, so each must be staged,
         # uploaded, listed in SHA256SUMS and re-downloaded for the byte check.
         publish = job_block(RELEASE, "publish")
-        for name in ("LICENSE-inter.txt", "LICENSE-jetbrains-mono.txt"):
+        for name in ("LICENSE-inter.txt", "LICENSE-jetbrains-mono.txt", "LICENSE-pixelify-sans.txt"):
             with self.subTest(name=name):
                 self.assertIn(f"client/src/assets/fonts/{name}", publish)
                 self.assertIn(f"stage/{name}", publish)
                 self.assertIn("sha256sum FlowMap_* THIRD-PARTY-NOTICES.txt LICENSE NOTICE", publish)
                 self.assertIn(f"--pattern {name}", publish)
         sums = publish[publish.index("sha256sum FlowMap_*"):]
-        self.assertIn("LICENSE-inter.txt LICENSE-jetbrains-mono.txt", sums[:200])
+        self.assertIn("LICENSE-inter.txt LICENSE-jetbrains-mono.txt LICENSE-pixelify-sans.txt", sums[:200])
 
     def test_uv_and_rust_versions_are_pinned_once_per_workflow(self):
         # Every setup-uv step names the same exact release, and the Rust toolchain

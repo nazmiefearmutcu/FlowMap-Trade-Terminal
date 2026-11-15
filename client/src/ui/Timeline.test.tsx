@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Renderer } from '../gl/renderer';
 import { useFlowMapStore } from '../state/store';
+import { version as APP_VERSION } from '../../package.json';
 import { Timeline, transportDisplay } from './Timeline';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -131,6 +132,16 @@ afterEach(() => {
     paused: false,
     speed: 1,
     replayPlayback: null,
+  });
+});
+
+describe('Timeline version label', () => {
+  it('shows the app version as the first item of the bottom strip', () => {
+    render(fakeRenderer(100));
+    const label = q<HTMLSpanElement>('[data-testid="app-version"]')!;
+    expect(label.textContent).toBe(`v${APP_VERSION}`);
+    expect(label.textContent).toMatch(/^v\d+\.\d+\.\d+$/);
+    expect(q('[data-testid="timeline"]')!.firstElementChild).toBe(label);
   });
 });
 
