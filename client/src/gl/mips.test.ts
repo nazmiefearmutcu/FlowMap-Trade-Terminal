@@ -292,6 +292,34 @@ describe('updateRange — batched history-page splices', () => {
     expect(ps[2].u_groupNewest).toBe(79);
   });
 
+  it('bakes the groups a newest-first page shares with the page spliced before it', () => {
+    const { chain, ring, gl } = makeChain();
+    for (let s = 102; s <= 199; s++) append(ring, s); // the newer page, already resident
+    for (let s = 101; s >= 90; s--) append(ring, s); // the older page, spliced newest-first
+    expect(ring.validFromSeq()).toBe(90);
+
+    chain.updateRange(ring, 90, 101);
+
+    // The 4-group [100..103] and the 16-group [96..111] straddle the two pages.
+    // Both are fully resident now, so both are baked: before, their texels kept
+    // whatever the slot held a ring wrap ago.
+    const ps = passes(gl);
+    const level1 = ps.filter((p) => p.u_rowOnly === 0 && p.u_validFrom !== -0x7fffffff);
+    const level2 = ps.filter((p) => p.u_validFrom === -0x7fffffff);
+    expect(level1.map((p) => p.u_groupNewest)).toEqual([103]);
+    expect(level2.map((p) => p.u_groupNewest)).toEqual([111]);
+    for (const p of ps) expect(p.u_groupNewest).toBeLessThanOrEqual(199);
+  });
+
+  it('does not bake the live edge group past the resident newest', () => {
+    const { chain, ring, gl } = makeChain();
+    for (let s = 64; s <= 81; s++) append(ring, s);
+    chain.updateRange(ring, 64, 81);
+    const level1 = passes(gl).filter((p) => p.u_rowOnly === 0 && p.u_validFrom !== -0x7fffffff);
+    // [80..83] is not complete (82, 83 unwritten): the pass stops at 79.
+    expect(level1.map((p) => p.u_groupNewest)).toEqual([79]);
+  });
+
   it('is a no-op for degenerate ranges and stays inert after an FBO failure', () => {
     const { chain, ring, gl } = makeChain({ incompleteFBO: true });
     append(ring, 3);

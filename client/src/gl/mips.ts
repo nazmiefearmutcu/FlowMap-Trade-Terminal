@@ -282,11 +282,17 @@ export class MipChain {
     if (hi < fromSeq) return;
 
     const cap = ring.capacityCols;
+    const newest = range !== null ? range.newest : hi;
     const a0 = fromSeq - (fromSeq % 4);
     // Largest 4-group end ≤ hi — a pass never reads slots past the resident
     // newest (below-validFrom slots are masked; above-newest slots are unwritten
-    // garbage and NOT masked).
-    const b0 = hi - ((hi + 1) % 4);
+    // garbage and NOT masked). History pages arrive newest-first, so the group
+    // holding `hi` usually continues into the page spliced before this one:
+    // when that group is fully resident it is baked too. Skipping it left the
+    // texel a page's right edge shares with the previous page holding whatever
+    // the slot held a ring wrap ago — a stale block in a zoomed-out view.
+    const holdingEnd = hi - (hi % 4) + 3;
+    const b0 = holdingEnd <= newest ? holdingEnd : hi - ((hi + 1) % 4);
     const validFrom = ring.validFromSeq();
 
     // Row-only mip: per-column groups, so the WHOLE resident part of the splice
@@ -360,7 +366,11 @@ export class MipChain {
     if (this.tex2 !== null && this.maxLevel >= 2 && b0 >= 15) {
       const align16Up = (v: number): number => v + ((16 - (v % 16)) % 16);
       const c0 = Math.max(align16Up(a0), align16Up(validFrom));
-      const c1 = b0 - 15 - ((b0 - 15) % 16); // last 16-aligned group start ≤ b0−15
+      // The 16-group holding `hi`, like the 4-group above, is baked when it is
+      // fully resident: its level-1 columns past b0 were built by the newer page.
+      const holding16End = hi - (hi % 16) + 15;
+      const end16 = holding16End <= newest ? Math.max(b0, holding16End) : b0;
+      const c1 = end16 - 15 - ((end16 - 15) % 16); // last 16-aligned group start ≤ end16−15
       let g = c0;
       while (g <= c1) {
         const segEnd = Math.min(

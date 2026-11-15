@@ -593,6 +593,77 @@ describe('Renderer (fake GL harness)', () => {
     r.dispose();
   });
 
+  describe('overview across a grid re-anchor', () => {
+    /** The overview surface the frame draws with (private on Renderer). */
+    const drawnOverview = (r: Renderer): unknown => (r as unknown as { activeOverview(): unknown }).activeOverview();
+
+    function setup() {
+      const made = makeRenderer();
+      const scale = makeHybrid({ mid: 100, rows: 256, coreRows: 128, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;
+      const params = (epoch: number) => ({ epoch, tick: 0.01, tick_multiple: 1, dt_ns: DT_NS, p0: scale.coreP0, rows: scale.rows,
+        scale_kind: 1, dn_rows: scale.dnRows, core_rows: scale.coreRows, core_p0: scale.coreP0, core_step: scale.coreStep,
+        lo_price: scale.loPrice, hi_price: scale.hiPrice });
+      made.store.state.epochs = new Map([[0, params(0)]]);
+      const pages: Array<{ range: HistoryOverviewRequest; resolve: (response: HistoryResponse) => void }> = [];
+      made.store.state.requestHistory = (...args: unknown[]) => {
+        const range = args[2] as HistoryOverviewRequest | undefined;
+        if (!range) return new Promise(() => undefined);
+        return new Promise<HistoryResponse>(resolve => { pages.push({ range, resolve }); });
+      };
+      for (let seq = 0; seq < 1024; seq++) made.store.emit(makeCol(seq, true, scale.rows));
+      made.r.setPriceFollow('off');
+      made.r.setTimeWindowMs(null);
+      const answer = (index: number) => {
+        const { range, resolve } = pages[index];
+        const depth: DepthColumn[] = [];
+        for (let col = range.start_col; col <= range.end_col; col += range.stride) depth.push(makeCol(col, true, scale.rows));
+        resolve({ type: MsgType.HISTORY_RESP, req_id: index + 1, epoch: 0, oldest_available_t_ns: 0n, depth_cols: depth,
+          bar_cols: [], markers: [], big_trades: [] });
+      };
+      return { ...made, params, pages, answer };
+    }
+
+    /** Run queued frames and timers (both are stubbed here) until `done` or the budget runs out. */
+    async function drainUntil(done: () => boolean): Promise<void> {
+      for (let i = 0; i < 400 && !done(); i++) {
+        await Promise.resolve();
+        const timers = asyncThrows.splice(0);
+        for (const cb of timers) cb();
+        await Promise.resolve();
+        if (rafQueue.length > 0) rafQueue.shift()!(100 + i);
+      }
+    }
+
+    it('keeps drawing the close-up ring until the overview has a time knot', async () => {
+      const { r, pages, answer } = setup();
+      pump(16);
+      expect(pages.length).toBeGreaterThan(0);
+      expect(r.overviewStats()?.inFlight).toBe(true);
+      expect(drawnOverview(r)).toBeNull(); // nothing loaded yet: no time map to draw with
+      answer(0);
+      await drainUntil(() => drawnOverview(r) !== null);
+      expect(drawnOverview(r)).not.toBeNull();
+      r.dispose();
+    });
+
+    it('keeps the loaded overview when the grid re-anchors on the same ring', async () => {
+      const { r, store, params, pages, answer } = setup();
+      pump(16);
+      answer(0);
+      await drainUntil(() => drawnOverview(r) !== null);
+      const surface = r.overviewSurface;
+      expect(surface).not.toBeNull();
+      const requested = pages.length;
+      store.state.epochs = new Map([[0, params(0)], [1, params(1)]]);
+      store.state.gridEpoch = 1;
+      pump(200);
+      expect(r.overviewSurface).toBe(surface); // not rebuilt
+      expect(drawnOverview(r)).toBe(surface);
+      expect(pages.length).toBe(requested); // nothing already loaded is asked for again
+      r.dispose();
+    });
+  });
+
   it('forwards the overview page AbortSignal to the request', () => {
     const { r, store } = makeRenderer();
     const scale = makeHybrid({ mid: 100, rows: 256, coreRows: 128, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;

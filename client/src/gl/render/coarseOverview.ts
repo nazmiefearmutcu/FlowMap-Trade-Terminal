@@ -41,7 +41,16 @@ export interface OverviewStats {
 export class CoarseOverview {
   private overviewHistory: OverviewHistory | null = null;
   private overview: OverviewSurface | null = null;
-  private overviewEpoch: number | null = null;
+  /**
+   * The ring the overview was built for. A grid re-anchor (a new epoch on the
+   * same ring) keeps the overview: every overview column carries its own epoch
+   * geometry, exactly as the close-up ring does. Only a different ring (a row
+   * count change or a session reset rebuilds it) starts the overview over.
+   * Resetting on every epoch used to blank a zoomed-out chart (no time map, so
+   * no price line, trades or axes either) each time the price moved far enough
+   * to roll the grid, and reload every page.
+   */
+  private overviewRing: TileRing | null = null;
 
   constructor(
     private readonly gpu: GpuLifecycle,
@@ -57,9 +66,17 @@ export class CoarseOverview {
   private get axis(): AxisMap { return this.host.axis; }
   private glLost(): boolean { return this.gpu.glLost(); }
 
-  /** The overview surface when the view is zoomed out past the ring, else null. */
+  /**
+   * The overview surface when the view is zoomed out past the ring AND the
+   * overview can place things in time, else null. While its first page is
+   * still loading it has no time knots; switching to it then left the price
+   * line, the trades and the axes with no time map, so the whole chart went
+   * blank until the page arrived. The close-up ring keeps drawing meanwhile.
+   */
   activeOverview(): OverviewSurface | null {
-    return this.ring !== null && this.frameState.view.colScale > this.ring.capacityCols ? this.overview : null;
+    const overview = this.overview;
+    if (overview === null || this.ring === null || this.frameState.view.colScale <= this.ring.capacityCols) return null;
+    return overview.timeMap(this.axis.currentDtNs()) !== null ? overview : null;
   }
 
   /** The overview surface, whatever the view (diagnostics and the normaliser). */
@@ -79,7 +96,7 @@ export class CoarseOverview {
     this.overview?.dispose();
     this.overviewHistory = null;
     this.overview = null;
-    this.overviewEpoch = null;
+    this.overviewRing = null;
   }
 
   /** Coarse history is independent of close-up GPU storage and reloads by pixel detail. */
@@ -87,15 +104,15 @@ export class CoarseOverview {
     const ring = this.ring;
     const epoch = this.store.getState().gridEpoch;
     if (!ring || epoch === null || this.host.perfRunning() || this.frameState.view.colScale <= ring.capacityCols) return;
-    if (this.overviewEpoch !== epoch) {
-      const pending = this.overviewEpoch === null && this.host.follow().pendingOverviewFit;
+    if (this.overviewRing !== ring) {
+      const pending = this.overviewRing === null && this.host.follow().pendingOverviewFit;
       this.reset();
       this.host.follow().pendingOverviewFit = pending;
     }
     if (this.overviewHistory === null) {
-      this.overviewEpoch = epoch;
+      this.overviewRing = ring;
       this.overviewHistory = new OverviewHistory({
-        active: () => this.ring === ring && this.overviewEpoch === epoch && !this.glLost() && !this.host.awaitingSession() && this.frameState.view.colScale > ring.capacityCols,
+        active: () => this.ring === ring && this.overviewRing === ring && !this.glLost() && !this.host.awaitingSession() && this.frameState.view.colScale > ring.capacityCols,
         resident: () => this.overview?.ring.residentRange() ?? null,
         // The signal is forwarded so a superseded overview page cancels its
         // in-flight request instead of holding the connection.
@@ -104,7 +121,10 @@ export class CoarseOverview {
         pageCols: () => pageColsForRows(ring.rows, serverOrigin() === null ? HISTORY_DEV_FRAME_BUDGET_BYTES : HISTORY_FRAME_BUDGET_BYTES),
         reset: (stride) => {
           this.overview?.dispose();
-          this.overview = new OverviewSurface(this.ctx, ring.rows, this.lut, stride, this.axis.overlayPriceMap()?.scale ?? null, epoch,
+          // Native epoch: the grid's frame when this surface is built (a stride
+          // change). Columns map through their own epoch's scale either way.
+          this.overview = new OverviewSurface(this.ctx, ring.rows, this.lut, stride, this.axis.overlayPriceMap()?.scale ?? null,
+            this.store.getState().gridEpoch ?? epoch,
             sourceEpoch => { const params = this.store.getState().epochs.get(sourceEpoch); return params ? this.axis.priceMapFor(params).scale ?? null : null; },
             () => { this.frameState.dirty = true; });
           this.frameState.dirty = true;
@@ -140,7 +160,8 @@ export class CoarseOverview {
 
   stats(): OverviewStats | null {
     const history = this.overviewHistory;
-    if (!history || !this.activeOverview()) return null;
+    // Diagnostics cover a loading overview too (it is not drawn until it has time knots).
+    if (!history || this.ring === null || this.frameState.view.colScale <= this.ring.capacityCols) return null;
     const slots = this.overview?.timeMap(this.axis.currentDtNs())?.slots;
     const timeBounds = slots && slots.t0.length > 0 ? {
       startNs: BigInt(Math.round(slots.t0[0])).toString(),
