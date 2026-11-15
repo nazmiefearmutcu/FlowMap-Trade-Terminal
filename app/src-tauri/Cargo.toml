@@ -28,7 +28,7 @@ libc = "0.2"
 # Already in the dependency tree via tauri — declared directly for the native
 # error dialogs, the job object that reaps the sidecar, the focus-existing-window
 # helper and the process creation flags.
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Globalization",
   # CreateJobObjectW's signature needs the Security types, so this feature is
