@@ -25,6 +25,7 @@
  */
 
 import type { HeatmapView } from '../heatmap';
+import type { ChartView } from '../gapProjection';
 import {
   priceToRow as scalePriceToRow,
   priceToPlotRow,
@@ -92,6 +93,9 @@ export interface TimeMap {
   dtNs: number;
   /** Optional per-column start-time table; see {@link TimeSlots}. */
   slots?: TimeSlots;
+  /** Source-clock discontinuities in coarse chart columns, sorted ascending. */
+  traceBreaks?: readonly number[];
+  priceGaps?: readonly import('../gapProjection').ClockGap[];
 }
 
 /**
@@ -172,6 +176,30 @@ export function slotTsToCol(s: TimeSlots, tsNs: bigint): number | null {
   return cols !== undefined ? cols[lo] + frac * (cols[lo + 1] - cols[lo]) : s.startSeq + (lo + frac) * stride;
 }
 
+/** Outside a loaded run, extend its nearest edge. The newest anchor would
+ * shift the entire earlier boundary across a restart gap. */
+function nearestClockAnchor(time: TimeMap, before: boolean): { col: number; ns: bigint } {
+  const slots = time.slots;
+  if (before && slots && time.priceGaps?.length && Number.isFinite(slots.t0[0])) {
+    return { col: slots.cols?.[0] ?? slots.startSeq, ns: BigInt(Math.round(slots.t0[0])) };
+  }
+  return { col: time.anchorSeq, ns: time.anchorT0Ns };
+}
+
+export function chartTimestamp(time: TimeMap, col: number): bigint {
+  const actual = time.slots ? slotColToTsNs(time.slots, col) : null;
+  if (actual !== null) return actual;
+  const anchor = nearestClockAnchor(time, col < (time.slots?.cols?.[0] ?? time.slots?.startSeq ?? -Infinity));
+  return anchor.ns + BigInt(Math.round((col - anchor.col) * time.dtNs));
+}
+
+export function chartColumn(time: TimeMap, tsNs: bigint): number {
+  const actual = time.slots ? slotTsToCol(time.slots, tsNs) : null;
+  if (actual !== null) return actual;
+  const anchor = nearestClockAnchor(time, Number(tsNs) < (time.slots?.t0[0] ?? -Infinity));
+  return anchor.col + Number(tsNs - anchor.ns) / time.dtNs;
+}
+
 /**
  * Row⇄price map for the current epoch.
  *
@@ -212,7 +240,7 @@ export function mapScale(p: PriceMap): PriceScale {
  * constructor and the refill write the same fields).
  */
 export class GridMap {
-  view: HeatmapView;
+  view: ChartView;
   dims: SurfaceDims;
   time: TimeMap | null;
   price: PriceMap | null;
@@ -220,7 +248,7 @@ export class GridMap {
   private screenPriceSpan = 0;
 
   constructor(
-    view: HeatmapView,
+    view: ChartView,
     dims: SurfaceDims,
     time: TimeMap | null,
     price: PriceMap | null,
@@ -233,7 +261,7 @@ export class GridMap {
   }
 
   /** Point this GridMap at a new frame's view + geometry (no allocation). */
-  refill(view: HeatmapView, dims: SurfaceDims, time: TimeMap | null, price: PriceMap | null): this {
+  refill(view: ChartView, dims: SurfaceDims, time: TimeMap | null, price: PriceMap | null): this {
     this.view = view;
     this.dims = dims;
     this.time = time;
@@ -266,12 +294,7 @@ export class GridMap {
    *  otherwise the linear affine (bit-identical to the pre-slot behaviour). */
   tsToCol(tsNs: bigint): number {
     const t = this.time;
-    if (t === null) return Number.NaN;
-    if (t.slots !== undefined) {
-      const piecewise = slotTsToCol(t.slots, tsNs);
-      if (piecewise !== null) return piecewise;
-    }
-    return t.anchorSeq + Number(tsNs - t.anchorT0Ns) / t.dtNs;
+    return t === null ? Number.NaN : chartColumn(t, tsNs);
   }
 
   /** Nanosecond start time of a (fractional) column, or null when time unknown.
@@ -279,12 +302,7 @@ export class GridMap {
    *  otherwise the linear affine (bit-identical to the pre-slot behaviour). */
   colToTsNs(col: number): bigint | null {
     const t = this.time;
-    if (t === null) return null;
-    if (t.slots !== undefined) {
-      const piecewise = slotColToTsNs(t.slots, col);
-      if (piecewise !== null) return piecewise;
-    }
-    return t.anchorT0Ns + BigInt(Math.round((col - t.anchorSeq) * t.dtNs));
+    return t === null ? null : chartTimestamp(t, col);
   }
 
   /** Fractional row of a price, or NaN when the price map is unknown. */
@@ -322,7 +340,7 @@ export class GridMap {
   // --- grid space → clip space (WebGL, y-up) ------------------------------------
 
   clipX(colf: number): number {
-    return ((colf - this.view.colOffset) / this.view.colScale) * 2 - 1;
+    return this.fractionX(colf) * 2 - 1;
   }
 
   clipY(rowf: number): number {
@@ -332,7 +350,11 @@ export class GridMap {
   // --- grid space → CSS pixels (2D canvas, y-down) ------------------------------
 
   cssX(colf: number): number {
-    return ((colf - this.view.colOffset) / this.view.colScale) * this.dims.cssW;
+    return this.fractionX(colf) * this.dims.cssW;
+  }
+
+  private fractionX(col: number): number {
+    return this.view.timeProjection?.fractionAt(col) ?? (col - this.view.colOffset) / this.view.colScale;
   }
 
   cssY(rowf: number): number {

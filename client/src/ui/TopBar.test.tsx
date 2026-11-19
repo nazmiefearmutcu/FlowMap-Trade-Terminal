@@ -466,7 +466,7 @@ describe('TopBar i18n shell', () => {
     );
 
     act(() => setLocale('tr'));
-    expect(container.querySelector('[data-testid="rail-toggle"]')!.textContent).toBe('Şerit');
+    expect(container.querySelector('[data-testid="rail-toggle"]')!.textContent).toBe('Yan panel');
     expect(container.querySelector('[data-testid="settings-open"]')!.textContent).toContain(
       'Ayarlar',
     );

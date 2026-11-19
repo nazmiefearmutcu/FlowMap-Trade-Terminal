@@ -93,7 +93,7 @@ async def test_pong_and_symbol_switch_proceed_while_history_is_blocked():
     assert conn._session is new and manager.unsubscribed == [old]
     old_work = conn._history_work
     await conn._handle_frame(wire.encode(request(2)))
-    assert conn._history_pending is not None
+    assert len(conn._history_pending) == 1
     assert new.calls == []  # old executor work drains, never concurrent
     release.set()
     await asyncio.wait_for(old_work, 1)
@@ -105,7 +105,7 @@ async def test_pong_and_symbol_switch_proceed_while_history_is_blocked():
     assert not old.cancelled
 
 
-async def test_single_worker_and_one_coalesced_pending_request_bound_a_burst():
+async def test_single_worker_and_one_coalesced_pending_page_per_resolution_bound_a_burst():
     release = asyncio.Event()
     session = Session(release)
     socket = Socket()
@@ -117,7 +117,7 @@ async def test_single_worker_and_one_coalesced_pending_request_bound_a_burst():
     for identity in range(2, 100):
         await conn._handle_frame(wire.encode(request(identity)))
         assert conn._history_work is worker
-    assert conn._history_pending[2].req_id == 99
+    assert [pending[2].req_id for pending in conn._history_pending.values()] == [99]
     delivery = conn._history_response
     release.set()
     await asyncio.wait_for(delivery, 1)
@@ -125,6 +125,25 @@ async def test_single_worker_and_one_coalesced_pending_request_bound_a_burst():
         await asyncio.wait_for(conn._history_response, 1)
     assert session.calls == [1, 99]
     assert socket.sent == [response(1), response(99)]
+
+
+async def test_overview_zoom_does_not_replace_a_queued_native_gap_repair():
+    release = asyncio.Event()
+    session = Session(release)
+    socket = Socket()
+    conn = ws_mod._Connection(socket, Manager({}))
+    conn._session = session
+    await conn._handle_frame(wire.encode(request(1)))
+    await session.started.wait()
+    repair = events.HistoryRequest(req_id=2, before_t=2**63 - 1, n_cols=4, start_col=0, end_col=3)
+    await conn._handle_frame(wire.encode(repair))
+    await conn._handle_frame(wire.encode(request(3)))
+    await conn._handle_frame(wire.encode(request(4)))
+    release.set()
+    while conn._history_response is not None:
+        await asyncio.wait_for(conn._history_response, 1)
+    assert session.calls == [1, 2, 4]
+    assert socket.sent == [response(1), response(2), response(4)]
 
 
 async def test_unsubscribe_discards_response_waiting_for_the_send_lock():
@@ -195,7 +214,7 @@ async def test_live_pongs_prevent_false_timeout_during_a_long_overview(monkeypat
         worker = conn._history_work
         socket.messages.put_nowait({"type": "websocket.disconnect"})
         await asyncio.wait_for(running, 1)
-        assert conn._history_response is None and conn._history_pending is None
+        assert conn._history_response is None and not conn._history_pending
         release.set()
         await asyncio.wait_for(worker, 1)
         await asyncio.sleep(0)

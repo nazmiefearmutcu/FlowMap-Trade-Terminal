@@ -83,6 +83,8 @@ export interface CrosshairReadout {
   timeNs: bigint | null;
   /** Time span of an averaged history bucket; absent on full-resolution data. */
   averageMs?: number;
+  /** Cursor is over a verified interval with no recorded order book. */
+  recordingGap?: boolean;
   /**
    * True on a sim feed, whose `timeNs` is session-relative (T+ from session start)
    * rather than wall time. The UI shows the T+ clock for it, with no zone label.

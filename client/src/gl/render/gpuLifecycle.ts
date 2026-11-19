@@ -470,15 +470,18 @@ export class GpuLifecycle {
   }
 
   /** Forwards a history-loader prefetch of up to `targetCols` columns. */
-  prefetchHistory(targetCols: number): void {
+  prefetchHistory(targetCols: number, atLaunch: boolean): void {
+    // Wide startup frames already request the archive through the overview.
+    // A competing full-resolution request wastes I/O and GPU uploads.
+    if (atLaunch && this.camera.state.colSpan > (this.ring?.capacityCols ?? 0)) return;
     void this.history?.prefetch(targetCols);
   }
 
   // --- coarse overview layer (see coarseOverview.ts) -------------------------
 
   /** The overview surface when the view is zoomed out past the ring, else null. */
-  activeOverview(): OverviewSurface | null {
-    return this.coarse.activeOverview();
+  activeOverview(withTime = true): OverviewSurface | null {
+    return this.coarse.activeOverview(withTime);
   }
 
   /** The overview surface, whatever the view (diagnostics and the normaliser). */

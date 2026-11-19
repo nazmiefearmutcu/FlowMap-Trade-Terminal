@@ -335,6 +335,35 @@ async def test_service_serves_a_fresh_answer_without_fetching_again():
     assert first.items[0].symbol == "AAPL"
 
 
+async def test_expired_map_is_served_while_one_refresh_runs():
+    mono = _Mono()
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    calls = 0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered.set()
+            await finish.wait()
+        return NASDAQ
+
+    svc = MarketMapService(fetch_us=fetch, monotonic=mono, ttl_s=60)
+    try:
+        first = await svc.get("us")
+        mono.t += 61
+        stale = await asyncio.wait_for(svc.get("us", allow_stale=True), timeout=1)
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert stale.stale and stale.items == first.items
+        assert (await svc.get("us", allow_stale=True)).stale
+        finish.set()
+        assert not (await svc.get("us")).stale
+        assert calls == 2
+    finally:
+        await svc.close()
+
+
 async def test_service_fetches_again_after_the_ttl():
     us = _Source(NASDAQ)
     mono = _Mono()

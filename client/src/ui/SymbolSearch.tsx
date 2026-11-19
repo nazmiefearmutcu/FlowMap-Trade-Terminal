@@ -104,7 +104,7 @@ function SymbolSearchTrigger({ triggerRef, current, singleKeys, onOpen }: {
       <span className="symsearch__icon" aria-hidden="true">
         ⌕
       </span>
-      <span className="symsearch__current">{current}</span>
+      <span className="symsearch__current">{current.slice(current.indexOf(':') + 1)}</span>
       <span className="symsearch__kbd" aria-hidden="true">
         {searchChord()}
       </span>

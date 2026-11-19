@@ -409,28 +409,42 @@ describe('MarketMap', () => {
     expect(dialog()).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('shows the previous map immediately while refreshing on reopen', async () => {
+    const { setOpen } = renderMap({ open: true });
+    await flush();
+    setOpen(false);
+    fetchMock.mockImplementationOnce(() => new Promise(() => {}));
+    setOpen(true);
+    expect(tileFor('NVDA')).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('MarketMap with markets switched off in Settings', () => {
   afterEach(() => setHiddenMarkets([]));
 
-  it('offers only the tab whose markets are on, and fetches only it', async () => {
+  it('loads stocks even when equity charts are switched off', async () => {
     setHiddenMarkets(['equity']);
     renderMap({ open: true });
     await flush();
 
-    expect(document.querySelector('[data-testid="market-map-tab-us"]')).toBeNull();
-    expect(tab('crypto').getAttribute('aria-selected')).toBe('true');
-    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(['crypto']);
+    expect(tab('us').getAttribute('aria-selected')).toBe('true');
+    expect(tab('crypto').getAttribute('aria-selected')).toBe('false');
+    expect(tileFor('NVDA').tagName).toBe('DIV');
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(['us']);
   });
 
-  it('says so and fetches nothing when both markets are off', async () => {
+  it('can browse both maps when both chart markets are off', async () => {
     setHiddenMarkets(['equity', groupEntry('crypto')]);
     renderMap({ open: true });
     await flush();
 
-    expect(document.querySelector('[data-testid="market-map-all-off"]')).not.toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(tileFor('NVDA')).toBeTruthy();
+    clickEl(tab('crypto'));
+    await flush();
+    expect(tileFor('BTC').tagName).toBe('DIV');
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(['us', 'crypto']);
   });
 
   it('a tile whose chart market is off opens nothing', async () => {

@@ -540,8 +540,8 @@ vec2 projectedDensity(int col, float priceDelta, int timeLevel, out int columnBl
   float span = nativeSpan(float(firstRow) - 0.5, float(lastRow) - 0.5, core, wings);
   vec2 mass = columnBlock == 1 ? projectedNativeRows(col, first, taps, rowLevel)
     : projectedRows(col, first, taps, rowLevel, timeLevel);
-  // Keep wide recorded buckets honest. They have no fine price resolution;
-  // do not present uncertain hundreds-of-dollar intervals as hot fine walls.
+  // Attenuate recorded buckets when their price resolution is coarser than
+  // the screen can resolve. Their source width still controls the geometry.
   float sourceWidth = width;
   if (u_resolutionEnabled == 1) {
     int slot = col % u_capacityCols;
@@ -562,7 +562,7 @@ vec2 projectedDensity(int col, float priceDelta, int timeLevel, out int columnBl
       else { sourceWidth = max(sourceWidth, band.z); break; }
     }
   }
-  confidence = max(0.3, min(1.0, sqrt(u_priceCore.z / max(sourceWidth, u_priceCore.z))));
+  confidence = max(0.3, min(1.0, sqrt(max(u_priceCore.z, u_pricePixel) / max(sourceWidth, u_priceCore.z))));
   return mass * u_priceCore.z / max(span, 1e-30);
 }
 

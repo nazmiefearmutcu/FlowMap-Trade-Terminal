@@ -397,6 +397,13 @@ export function Tape({ bigTradeUsd = 0 }: { bigTradeUsd?: number }): JSX.Element
             onPointerEnter={feed.onEnter}
             onPointerLeave={feed.onLeave}
           >
+            {trades.length > 0 && (
+              <div className="tape__columns" aria-hidden="true">
+                <span>{t('crosshair.time')}</span>
+                <span>{t('crosshair.price')}</span>
+                <span>{t('tape.quantity')}</span>
+              </div>
+            )}
             {trades.length === 0 ? (
               <div className="panel__empty">{source.length === 0 ? t('tape.waiting') : t('tape.noMatch')}</div>
             ) : (
@@ -454,6 +461,8 @@ function TapeHeader({
   onToggleHold,
 }: TapeHeaderProps) {
   const t = useT();
+  const holdLabel = t('tape.hold');
+  const resumeLabel = t('tape.resume');
   return (
     <header className="panel__header">
       <h2 className="panel__heading">
@@ -474,11 +483,9 @@ function TapeHeader({
       <span className="panel__badge tape__clock" data-testid={sessionClock ? 'tape-session' : 'tape-zone'}>
         {sessionClock ? t('tape.sessionClock') : zoneText}
       </span>
-      {held && (
-        <span className="panel__badge tape__held" data-testid="tape-held" title={t('tape.heldTitle')}>
-          {t('tape.held')}
-        </span>
-      )}
+      <span className="panel__badge tape__held" data-testid="tape-held" aria-hidden={!held} title={t('tape.heldTitle')}>
+        {t('tape.held')}
+      </span>
       {bigActive && (
         <span
           className="panel__badge tape__big"
@@ -494,8 +501,9 @@ function TapeHeader({
         className="panel__lock tape__hold"
         onClick={onToggleHold}
         data-testid="tape-hold"
+        data-fit-label={held ? holdLabel : resumeLabel}
       >
-        {held ? t('tape.resume') : t('tape.hold')}
+        <span>{held ? resumeLabel : holdLabel}</span>
       </button>
     </header>
   );

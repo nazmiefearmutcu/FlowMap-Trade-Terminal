@@ -14,6 +14,7 @@ import type { GridMap } from './coords';
 import type { PointBatch, SolidBatch } from './primitives';
 import type { TextLayer } from '../textLayer';
 import type { PriceScale } from '../priceScale';
+import type { PriceGapFill } from './priceGapFill';
 
 export interface OverlayFrame {
   /** Immutable camera + epoch transform for this frame. */
@@ -38,6 +39,7 @@ export interface OverlayFrame {
   columnScale?: (col: number) => PriceScale | null;
   dataVersion?: number;
   changed?: () => void;
+  priceGapFill?: PriceGapFill;
   /**
    * Legacy frame-wide heatmap LOD diagnostics. The profile always accumulates
    * native rows; a projected heatmap chooses its footprint locally per pixel.

@@ -128,6 +128,9 @@ class Config(msgspec.Struct, frozen=True):
     alpaca_key: str | None = None
     alpaca_secret: str | None = None
     finnhub_key: str | None = None
+    # Anonymous, provider-classified trade trial. Desktop enables this explicitly;
+    # direct server users can opt in without adding any personal credentials.
+    equity_public_tape: bool = False
     dt_crypto_ns: int = 250_000_000
     dt_equity_keyed_ns: int = 10**9
     # Keyless equity. dt_equity_book_ns is how often the four Cboe books are
@@ -257,6 +260,7 @@ class Config(msgspec.Struct, frozen=True):
             # An empty key is "no key", like an absent Alpaca pair (normalized
             # to None) — the equity tier test is a truthiness check.
             finnhub_key=env.get("FINNHUB_API_KEY") or None,
+            equity_public_tape=_bool_env(env, "FLOWMAP_EQUITY_PUBLIC_TAPE", "0"),
             backfill_enabled=_bool_env(env, "FLOWMAP_BACKFILL_ENABLED", "1"),
             backfill_max_cols=_int_in_range(
                 env, "FLOWMAP_BACKFILL_MAX_COLS", "512", *_BACKFILL_MAX_COLS_RANGE

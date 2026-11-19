@@ -375,6 +375,7 @@ class MarketMapService:
         self._answers: dict[str, tuple[MarketMap, float]] = {}
         self._failed_at: dict[str, float] = {}
         self._locks = {market: asyncio.Lock() for market in _SOURCE_NAMES}
+        self._refreshes: dict[str, asyncio.Task[MarketMap | None]] = {}
         # The learned USDT pair set, when it was fetched, and when a refresh last failed.
         self._pairs: frozenset[str] | None = None
         self._pairs_fetched_at: float | None = None
@@ -382,18 +383,22 @@ class MarketMapService:
         self._pairs_lock = asyncio.Lock()
         self._session: aiohttp.ClientSession | None = None
 
-    async def get(self, market: str) -> MarketMap:
+    async def get(self, market: str, *, allow_stale: bool = False) -> MarketMap:
         if market not in _SOURCE_NAMES:
             raise ValueError(f"unknown market {market!r}")
         fresh = self._fresh(market)
         if fresh is not None:
             return fresh
+        if allow_stale and market in self._answers:
+            refresh = self._refreshes.get(market)
+            if (refresh is None or refresh.done()) and self._can_refresh(market):
+                self._refreshes[market] = asyncio.create_task(self._refresh_cached(market))
+            return self._fallback(market)
         async with self._locks[market]:
             fresh = self._fresh(market)
             if fresh is not None:
                 return fresh
-            failed_at = self._failed_at.get(market)
-            if failed_at is None or self._monotonic() - failed_at >= RETRY_AFTER_FAILURE_S:
+            if self._can_refresh(market):
                 try:
                     items = await self._load(market)
                 except Exception as exc:
@@ -412,7 +417,23 @@ class MarketMapService:
                     return answer
             return self._fallback(market)
 
+    def _can_refresh(self, market: str) -> bool:
+        failed_at = self._failed_at.get(market)
+        return failed_at is None or self._monotonic() - failed_at >= RETRY_AFTER_FAILURE_S
+
+    async def _refresh_cached(self, market: str) -> MarketMap | None:
+        try:
+            return await self.get(market)
+        except MarketMapUnavailable:
+            return None
+
     async def close(self) -> None:
+        tasks = list(self._refreshes.values())
+        self._refreshes.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         session, self._session = self._session, None
         if session is not None and not session.closed:
             await session.close()
@@ -438,10 +459,10 @@ class MarketMapService:
         )
 
     async def _load(self, market: str) -> tuple[MapItem, ...]:
-        payload = await self._fetchers[market]()
         if market == "us":
-            return parse_us(payload)
-        return parse_crypto(payload, known_pairs=await self._usdt_pairs())
+            return parse_us(await self._fetchers[market]())
+        payload, pairs = await asyncio.gather(self._fetchers[market](), self._usdt_pairs())
+        return parse_crypto(payload, known_pairs=pairs)
 
     async def _usdt_pairs(self) -> frozenset[str]:
         """The USDT pairs a coin can chart against. Never raises.

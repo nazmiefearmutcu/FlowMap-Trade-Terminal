@@ -34,6 +34,8 @@ export const enMarket: Record<string, string> = {
   'marketMap.noChart': 'No chart for this one',
   'marketMap.group.other': 'Other',
   'crosshair.src': 'Source',
+  'crosshair.noRecording': 'No order book recording',
+  'tape.quantity': 'Size',
   'crosshair.time': 'Time',
   'crosshair.price': 'Price',
   'crosshair.bid': 'Bid orders',

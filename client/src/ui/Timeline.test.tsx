@@ -42,6 +42,7 @@ function fakeRenderer(spanCols = SPAN_COLS) {
   const subscriptions: Array<{ callback: () => void; unsubscribe: ReturnType<typeof vi.fn> }> = [];
   const r = {
     following: true,
+    loadedOldest: 0,
     range: { oldest: 0, newest: spanCols, count: spanCols + 1 } as { oldest: number; newest: number; count: number } | null,
     latestSeq: spanCols,
     drawn: { colOffset: tl.viewStartCol, colScale: tl.viewEndCol - tl.viewStartCol, rowOffset: 0, rowScale: 1 },
@@ -51,12 +52,15 @@ function fakeRenderer(spanCols = SPAN_COLS) {
     get newestColSeq() { return r.latestSeq; },
     get viewSnapshot() { return { ...r.drawn }; },
     residentRange: vi.fn(() => r.range),
-    timeline: vi.fn(() => r.range === null ? null : {
-      oldestSeq: 0,
+    timelineWindow: vi.fn(() => r.range === null ? null : {
+      oldestSeq: r.loadedOldest,
       newestSeq: Math.max(r.range.newest, r.latestSeq),
       viewStartCol: r.drawn.colOffset,
       viewEndCol: r.drawn.colOffset + r.drawn.colScale,
-      timeBase: r.timeBase,
+    }),
+    timeline: vi.fn(() => {
+      const window = r.timelineWindow();
+      return window && { ...window, timeBase: r.timeBase };
     }),
     timestampAtColumn: vi.fn((col: number) => r.timeBase.anchorT0Ns + BigInt(Math.round((col - r.timeBase.anchorSeq) * r.timeBase.dtNs))),
     stats: vi.fn(),
@@ -334,6 +338,20 @@ describe('Timeline drawn-window subscription', () => {
     expect(window.style.left).toBe('0%'); expect(window.style.width).toBe('100%');
     act(() => { r.range = { oldest: 0, newest: 100, count: 101 }; r.drawn.colOffset = 90; r.emitViewChanged(); });
     expect(window.style.left).toBe('90%');
+  });
+
+  it('uses the same nonzero archive origin for the minimap and its duration', () => {
+    useFlowMapStore.setState({ status: 'live', sessionId: 'live' });
+    const r = fakeRenderer(100);
+    r.loadedOldest = 20;
+    r.drawn.colOffset = 40;
+    r.drawn.colScale = 40;
+    render(r);
+    poll();
+    const window = q<HTMLDivElement>('[data-testid="minimap-window"]')!;
+    expect(window.style.left).toBe('25%');
+    expect(window.style.width).toBe('50%');
+    expect(window.closest('[data-testid="timeline"]')?.textContent ?? document.body.textContent).toContain('00:01:20.000');
   });
 
   it('polls quiet-view extent changes while replay geometry notifications send no transport commands', () => {

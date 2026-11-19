@@ -8,6 +8,7 @@ import type { BenchmarkMetrics } from '../benchmarkMetrics';
 import type { Camera } from '../camera';
 import type { ColumnCache } from '../columnCache';
 import { renderProgramsReady } from '../heatmapProgram';
+import { drawProjectedDepth } from '../gapProjection';
 import type { PerfResult, RendererStats } from '../rendererTypes';
 import type { AxisMap } from './axisMap';
 import type { DepthIngest } from './depthIngest';
@@ -283,7 +284,8 @@ export class FrameLoop {
   private sampleCadence(ts: number): void {
     if (this.statsLastRafTs > 0) {
       const dt = ts - this.statsLastRafTs;
-      if (dt > 0 && dt < 1000) {
+      // Multiple callbacks serviced in the same millisecond are not refreshes.
+      if (dt >= 1 && dt < 1000) {
         const sample = 1000 / dt;
         this.statsFpsEma =
           this.statsFpsEma > 0
@@ -335,7 +337,7 @@ export class FrameLoop {
     // On frames where the view moved, ask the loader to ensure the visible
     // range is populated. This guard is O(1) (visible-left vs resident-oldest) —
     // never O(history) — so the perf gate stays green.
-    if (this.frameState.viewMoved && this.gpu.history !== null && this.gpu.ring !== null && this.frameState.view.colScale <= this.gpu.ring.capacityCols) {
+    if (this.frameState.viewMoved && this.gpu.history !== null && this.gpu.ring !== null && this.camera.state.colSpan <= this.gpu.ring.capacityCols) {
       this.frameState.viewMoved = false;
       this.gpu.history.ensureVisible({
         leftCol: Math.floor(this.frameState.view.colOffset),
@@ -358,10 +360,11 @@ export class FrameLoop {
     // outside the measured draw cost; a no-op during the perf preload run).
     this.shading.updateNormalization();
     const t0 = performance.now();
-    this.gpu.heatmap.priceScale = this.axis.overlayPriceMap()?.scale ?? null;
+    const heatmap = this.gpu.heatmap;
+    heatmap.priceScale = this.axis.overlayPriceMap()?.scale ?? null;
     const overview = this.gpu.activeOverview();
-    if (overview) overview.draw(this.frameState.view, this.gpu.heatmap);
-    else this.gpu.heatmap.draw(this.frameState.view);
+    if (overview) overview.draw(this.frameState.view, heatmap);
+    else drawProjectedDepth(this.gpu.ctx.gl, this.axis.chartView(null), segment => heatmap.draw(segment));
     // Overlays draw OVER the heatmap, O(visible). They are part of the
     // frame the HUD reports: the PerfHud chip is the project's own
     // regression sensor, and overlays are on by default — measuring only

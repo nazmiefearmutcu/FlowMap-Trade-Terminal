@@ -241,6 +241,11 @@ is order independent so newest-first disk pages contribute their full CDF.
   readers never see a truncated part. A soft global cap (`FLOWMAP_RECORDING_GB_CAP`, default 20 GB)
   deletes the lexicographically oldest parts across all symbols as the total grows. `*-epochs-*`
   parts are exempt, so the total can stay above the cap.
+- **Restart history** loads at most the attach snapshot's 512 observed columns,
+  including a compatible recording older than the RAM window. Age alone does
+  not discard recorded L2. A gap marker separates the old tail from the real
+  live timestamp; no book is carried through the offline interval. Price-only
+  candle history is used when no compatible recording can be restored.
 - **Replay** is a feed like any other: `SUBSCRIBE` with `mode: "replay"` (optionally `start_t`)
   builds a `ReplayFeed` over that key's recordings. The transport is driven by the client through
   `SEEK` / `SET_SPEED` / `PAUSE` / `RESUME` (1–100×).

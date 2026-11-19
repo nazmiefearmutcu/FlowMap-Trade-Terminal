@@ -12,14 +12,14 @@ import { DEFAULT_SETTINGS } from './settings';
 const mounted: Array<{ container: HTMLElement; root: Root }> = [];
 
 /** Mount the toolbar against a renderer stub that reports history progress, then let its 500 ms poll run. */
-function mountWithProgress(loaded: number, total: number): HTMLElement {
+function mountWithProgress(loaded: number, total: number, presented = false): HTMLElement {
   vi.useFakeTimers();
   const rendererRef = {
     current: {
       following: true,
       priceFollow: 'off',
       stats: () => ({ fps: 60 }),
-      overviewStats: () => ({ error: null, progress: { loaded, total } }),
+      overviewStats: () => ({ error: null, progress: { loaded, total }, presented }),
     } as unknown as Renderer,
   };
   const container = document.createElement('div');
@@ -66,5 +66,10 @@ describe('DeskToolbar history progress', () => {
     setLocale('tr');
     const el = mountWithProgress(1000, 12000);
     expect(el.querySelector('[data-testid="history-loading"]')?.textContent).toBe('Geçmiş yükleniyor 1.000/12.000');
+  });
+
+  it('keeps the history status quiet during a refresh of the live edge', () => {
+    const el = mountWithProgress(340, 341, true);
+    expect(el.querySelector('[data-testid="history-loading"]')).toBeNull();
   });
 });

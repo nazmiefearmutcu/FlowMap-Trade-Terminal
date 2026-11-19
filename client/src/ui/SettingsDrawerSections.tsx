@@ -15,6 +15,7 @@ import { useIndicatorStore } from '../indicators/store';
 import { setSingleKeyShortcutsEnabled, useSingleKeyShortcuts } from '../input/shortcutPrefs';
 import { COLORMAP_CATALOG, resolveAppearance, stopsGradient } from '../theme/appearance';
 import { useTheme } from '../theme';
+import { UI_STYLES } from '../theme/uiStyle';
 import { toggleIndicatorPicker } from './IndicatorPicker';
 import { openOnboarding } from './OnboardingCard';
 import { OverlayToggles } from './OverlayToggles';
@@ -63,6 +64,23 @@ export function SettingsAppearanceSection({
   };
   return (
     <>
+      <div className="setting">
+        <span className="setting__label">{t('settings.interfaceStyle')}</span>
+        <div className="segrow" role="group" aria-label={t('settings.interfaceStyle')}>
+          {UI_STYLES.map(style => (
+            <button
+              key={style}
+              type="button"
+              className={`segrow__btn${settings.interfaceStyle === style ? ' is-on' : ''}`}
+              aria-pressed={settings.interfaceStyle === style}
+              data-testid={`interface-${style}`}
+              onClick={() => onChange({ interfaceStyle: style })}
+            >
+              {t(`settings.interfaceStyle.${style}`)}
+            </button>
+          ))}
+        </div>
+      </div>
       {/* language picker (i18n shell: EN default + TR). useT() above makes
           the whole drawer re-render the moment setLocale lands. */}
       <div className="setting">
@@ -151,6 +169,7 @@ export function SettingsDisplaySection({
   const zonePref = useTimeZone();
   const { theme } = useTheme();
   const singleKeys = useSingleKeyShortcuts();
+  const usesContrastPalette = theme === 'contrast';
   // The imbalance hint says the channel cycles with C, which the switch can turn off.
   const channelHintKey = settings.depthChannel === 'imbalance' && !singleKeys
     ? 'settings.channelHint.imbalanceNoKey'
@@ -189,7 +208,13 @@ export function SettingsDisplaySection({
       </div>
 
       {/* colormap */}
-      <div className="setting">
+      {usesContrastPalette ? (
+        <div className="setting">
+          <span className="setting__label">{t('settings.colormap')}</span>
+          <span className="palette-preview" aria-hidden="true" style={{ background: `linear-gradient(to right, ${stopsGradient(resolveAppearance(theme, 'theme').density)})` }} />
+          <span className="setting__hint">{t('settings.colormapHighContrast')}</span>
+        </div>
+      ) : <div className="setting">
         <span className="setting__label">{t('settings.colormap')}</span>
         <div className="appearance-grid" role="group" aria-label={t('settings.colormap')} data-testid="setting-colormap">
           {COLORMAP_CATALOG.map(({ id: c, label, nameKey, hint }) => (
@@ -209,7 +234,7 @@ export function SettingsDisplaySection({
           ))}
         </div>
         <span className="setting__hint">{t('settings.colormapHint')}</span>
-      </div>
+      </div>}
 
       {/* time zone: clock times follow this preference. format.ts owns the store, so the
           Tape, top bar, axes and crosshair re-render together when it changes. */}
@@ -450,7 +475,7 @@ export function SettingsViewSection({ settings, onChange }: SettingsSectionProps
       {/* server price band — changing it re-subscribes */}
       <div className="setting">
         <span className="setting__label">{t('settings.priceRange')}</span>
-        <div className="segrow" role="group" aria-label={t('settings.priceRange')} data-testid="setting-priceBand">
+        <div className="segrow" role="group" aria-label={t('settings.priceRange')} aria-describedby="price-band-description" data-testid="setting-priceBand">
           {PRICE_BANDS.map((b) => (
             <button
               type="button"
@@ -464,6 +489,7 @@ export function SettingsViewSection({ settings, onChange }: SettingsSectionProps
             </button>
           ))}
         </div>
+        <span className="setting__hint" id="price-band-description">{t('settings.priceRangeHelp')}</span>
         <span className="setting__hint">{t(PRICE_BAND_HINT_KEY[settings.priceBand])}</span>
       </div>
 

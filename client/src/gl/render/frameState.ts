@@ -7,8 +7,8 @@ import type { HeatmapView } from '../heatmap';
  * dirty mark made by any helper is seen by every other reader.
  */
 export interface FrameState {
-  /** Drawn view uniforms (includes the eased live-edge lag). */
-  view: HeatmapView;
+  /** Drawn view uniforms, including the live glide and space for quote labels. */
+  view: HeatmapView & { liveQuoteStartX?: number };
   /** Redraw on the next rAF tick (new column, view change, resize). */
   dirty: boolean;
   /** The view moved this frame, so the HistoryLoader must ensure the visible range. */

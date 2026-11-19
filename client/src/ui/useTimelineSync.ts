@@ -30,6 +30,14 @@ export interface MinimapGeom {
 
 export const EMPTY_GEOM: MinimapGeom = { leftPct: 0, widthPct: 100, extent: null };
 
+function drawnWindow(tl: NonNullable<ReturnType<Renderer['timelineWindow']>>): Pick<MinimapGeom, 'leftPct' | 'widthPct'> | null {
+  if (![tl.oldestSeq, tl.newestSeq, tl.viewStartCol, tl.viewEndCol].every(Number.isFinite)) return null;
+  const span = Math.max(1, tl.newestSeq - tl.oldestSeq);
+  const leftPct = clamp01((tl.viewStartCol - tl.oldestSeq) / span) * 100;
+  const rightPct = clamp01((tl.viewEndCol - tl.oldestSeq) / span) * 100;
+  return { leftPct, widthPct: Math.max(0.6, rightPct - leftPct) };
+}
+
 function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
@@ -72,21 +80,10 @@ function useDrawnWindowPainter(
     const paintWindow = (r: Renderer | null): void => {
       const node = windowRef.current;
       if (!node) return;
-      let leftPct = EMPTY_GEOM.leftPct;
-      let widthPct = EMPTY_GEOM.widthPct;
-      const range = r?.residentRange();
-      if (r && range != null) {
-        const newest = Math.max(range.newest, r.newestColSeq);
-        const view = r.viewSnapshot;
-        const right = view.colOffset + view.colScale;
-        if (!Number.isFinite(newest) || !Number.isFinite(view.colOffset) ||
-            !Number.isFinite(view.colScale) || !Number.isFinite(right)) return;
-        // Match timeline(): session oldest=0, newest=max(resident, appended).
-        const span = Math.max(1, newest);
-        leftPct = clamp01(view.colOffset / span) * 100;
-        const rightPct = clamp01(right / span) * 100;
-        widthPct = Math.max(0.6, rightPct - leftPct);
-      }
+      const tl = r?.timelineWindow();
+      const geometry = tl ? drawnWindow(tl) : EMPTY_GEOM;
+      if (!geometry) return;
+      const { leftPct, widthPct } = geometry;
       if (node === paintedWindow && leftPct === paintedLeft && widthPct === paintedWidth) return;
       node.style.left = `${leftPct}%`;
       node.style.width = `${widthPct}%`;
@@ -163,29 +160,27 @@ export function useTimelineSync(
       }
       return;
     }
-    const span = Math.max(1, tl.newestSeq - tl.oldestSeq);
-    const leftPct = clamp01((tl.viewStartCol - tl.oldestSeq) / span) * 100;
-    const rightPct = clamp01((tl.viewEndCol - tl.oldestSeq) / span) * 100;
+    const window = drawnWindow(tl);
+    if (!window) return;
     let extent: TimeExtent | null = null;
     let toNs: ((col: number) => bigint) | null = null;
     if (tl.timeBase) {
       const { anchorSeq, anchorT0Ns, dtNs } = tl.timeBase;
       toNs = (col: number): bigint =>
         r?.timestampAtColumn?.(col) ?? anchorT0Ns + BigInt(Math.round((col - anchorSeq) * dtNs));
-      extent = { startNs: toNs(tl.oldestSeq), endNs: toNs(tl.newestSeq) };
+      extent = tl.timeExtent ?? { startNs: toNs(tl.oldestSeq), endNs: toNs(tl.newestSeq) };
     }
     if (state.subscription?.mode === 'replay') extent = replay ? { startNs: replay.startNs, endNs: replay.endNs } : null;
     // Advance the playhead: map the newest column to ns and drive the scrubber
     // from its fraction of the session extent — unless the user is scrubbing.
     // Also self-corrects a stale thumb across session/symbol switches.
     if (extent && toNs && !draggingRef.current) {
-      const f = fractionOfExtent(replay?.positionNs ?? toNs(tl.newestSeq), extent);
+      const f = fractionOfExtent(replay?.positionNs ?? (tl.timeExtent?.endNs ?? toNs(tl.newestSeq)), extent);
       const nv = Math.round(f * SCRUB_STEPS);
       setScrub((prev) => (prev === nv ? prev : nv));
     }
     const next: MinimapGeom = {
-      leftPct,
-      widthPct: Math.max(0.6, rightPct - leftPct),
+      ...window,
       extent,
     };
     const prev = geomRef.current;

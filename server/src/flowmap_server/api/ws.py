@@ -243,7 +243,7 @@ class _Connection:
         self._history_generation = 0
         self._history_work: asyncio.Task[bytes] | None = None
         self._history_response: asyncio.Task[None] | None = None
-        self._history_pending: tuple[Session, int, events.HistoryRequest] | None = None
+        self._history_pending: dict[bool, tuple[Session, int, events.HistoryRequest]] = {}
         self._closed = False
         # True while a Subscribe is being served. The server is busy, not the
         # peer silent, so the liveness check must not fire during it.
@@ -477,7 +477,7 @@ class _Connection:
         another zoom must not launch concurrent workers against that cache.
         """
         self._history_generation += 1
-        self._history_pending = None
+        self._history_pending.clear()
         response, self._history_response = self._history_response, None
         if response is not None:
             response.cancel()
@@ -490,10 +490,10 @@ class _Connection:
             return
         pending = session, self._history_generation, req
         if self._history_work is not None:
-            # One active worker and one coalesced pending request per socket.
-            # Native and overview loaders may overlap; hostile request bursts
-            # cannot create an unbounded queue of multi-MiB disk operations.
-            self._history_pending = pending
+            # Keep at most one pending page per resolution class. A zoom can
+            # coalesce older overview work without dropping the independent
+            # native page that restores a gap in the current feed.
+            self._history_pending[req.stride > 1] = pending
             return
         self._start_history(*pending)
 
@@ -517,9 +517,9 @@ class _Connection:
         if work is not self._history_work or not work.done() or self._history_response is not None:
             return
         self._history_work = None
-        pending, self._history_pending = self._history_pending, None
-        if pending is not None:
-            self._start_history(*pending)
+        if self._history_pending:
+            kind = next(iter(self._history_pending))
+            self._start_history(*self._history_pending.pop(kind))
 
     async def _deliver_history(self, work: asyncio.Task[bytes], session: Session, generation: int,
                                session_id: str | None = None) -> None:

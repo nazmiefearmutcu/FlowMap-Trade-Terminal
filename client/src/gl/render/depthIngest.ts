@@ -140,7 +140,7 @@ export class DepthIngest {
     this.columnCache = host.columnCache;
     this.benchmark = host.benchmark;
     this.capacityColsTarget = host.capacityColsTarget;
-    this.writer = new ColumnWriter(host, this.partialGate);
+    this.writer = new ColumnWriter(host, this.partialGate, () => this.pendingDepth.at(-1)?.col_seq ?? -1);
     this.overlayFeed = new OverlayFeed({ store: this.store, overlayLayer: this.overlayLayer, follow: this.follow, frameState: this.frameState });
   }
 

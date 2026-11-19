@@ -335,9 +335,9 @@ describe('Tape inspection controls', () => {
     click(container.querySelector('[data-testid="tape-hold"]')!);
     act(() => { print(2n, 101); flushForTest(); });
     expect(container.querySelectorAll('[data-testid="tape-row"]')).toHaveLength(1);
-    expect(container.querySelector('[data-testid="tape-held"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tape-held"]')?.getAttribute('aria-hidden')).toBe('false');
     pointer(container.querySelector('[data-testid="tape-body"]')!, 'pointerout');
-    expect(container.querySelector('[data-testid="tape-held"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tape-held"]')?.getAttribute('aria-hidden')).toBe('false');
     click(container.querySelector('[data-testid="tape-hold"]')!);
     expect(container.querySelectorAll('[data-testid="tape-row"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="tape-row"]')?.getAttribute('data-price')).toBe('101.00');
@@ -359,12 +359,12 @@ describe('Tape inspection controls', () => {
     const { container } = render(<Tape />);
     const body = container.querySelector('[data-testid="tape-body"]')!;
     pointer(body, 'pointerover');
-    expect(container.querySelector('[data-testid="tape-held"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tape-held"]')?.getAttribute('aria-hidden')).toBe('false');
     act(() => { print(2n, 101); flushForTest(); });
     expect(container.querySelectorAll('[data-testid="tape-row"]')).toHaveLength(1);
     pointer(body, 'pointerout');
     expect(container.querySelectorAll('[data-testid="tape-row"]')).toHaveLength(2);
-    expect(container.querySelector('[data-testid="tape-held"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tape-held"]')?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('drops held rows immediately on symbol switch and resets filters/hold after reset', () => {
@@ -377,7 +377,7 @@ describe('Tape inspection controls', () => {
     act(() => useFlowMapStore.setState({ subscription: { market: 'crypto', symbol: 'ETHUSDT', mode: 'live', band: 'native' } }));
     expect(container.querySelectorAll('[data-testid="tape-row"]')).toHaveLength(0);
     expect(select.value).toBe('all');
-    expect(container.querySelector('[data-testid="tape-held"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tape-held"]')?.getAttribute('aria-hidden')).toBe('true');
     act(() => { resetForSession(); print(2n, 25); flushForTest(); });
     expect(container.querySelector('[data-testid="tape-row"]')?.getAttribute('data-price')).toBe('25.00');
     act(() => { print(3n, 26); flushForTest(); });
@@ -390,7 +390,7 @@ describe('Tape inspection controls', () => {
     click(container.querySelector('[data-testid="tape-hold"]')!);
     act(() => { resetForSession(); flushForTest(); });
     expect(container.querySelectorAll('[data-testid="tape-row"]')).toHaveLength(0);
-    expect(container.querySelector('[data-testid="tape-held"]')).toBeNull();
+    expect(container.querySelector('[data-testid="tape-held"]')?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('shows the retained count and an honest no-match empty state', () => {

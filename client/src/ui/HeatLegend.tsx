@@ -1,7 +1,7 @@
 /** Liquidity scale from the same resolved descriptor used by PNG export. */
 import type { Colormap } from '../gl/lut';
 import type { DepthChannelMode } from './settings';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { useFlowMapStore } from '../state/store';
 import { useT } from '../i18n/useT';
 import { getSnapshot, subscribe as subscribeBook } from '../state/bookStore';
@@ -57,16 +57,7 @@ export function HeatLegend({ colormap, channel }: HeatLegendProps): JSX.Element 
         className="heat-legend__bar"
         data-testid="heat-legend-bar"
         data-ramp={legend.row}
-        style={{
-          background: `linear-gradient(to top, ${legend.gradient})`,
-          // Bookmap-style swatch frame: the ramp's low end is near-black on the
-          // midnight chip (invisible edge), so every legend — not just the
-          // divergent one (CSS keeps its own rule) — gets a defined outline.
-          // `width` compensates the 2×1px border (border-box) so the painted
-          // gradient keeps its original 8px stem.
-          border: '1px solid var(--chart-chip-border, var(--line))',
-          width: 10,
-        }}
+        style={{ '--heat-stops': legend.gradient } as CSSProperties}
         aria-hidden="true"
       />
       <span className="heat-legend__cap">{legend.bottomCap}</span>

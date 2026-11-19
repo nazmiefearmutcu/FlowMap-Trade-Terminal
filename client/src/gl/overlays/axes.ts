@@ -221,24 +221,28 @@ function zoneReservePx(zone: string): number {
  * in the width that is left.
  */
 export function timeAxisModel(gm: GridMap, cssW: number, clock: TimeAxisClock | null = null): AxisLabel[] {
-  if (!gm.hasEvents) return [];
-  const tLo = gm.colToTsNs(gm.view.colOffset);
-  const tHi = gm.colToTsNs(gm.view.colOffset + gm.view.colScale);
-  if (tLo === null || tHi === null) return [];
-  const { step, ticks } = timeTickModel(tLo, tHi, TIME_TARGET);
-  // adaptive labels: the millisecond format is reserved for genuinely
-  // sub-second ladders (< 0.5 s) — 0.5 s ticks already read as clock seconds at
-  // a glance, and every 1 s+ ladder before this change paid invisible `.mmm`.
-  const fmt = timeAxisLabelFormatter(step, clock);
+  if (gm.time === null) return [];
   const plotW = cssW - zoneReservePx(timeAxisZoneText(clock));
   const out: AxisLabel[] = [];
-  for (const t of ticks) {
-    const x = gm.cssX(gm.tsToCol(t));
-    if (x < -1 || x > plotW + 1) continue;
-    out.push({ pos: x, label: fmt(t) });
+  // A single step across a multi-hour outage hides every tick in the few
+  // minutes of captured data next to it. Use the screen width of each part.
+  const spans = gm.view.timeProjection?.segments ?? [{
+    from: gm.view.colOffset, to: gm.view.colOffset + gm.view.colScale, x0: 0, x1: 1,
+  }];
+  for (const { from, to, x0, x1 } of spans) {
+    const width = Math.min(x1 * cssW, plotW) - x0 * cssW;
+    if (width < 48 && spans.length > 1) continue;
+    const tLo = gm.colToTsNs(from);
+    const tHi = gm.colToTsNs(to);
+    if (tLo === null || tHi === null || tLo >= tHi) continue;
+    const target = spans.length === 1 ? TIME_TARGET : Math.max(1, Math.round(width / 140));
+    const { step, ticks } = timeTickModel(tLo, tHi, target);
+    const fmt = timeAxisLabelFormatter(step, clock);
+    for (const t of ticks) {
+      const x = gm.cssX(gm.tsToCol(t));
+      if (x >= -1 && x <= plotW + 1) out.push({ pos: x, label: fmt(t) });
+    }
   }
-  // Irregular recorded cadence and restart gaps can squeeze distant clock
-  // ticks into a few pixels. Filter their projected boxes, never their times.
   return spacedTimeLabels(out, plotW);
 }
 
@@ -267,8 +271,8 @@ export function priceTickPositions(gm: GridMap, cssH: number): number[] {
  * Time tick gutter-x positions only: EXACTLY the collision-filtered labels.
  * Sharing the layout keeps gridlines and visible labels on the same ticks.
  */
-export function timeTickPositions(gm: GridMap, cssW: number): number[] {
-  return timeAxisModel(gm, cssW).map(label => label.pos);
+export function timeTickPositions(gm: GridMap, cssW: number, clock?: TimeAxisClock | null): number[] {
+  return timeAxisModel(gm, cssW, clock).map(label => label.pos);
 }
 
 /**
@@ -293,6 +297,7 @@ export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | n
       color: OVERLAY.axis.css,
       size: AXIS_LABEL_SIZE,
       weight: AXIS_LABEL_WEIGHT,
+      maxWidth: Math.max(1, cssW - 8),
     });
   }
   if (last === null || gm.price === null) return;
@@ -318,13 +323,15 @@ export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | n
 export function drawTimeAxis(layer: TextLayer, gm: GridMap, clock: TimeAxisClock | null = null, style: AxisStyle = {}): void {
   layer.clear();
   const cssW = layer.width;
+  const zone = timeAxisZoneText(clock);
+  const labelWidth = cssW - zoneReservePx(zone);
   const model = timeAxisModel(gm, cssW, clock);
   for (let i = 0; i < model.length; i++) {
     const t = { pos: snapToPixelBlock(model[i].pos, style.pixel), label: model[i].label };
     layer.line(t.pos, 0, t.pos, AXIS_TICK_LEN, OVERLAY.axis.css, 1, AXIS_TICK_ALPHA);
     // Clamp the edge labels inward so the first/last time isn't half-clipped by
     // the gutters (the tick mark itself stays at t.pos).
-    const { x, align } = timeLabelPlacement(t, i, model.length, cssW);
+    const { x, align } = timeLabelPlacement(t, i, model.length, labelWidth);
     layer.text(x, 15, t.label, {
       align,
       baseline: 'alphabetic',
@@ -333,7 +340,6 @@ export function drawTimeAxis(layer: TextLayer, gm: GridMap, clock: TimeAxisClock
       weight: AXIS_LABEL_WEIGHT,
     });
   }
-  const zone = timeAxisZoneText(clock);
   if (zone !== '') {
     layer.text(cssW - 2, 15, zone, {
       align: 'right',
@@ -363,7 +369,7 @@ function sameGridline(a: number, b: number): boolean {
  * one pixel row, e.g. an edge tick landing on a major) are drawn once.
  * Color/width stay `OVERLAY.grid` / 1 px (alpha is owned by the palette).
  */
-export function drawGridlines(text: TextLayer, gm: GridMap, style: AxisStyle = {}): void {
+export function drawGridlines(text: TextLayer, gm: GridMap, style: AxisStyle = {}, clock?: TimeAxisClock | null): void {
   const cssW = text.width;
   const cssH = text.height;
   let prev = Number.NaN;
@@ -374,7 +380,7 @@ export function drawGridlines(text: TextLayer, gm: GridMap, style: AxisStyle = {
     text.line(0, y, cssW, y, OVERLAY.grid.css, 1);
   }
   prev = Number.NaN;
-  for (const raw of timeTickPositions(gm, cssW)) {
+  for (const raw of timeTickPositions(gm, cssW, clock)) {
     const x = snapToPixelBlock(raw, style.pixel);
     if (sameGridline(x, prev)) continue;
     prev = x;

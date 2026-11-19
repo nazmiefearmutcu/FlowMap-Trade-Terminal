@@ -1,10 +1,7 @@
 """Bounded working memory for genuine recorded-depth time overviews.
 
-The native ring is a cache, not the user's viewing limit. An overview has at
-most 256 output columns, accumulated from as many source partitions as that
-range needs. Source density is decoded in small batches, then discarded.
-Completed bins can be reused without another density read. All disk reads and
-aggregation are performed by Session's executor, away from the live feed loop.
+The session executor streams source partitions into at most 256 output columns.
+Completed bins are cached, and each raw batch is discarded after aggregation.
 """
 
 from __future__ import annotations
@@ -41,8 +38,7 @@ CACHE_BYTES = 32 * 1024 * 1024
 MAX_GAP_MARKERS = 1024
 GAP_MARKER_PREFIX = "history-gap:v1 "
 RESOLUTION_MARKER_PREFIX = "flowmap.depth-resolution.v1 "
-# Only scalar identity/bounds, a few MiB even with years of small part files.
-# The production BTC folder already exceeds 12k parts across unrelated runs.
+# The index stores scalar file identities and bounds, even across thousands of parts.
 _INDEX_PARTS = 65_536
 _PartBounds = tuple[int, int, tuple[str, ...], int]
 _PartSnapshot = list[tuple[Path, _PartBounds | None]]
@@ -271,17 +267,16 @@ class OverviewBuilder:
         self.output_epochs: dict[int, EpochParams] = {}
         self.bins: dict[int, _Bin] = {}
         self.ready: dict[int, FinalizedColumn] = {}
+        self._close_locations: dict[int, tuple[int, int]] = {}
         self._coarse_ranges: dict[int, tuple[tuple[float, float, float], ...]] = {}
-        # Epochs roll frequently now. Bound transient plans as well as output
-        # bins; a plan contains at most source.rows + target.rows overlaps.
+        # Each cached projection plan has at most source.rows + target.rows overlaps.
         self._projection: OrderedDict[
             tuple[bytes, bytes],
             tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None,
         ] = OrderedDict()
         self.first_time: int | None = None
         self.last_time: int | None = None
-        # Only run boundaries survive, not one timestamp object per source.
-        # Real discontinuities are recorded separately and capped.
+        # Keep run boundaries and genuine seams instead of every source timestamp.
         self._source_coverage = _Coverage()
         self._source_endpoints: dict[int, tuple[int, int]] = {}
         self._gaps: dict[tuple[int, int], _Gap] = {}
@@ -295,9 +290,7 @@ class OverviewBuilder:
             if cached is not None and cached.last_time < before_t and cached.last_sequence <= end:
                 group_target = self._target_for(group)
                 if cached.params != group_target:
-                    # A newly completed group's midpoint can choose a newer
-                    # native frame. Re-read its genuine sources instead of
-                    # reprojecting an already averaged coarse prefix again.
+                    # A new target epoch needs the original sources for reprojection.
                     continue
                 self.output_epochs[group_target.epoch] = group_target
                 column, last_time, weight, last_sequence = (
@@ -308,6 +301,7 @@ class OverviewBuilder:
                 )
                 if last_sequence == min(group + stride - 1, end):
                     self.ready[group] = column
+                    self._close_locations[group] = (last_sequence, last_time)
                     self._coarse_ranges[group] = cached.coarse_ranges
                 else:
                     item = self.bins[group] = _Bin(group_target.rows)
@@ -694,6 +688,7 @@ class OverviewBuilder:
                 bar=bar,
             )
             self.ready[group] = output
+            self._close_locations[group] = (last.col_seq, last.t0_ns)
             self._coarse_ranges[group] = item.coarse_ranges
             if (
                 group >= self.start
@@ -716,6 +711,11 @@ class OverviewBuilder:
                     item.ask.copy(),
                 )
         return [self.ready[group] for group in sorted(self.ready)]
+
+    def close_bar(self, column: FinalizedColumn) -> BarColumn:
+        """Keep the coarse OHLC, but locate its close at the actual source column."""
+        sequence, time_ns = self._close_locations[column.col_seq]
+        return msgspec.structs.replace(column.bar, col_seq=sequence, t0_ns=time_ns)
 
 
 def _recording_epochs(

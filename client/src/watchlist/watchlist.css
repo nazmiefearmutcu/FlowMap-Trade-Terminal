@@ -61,8 +61,8 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  height: 24px;
-  padding: 0 var(--sp-3);
+  min-height: 34px;
+  padding: 3px var(--sp-3);
   border-left: 2px solid transparent;
   cursor: pointer;
   user-select: none;
@@ -123,12 +123,30 @@
   filter: brightness(1.25);
 }
 
-.watchlist__sym {
+.watchlist__identity {
+  display: grid;
   flex: 1 1 auto;
-  /* Hard floor: the label carries the row's identity and must NEVER be starved
-     to 0px by the fixed price/change/chip columns — a full base symbol stays
-     readable at the default 260px rail (flex-grow takes any slack). */
   min-width: 52px;
+  grid-template-rows: 14px 13px;
+}
+
+.watchlist__source {
+  color: var(--text-3);
+  font-size: var(--fs-2xs);
+  line-height: 13px;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchlist__row[data-source="live-mid"] .watchlist__source,
+.watchlist__row[data-source="live-last"] .watchlist__source {
+  color: var(--accent-bright);
+}
+
+.watchlist__sym {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -146,7 +164,7 @@ button.watchlist__sym {
   padding: 0;
   border: none;
   background: none;
-  font: inherit;
+  font: 500 var(--fs-sm)/14px var(--font-mono);
   text-align: left;
   cursor: pointer;
 }

@@ -10,12 +10,17 @@ import msgspec
 from flowmap_server.core.backfill import (
     columns_from_candles,
 )
+from flowmap_server.core.grid import FinalizedColumn
 from flowmap_server.core.pyramid import pyramid_for
 from flowmap_server.core.record import SessionRecorder, TailData
 from flowmap_server.core.session_capability import recorded_capability
 from flowmap_server.core.session_common import SESSION_LOGGER, SNAPSHOT_COLS
+from flowmap_server.core.startup_prices import (
+    fetch_restart_prices, restart_price_columns, restart_price_marker,
+)
 from flowmap_server.data.real_books import real_book
 from flowmap_server.feeds.base import BarSample, BookState
+from flowmap_server.feeds.crypto import is_crypto_market
 from flowmap_server.feeds.equity_markets import EquityFeedBase
 from flowmap_server.feeds.replay import ReplayFeed
 from flowmap_server.proto import events
@@ -69,8 +74,8 @@ class BootMixin:
 
         Any failure here is logged and degrades to a cold start (recording
         disabled on a recorder error) — never propagated into subscribe/attach.
-        Precedence: a fresh Parquet tail wins; only a cold ring (no tail) is
-        seeded from the first-launch candle backfill.
+        Restore a compatible Parquet tail, then append available prices for
+        the offline interval. A cold ring uses the first-launch candle backfill.
         """
         tail_applied = False
         native_snapshot = getattr(self._feed, 'native_snapshot', None)
@@ -110,11 +115,13 @@ class BootMixin:
                     # genuinely virgin, so the candle backfill below must run
                     # — otherwise the session gets NO history at all even
                     # though both sources were available.
-                    tail_applied = self._apply_tail(tail)
+                    tail_applied = await self._restore_tail(tail)
 
         # Backfill only a genuinely cold ring — never on top of a rehydrated tail
         # (the grid is no longer virgin; preload would raise).
         if not tail_applied:
+            if self._closed:
+                return
             await self._run_backfill()
 
         await self._prepare_closed_history()
@@ -322,21 +329,33 @@ class BootMixin:
             market, symbol, capability=recorded_capability(self._feed.capability)
         )
         cfg = self._grid.cfg
+        now_ns = self._wall_clock()
+        # A recent partial run must not hide older compatible columns in the
+        # same recording. Bound by the first snapshot size, not wall-clock age.
         tail = self._recorder_root.load_tail(
-            market,
-            symbol,
-            max_age_ns=cfg.ring_columns * cfg.dt_ns,
-            now_ns=self._wall_clock(),
-            # Boot needs only the same active tail sent in the first attach.
-            # Eagerly decoding/packing an entire 32k ring delays the first
-            # live book and materializes a much larger, discarded tape. Keep
-            # ring capacity/freshness unchanged; older genuine history pages
-            # and overviews read the validated recording UUID on demand.
+            market, symbol, max_age_ns=max(0, now_ns), now_ns=now_ns,
             limit_cols=min(cfg.ring_columns, SNAPSHOT_COLS),
         )
         return rec, tail
 
-    def _apply_tail(self, tail: TailData) -> bool:
+    async def _restore_tail(self, tail: TailData) -> bool:
+        """Restore saved depth and fill missing prices within the boot budget."""
+        extra = []
+        fetch = self._backfill_fn
+        if fetch is not None and tail.columns and is_crypto_market(self._feed.market):
+            last = tail.columns[-1]
+            cfg = self._grid.cfg
+            now = self._wall_clock()
+            # Preserve at least half of the first snapshot for observed depth.
+            limit = min(self._backfill_max_cols, min(cfg.ring_columns, SNAPSHOT_COLS) // 2)
+            candles = await fetch_restart_prices(
+                fetch, self._feed.market, self._feed.symbol,
+                after_ns=last.t0_ns + cfg.dt_ns, now_ns=now, limit=limit,
+            )
+            extra = restart_price_columns(last, candles, dt_ns=cfg.dt_ns, now_ns=now, limit=limit)
+        return not self._closed and self._apply_tail(tail, extra)
+
+    def _apply_tail(self, tail: TailData, price_columns: list[FinalizedColumn] | None = None) -> bool:
         """Seed grid/tape/markers from a recorded tail + emit the gap Marker.
 
         Returns True only when the grid actually took the tail; a False return
@@ -365,7 +384,7 @@ class BootMixin:
                 )
                 return False
         try:
-            self._grid.preload(tail.columns, tail.epochs)
+            self._grid.preload(tail.columns + (price_columns or []), tail.epochs)
         except Exception:
             # Unusable tail (e.g. grid shape changed between runs):
             # says cold start — never fail the session over it.
@@ -409,6 +428,14 @@ class BootMixin:
         )
         self._markers.append(gap)
         self._record(lambda r: r.record_marker(gap))
+        if price_columns:
+            # Store real candle prices as zero-depth columns so sequence IDs stay
+            # continuous on the next restart. Existing L2 columns remain intact.
+            marker = restart_price_marker(price_columns)
+            self._markers.append(marker)
+            self._record(lambda r: r.record_marker(marker))
+            for column in price_columns:
+                self._record(lambda r, c=column: r.record_column(c))
         logger.info(
             "session %s rehydrated %d columns (tail t0 %d..%d)",
             self.session_id,

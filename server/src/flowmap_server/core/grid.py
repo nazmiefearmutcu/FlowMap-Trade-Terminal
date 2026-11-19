@@ -41,6 +41,7 @@ import math
 import msgspec
 import numpy as np
 
+from flowmap_server.core.grid_trades import accumulate_trade
 from flowmap_server.core.price_scale import (
     SCALE_HYBRID,
     PriceScale,
@@ -53,8 +54,6 @@ from flowmap_server.core.price_scale import (
 from flowmap_server.core.price_scale_np import rows_for_prices
 from flowmap_server.proto.events import (
     MODE_SYNTH_PROFILE,
-    SIDE_BUY,
-    SIDE_SELL,
     BarColumn,
     BookUpdate,
     DepthColumn,
@@ -300,6 +299,11 @@ class Grid:
     def cfg(self) -> GridCfg:
         """The immutable grid configuration (read-only)."""
         return self._cfg
+
+    @property
+    def cvd_cumulative(self) -> float:
+        """Known signed volume, including a rehydrated recording's baseline."""
+        return self._cvd_cum
 
     # -- rehydration ---------------------------------------
 
@@ -727,59 +731,8 @@ class Grid:
         self._vwap_den_cum += volume
 
     def on_trade(self, ts_ns: int, price: float, size: float, side: int) -> None:
-        """Feed a trade into the current interval's bar accumulators.
-
-        Never advances intervals or finalizes columns — time advancement is
-        driven by :meth:`on_book`. A trade arriving before any book update
-        anchors the current interval at ``ts_ns // dt_ns``.
-
-        A malformed print (non-finite or non-positive price, non-finite or
-        negative size) is ignored ENTIRELY — not even time-anchoring:
-        ``cvd_cum`` and the ``vwap_*`` sums are session-cumulative, so a
-        single NaN or negative print would poison every later bar, and a
-        ``+inf`` price would do the same through ``vwap_num_cum`` forever
-        (``price > 0`` alone admits it). Same rationale as the finite
-        filter in ``_map_levels``; the raw print still reaches the tape and
-        the recording via the session, only the DERIVED aggregates are
-        protected. A zero-size print is kept (some venues publish them at the
-        real price; dropping them would skew OHLC away from venue truth).
-        """
-        if (
-            not (price > 0.0)
-            or not math.isfinite(price)
-            or not math.isfinite(size)
-            or size < 0.0
-        ):
-            return
-        if self._cur_idx is None:
-            self._cur_idx = ts_ns // self._cfg.dt_ns
-            self._prev_ts = ts_ns
-        # Interval boundaries advance only in on_book. A print stamped outside
-        # the forming interval (already past its end, because the next book has
-        # not arrived yet, or late) is tallied in out_of_interval_trades and
-        # still folded into this bar as it always was: dropping it would remove
-        # volume from the bars while session CVD kept it, breaking their sum.
-        # Attributing it to its own bar needs held prints.
-        if ts_ns // self._cfg.dt_ns != self._cur_idx:
-            self.out_of_interval_trades += 1
-
-        if self._bar_has_trade:
-            self._h = max(self._h, price)
-            self._l = min(self._l, price)
-        else:
-            self._o = self._h = self._l = price
-            self._bar_has_trade = True
-        self._c = price
-
-        if side == SIDE_BUY:
-            self._vol_buy += size
-            self._cvd_cum += size
-        elif side == SIDE_SELL:
-            self._vol_sell += size
-            self._cvd_cum -= size
-        # SIDE_UNKNOWN: neither volume bucket, cvd unchanged.
-        self._vwap_num_cum += price * size
-        self._vwap_den_cum += size
+        """Accumulate a validated trade without advancing the book/grid clock."""
+        accumulate_trade(self, ts_ns, price, size, side)
 
     def _snap_bar(self, t0_ns: int) -> BarColumn:
         return BarColumn(

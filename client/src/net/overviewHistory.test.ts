@@ -19,7 +19,7 @@ function harness() {
 }
 
 describe('independent historical level of detail', () => {
-  it.each([0, 2])('bounds uploads by eight columns or six milliseconds at %ims per column', async (columnCost) => {
+  it.each([0, 2])('bounds uploads by 24 columns or six milliseconds at %ims per column', async (columnCost) => {
     const { loader, deps } = harness();
     let time = 0, batch = 0;
     const batches: Array<{ columns: number; duration: number }> = [];
@@ -32,10 +32,10 @@ describe('independent historical level of detail', () => {
       await vi.waitFor(() => expect(loader.inFlight).toBe(false));
       expect(loader.complete).toBe(true);
       expect(batches.length).toBeGreaterThan(0);
-      expect(batches.every(b => b.columns <= 8 && b.duration <= 6)).toBe(true);
+      expect(batches.every(b => b.columns <= 24 && b.duration <= 6)).toBe(true);
       // Even cheap uploads yield at the hard cap. Expensive columns share a
       // six-millisecond slice before yielding, avoiding a display wait per pair.
-      expect(batches[0].columns).toBe(columnCost === 0 ? 8 : 3);
+      expect(batches[0].columns).toBe(columnCost === 0 ? 24 : 3);
     } finally { loader.dispose(); clock.mockRestore(); }
   });
 
@@ -92,6 +92,44 @@ describe('independent historical level of detail', () => {
     expect(signals[0].aborted).toBe(true); // the superseded page was told to stop
     await vi.waitFor(() => expect(loader.inFlight).toBe(false));
     expect(loader.cachedBuckets).toBeGreaterThan(0);
+    loader.dispose();
+  });
+
+  it('cancels a pending off-screen page after a pan at the same resolution', async () => {
+    const { loader, deps, columns } = harness();
+    const original = deps.request;
+    let late!: (response: HistoryResponse) => void;
+    let abandoned: AbortSignal | undefined;
+    const request = vi.fn<OverviewHistoryDeps['request']>()
+      .mockImplementationOnce((_before, _count, _req, signal) => {
+        abandoned = signal;
+        return new Promise(resolve => { late = resolve; });
+      }).mockImplementation(original);
+    deps.request = request;
+    const view = { colOffset: 0, colScale: 4096, rowOffset: 0, rowScale: 10 };
+    loader.ensure(view, 20_000, 0);
+    loader.ensure({ ...view, colOffset: 8192 }, 20_000, 1);
+    expect(abandoned?.aborted).toBe(true);
+    expect(request.mock.calls[1][2]).toMatchObject({ start_col: 8192, stride: 16 });
+    late(await original(1n, 1, { start_col: 0, end_col: 15, stride: 16 }));
+    await vi.waitFor(() => expect(loader.complete).toBe(true));
+    expect(columns.every(c => c.seq >= 8192)).toBe(true);
+    expect(deps.reset).toHaveBeenCalledOnce();
+    loader.dispose();
+  });
+
+  it('requests only newly exposed buckets after a small pan into the archive', async () => {
+    const { loader, deps } = harness();
+    const view = { colOffset: 2048, colScale: 4096, rowOffset: 0, rowScale: 10 };
+    loader.ensure(view, 20_000, 0);
+    await vi.waitFor(() => expect(loader.inFlight).toBe(false));
+    vi.mocked(deps.request).mockClear();
+    loader.ensure({ ...view, colOffset: 1920 }, 20_000, 1);
+    await vi.waitFor(() => expect(loader.inFlight).toBe(false));
+    expect(deps.request).toHaveBeenCalledOnce();
+    expect(deps.request).toHaveBeenCalledWith(expect.any(BigInt), 8,
+      { start_col: 1920, end_col: 2047, stride: 16 }, expect.any(AbortSignal));
+    expect(loader.complete).toBe(true);
     loader.dispose();
   });
 

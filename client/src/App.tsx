@@ -162,7 +162,7 @@ export function App() {
 
   // Session generation teardown happens synchronously in the renderer lifecycle.
   const subscription = useFlowMapStore((s) => s.subscription);
-  useHistoryPrefetch(sessionResetKey(subscription), rendererRef, settingsRef);
+  useHistoryPrefetch(subscription?.mode === 'live' ? sessionResetKey(subscription) : null, rendererRef, settingsRef);
   const streamClock = useStreamClock(rendererRef);
   const [helpOpen, setHelpOpen] = useHelpToggle();
   useChartThemeBridge(theme, settings.colormap, syncChartTheme);
@@ -237,7 +237,7 @@ export function App() {
       <MarketStrip rendererRef={rendererRef} />
       <DeskToolbar rendererRef={rendererRef} settings={settings} layout={desk.layout} onLayout={selectDesk}
         onChange={applyPatch} onTrack={onTrackPrice} onFit={() => {
-          rendererRef.current?.setTimeWindowMs(null);
+          rendererRef.current?.setTimeWindowMs(null, true);
           rendererRef.current?.setPriceFollow('fit');
           if (useFlowMapStore.getState().subscription?.mode !== 'replay') setSettings(prev => ({ ...prev, followPrice: true }));
         }} />

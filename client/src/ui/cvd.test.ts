@@ -1,7 +1,32 @@
 import { describe, expect, it } from 'vitest';
 
 import { setLocale } from '../i18n';
-import { cvdBounds, cvdColToX, cvdProject, cvdValueToY, fmtCvd } from './cvd';
+import { cvdBounds, cvdColToX, cvdProject, cvdValueToY, fmtCvd, scopedCvdSeries } from './cvd';
+
+describe('provider CVD connection scopes', () => {
+  const points = [{ col: 0, cvd: 1000 }, { col: 1, cvd: 1007 }, { col: 2, cvd: 1004 }];
+  const time = (column: number): bigint => BigInt(column) * 1_000_000_000n;
+  it('excludes price-only history and subtracts the exact captured baseline', () => {
+    expect(scopedCvdSeries(points, time, '1000000000', 1000)).toEqual([
+      { col: 1, cvd: 7 }, { col: 2, cvd: 4 },
+    ]);
+    expect(points[1].cvd).toBe(1007);
+  });
+  it('starts a reconnect from its own baseline instead of bridging missing volume', () => {
+    expect(scopedCvdSeries(points, time, '2000000000', 1007)).toEqual([{ col: 2, cvd: -3 }]);
+  });
+  it('includes the forming interval containing a mid-column capture start', () => {
+    expect(scopedCvdSeries(points, time, '1500000000', 1000)[0]).toEqual({ col: 1, cvd: 7 });
+  });
+  it('does not extend recorded CVD into the missing interval after disconnection', () => {
+    expect(scopedCvdSeries(points, time, '1000000000', 1000, '2000000000')).toEqual([{ col: 1, cvd: 7 }]);
+  });
+  it('withholds values whose timestamps or baseline cannot be verified', () => {
+    expect(scopedCvdSeries(points, () => null, '1000000000', 1000)).toEqual([]);
+    expect(scopedCvdSeries(points, time, '', 1000)).toEqual([]);
+    expect(scopedCvdSeries(points, time, '1000000000', Number.NaN)).toEqual([]);
+  });
+});
 
 describe('cvdBounds — signed value range always spanning zero', () => {
   it('includes 0 even when all values are positive', () => {

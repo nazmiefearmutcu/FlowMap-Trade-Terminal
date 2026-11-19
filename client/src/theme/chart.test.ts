@@ -24,7 +24,12 @@ function lab(rgb: readonly number[] | Uint8Array): number[] {
 }
 
 describe('palette identity', () => {
- for (const id of THEME_IDS) {
+ it('uses the same neutral liquidity scale in high contrast regardless of the saved palette', () => {
+  const neutral = resolveAppearance('contrast', 'theme');
+  expect(neutral.density.every(({rgb: [r,g,b]}) => r === g && g === b)).toBe(true);
+  for (const {id} of COLORMAP_CATALOG) expect(resolveAppearance('contrast', id)).toBe(neutral);
+ });
+ for (const id of THEME_IDS.filter(id => id !== 'contrast')) {
   it(`${id}: every palette has a distinct middle-density color path`, () => {
    const palettes=COLORMAP_CATALOG.map(({id:family}) => {
     const ramp=buildRamp(resolveAppearance(id,family).density);

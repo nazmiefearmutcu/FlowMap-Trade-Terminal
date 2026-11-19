@@ -287,7 +287,8 @@ export class OverlayLayer {
     const gl = this.gl;
     const range = overview?.ring.residentRange() ?? this.ring?.residentRange() ?? null;
     const ctx = this.overlayCtx;
-    ctx.view = overview ? overview.view(this.frameState.view) : this.frameState.view;
+    ctx.view = this.axis.chartView(overview);
+    ctx.liveQuoteStartX = this.frameState.view.liveQuoteStartX;
     ctx.overviewBars = overview?.bars ?? null;
     ctx.columnArrays = overview?.columnArrays ?? this.rawColumnArrays;
     ctx.columnScale = overview ? col => overview.priceScaleAt(col) : this.rawColumnScale;
@@ -304,13 +305,16 @@ export class OverlayLayer {
     } else {
       ctx.resident = null;
     }
-    ctx.capability = this.store.getState().capability;
+    const state = this.store.getState();
+    const sub = state.subscription;
+    ctx.capability = state.capability;
+    ctx.priceGapSymbol = sub?.mode === 'live' && sub.market === 'binance-spot' ? sub.symbol : undefined;
     ctx.timeAxisClock = this.timeAxisClockFor();
     ctx.time = time;
     ctx.price = price;
     ctx.newestArrays = this.frameState.newestSeq >= 0 ? this.columnCache.arrays(this.frameState.newestSeq) : null;
     const newestEpoch = this.columnCache.epochAt(this.frameState.newestSeq);
-    const newestParams = newestEpoch === null ? undefined : this.store.getState().epochs.get(newestEpoch);
+    const newestParams = newestEpoch === null ? undefined : state.epochs.get(newestEpoch);
     ctx.newestPrice = this.columnCache.priceAt(this.frameState.newestSeq) ?? (newestParams ? this.priceMapFor(newestParams) : null);
     // Profile accumulation is independent of local heatmap sampling footprints.
     ctx.mipLevel = 0; // The profile sums native price intervals, independently of heatmap LOD.

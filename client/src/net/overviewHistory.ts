@@ -6,7 +6,7 @@ import { depthResolution, isDepthResolution } from './depthResolution';
 export const OVERVIEW_CAPACITY = 512;
 export const OVERVIEW_VISIBLE_BUCKETS = 480;
 const UPLOAD_BUDGET_MS = 6;
-const UPLOAD_BATCH_COLS = 8;
+const UPLOAD_BATCH_COLS = 24;
 
 export interface OverviewPlan { stride: number; lo: number; hi: number }
 
@@ -52,12 +52,8 @@ export class OverviewHistory {
   private generation = 0;
   private loaded = new Set<number>();
   private present = new Set<number>();
-  /** True while ANY pump is awaiting a request (a superseded pump included). */
   private loading = false;
-  /** Token of the newest pump; only that pump may clear {@link loading}. */
-  private pumpToken = 0;
-  /** The generation the newest pump serves — a mismatch means a zoom superseded it. */
-  private pumpGeneration = -1;
+  private inFlightPage: { lo: number; hi: number } | null = null;
   /** Aborts the requests of the generation that was superseded. */
   private abort: AbortController | null = null;
   private disposed = false;
@@ -84,17 +80,23 @@ export class OverviewHistory {
   ensure(view: HeatmapView, newest: number, now = performance.now()): void {
     if (this.disposed || !this.deps.active()) return;
     const next = overviewPlan(view, newest);
-    if (next === null) return;
+    if (next === null) {
+      this.suspend();
+      return;
+    }
     if (this.plan === null || next.stride !== this.plan.stride) {
-      this.generation++;
-      this.abort?.abort(); // the superseded page is no longer wanted
-      this.abort = null;
+      this.suspend();
       this.loaded.clear();
       this.present.clear();
       this.error = null;
       this.retryAt = 0;
       this.refreshAt = 0;
       this.deps.reset(next.stride);
+    } else if (this.inFlightPage && (this.inFlightPage.hi < next.lo || this.inFlightPage.lo > next.hi)) {
+      // A same-resolution pan can put the old request entirely off screen.
+      this.suspend();
+      this.error = null;
+      this.retryAt = 0;
     }
     this.plan = next;
     // Keep only a small adjacent reserve. Neither time coverage nor scale is
@@ -104,19 +106,13 @@ export class OverviewHistory {
       this.loaded.delete(next.hi); // genuine forming bucket, at most once/sec
       this.refreshAt = now + 1000;
     }
-    // A superseded pump (older generation) must not hold up the new one: a zoom
-    // that changes the stride starts its pump at once instead of waiting for the
-    // stale request to resolve or time out (up to 60 s).
-    const superseded = this.pumpGeneration !== this.generation;
-    if ((!this.loading || superseded) && now >= this.retryAt) void this.pump();
+    if (!this.loading && !this.complete && now >= this.retryAt) void this.pump();
   }
 
   private async pump(): Promise<void> {
-    const token = ++this.pumpToken;
     this.loading = true;
     const generation = this.generation;
-    this.pumpGeneration = generation;
-    if (this.abort === null) this.abort = new AbortController();
+    this.abort = new AbortController();
     const signal = this.abort.signal;
     try {
       while (this.current(generation)) {
@@ -124,8 +120,11 @@ export class OverviewHistory {
         let first = plan.lo;
         while (first <= plan.hi && this.loaded.has(first)) first++;
         if (first > plan.hi) break;
-        const count = Math.max(1, Math.min(256, this.deps.pageCols(), plan.hi - first + 1));
-        const last = first + count - 1;
+        const limit = Math.min(plan.hi, first + Math.max(1, Math.min(256, this.deps.pageCols())) - 1);
+        let last = first;
+        while (last < limit && !this.loaded.has(last + 1)) last++;
+        const count = last - first + 1;
+        this.inFlightPage = { lo: first, hi: last };
         this.requests++;
         const request = {
           start_col: first * plan.stride,
@@ -179,7 +178,8 @@ export class OverviewHistory {
           this.deps.column(resolution.has(column.col_seq) ? { ...column, coarse_ranges: resolution.get(column.col_seq) } : column, plan.stride);
           this.present.add(bucket);
           // Bound CPU work and queued GPU uploads independently, then paint.
-          if (++batch >= UPLOAD_BATCH_COLS || performance.now() - start >= UPLOAD_BUDGET_MS) {
+          if ((++batch >= UPLOAD_BATCH_COLS || performance.now() - start >= UPLOAD_BUDGET_MS)
+            && column !== columns[columns.length - 1]) {
             await this.deps.yieldToFrame();
             start = performance.now(); batch = 0;
           }
@@ -204,10 +204,12 @@ export class OverviewHistory {
         this.deps.changed();
       }
     } finally {
-      // Only the newest pump owns the flag: a superseded pump finishing late must
-      // not report "idle" while the replacement is still on the wire.
-      if (token === this.pumpToken) this.loading = false;
-      this.deps.changed();
+      if (generation === this.generation) {
+        this.loading = false;
+        this.inFlightPage = null;
+        this.abort = null;
+        this.deps.changed();
+      }
     }
   }
 
@@ -215,11 +217,19 @@ export class OverviewHistory {
     return !this.disposed && generation === this.generation && this.plan !== null && this.deps.active();
   }
 
-  dispose(): void {
-    this.disposed = true;
+  /** Cancel obsolete work while preserving the already committed buckets. */
+  suspend(): void {
+    if (!this.loading) return;
     this.generation++;
     this.abort?.abort();
     this.abort = null;
+    this.inFlightPage = null;
+    this.loading = false;
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.suspend();
     this.loaded.clear();
   }
 }

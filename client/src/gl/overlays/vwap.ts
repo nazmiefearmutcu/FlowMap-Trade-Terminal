@@ -18,6 +18,7 @@ import { OVERLAY } from './palette';
 import type { BarColumn } from '../../proto/types';
 import { visibleColRange } from './coords';
 import { addUnderStrokedSegments, type TraceSegment } from './underStroke';
+import { traceRuns } from './traceRuns';
 
 /** CSS-px width of the VWAP core stroke. */
 const VWAP_WIDTH_PX = 2.4;
@@ -30,14 +31,16 @@ export function sessionVwap(numCum: number, denCum: number): number {
 interface Entry {
   num: number;
   den: number;
+  t0: bigint;
+  xCol: number;
 }
 
 export class Vwap {
   private readonly bars = new Map<number, Entry>();
 
   /** Record / refresh a bar column's cumulants at its absolute col_seq. */
-  add(bar: BarColumn): void {
-    this.bars.set(bar.col_seq, { num: bar.vwap_num_cum, den: bar.vwap_den_cum });
+  add(bar: BarColumn, closeColumn = bar.col_seq + 0.5): void {
+    this.bars.set(bar.col_seq, { num: bar.vwap_num_cum, den: bar.vwap_den_cum, t0: bar.t0_ns, xCol: closeColumn });
   }
 
   get size(): number {
@@ -72,24 +75,29 @@ export class Vwap {
     // Collect visible vertices in ascending column order (one per column).
     // `+0.5` = row-cell centre (the line family must sit on the
     // density cell the heatmap paints, matching the bubbles and markers).
-    const pts: Array<{ x: number; y: number }> = [];
+    const pts: Array<{ col: number; t0: bigint; xCol: number; x: number; y: number }> = [];
+    const projection = gm.view.timeProjection;
     for (let c = range.lo; c <= range.hi; c++) {
       const e = this.bars.get(c);
       if (e === undefined) continue;
       const v = sessionVwap(e.num, e.den);
       if (!Number.isFinite(v)) continue;
-      pts.push({ x: gm.clipX(c + 0.5), y: gm.clipY(gm.priceEventToRow(v)) });
+      const x = gm.clipX(e.xCol);
+      if (projection?.emptyAt((x + 1) / 2)) continue;
+      pts.push({ col: c, t0: e.t0, xCol: e.xCol, x, y: gm.clipY(gm.priceEventToRow(v)) });
     }
     if (pts.length === 0) return;
 
     const segments: TraceSegment[] = [];
-    for (let i = 1; i < pts.length; i++) {
-      segments.push({ x0: pts[i - 1].x, y0: pts[i - 1].y, x1: pts[i].x, y1: pts[i].y });
-    }
-    // A single visible vertex: draw a short dash so it's still visible.
-    if (pts.length === 1) {
-      const dx = gm.pxToClipW(3);
-      segments.push({ x0: pts[0].x - dx, y0: pts[0].y, x1: pts[0].x + dx, y1: pts[0].y });
+    for (const run of traceRuns(pts, gm.time)) {
+      for (let i = 1; i < run.length; i++) {
+        segments.push({ x0: run[i - 1].x, y0: run[i - 1].y, x1: run[i].x, y1: run[i].y });
+      }
+      // An isolated observation stays visible without implying a connection.
+      if (run.length === 1) {
+        const dx = gm.pxToClipW(3);
+        segments.push({ x0: run[0].x - dx, y0: run[0].y, x1: run[0].x + dx, y1: run[0].y });
+      }
     }
     solid.begin();
     // The violet core sits over the hot end of the density ramp, so it gets the

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { OverviewSurface } from './overviewSurface';
-import { makeFakeGL } from './mockGL';
+import { makeFakeGL, type FakeGL } from './mockGL';
 import { slotColToTsNs, slotTsToCol } from './overlays/coords';
 import { MODE_L2, MsgType } from '../proto/types';
 
-function surface(stride = 16) {
+function surface(stride = 16, restoredMinutes = false) {
   const gl = makeFakeGL();
-  return new OverviewSurface({ gl, caps: { maxTextureImageUnits: 16, maxArrayTextureLayers: 2048, maxTextureSize: 8192, colorBufferFloat: false } }, 16, {} as WebGLTexture, stride);
+  return new OverviewSurface({ gl, caps: { maxTextureImageUnits: 16, maxArrayTextureLayers: 2048, maxTextureSize: 8192, colorBufferFloat: false } },
+    16, {} as WebGLTexture, stride, null, 0, null, undefined, restoredMinutes);
 }
 function add(s: OverviewSurface, group: number, time: bigint) {
   const bid = new Float32Array(16); bid[4] = 10;
@@ -59,13 +60,50 @@ describe('coarse history surface', () => {
   it('preserves both real clocks of a restart inside one averaged time bin', () => {
     const s = surface(4);
     add(s, 0, 0n);
+    expect(s.ready).toBe(false);
     s.page({ type: MsgType.HISTORY_RESP, req_id: 1, epoch: 1, oldest_available_t_ns: 0n,
       depth_cols: [], bar_cols: [], big_trades: [], markers: [{ type: MsgType.MARKER, kind: 'gap', ts_ns: 120000000000n, price: null, size: null,
         text: 'history-gap:v1 ' + JSON.stringify({ left_col: 1, right_col: 2, left_t0_ns: '250000000', left_end_t_ns: '500000000', right_t0_ns: '120000000000' }) }] });
     const original = s.originalTimeMap(250000000)!;
+    expect(s.ready).toBe(true);
     expect(slotColToTsNs(original.slots!, 1)).toBe(250000000n);
     expect(slotColToTsNs(original.slots!, 2)).toBe(120000000000n);
     expect(slotTsToCol(original.slots!, 120000000000n)).toBe(2);
+    expect(original.traceBreaks).toEqual([2]);
+    s.draw({ colOffset: 0, colScale: 4, rowOffset: 0, rowScale: 16 }, s.heatmap);
+    const gl = s.heatmap.gl as FakeGL;
+    const slices = gl.callsOf('scissor');
+    expect(slices).toHaveLength(3);
+    expect(Number(slices[1].args[2])).toBeGreaterThan(100);
+    expect(gl.callsOf('disable').at(-1)?.args[0]).toBe(gl.SCISSOR_TEST);
+    s.dispose();
+  });
+
+  it('includes minute-only records and their bordering outages in one clock span', () => {
+    const s = surface(16, true);
+    const minute = 60_000_000_000n;
+    const times = [0n, ...Array.from({ length: 255 }, (_, i) => BigInt(i + 50) * minute), 306n * minute];
+    add(s, 0, 0n);
+    add(s, 16, times.at(-1)!);
+    s.page({
+      type: MsgType.HISTORY_RESP, req_id: 1, epoch: 1, oldest_available_t_ns: 0n,
+      depth_cols: [], bar_cols: [], big_trades: [],
+      markers: times.slice(1).map((time, i) => ({
+        type: MsgType.MARKER, kind: 'gap', ts_ns: time, price: null, size: null,
+        text: 'history-gap:v1 ' + JSON.stringify({
+          left_col: i, right_col: i + 1, left_t0_ns: String(times[i]),
+          left_end_t_ns: String(times[i] + 250_000_000n), right_t0_ns: String(time),
+        }),
+      })),
+    });
+    const map = s.timeMap(250_000_000)!;
+    expect(map.priceGaps).toEqual([{ left: .5 / 16, right: 16, leftNs: 0n, rightNs: 306n * minute, minuteRun: true }]);
+    const view = s.view({ colOffset: 0, colScale: 272, rowOffset: 0, rowScale: 16 });
+    const project = view.timeProjection!;
+    const start = project.fractionAt(.5 / 16);
+    const end = project.fractionAt(16);
+    expect((project.fractionAt(1 / 16) - start) / (end - start)).toBeCloseTo(50 / 306);
+    expect(project.emptyAt((start + end) / 2)).toBe(true);
     s.dispose();
   });
 });

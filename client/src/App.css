@@ -2247,7 +2247,8 @@ body,
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  padding: var(--sp-1) 3px;
+  width: 42px;
+  padding: 4px 5px;
   background: var(--chart-chip-bg);
   border: 1px solid var(--chart-chip-border);
   border-radius: var(--r-1);
@@ -2257,15 +2258,31 @@ body,
 }
 .heat-legend__bar {
   width: 8px;
-  height: 92px;
+  height: 56px;
+  border: 1px solid var(--chart-chip-border);
   border-radius: var(--r-1);
-  /* The gradient is painted inline by HeatLegend.tsx from the same stop list
-     gl/lut.ts rasterizes, so the legend always matches the heatmap ramp. */
+  background: linear-gradient(var(--heat-direction, to top), var(--heat-stops));
 }
 .heat-legend__cap {
   font-size: var(--fs-2xs);
-  letter-spacing: 0.04em;
+  max-width: 30px;
+  line-height: 1.1;
+  text-align: center;
+  letter-spacing: 0;
   color: var(--chart-ink-dim);
+}
+/* Tier and channel are already named by the top bar and channel selector.
+   Preserve the legend's accessible disclosure without a wide duplicate tag. */
+.heat-legend__tier,
+.heat-legend__channel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .heat-legend__tier {
   margin-top: 2px;
@@ -2287,17 +2304,15 @@ body,
 /* Divergent (imbalance) legend: the side labels are longer than "more"/"less",
    so give the column room and keep each cap on one line. */
 .heat-legend--divergent {
-  padding: var(--sp-1) var(--sp-2);
+  width: auto;
+  padding: 4px 5px;
 }
 .heat-legend--divergent .heat-legend__cap {
+  max-width: none;
   white-space: nowrap;
 }
 .heat-legend--synth .heat-legend__tier {
   color: var(--warn);
-}
-
-.heat-legend--divergent .heat-legend__bar {
-  border: 1px solid var(--chart-chip-border);
 }
 
 /* ==========================================================================
@@ -2414,6 +2429,15 @@ body,
   }
 }
 @media (max-width: 1500px) {
+  .topbar {
+    column-gap: var(--sp-2);
+  }
+  .symsearch__trigger {
+    width: 190px;
+  }
+  .symsearch__kbd {
+    white-space: nowrap;
+  }
   .caps .cap:not(.cap--depth):not(.cap--synth):not(.cap--na):not(.cap--pending) {
     display: none;
   }

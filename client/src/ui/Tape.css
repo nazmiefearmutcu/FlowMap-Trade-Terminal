@@ -5,6 +5,10 @@
   position: relative;
 }
 
+.tape__columns {
+  display: none;
+}
+
 /* The tape's clock label: the zone of its wall-clock times, or the session marker for
    the sim. Small and muted beside the badges, so it names the clock without competing
    with the tier and the HELD state. */
@@ -20,4 +24,24 @@
   min-width: 0;
   margin: 0;
   font: inherit;
+}
+
+/* Hold is triggered by entering the list. Reserve the badge and the wider
+   action label so that neither can move the list out from under the pointer. */
+.tape__held[aria-hidden="true"] {
+  visibility: hidden;
+}
+
+.tape .tape__hold {
+  display: inline-grid;
+  white-space: nowrap;
+}
+
+.tape__hold > span, .tape__hold::before {
+  grid-area: 1 / 1;
+}
+
+.tape__hold::before {
+  content: attr(data-fit-label);
+  visibility: hidden;
 }

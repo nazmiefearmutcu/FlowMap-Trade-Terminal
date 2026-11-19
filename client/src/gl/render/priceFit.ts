@@ -9,7 +9,7 @@
 
 import { priceFrame, type Camera } from '../camera';
 import { isColVisible } from '../follow';
-import { remapRow, remapRowSpan } from '../overlays/coords';
+import { chartTimestamp, remapRow, remapRowSpan, type TimeMap } from '../overlays/coords';
 import { priceOverviewBounds } from '../priceOverview';
 import { priceToRow as scalePriceToRow, rowToPrice as scaleRowToPrice } from '../priceScale';
 import type { AxisMap } from './axisMap';
@@ -56,14 +56,16 @@ export class PriceFit {
   apply(): boolean {
     const ring = this.host.ring();
     if (ring === null) return false;
-    if (this.frameState.view.colScale > ring.capacityCols) {
+    if (this.camera.state.colSpan > ring.capacityCols || this.policy.fitsFullDepth) {
       this.prepareOverview();
       const bounds = this.camera.priceZoomBounds;
       const scale = this.camera.priceScale;
-      if (!bounds || !scale) return false;
-      const low = scalePriceToRow(scale, bounds.low), high = scalePriceToRow(scale, bounds.high);
-      this.camera.setPriceFrame(low, high - low);
-      return true;
+      if (bounds && scale) {
+        const low = scalePriceToRow(scale, bounds.low), high = scalePriceToRow(scale, bounds.high);
+        this.camera.setPriceFrame(low, high - low);
+        return true;
+      }
+      if (this.camera.state.colSpan > ring.capacityCols) return false;
     }
     const range = ring.residentRange();
     if (range === null) return false;
@@ -90,7 +92,9 @@ export class PriceFit {
       const prices = this.host.overlays().priceRange(lo, hi);
       const mid = this.policy.trackedRowN !== null && isColVisible(this.camera.toView(), this.frameState.newestSeq)
         ? scaleRowToPrice(scale, this.policy.trackedRowN) : null;
-      const visible = prices ?? (mid === null ? null : { low: mid, high: mid });
+      const view = this.axis.chartView(null);
+      const visible = this.includeExchangePrices(prices ?? (mid === null ? null : { low: mid, high: mid }),
+        this.axis.overlayTimeMap(), view.colOffset, view.colOffset + view.colScale);
       if (visible === null) return false;
       const bounds = priceOverviewBounds(scale, visible);
       const low = scalePriceToRow(scale, bounds.low), high = scalePriceToRow(scale, bounds.high);
@@ -129,8 +133,7 @@ export class PriceFit {
     return true;
   }
 
-  /** Zoom-out reaches a useful overview of the visible market, while the
-   *  far depth remains accessible by panning. No price values are filtered. */
+  /** Fit the visible market, including resting liquidity in the full view. */
   prepareOverview(): void {
     const scale = this.axis.overlayPriceMap()?.scale;
     this.camera.priceScale = scale ?? null;
@@ -138,21 +141,64 @@ export class PriceFit {
     if (scale?.kind !== 'hybrid') return;
     const view = this.camera.toView();
     const overview = this.host.activeOverview();
+    const left = Math.floor(view.colOffset);
+    const right = Math.ceil(view.colOffset + view.colScale) - 1;
     const historyPrices = overview
-      ? overview.bars.price.priceRange(Math.floor(view.colOffset / overview.stride), Math.ceil((view.colOffset + view.colScale) / overview.stride))
-      : this.host.overlays().priceRange(Math.floor(view.colOffset), Math.ceil(view.colOffset + view.colScale));
+      ? overview.bars.price.priceRange(Math.floor(left / overview.stride), Math.floor(right / overview.stride))
+      : this.host.overlays().priceRange(left, right);
     // Only use the current inside market when the live edge is on screen.
     // A historical empty window must not jump to today's price.
     const mid = this.policy.trackedRowN !== null && isColVisible(view, this.frameState.newestSeq)
       ? scaleRowToPrice(scale, this.policy.trackedRowN) : null;
-    const prices = historyPrices ?? (mid === null ? null : { low: mid, high: mid });
-    if (prices === null) return;
-    this.camera.priceZoomBounds = priceOverviewBounds(scale, prices);
+    const clock = overview?.timeMap(this.axis.currentDtNs()) ?? this.axis.overlayTimeMap();
+    const stride = overview?.stride ?? 1;
+    const prices = this.includeExchangePrices(historyPrices ?? (mid === null ? null : { low: mid, high: mid }),
+      clock, view.colOffset / stride, (view.colOffset + view.colScale) / stride);
+    const depth = !this.policy.fitsFullDepth ? null : overview
+      ? overview.depthPriceRange(Math.floor(left / overview.stride), Math.floor(right / overview.stride))
+      : this.residentDepthPrices(left, right);
+    if (depth === null) {
+      if (prices !== null) this.camera.priceZoomBounds = priceOverviewBounds(scale, prices);
+      return;
+    }
+    const low = Math.min(depth.low, prices?.low ?? Infinity);
+    const high = Math.max(depth.high, prices?.high ?? -Infinity);
+    const padding = Math.max(scale.coreStep * MIN_ROW_PAD, (high - low) * ROW_PAD_FRACTION);
+    this.camera.priceZoomBounds = { low: Math.max(scale.loPrice, low - padding), high: Math.min(scale.hiPrice, high + padding) };
+  }
+
+  private includeExchangePrices(prices: { low: number; high: number } | null, clock: TimeMap | null,
+    fromCol: number, toCol: number): { low: number; high: number } | null {
+    if (!clock?.priceGaps?.length) return prices;
+    const exchange = this.host.overlays().gapPriceRange(clock.priceGaps, chartTimestamp(clock, fromCol), chartTimestamp(clock, toCol));
+    if (!exchange) return prices;
+    return prices ? { low: Math.min(prices.low, exchange.low), high: Math.max(prices.high, exchange.high) } : exchange;
+  }
+
+  private residentDepthPrices(left: number, right: number): { low: number; high: number } | null {
+    const ring = this.host.ring();
+    const range = ring?.residentRange();
+    if (!ring || !range) return null;
+    const lows = this.host.extentLo();
+    const highs = this.host.extentHi();
+    const seqs = this.host.extentSeq();
+    let low = Infinity;
+    let high = -Infinity;
+    for (let col = Math.max(left, range.oldest); col <= Math.min(right, range.newest); col++) {
+      const slot = col % ring.capacityCols;
+      if (seqs[slot] !== col || lows[slot] < 0) continue;
+      const scale = this.axis.rawColumnScale(col);
+      if (!scale) continue;
+      const shift = scale.kind === 'hybrid' ? 0.5 : 0;
+      low = Math.min(low, scaleRowToPrice(scale, lows[slot] - shift));
+      high = Math.max(high, scaleRowToPrice(scale, highs[slot] + 1 - shift));
+    }
+    return high >= low ? { low, high } : null;
   }
 
   fitOverview(): void {
     const ring = this.host.ring();
-    if (ring !== null && this.frameState.view.colScale > ring.capacityCols && !this.host.overviewComplete()) this.policy.pendingOverviewFit = true;
+    if (ring !== null && this.camera.state.colSpan > ring.capacityCols && !this.host.overviewComplete()) this.policy.pendingOverviewFit = true;
     this.prepareOverview();
     const bounds = this.camera.priceZoomBounds;
     const scale = this.camera.priceScale;

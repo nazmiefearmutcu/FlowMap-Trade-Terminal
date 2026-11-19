@@ -21,6 +21,13 @@ finnhub (keyed) tick tape with side **inferred** (tick rule); no depth / no
               quotes.
 ============  ================================================================
 
+**Optional public tape.** ``equity_public_tape`` enables TickDB's explicitly
+published anonymous trial for its supported US symbols. All sessions share one
+socket. It preserves the provider's buy/sell/neutral classes, claims neither
+exchange-certified aggressors nor whole-market completeness, and starts a new
+observable CVD scope after connection or consumer loss. Cboe remains the depth
+source. The Cboe-only behavior below remains the fallback when tape is absent.
+
 **Keyless depth.** Each cycle reads the four books together and merges them by
 price (sizes summed, in shares). A book that misses a cycle keeps its last read
 for a few cycles so the merged depth does not flicker; after
@@ -80,7 +87,7 @@ import datetime
 import logging
 import math
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from typing import Protocol, cast
 
 import numpy as np
@@ -102,19 +109,17 @@ from flowmap_server.feeds.equity_book import (
     DEPTH_SCOPE,
     CboeBookClient,
     VenueBook,
-    VenuePrint,
     extended_session_state,
-    merge_books,
-    prints_to_trades,
 )
+from flowmap_server.feeds.equity_keyless import LAST_PRICE_VENUE, keyless_live
 from flowmap_server.feeds.equity_poll import _GooglePricePoller
+from flowmap_server.feeds.equity_public_tape import (
+    SUPPORTED_SYMBOLS, TapeMessage, default_public_tape,
+)
 from flowmap_server.feeds.equity_sink import _EquitySink
 from flowmap_server.feeds.equity_markets import EQUITY_MARKET, EQUITY_MARKETS, EquityFeedBase
 from flowmap_server.proto.events import (
-    SIDE_SRC_NA,
-    SIDE_UNKNOWN,
     Marker,
-    Trade,
 )
 
 __all__ = [
@@ -126,16 +131,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# Venue tag of the keyless last-price fallback (not an exchange print or NBBO).
-LAST_PRICE_VENUE = "last-price"
-# Consecutive failed keyless price polls before the live tape says so (gap Marker).
-_POLL_FAILURES_BEFORE_NOTICE = 3
-# Consecutive cycles with no Cboe book at all before the depth is withheld.
-_BOOK_FAILURES_BEFORE_NOTICE = 3
-# A book that misses cycles keeps its last read for this many cycles.
-_BOOK_HOLD_CYCLES = 3
-# Once the notice is out, a failed book read is retried after this long, not one cycle.
-_BOOK_RETRY_NS = 30 * 10**9
 # Keyed tiers: no provider event for this long is a silent socket or a stuck
 # provider, not a quiet name, so the feed fails and the session restarts it.
 # The check cadence bounds how quickly the calendar close is noticed.
@@ -148,6 +143,7 @@ BookFn = Callable[[], Awaitable[Sequence[VenueBook]]]
 PriceFn = Callable[[], Awaitable[float | None]]
 SleepFn = Callable[[float], Awaitable[None]]
 NowFn = Callable[[], int]
+PublicTapeFn = Callable[[], AsyncIterator[TapeMessage]]
 
 _EMPTY = np.empty(0, dtype=np.float64)
 
@@ -224,6 +220,7 @@ class EquityFeed(EquityFeedBase):
         provider_factory: Callable[[_EquitySink], object] | None = None,
         calendar: USMarketCalendar | None = None,
         stats: DropCounters | None = None,
+        public_tape_fn: PublicTapeFn | None = None,
     ) -> None:
         self.symbol = symbol.upper()
         self._cfg = cfg
@@ -238,6 +235,13 @@ class EquityFeed(EquityFeedBase):
         self._tier = self._select_tier()
         # A per-instance copy: a shared module-level dict would leak any per-feed write.
         self.capability: dict[str, object] = dict(_CAPABILITY[self._tier])
+        self._public_tape_enabled = (
+            self._tier == "keyless" and cfg.equity_public_tape and self.symbol in SUPPORTED_SYMBOLS
+        )
+        self._public_tape_fn = public_tape_fn or (lambda: default_public_tape(self.symbol))
+        self._public_tape_active = False
+        if self._public_tape_enabled:
+            self.capability.update(public_tape="trial", tape_source="TickDB", cvd_scope="connection")
 
         # Session state the session layer reads to emit Status. Reset at
         # the start of every events() call so a re-called feed starts honest.
@@ -336,9 +340,13 @@ class EquityFeed(EquityFeedBase):
         self.next_open_ts = None
         self.poll_failures = 0
         self.book_failures = 0
+        self._public_tape_active = False
+        if self._public_tape_enabled:
+            self.capability.update(tape="poll", trade_side="na", cvd="na", public_tape_state="connecting")
         if self._tier == "keyless":
-            async for ev in self._keyless_events():
-                yield ev
+            async with contextlib.aclosing(self._keyless_events()) as stream:
+                async for ev in stream:
+                    yield ev
         else:
             async for ev in self._keyed_events():
                 yield ev
@@ -351,10 +359,11 @@ class EquityFeed(EquityFeedBase):
         Session boot calls this only after is_closed_now(); it cannot get stuck
         in the unbounded live poll loop while no client has attached yet.
         """
-        async for ev in self._keyless_events(history_only=True):
-            yield ev
+        async with contextlib.aclosing(self._keyless_events(history_only=True)) as stream:
+            async for ev in stream:
+                yield ev
 
-    async def _keyless_events(self, *, history_only: bool = False) -> AsyncIterator[FeedEvent]:
+    async def _keyless_events(self, *, history_only: bool = False) -> AsyncGenerator[FeedEvent, None]:
         try:
             bars = await self._fetch_bars()
         except Exception:  # a 429 storm must degrade, not kill the feed
@@ -406,154 +415,16 @@ class EquityFeed(EquityFeedBase):
             return
 
         try:
-            async for ev in self._keyless_live(ref, has_history=bool(warmup)):
-                yield ev
+            async with contextlib.aclosing(self._keyless_live(ref, has_history=bool(warmup))) as stream:
+                async for ev in stream:
+                    yield ev
         finally:
             await self._close_clients()
 
-    async def _keyless_live(
-        self, ref: float | None, *, has_history: bool
-    ) -> AsyncIterator[FeedEvent]:
-        """Live keyless loop.
-
-        Every ``dt_equity_book_ns`` the four Cboe books are read together: their
-        new prints become trades and their merged levels become the book. The
-        grid advances one column per ``dt_equity_keyless_grid_ns`` on the last
-        merged book. A symbol with no fresh Cboe print for
-        ``dt_equity_keyless_ns`` polls a last price so the chart still moves.
-        Stops with a session_break when the extended trading window closes. ``ref`` seeds from
-        the last warmup bar's close and then tracks each print: it is where the
-        grid stays centred while the book is empty.
-        """
-        cfg = self._cfg
-        grid_s = cfg.dt_equity_keyless_grid_ns / 1e9
-        book_ns = cfg.dt_equity_book_ns
-        hold_ns = book_ns * _BOOK_HOLD_CYCLES
-        next_book = self._now_ns()
-        next_price = next_book
-        last_print_ns = next_book
-        # Both reads run as their own tasks: a slow response must not hold the
-        # one-column-per-grid-tick cadence.
-        book_task: asyncio.Task[Sequence[VenueBook]] | None = None
-        price_task: asyncio.Task[float | None] | None = None
-        held: dict[str, tuple[VenueBook, int]] = {}
-        seen: dict[str, tuple[VenuePrint, ...]] = {}
-        levels = (_EMPTY, _EMPTY, _EMPTY, _EMPTY)
-        try:
-            while True:
-                now = self._now_ns()
-                state, next_open = self._keyless_state(now)
-                if state == "closed":
-                    self.feed_state = "closed"
-                    self.next_open_ts = next_open
-                    yield Marker(
-                        ts_ns=now,
-                        kind="session_break",
-                        text=_closed_marker_text(has_history),
-                    )
-                    return
-
-                if book_task is None and now >= next_book:
-                    book_task = asyncio.create_task(
-                        self._read_books_safe(now), name=f"equity-book:{self.symbol}"
-                    )
-                    # Integer-ns arithmetic ONLY: a float offset loses the whole
-                    # interval to float64 rounding at ns magnitudes (~1.8e18).
-                    next_book = now + book_ns
-                if book_task is not None and book_task.done():
-                    books = book_task.result()  # _read_books_safe never raises
-                    book_task = None
-                    if books:
-                        self.book_failures = 0
-                        self.feed_state = "live"
-                        for trade in prints_to_trades(books, seen, now, book_ns, self._stats):
-                            ref = trade.price
-                            last_print_ns = now
-                            yield trade
-                        for book in books:
-                            held[book.venue] = (book, now)
-                    else:
-                        self.book_failures += 1
-                        if self.book_failures == _BOOK_FAILURES_BEFORE_NOTICE:
-                            logger.warning(
-                                "order book unavailable for %s after %d failed reads",
-                                self.symbol,
-                                self.book_failures,
-                            )
-                            yield Marker(
-                                ts_ns=now,
-                                kind="gap",
-                                text=(
-                                    f"order book unavailable after {self.book_failures} "
-                                    "failed reads; depth is withheld until it returns"
-                                ),
-                            )
-                        if self.book_failures >= _BOOK_FAILURES_BEFORE_NOTICE:
-                            self.feed_state = "degraded"
-                            next_book = now + _BOOK_RETRY_NS
-
-                # Checked every tick, not only on a read: with retries 30 s apart a
-                # book that has stopped answering must still drop after hold_ns.
-                held = {v: e for v, e in held.items() if now - e[1] <= hold_ns}
-                levels = merge_books(book for book, _read_ns in held.values())
-
-                quiet = now - last_print_ns >= cfg.dt_equity_keyless_ns
-                if price_task is None and quiet and now >= next_price:
-                    price_task = asyncio.create_task(
-                        self._poll_price_safe(), name=f"equity-price-poll:{self.symbol}"
-                    )
-                    next_price = now + cfg.dt_equity_keyless_ns
-                if price_task is not None and price_task.done():
-                    price = price_task.result()  # _poll_price_safe never raises
-                    price_task = None
-                    if price is not None and math.isfinite(price) and price > 0.0:
-                        self.poll_failures = 0
-                        # Display-only: a scraped last price is not a print, so it
-                        # carries no size and no side.
-                        ref = float(price)
-                        yield Trade(
-                            ts_ns=now,
-                            price=float(price),
-                            size=0.0,
-                            side=SIDE_UNKNOWN,
-                            side_src=SIDE_SRC_NA,
-                            venue=LAST_PRICE_VENUE,
-                        )
-                    else:
-                        self.poll_failures += 1
-                        if self.poll_failures == _POLL_FAILURES_BEFORE_NOTICE:
-                            logger.warning(
-                                "live price unavailable for %s after %d consecutive failed polls",
-                                self.symbol,
-                                self.poll_failures,
-                            )
-                            yield Marker(
-                                ts_ns=now,
-                                kind="gap",
-                                text=(
-                                    f"live price unavailable after {self.poll_failures} "
-                                    "failed polls; the last trade may be stale"
-                                ),
-                            )
-                # One book per grid tick: the grid advances a column and the
-                # current column holds the last merged levels.
-                bid_px, bid_sz, ask_px, ask_sz = levels
-                yield BookState(
-                    ts_ns=now,
-                    bid_px=bid_px,
-                    bid_sz=bid_sz,
-                    ask_px=ask_px,
-                    ask_sz=ask_sz,
-                    source="cboe",
-                    anchor_px=ref,
-                )
-                await self._sleep(grid_s)
-        finally:
-            # Cancelled reads are awaited, so the HTTP session closes only after they end.
-            tasks = [task for task in (book_task, price_task) if task is not None]
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+    async def _keyless_live(self, ref: float | None, *, has_history: bool) -> AsyncGenerator[FeedEvent, None]:
+        async with contextlib.aclosing(keyless_live(self, ref, has_history=has_history, closed_marker_text=_closed_marker_text)) as stream:
+            async for event in stream:
+                yield event
 
     async def _fetch_bars(self) -> Sequence[EqBar]:
         if self._bars_fn is not None:

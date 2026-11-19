@@ -7,8 +7,8 @@ import type { DepthColumn, EpochParams } from '../../proto/types';
 import { scaleFromEpoch } from '../priceScale';
 import {
   mapScale,
-  slotColToTsNs,
-  slotTsToCol,
+  chartColumn,
+  chartTimestamp,
   type PriceMap,
   type TimeMap,
   type TimeSlots,
@@ -17,6 +17,14 @@ import type { ColumnCache } from '../columnCache';
 import type { OverviewSurface } from '../overviewSurface';
 import type { ResidentRange, TileRing } from '../tileRing';
 import type { FrameState, StateSource } from './frameState';
+import { gapProjection, recordingClock, type ChartView } from '../gapProjection';
+
+interface RecordingClockMemo {
+  source: TimeSlots;
+  dtNs: number;
+  version: number;
+  clock: ReturnType<typeof recordingClock>;
+}
 
 /** What the axis maps read from the renderer: the live ring, overview surface and column cache. */
 export interface AxisMapHost {
@@ -24,7 +32,14 @@ export interface AxisMapHost {
   readonly frameState: FrameState;
   columnCache(): ColumnCache;
   ring(): TileRing | null;
-  activeOverview(): OverviewSurface | null;
+  activeOverview(withTime?: boolean): OverviewSurface | null;
+}
+
+interface TimelineWindow {
+  oldestSeq: number;
+  newestSeq: number;
+  viewStartCol: number;
+  viewEndCol: number;
 }
 
 /**
@@ -55,6 +70,7 @@ export class SlotTimeTable {
   private runStart = -1;
   private runEnd = -2;
   private revision = 0;
+  get version(): number { return this.revision; }
   private memo: { source: Float64Array; from: number; to: number; revision: number; slots: TimeSlots } | null = null;
 
   /** Allocate an empty table for a ring of `cap` slots. */
@@ -169,6 +185,8 @@ export class AxisMap {
   overlayAnchorEpoch = 0;
   /** Last PriceMap the camera was interpreted through (see overlayPriceMap). */
   lastPriceMapCache: PriceMap | null = null;
+  private rawClock: RecordingClockMemo | null = null;
+  private rawView: { source: FrameState['view']; clock: RecordingClockMemo | null; value: ChartView } | null = null;
 
   constructor(host: AxisMapHost) {
     this.host = host;
@@ -215,24 +233,49 @@ export class AxisMap {
    * the column⇄time base (anchor + dt) so a scrubber fraction maps to a real ns.
    * Null before the first column. Cheap — the Timeline polls it at ≤4 Hz.
    */
-  timeline(): {
-    oldestSeq: number;
-    newestSeq: number;
-    viewStartCol: number;
-    viewEndCol: number;
+  timeline(): (TimelineWindow & {
+    columnFraction?: (col: number) => number;
+    emptySpans?: ReadonlyArray<{ x0: number; x1: number }>;
     /** The column⇄time map the chart draws with (slots included when present). */
     timeBase: TimeMap | null;
-  } | null {
+    timeExtent?: { startNs: bigint; endNs: bigint };
+  }) | null {
     const range = this.residentRange();
     if (range === null) return null;
+    const overview = this.activeOverview();
+    const view = this.chartView(overview);
+    const projection = view.timeProjection;
+    const stride = overview?.stride ?? 1;
+    const window = this.timelineBounds(range, overview);
+    const timeBase = overview?.originalTimeMap(this.currentDtNs()) ?? this.overlayTimeMap();
+    const startMap = window.oldestSeq === range.oldest && overview ? this.overlayTimeMap() : timeBase;
+    const timeExtent = startMap && this.frameState.newestSeq === window.newestSeq
+      ? { startNs: chartTimestamp(startMap, window.oldestSeq), endNs: this.frameState.newestT0Ns } : undefined;
     return {
-      // The resident window's oldest column. A hard 0 pinned the Timeline
-      // scrubber to the session origin, so the slider and minimap mapped the run wrongly.
-      oldestSeq: range.oldest,
+      ...window,
+      columnFraction: projection ? col => projection.fractionAt(col / stride) : undefined,
+      emptySpans: projection?.segments.filter(segment => segment.empty),
+      timeBase,
+      timeExtent,
+    };
+  }
+
+  /** Geometry-only hot path for dragging the minimap with the chart. */
+  timelineWindow(): TimelineWindow | null {
+    const range = this.residentRange();
+    return range ? this.timelineBounds(range, this.host.activeOverview(false)) : null;
+  }
+
+  private timelineBounds(range: ResidentRange, overview: OverviewSurface | null): TimelineWindow {
+    const archive = overview?.ring.residentRange();
+    const archiveOldest = archive && overview
+      ? Math.max(archive.oldest, overview.ring.validFromSeq()) * overview.stride : range.oldest;
+    const view = overview ? this.frameState.view : this.rawChartView();
+    return {
+      oldestSeq: Math.min(range.oldest, archiveOldest),
       newestSeq: Math.max(range.newest, this.frameState.newestSeq),
-      viewStartCol: this.frameState.view.colOffset,
-      viewEndCol: this.frameState.view.colOffset + this.frameState.view.colScale,
-      timeBase: this.activeTimeMap(),
+      viewStartCol: view.colOffset,
+      viewEndCol: view.colOffset + view.colScale,
     };
   }
 
@@ -296,7 +339,46 @@ export class AxisMap {
       dtNs,
     };
     const slots = this.overlaySlotsFor();
-    return slots === null ? base : { ...base, slots: slots };
+    if (slots === null) {
+      this.rawClock = null;
+      return base;
+    }
+    const memo = this.rawClock;
+    if (!memo || memo.version !== this.slots.version || memo.dtNs !== dtNs || memo.source.startSeq !== slots.startSeq
+      || memo.source.t0.buffer !== slots.t0.buffer || memo.source.t0.byteLength !== slots.t0.byteLength) {
+      const restoredMinutes = this.store.getState().subscription?.market === 'binance-spot';
+      this.rawClock = { source: slots, dtNs, version: this.slots.version, clock: recordingClock(slots, dtNs, restoredMinutes) };
+    }
+    const clock = this.rawClock!.clock;
+    return { ...base, slots: clock.slots, priceGaps: clock.gaps.length ? clock.gaps : undefined };
+  }
+
+  chartView(overview = this.activeOverview()): ChartView {
+    const source = this.frameState.view;
+    if (overview) return overview.view(source);
+    const time = this.overlayTimeMap();
+    const memo = this.rawView;
+    if (memo?.source === source && memo.clock === this.rawClock) return memo.value;
+    let view = this.rawChartView();
+    if (time?.priceGaps) {
+      view = { ...view, timeProjection: gapProjection(view, time.priceGaps, time.dtNs, source.liveQuoteStartX, time) };
+    }
+    this.rawView = { source, clock: this.rawClock, value: view };
+    return view;
+  }
+
+  private rawChartView(): ChartView {
+    const source = this.frameState.view;
+    const inset = source.liveQuoteStartX === undefined ? 0 : (1 - source.liveQuoteStartX) / 2;
+    const right = source.colOffset + source.colScale * (1 - inset);
+    const ring = this.host.ring();
+    const resident = ring?.residentRange();
+    // While the first overview page loads, paint the available tail at a
+    // readable size. The desired range still drives the history request.
+    return resident && ring && source.colScale * (1 - inset) > ring.capacityCols
+      && source.colOffset < resident.oldest && right >= resident.newest
+      ? { ...source, colOffset: resident.oldest, colScale: resident.count / (1 - inset) }
+      : source;
   }
 
   /**
@@ -306,12 +388,7 @@ export class AxisMap {
    */
   timestampAtColumn(col: number): bigint | null {
     const time = this.activeTimeMap();
-    if (time === null) return null;
-    if (time.slots !== undefined) {
-      const ts = slotColToTsNs(time.slots, col);
-      if (ts !== null) return ts;
-    }
-    return time.anchorT0Ns + BigInt(Math.round((col - time.anchorSeq) * time.dtNs));
+    return time === null ? null : chartTimestamp(time, col);
   }
 
   /**
@@ -320,11 +397,6 @@ export class AxisMap {
    */
   columnAtTimestamp(tsNs: bigint): number | null {
     const time = this.activeTimeMap();
-    if (time === null) return null;
-    if (time.slots !== undefined) {
-      const col = slotTsToCol(time.slots, tsNs);
-      if (col !== null) return col;
-    }
-    return time.anchorSeq + Number(tsNs - time.anchorT0Ns) / time.dtNs;
+    return time === null ? null : chartColumn(time, tsNs);
   }
 }

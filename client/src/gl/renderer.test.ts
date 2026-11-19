@@ -252,6 +252,29 @@ describe('Renderer (fake GL harness)', () => {
     r.dispose();
   });
 
+  it('keeps every snapshot price and VWAP while staged depth catches up after shader compilation', () => {
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    const completion = 0x91b1;
+    let ready = false;
+    const extension = gl.getExtension.bind(gl);
+    vi.spyOn(gl, 'getExtension').mockImplementation(name => name === 'KHR_parallel_shader_compile'
+      ? { COMPLETION_STATUS_KHR: completion } : extension(name));
+    vi.spyOn(gl, 'getProgramParameter').mockImplementation((_program, key) => key === completion ? ready : true);
+    const { r, store } = makeRenderer();
+    for (let seq = 0; seq < 512; seq++) {
+      store.emit(makeCol(seq, true));
+      store.emit({ type: MsgType.BAR_COL, epoch: 0, col_seq: seq, t0_ns: BigInt(seq) * BigInt(DT_NS),
+        o: 101, h: 102, l: 100, c: 101 + seq / 1000,
+        vol_buy: 1, vol_sell: 1, cvd_cum: seq, vwap_num_cum: 202, vwap_den_cum: 2 });
+    }
+    ready = true;
+    for (let frame = 0; frame < 64; frame++) pump(16 + frame * 16);
+    expect(r.newestColSeq).toBe(511);
+    expect(r.overlayDebugForTest()).toMatchObject({ vwap: 512, volumeBars: 512 });
+    expect(r.cvdSeries(0, 511)).toHaveLength(512);
+    r.dispose();
+  });
+
   it('discards staged columns from the previous instrument while compilation is pending', () => {
     const completion = 0x91b1;
     let ready = false;
@@ -554,6 +577,32 @@ describe('Renderer (fake GL harness)', () => {
     r.dispose();
   });
 
+  it('fits distant resting orders on both sides of a hybrid book in the full view', () => {
+    const { r, store } = makeRenderer();
+    const scale = makeHybrid({ mid: 64600, rows: 4096, coreRows: 2048, coreStep: 1, upMult: 11, dnFloor: .01 })!;
+    store.state.epochs = new Map([[0, { epoch: 0, tick: .01, tick_multiple: 100, dt_ns: DT_NS, p0: scale.coreP0, rows: scale.rows,
+      scale_kind: 1, dn_rows: scale.dnRows, core_rows: scale.coreRows, core_p0: scale.coreP0, core_step: scale.coreStep, lo_price: scale.loPrice, hi_price: scale.hiPrice }]]);
+    const bidRow = Math.round(priceToRow(scale, 60000));
+    const askRow = Math.round(priceToRow(scale, 78000));
+    const book = makeCol(0, true, scale.rows);
+    book.bid.fill(0);
+    book.ask!.fill(0);
+    book.bid[bidRow] = 600;
+    book.ask![askRow] = 30;
+    store.emit(book);
+    r.ingestForTest({ type: MsgType.BAR_COL, epoch: 0, col_seq: 0, t0_ns: 0n,
+      o: 64600, h: 64601, l: 64599, c: 64600, v_buy: 1, v_sell: 1, cvd: 0 } as never);
+    expect(r.setTimeWindowMs(null, true)).toBe(true);
+    r.setPriceFollow('fit');
+    const view = r.viewSnapshot;
+    expect(view.rowOffset).toBeLessThan(bidRow - .5);
+    expect(view.rowOffset + view.rowScale).toBeGreaterThan(askRow + .5);
+    expect(rowToPrice(scale, view.rowOffset)).toBeGreaterThan(55000);
+    expect(rowToPrice(scale, view.rowOffset + view.rowScale)).toBeLessThan(83000);
+    expect(r.priceFollow).toBe('fit');
+    r.dispose();
+  });
+
   it.each(['wheel', 'keyboard', 'test hook'] as const)('maximum time zoom preserves a manual price frame (%s)', input => {
     const { r, store } = makeRenderer();
     const scale = makeHybrid({ mid: 85505, rows: 4096, coreRows: 2048, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;
@@ -597,7 +646,7 @@ describe('Renderer (fake GL harness)', () => {
     /** The overview surface the frame draws with (private on Renderer). */
     const drawnOverview = (r: Renderer): unknown => (r as unknown as { activeOverview(): unknown }).activeOverview();
 
-    function setup() {
+    function setup(columns = 1024) {
       const made = makeRenderer();
       const scale = makeHybrid({ mid: 100, rows: 256, coreRows: 128, coreStep: 0.01, upMult: 11, dnFloor: 0.01 })!;
       const params = (epoch: number) => ({ epoch, tick: 0.01, tick_multiple: 1, dt_ns: DT_NS, p0: scale.coreP0, rows: scale.rows,
@@ -610,7 +659,7 @@ describe('Renderer (fake GL harness)', () => {
         if (!range) return new Promise(() => undefined);
         return new Promise<HistoryResponse>(resolve => { pages.push({ range, resolve }); });
       };
-      for (let seq = 0; seq < 1024; seq++) made.store.emit(makeCol(seq, true, scale.rows));
+      for (let seq = 0; seq < columns; seq++) made.store.emit(makeCol(seq, true, scale.rows));
       made.r.setPriceFollow('off');
       made.r.setTimeWindowMs(null);
       const answer = (index: number) => {
@@ -634,32 +683,75 @@ describe('Renderer (fake GL harness)', () => {
       }
     }
 
-    it('keeps drawing the close-up ring until the overview has a time knot', async () => {
-      const { r, pages, answer } = setup();
+    it('keeps drawing the close-up ring until all initial overview pages have committed', async () => {
+      const { r, pages, answer } = setup(1200);
       pump(16);
       expect(pages.length).toBeGreaterThan(0);
       expect(r.overviewStats()?.inFlight).toBe(true);
       expect(drawnOverview(r)).toBeNull(); // nothing loaded yet: no time map to draw with
       answer(0);
-      await drainUntil(() => drawnOverview(r) !== null);
+      await drainUntil(() => pages.length >= 2);
+      expect(r.overviewStats()?.progress.loaded).toBeGreaterThan(0);
+      expect(r.overviewStats()?.presented).toBe(false);
+      expect(drawnOverview(r)).toBeNull();
+      let answered = 1;
+      await drainUntil(() => {
+        while (answered < pages.length) answer(answered++);
+        return drawnOverview(r) !== null;
+      });
+      expect(r.overviewStats()?.presented).toBe(true);
       expect(drawnOverview(r)).not.toBeNull();
+      const timeline = r.timeline()!;
+      expect(timeline.oldestSeq).toBeLessThan(r.residentRange()!.oldest);
+      expect(timeline.timeExtent).toEqual({ startNs: 0n, endNs: BigInt(timeline.newestSeq) * BigInt(DT_NS) });
       r.dispose();
     });
 
     it('keeps the loaded overview when the grid re-anchors on the same ring', async () => {
       const { r, store, params, pages, answer } = setup();
       pump(16);
-      answer(0);
-      await drainUntil(() => drawnOverview(r) !== null);
+      let answered = 0;
+      await drainUntil(() => {
+        while (answered < pages.length) answer(answered++);
+        return drawnOverview(r) !== null;
+      });
+      expect(r.overviewStats()?.presented).toBe(true);
       const surface = r.overviewSurface;
       expect(surface).not.toBeNull();
       const requested = pages.length;
       store.state.epochs = new Map([[0, params(0)], [1, params(1)]]);
       store.state.gridEpoch = 1;
       pump(200);
-      expect(r.overviewSurface).toBe(surface); // not rebuilt
-      expect(drawnOverview(r)).toBe(surface);
+      expect(r.overviewSurface === surface).toBe(true);
+      expect(drawnOverview(r) === surface).toBe(true);
       expect(pages.length).toBe(requested); // nothing already loaded is asked for again
+      r.dispose();
+    });
+
+    it('keeps drawing the previous overview during a wheel zoom across archive resolutions', async () => {
+      const { r, pages, answer } = setup(1400);
+      pump(16);
+      let answered = 0;
+      await drainUntil(() => {
+        while (answered < pages.length) answer(answered++);
+        return drawnOverview(r) !== null;
+      });
+      const previous = r.overviewSurface;
+      expect(previous?.stride).toBe(4);
+
+      priv(r).viewport.makeController().zoomTimeAtFraction(0.60, 0.5);
+      pump(201);
+      expect(r.overviewSurface?.stride).toBe(2);
+      expect(r.overviewStats()?.presented).toBe(false);
+      expect(drawnOverview(r)).toBe(previous);
+
+      await drainUntil(() => {
+        while (answered < pages.length) answer(answered++);
+        return r.overviewStats()?.presented === true;
+      });
+      expect(r.overviewStats()?.presented).toBe(true);
+      expect(drawnOverview(r)).toBe(r.overviewSurface);
+      expect(drawnOverview(r)).not.toBe(previous);
       r.dispose();
     });
   });
@@ -984,6 +1076,70 @@ describe('Renderer (fake GL harness)', () => {
   });
 
 
+  it('opens the requested history window around restored data without re-enabling follow', () => {
+    const { r, store } = makeRenderer();
+    r.setFollowTime(false);
+    for (let i = 0; i < 280; i++) {
+      const book = makeCol(i, true);
+      if (i >= 240) book.t0_ns += 86_400_000_000_000n;
+      store.emit(book);
+    }
+    pump(16);
+    expect(r.prefetchHistory(200, true)).toBe(true);
+    expect(r.viewSnapshot.colOffset).toBe(80);
+    expect(r.viewSnapshot.colScale).toBe(200);
+    expect(r.following).toBe(false);
+    r.dispose();
+  });
+
+  it('opens wide startup history without shrinking it to the raw ring on the next live column', () => {
+    const { r, store } = makeRenderer();
+    for (let i = 4_000; i < 4_260; i++) store.emit(makeCol(i, true));
+    pump(16);
+    expect(r.prefetchHistory(4_000, true)).toBe(true);
+    expect(r.viewSnapshot.colScale).toBe(4_000);
+    expect(r.timeline()?.viewStartCol).toBe(4_000); // readable fallback until the overview arrives
+    store.emit(makeCol(4_260, true));
+    pump(32);
+    expect(r.viewSnapshot.colScale).toBe(4_000);
+    expect(r.overviewStats()?.plan).toBeTruthy();
+    expect(r.following).toBe(true);
+    r.dispose();
+  });
+
+  it('keeps the forming live column outside the quote strip without losing the selected history', () => {
+    const { r, canvas, store } = makeRenderer();
+    store.state.subscription = { market: 'binance-spot', symbol: 'BTCUSDT', mode: 'live' };
+    Object.defineProperty(canvas, 'clientWidth', { value: 1000 });
+    Object.defineProperty(canvas, 'clientHeight', { value: 600 });
+    (r as unknown as { viewport: { resize(): void } }).viewport.resize();
+    const draw = vi.spyOn(overlaysOf(r), 'draw');
+    for (let i = 0; i < 512; i++) store.emit(makeCol(i, true));
+    pump(16);
+    expect(r.setTimeWindowMs(null)).toBe(true);
+    store.emit(makeCol(512, false));
+    pump(32);
+
+    const view = r.viewSnapshot;
+    const quoteStart = 1000 - 156;
+    const liveColumnEnd = 1000 * (513 - view.colOffset) / view.colScale;
+    expect(liveColumnEnd).toBeLessThanOrEqual(quoteStart + 0.001);
+    expect(liveColumnEnd).toBeGreaterThan(quoteStart - 1);
+    expect(view.colOffset).toBeLessThanOrEqual(0);
+    expect(draw.mock.lastCall?.[0].liveQuoteStartX).toBeCloseTo(2 * quoteStart / 1000 - 1);
+
+    r.setOverlayVisibility({ bbo: false });
+    pump(48);
+    expect(draw.mock.lastCall?.[0].liveQuoteStartX).toBeUndefined();
+
+    r.setOverlayVisibility({ bbo: true });
+    r.setFollowTime(false);
+    pump(64);
+    expect(draw.mock.lastCall?.[0].liveQuoteStartX).toBeUndefined();
+    expect(r.viewSnapshot.colScale).toBe(513);
+    r.dispose();
+  });
+
   it('time presets preserve a history position and follow policy, then fit all loaded data', () => {
     const { r, store } = makeRenderer();
     for (let i = 0; i < 200; i++) store.emit(makeCol(i, true));
@@ -1198,11 +1354,34 @@ describe('Renderer (fake GL harness)', () => {
     expect(r.validFromSeq).toBe(1000);
   });
 
+  it('does not probe cached liquidity before the heatmap validity boundary', () => {
+    const { r, store } = makeRenderer(2048);
+    for (let s = 0; s <= 4; s++) store.emit(makeCol(s, true));
+    store.emit(makeCol(1000, true));
+    r.setViewForTest(0, 5, 0, ROWS);
+    const pixel = r.cellToCanvasCss(2, 2);
+    expect(r.residentRange()!.oldest).toBe(0);
+    expect(r.validFromSeq).toBe(1000);
+    expect(r.columnCacheForTest.has(2)).toBe(true);
+    expect(r.probeAt(pixel.x, pixel.y)).toMatchObject({ inRange: false, bid: null, ask: null });
+    r.dispose();
+  });
+
   // --- a repaired skip band is refetched from the session grid ring ------
 
   /** Await the loader's async band refetch (requestHistory → splice loop). */
   const flushMicrotasks = async (): Promise<void> => {
     for (let i = 0; i < 8; i++) await Promise.resolve();
+  };
+
+  /** Let real upload time limits yield even on a busy runner. */
+  const flushHistoryWork = async (done: () => boolean): Promise<void> => {
+    await flushMicrotasks();
+    for (let i = 0; i < 8 && !done(); i++) {
+      pump(32 + 16 * i);
+      for (const callback of asyncThrows.splice(0)) callback();
+      await flushMicrotasks();
+    }
   };
 
   it('reloads the visible suffix after a large jump even when residency claims it', async () => {
@@ -1221,7 +1400,7 @@ describe('Renderer (fake GL harness)', () => {
     r.setFollowTime(false);
     r.setViewForTest(994, 7, 0, ROWS);
     pump(16);
-    await flushMicrotasks();
+    await flushHistoryWork(() => r.validFromSeq === 994);
     expect(request).toHaveBeenCalledTimes(1);
     const [, count, sourceRange] = request.mock.calls[0];
     expect(sourceRange).toMatchObject({ end_col: 999, stride: 1 });
@@ -1300,7 +1479,7 @@ describe('Renderer (fake GL harness)', () => {
     store.emit(makeCol(18, true));
     expect(r.validFromSeq).toBe(10); // the synchronous repair contract first
 
-    await flushMicrotasks();
+    await flushHistoryWork(() => r.columnCacheForTest.has(15) && r.columnCacheForTest.has(16) && r.columnCacheForTest.has(17));
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({ n: 3, range: { start_col: 15, end_col: 17, stride: 1 } });
     // The zeroes were replaced by the real columns: they are cached/resident now.
@@ -1900,8 +2079,8 @@ describe('Renderer (fake GL harness)', () => {
     return r as unknown as PrivRenderer;
   }
 
-  function overlaysOf(r: Renderer): { reset: () => void; clearInk?: () => void } {
-    return (r as unknown as { overlays: { reset: () => void } }).overlays;
+  function overlaysOf(r: Renderer): OverlayManager {
+    return (r as unknown as { overlays: OverlayManager }).overlays;
   }
 
   function makeColAt(

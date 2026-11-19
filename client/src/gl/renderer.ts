@@ -221,7 +221,7 @@ export class Renderer {
       frameState: this.frameState,
       columnCache: () => this.columnCache,
       ring: () => this.ring,
-      activeOverview: () => this.activeOverview(),
+      activeOverview: withTime => this.activeOverview(withTime),
     });
 
     // GL context, LUT and the ring/heatmap/mips lifecycle. The context is created
@@ -735,9 +735,11 @@ export class Renderer {
     return this.axis.timeline();
   }
 
+  timelineWindow(): ReturnType<AxisMap['timelineWindow']> { return this.axis.timelineWindow(); }
+
   /** Choose a real time duration without changing the user's follow policy. */
-  setTimeWindowMs(durationMs: number | null): boolean {
-    return this.follow.setTimeWindowMs(durationMs);
+  setTimeWindowMs(durationMs: number | null, fitDepth = false): boolean {
+    return this.follow.setTimeWindowMs(durationMs, fitDepth);
   }
 
   /**
@@ -758,14 +760,12 @@ export class Renderer {
     return this.overlayLayer.cvdRevision;
   }
 
-  /**
-   * First-launch history depth: eagerly pull up to `targetCols` columns of
-   * history into the ring so the chosen span is instantly available on scroll-back
-   * (the server seeds the deep tail; this loads it). One-shot and bounded — safe
-   * because the ring is nearly empty at launch. No-op when history isn't ready.
-   */
-  prefetchHistory(targetCols: number): void {
-    this.gpu.prefetchHistory(targetCols);
+  /** Prefetch history. At launch, also frame it once the snapshot is drawable. */
+  prefetchHistory(targetCols: number, atLaunch = false): boolean {
+    if (atLaunch && (!this.marketFrameReady || this.ingest.pendingDepth.length !== 0
+      || !this.follow.openStartupHistory(targetCols))) return false;
+    this.gpu.prefetchHistory(targetCols, atLaunch);
+    return true;
   }
 
   /** `Space` (live mode) / `F`: toggle auto-follow of the live right edge. */
@@ -825,8 +825,8 @@ export class Renderer {
   };
 
   /** The overview surface when the view is zoomed out past the ring, else null. */
-  private activeOverview(): ReturnType<GpuLifecycle['activeOverview']> {
-    return this.gpu.activeOverview();
+  private activeOverview(withTime = true): ReturnType<GpuLifecycle['activeOverview']> {
+    return this.gpu.activeOverview(withTime);
   }
 
   /** The coarse overview surface whatever the view (diagnostics and e2e). */

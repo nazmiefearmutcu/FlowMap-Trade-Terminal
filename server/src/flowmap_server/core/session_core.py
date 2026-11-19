@@ -44,8 +44,9 @@ from flowmap_server.core.session_fanout import FanoutMixin
 from flowmap_server.core.session_history import HistoryMixin
 from flowmap_server.core.session_queue import ClientTx
 from flowmap_server.core.session_recording import RecordingMixin
+from flowmap_server.core.session_cvd import apply_cvd_anchor
 from flowmap_server.core.stats import SessionStats
-from flowmap_server.feeds.base import BarSample, BookState, CandleSnapshot, Feed
+from flowmap_server.feeds.base import BarSample, BookState, CandleSnapshot, CvdAnchor, Feed
 from flowmap_server.core.session_candles import apply_candle_snapshot
 from flowmap_server.feeds.crypto import is_crypto_market
 from flowmap_server.feeds.equity_markets import EquityFeedBase
@@ -561,6 +562,9 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
 
     async def _consume_events(self) -> None:
         async for ev in self._feed.events():
+            if isinstance(ev, CvdAnchor):
+                apply_cvd_anchor(self, ev)
+                continue
             if isinstance(ev, CandleSnapshot):
                 apply_candle_snapshot(self, ev)
                 continue
@@ -731,7 +735,9 @@ class Session(BootMixin, RecordingMixin, FanoutMixin, BookMixin, HistoryMixin):
         clock task, so a quiet source can still expose capture finalization;
         canonical book counters do not fabricate upstream frame counts.
         """
-        if not isinstance(self._feed, ReplayFeed) and "source_book_events" not in self._feed.capability:
+        if (not isinstance(self._feed, ReplayFeed)
+                and "source_book_events" not in self._feed.capability
+                and "public_tape" not in self._feed.capability):
             return
         now = self._clock()
         if now < self._next_capability_status_ns:

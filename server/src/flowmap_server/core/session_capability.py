@@ -9,7 +9,10 @@ from flowmap_server.feeds.crypto import is_crypto_market
 # The capability keys a recording keeps. They describe what the data is (depth
 # provenance, tape kind, side and CVD provenance), so a replay reports the
 # recorded truth instead of a fixed guess.
-_RECORDED_CAPABILITY_KEYS = ("depth", "depth_scope", "tape", "trade_side", "cvd")
+_RECORDED_CAPABILITY_KEYS = (
+    "depth", "depth_scope", "tape", "trade_side", "cvd", "public_tape", "tape_source",
+    "cvd_scope", "cvd_anchor_ns", "cvd_offset", "cvd_end_ns",
+)
 
 # Recordings written before the capability was stored. Crypto venues always
 # delivered exchange-true L2 depth, tick tape, side and CVD. Anything else gets

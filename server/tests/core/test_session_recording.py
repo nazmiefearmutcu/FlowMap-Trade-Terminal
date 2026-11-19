@@ -9,7 +9,7 @@ b. a flush failure is logged, disables recording for the session, and the
 c. rehydration: a fresh session for a previously recorded (market, symbol)
    serves the recorded tail in its attach snapshot, with a gap Marker, and
    live columns continue with non-overlapping col_seq,
-d. a stale tail (older than one ring span) means a cold start, no crash,
+d. an old compatible tail survives a restart beyond one ring span,
 e. an unusable tail (grid shape changed between runs) degrades to a cold
    start via the wrapped preload, never a crashed subscribe.
 
@@ -34,6 +34,7 @@ import pytest
 import flowmap_server.core.session as session_mod
 import flowmap_server.core.session_recording as rec_mod
 from flowmap_server.core.grid import Grid, GridCfg
+from flowmap_server.core.backfill import Candle
 from flowmap_server.core.record import Recorder, SessionRecorder
 from flowmap_server.core.record import TailData
 from flowmap_server.core.session import ClientTx, Session
@@ -48,6 +49,7 @@ from flowmap_server.proto.events import (
     SIDE_BUY,
     SIDE_SRC_EXCHANGE,
     DepthColumn,
+    BarColumn,
     EpochStart,
     Hello,
     Marker,
@@ -613,7 +615,7 @@ async def test_bootstrap_only_loads_attach_tail_and_preserves_disk_history_and_l
     client = ClientTx()
     snapshot = _decode_frames(session.attach(client))
     assert calls[0]["limit_cols"] == session_mod.SNAPSHOT_COLS == 512
-    assert calls[0]["max_age_ns"] == cfg.ring_columns * DT
+    assert calls[0]["max_age_ns"] == now
     assert grid.cfg.ring_columns == 32768
     assert grid.retained_sequence_range() == (512, 1023)
     assert [e.col_seq for e in snapshot if isinstance(e, DepthColumn)] == list(range(512, 1024))
@@ -723,10 +725,10 @@ async def test_bounded_bootstrap_restores_native_hybrid_epoch_and_fine_resolutio
 
 
 # ---------------------------------------------------------------------------
-# d. stale tail -> cold start, no crash
+# d. old observed depth survives a restart beyond the RAM residency window
 
 
-async def test_stale_tail_cold_start(tmp_path):
+async def test_old_tail_rehydrates_without_filling_the_restart_gap(tmp_path):
     cfg = _cfg(ring_columns=64)  # ring span = 64 * DT = 16 s
     root = Recorder(tmp_path / "rec", 20.0)
     cols = _prerecord_tail(root, cfg, n_cols=10)
@@ -734,6 +736,8 @@ async def test_stale_tail_cold_start(tmp_path):
     # Everything recorded is older than one ring span before "now".
     now_ns = cols[-1].t0_ns + 1000 * DT
     feed = DrivenFeed()
+    async def no_candle_fallback(*args, **kwargs):
+        raise AssertionError("existing observed depth must win over price-only candles")
     sess = Session(
         "rec-d",
         feed=feed,
@@ -741,12 +745,19 @@ async def test_stale_tail_cold_start(tmp_path):
         recorder=root,
         wall_clock=lambda: now_ns,
         timer=FakeTimer(),
+        backfill_fn=no_candle_fallback,
+        backfill_max_cols=512,
     )
     await sess.start()
     client = ClientTx()
     snap = _decode_frames(sess.attach(client))
     assert isinstance(snap[0], Hello)
-    assert not any(isinstance(e, DepthColumn) for e in snap)  # cold: no tail
+    history = [e for e in snap if isinstance(e, DepthColumn)]
+    assert [e.col_seq for e in history] == [c.col_seq for c in cols]
+    assert [e.t0_ns for e in history] == [c.t0_ns for c in cols]
+    for actual, original in zip(history, cols, strict=True):
+        np.testing.assert_array_equal(actual.bid, original.bid.astype(np.float32))
+    assert any(isinstance(e, Marker) and e.kind == 'gap' and e.text.startswith('restart:') for e in snap)
 
     feed.q.put_nowait(BookState(now_ns, *_book(100.0)))
     feed.q.put_nowait(BookState(now_ns + DT, *_book(100.0)))
@@ -754,9 +765,71 @@ async def test_stale_tail_cold_start(tmp_path):
         lambda: [e for e in _drain(client) if isinstance(e, DepthColumn) and e.final]
         or None
     )
-    assert live[0].col_seq == 0  # fresh grid: sequence starts over
+    assert live[0].col_seq == cols[-1].col_seq + 1
+    assert live[0].t0_ns == (now_ns // DT) * DT
+    assert sess.grid.retained_sequence_range() == (0, len(cols))
     feed.q.put_nowait(None)
     await asyncio.wait_for(sess.run_task, timeout=5)
+
+
+async def test_crypto_restart_opens_with_saved_depth_and_real_offline_prices(tmp_path):
+    class CryptoFeed(DrivenFeed):
+        market = "binance-spot"
+        symbol = "BTCUSDT"
+
+    cfg = _cfg(ring_columns=64)
+    root = Recorder(tmp_path / "rec", 20.0)
+    initial = Grid(cfg)
+    minute = 60 * 10**9
+    start = 1_794_800_000 // 60 * minute
+    initial.on_book(start, *_book(100.0))
+    initial.on_trade(start, 100.0, 3.0, SIDE_BUY)
+    original = initial.on_book(start + DT, *_book(100.0))[0]
+    writer = root.open_session(CryptoFeed.market, CryptoFeed.symbol)
+    writer.record_epoch(initial.current_epoch_params())
+    writer.record_column(original)
+    writer.close()
+    calls = []
+
+    async def candle_history(market, symbol, *, max_cols, now_ns):
+        calls.append((market, symbol, max_cols, now_ns))
+        return [
+            Candle(start, 100, 103, 99, 102, 7),  # overlaps the recorded minute
+            Candle(start + minute, 102, 105, 101, 104, 10),
+            Candle(start + 2 * minute, 104, 109, 103, 108, 12),
+            Candle(start + 3 * minute, 108, 120, 108, 120, 2),  # still forming
+        ]
+
+    now = start + 3 * minute + DT
+    feed = CryptoFeed()
+    sess = Session("restart-crypto", feed=feed, grid=Grid(cfg), recorder=root,
+                   wall_clock=lambda: now, timer=FakeTimer(), backfill_fn=candle_history,
+                   backfill_max_cols=512)
+    await sess.start()
+    client = ClientTx()
+    try:
+        snap = _decode_frames(sess.attach(client))
+        depth = [e for e in snap if isinstance(e, DepthColumn)]
+        bars = [e for e in snap if isinstance(e, BarColumn)]
+        assert calls == [(feed.market, feed.symbol, 4, now)]
+        assert [col.t0_ns for col in depth] == [start, start + minute, start + 2 * minute]
+        assert np.any(depth[0].bid)
+        assert [float(np.sum(col.bid) + np.sum(col.ask)) for col in depth[1:]] == [0, 0]
+        assert [bar.c for bar in bars] == [100, 104, 108]
+        assert [bar.cvd_cum for bar in bars] == [3, 3, 3]
+        assert any(isinstance(e, Marker) and "restart prices" in e.text for e in snap)
+    finally:
+        task = sess.run_task
+        sess.detach(client)
+        sess.teardown_now()
+        await asyncio.gather(task, return_exceptions=True)
+        if sess._recording_close_task is not None:
+            await sess._recording_close_task
+
+    reopened = root.load_tail(feed.market, feed.symbol, now_ns=now, max_age_ns=now, limit_cols=8)
+    assert reopened is not None
+    assert [c.col_seq for c in reopened.columns] == [0, 1, 2]
+    assert [c.bar.c for c in reopened.columns] == [100, 104, 108]
 
 
 # ---------------------------------------------------------------------------

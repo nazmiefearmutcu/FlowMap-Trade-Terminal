@@ -96,6 +96,7 @@ vi.mock('./gl/renderer', () => {
     timeline(): null {
       return null;
     }
+    timelineWindow(): null { return null; }
     stats(): { fps: number } { return { fps: 60 }; }
     overlayPointCss(): null { return null; }
     /** chartMap (MeasureTool/DrawingLayer) reads these every rAF tick. */

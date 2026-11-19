@@ -34,6 +34,8 @@ export const trMarket: Record<string, string> = {
   'marketMap.noChart': 'Bunun grafiği yok',
   'marketMap.group.other': 'Diğer',
   'crosshair.src': 'Kaynak',
+  'crosshair.noRecording': 'Emir defteri kaydı yok',
+  'tape.quantity': 'Miktar',
   'crosshair.time': 'Zaman',
   'crosshair.price': 'Fiyat',
   'crosshair.bid': 'Alış emirleri',

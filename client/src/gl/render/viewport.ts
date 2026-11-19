@@ -228,6 +228,20 @@ export class Viewport {
 
   // --- gesture control (input/gestures → Camera) --------------------------------
 
+  private columnAtFraction(fraction: number): number {
+    const overview = this.gpu.activeOverview();
+    const view = this.axis.chartView(overview);
+    const col = view.timeProjection?.columnAt(fraction) ?? view.colOffset + view.colScale * fraction;
+    return col * (overview?.stride ?? 1);
+  }
+
+  private fractionAtColumn(col: number): number {
+    const overview = this.gpu.activeOverview();
+    const view = this.axis.chartView(overview);
+    const localCol = col / (overview?.stride ?? 1);
+    return view.timeProjection?.fractionAt(localCol) ?? (localCol - view.colOffset) / view.colScale;
+  }
+
   makeController(): CameraController {
     const cssW = (): number => Math.max(1, this.canvas.clientWidth);
     const cssH = (): number => Math.max(1, this.canvas.clientHeight);
@@ -235,7 +249,7 @@ export class Viewport {
       panByPixels: (dx, dy, drag) => {
         // Natural drag: content follows the cursor. Right → earlier columns
         // (colCenter decreases); down → higher rows (rowCenter increases).
-        const dCols = -(dx / cssW()) * this.frameState.view.colScale;
+        const dCols = this.columnAtFraction(0.5 - dx / cssW()) - this.columnAtFraction(0.5);
         const dRows = (dy / cssH()) * this.frameState.view.rowScale;
         this.follow.pendingOverviewFit = false;
         // Per-axis release from PEAK displacement, so a deliberately horizontal
@@ -246,7 +260,7 @@ export class Viewport {
       zoomTimeAtFraction: (factor, fracX) => {
         this.follow.pendingOverviewFit = false;
         this.follow.requestedTimeWindow = undefined;
-        const anchorCol = this.frameState.view.colOffset + this.frameState.view.colScale * fracX;
+        const anchorCol = this.columnAtFraction(fracX);
         this.camera.zoomTime(factor, anchorCol);
         this.follow.userTimeZoomed = true; // user-owned span: follow must preserve it
         this.follow.onCameraChanged();
@@ -316,9 +330,14 @@ export class Viewport {
     const cssW = Math.max(1, this.canvas.clientWidth);
     const cssH = Math.max(1, this.canvas.clientHeight);
     const displayScale = this.axis.overlayPriceMap()?.scale ?? null;
-    const { colf, rowf: displayRow } = screenToGrid(this.frameState.view, cssX, cssY, cssW, cssH, displayScale);
+    const { rowf: displayRow } = screenToGrid(this.frameState.view, cssX, cssY, cssW, cssH, displayScale);
+    const view = this.axis.chartView(overview);
+    const fraction = cssX / cssW;
+    const sample = view.timeProjection?.columnAt(fraction) ?? view.colOffset + view.colScale * fraction;
+    const colf = sample * (overview?.stride ?? 1);
+    const empty = view.timeProjection?.emptyAt(fraction) ?? false;
     const colSeq = Math.floor(colf);
-    const sampleCol = overview ? Math.floor(colf / overview.stride) : colSeq;
+    const sampleCol = Math.floor(sample);
     const cache = overview?.cache ?? this.columnCache;
     const rows = ring.rows;
 
@@ -340,7 +359,8 @@ export class Viewport {
     const row = Math.floor(rowf + (centered ? 0.5 : 0));
     const onGrid = Number.isFinite(row) && row >= 0 && row < rows;
     const range = ring.residentRange();
-    const inRange = range !== null && sampleCol >= range.oldest && sampleCol <= range.newest && cache.arrays(sampleCol) !== null && onGrid;
+    const inRange = !empty && range !== null && sampleCol >= Math.max(range.oldest, ring.validFromSeq())
+      && sampleCol <= range.newest && cache.arrays(sampleCol) !== null && onGrid;
     const price = scale && onGrid ? scaleRowToPrice(scale,
       displayScale?.kind === 'hybrid' || scale.kind === 'hybrid' ? rowf : row) : null;
     // Native quote precision is independent of the storage bucket width.
@@ -356,7 +376,8 @@ export class Viewport {
       const high = scaleRowToPrice(displayScale, this.frameState.view.rowOffset + this.frameState.view.rowScale);
       const width = scaleStepAtRow(scale, rowf);
       const footprint = (high - low) / cssH / Math.max(width, 1e-30);
-      const maxLevel = this.gpu.mips?.usable ? this.gpu.mips.maxLevel : 0;
+      const mips = overview ? overview.mips : this.gpu.mips;
+      const maxLevel = mips?.usable ? mips.maxLevel : 0;
       const level = Math.min(maxLevel, Math.max(this.shading.tickGroupingLevel(), footprint >= 16 ? 2 : footprint >= 4 ? 1 : 0));
       blk = 4 ** level;
       taps = Math.max(1, Math.min(4, Math.ceil(footprint / blk)));
@@ -364,7 +385,7 @@ export class Viewport {
     const group = taps * blk;
     const rowStart = (Math.floor((rowf + (centered ? 0.5 : 0)) / blk) - Math.floor((taps - 1) / 2)) * blk;
     const firstRow = Math.max(0, rowStart), lastRow = Math.min(rows, rowStart + group);
-    const size = onGrid ? cache.sizeAt(sampleCol, firstRow, lastRow - firstRow) : null;
+    const size = inRange ? cache.sizeAt(sampleCol, firstRow, lastRow - firstRow) : null;
     // The group's true price EXTENT. A grouped cell spans `blk` ROWS, and on a
     // non-uniform grid that is emphatically not `blk * step` of price — so the
     // readout reports the real [lo, hi) rather than implying a uniform width.
@@ -381,8 +402,9 @@ export class Viewport {
       priceDecimals,
       bid: size ? size.bid : null,
       ask: size ? size.ask : null,
-      timeNs: cache.timeAt(sampleCol),
-      averageMs: overview ? overview.stride * this.axis.currentDtNs() / 1e6 : undefined,
+      timeNs: empty ? this.axis.timestampAtColumn(colf) : cache.timeAt(sampleCol),
+      averageMs: overview && inRange ? overview.stride * this.axis.currentDtNs() / 1e6 : undefined,
+      recordingGap: empty || undefined,
       inRange,
       sessionClock: isSessionClockMarket(st.subscription?.market ?? ''),
     };
@@ -392,7 +414,7 @@ export class Viewport {
   cellToCanvasCss(colSeq: number, row: number): { x: number; y: number } {
     const cssW = Math.max(1, this.canvas.clientWidth);
     const cssH = Math.max(1, this.canvas.clientHeight);
-    const uvX = (colSeq + 0.5 - this.frameState.view.colOffset) / this.frameState.view.colScale;
+    const uvX = this.fractionAtColumn(colSeq + 0.5);
     const uvY = rowFraction(this.frameState.view, this.axis.overlayPriceMap()?.scale ?? null, row + 0.5);
     return { x: uvX * cssW, y: (1 - uvY) * cssH };
   }
@@ -402,13 +424,13 @@ export class Viewport {
   canvasCssToGrid(x: number, y: number): { col: number; row: number } | null {
     if (this.axis.overlayPriceMap() === null) return null;
     const point = screenToGrid(this.frameState.view, x, y, Math.max(1, this.lastResizeCssW), Math.max(1, this.lastResizeCssH), this.axis.overlayPriceMap()?.scale ?? null);
-    return { col: point.colf, row: point.rowf - (this.axis.overlayPriceMap()?.scale?.kind === 'hybrid' ? 0 : 0.5) };
+    return { col: this.columnAtFraction(x / Math.max(1, this.lastResizeCssW)), row: point.rowf - (this.axis.overlayPriceMap()?.scale?.kind === 'hybrid' ? 0 : 0.5) };
   }
 
   gridToCanvasCss(col: number, row: number): { x: number; y: number } {
     const scale = this.axis.overlayPriceMap()?.scale ?? null;
     return {
-      x: (col - this.frameState.view.colOffset) / this.frameState.view.colScale * Math.max(1, this.lastResizeCssW),
+      x: this.fractionAtColumn(col) * Math.max(1, this.lastResizeCssW),
       y: (1 - rowFraction(this.frameState.view, scale, row + (scale?.kind === 'hybrid' ? 0 : 0.5))) * Math.max(1, this.lastResizeCssH),
     };
   }

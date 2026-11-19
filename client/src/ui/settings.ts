@@ -1,4 +1,5 @@
 import { isColormap } from '../theme/appearance';
+import { UI_STYLE, type UiStyle } from '../theme/uiStyle';
 /**
  * Persisted workspace settings for the settings drawer — pure load/save over a
  * Storage-shaped backend, so persistence + defaults + corruption tolerance are
@@ -135,8 +136,8 @@ const HISTORY_DEPTH_NS: Record<Exclude<HistoryDepth, 'off' | 'max'>, number> = {
 
 /**
  * Target column count for a history depth given the epoch's `dtNs` (ns per
- * column). `off` → 0 (no prefetch); `max` → a large cap the prefetch clamps to
- * available history + the ring budget; durations → wall-clock / dtNs.
+ * column). `off` → 0 (no prefetch); `max` → up to a million columns.
+ * Larger saved spans are opened with the coarser archive overview.
  */
 export function historyDepthCols(depth: HistoryDepth, dtNs: number): number {
   if (depth === 'off') return 0;
@@ -152,6 +153,7 @@ export interface FlowMapSettings {
    * `'theme'` ONCE on load. See the migration note in the module docblock.
    */
   settingsVersion: number;
+  interfaceStyle: UiStyle;
   /** Heatmap display contrast 0–100 (drives the perceptual gamma). */
   contrast: number;
   /** Heatmap black point 0–100 — how much density a cell needs to paint at all. */
@@ -203,11 +205,8 @@ export interface FlowMapSettings {
 export const SETTINGS_KEY = 'flowmap.settings.v1';
 
 /**
- * Current persisted schema version. 2 = the chart-harmony migration; 3 = the
- * `chartStyle` field (since removed: the interface is always pixel and the chart
- * always smooth, so a stored value is ignored). Only the colormap migration reads a stored
- * version, and it keeps its own threshold (COLORMAP_MIGRATED_VERSION), so this
- * bump never re-forces a colormap the user chose under version 2.
+ * Only the colormap migration reads a stored version. The interface preference
+ * uses the normal per-field default for existing settings.
  */
 export const SETTINGS_VERSION = 3;
 /** The first version whose stored colormap is trusted (chart-harmony fix). */
@@ -215,6 +214,7 @@ const COLORMAP_MIGRATED_VERSION = 2;
 
 export const DEFAULT_SETTINGS: FlowMapSettings = {
   settingsVersion: SETTINGS_VERSION,
+  interfaceStyle: UI_STYLE,
   contrast: DEFAULT_CONTRAST,
   tolerance: DEFAULT_TOLERANCE,
   colormap: DEFAULT_COLORMAP,
@@ -292,6 +292,7 @@ export function normalizeSettings(raw: unknown): FlowMapSettings {
       : 0;
   return {
     settingsVersion: SETTINGS_VERSION,
+    interfaceStyle: o.interfaceStyle === 'pixel' ? 'pixel' : UI_STYLE,
     contrast: Math.round(clampNumber(o.contrast, 0, 100, DEFAULT_SETTINGS.contrast)),
     tolerance: Math.round(clampNumber(o.tolerance, 0, 100, DEFAULT_SETTINGS.tolerance)),
     // Chart-harmony migration: a blob with no `settingsVersion` (or < 2)

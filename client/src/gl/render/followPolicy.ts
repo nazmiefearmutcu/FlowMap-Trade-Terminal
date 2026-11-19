@@ -36,6 +36,7 @@ import type { FrameState } from './frameState';
 import { PriceFit } from './priceFit';
 
 const MIN_VISIBLE_COLS = 32;
+const LIVE_QUOTE_SPACE_PX = 156;
 
 /**
  * What the follow policy reads from its owner. Getters are called at use time,
@@ -129,6 +130,8 @@ export class FollowPolicy {
   userTimeZoomed = false;
   /** undefined = manual zoom, null = all resident history, number = duration. */
   requestedTimeWindow: number | null | undefined = undefined;
+  private fitDepth = false;
+  get fitsFullDepth(): boolean { return this.fitDepth && this.requestedTimeWindow === null; }
 
   // --- eased live-edge scroll (time-follow smoothness) ---------------------------
   // The logical follow frame (applyTimeFollowFrame) still pins the right edge a
@@ -192,7 +195,6 @@ export class FollowPolicy {
       // first nonempty book once, then respect the user's existing follow mode.
       if (this.host.applyPriceFitFrame()) this.initialPriceFramed = true;
     }
-    this.frameState.view = this.camera.toView();
     // Re-apply the CURRENT eased lag (without stepping the dynamics — frame()
     // owns the step) so the change-notify never carries the un-eased logical
     // frame: this.frameState.view is otherwise jumped +1 column at this arrival, and
@@ -210,9 +212,7 @@ export class FollowPolicy {
       this.lagBaseSeq = this.frameState.newestSeq;
       this.liveLag = Math.min(this.liveLag + a, TIME_GLIDE_MAX_LAG);
     }
-    if (this.liveLag > 0) {
-      this.frameState.view = { ...this.frameState.view, colOffset: this.frameState.view.colOffset - this.liveLag };
-    }
+    this.frameState.view = this.drawView(this.liveLag);
     // Fire the view-changed seam only when a uniform actually moved: updateView
     // runs per appended column while following, and most appends reframe a
     // sub-pixel delta that must not spam listeners.
@@ -260,7 +260,11 @@ export class FollowPolicy {
       // zoom to ring capacity snapped 17136 → 8634 in live verification.)
       visible = this.camera.state.colSpan;
       if (!Number.isFinite(visible) || visible < 1) visible = MIN_VISIBLE_COLS;
-      this.camera.setTimeFrame(this.frameState.newestSeq - visible + 1, visible);
+      if (visible > cap) {
+        this.camera.state = { ...this.camera.state, colCenter: this.frameState.newestSeq + 1 - visible / 2, colSpan: visible };
+      } else {
+        this.camera.setTimeFrame(this.frameState.newestSeq - visible + 1, visible);
+      }
       return;
     } else {
       visible = Math.round(cssW / this.host.columnPx);
@@ -409,6 +413,25 @@ export class FollowPolicy {
     return this.camera.state.colSpan < this.frameState.newestSeq + 1 - 0.05;
   }
 
+  private drawView(lag = 0): FrameState['view'] {
+    const view: FrameState['view'] = this.camera.toView();
+    view.colOffset -= lag;
+    const width = this.host.cssWidth();
+    if (
+      width <= 0 || this.frameState.newestSeq < 0 || !this.camera.followTime ||
+      this.host.store.getState().subscription?.mode !== 'live' ||
+      !this.host.overlays().bboVisible
+    ) return view;
+
+    // Keep the selected history span in view, even when the glide trails the
+    // newest column. The quote lines and badges start beyond that column.
+    const inset = Math.min(LIVE_QUOTE_SPACE_PX / width, 0.36);
+    const end = this.frameState.newestSeq + 1;
+    view.colScale = Math.max(view.colScale, end - view.colOffset) / (1 - inset);
+    view.liveQuoteStartX = 1 - 2 * inset;
+    return view;
+  }
+
   private applyLiveEdgeGlide(ts: number): void {
     const dtMs =
       this.glideLastTs > 0 ? Math.min(Math.max(ts - this.glideLastTs, 0), 250) : 0;
@@ -448,11 +471,10 @@ export class FollowPolicy {
         this.liveLag = 0;
         this.frameState.dirty = true;
       }
-      this.frameState.view = this.camera.toView();
+      this.frameState.view = this.drawView();
       return;
     }
-    const logical = this.camera.toView();
-    this.frameState.view = { ...logical, colOffset: logical.colOffset - this.liveLag };
+    this.frameState.view = this.drawView(this.liveLag);
     this.frameState.dirty = true;
   }
 
@@ -465,7 +487,7 @@ export class FollowPolicy {
     // so remember whatever the camera settled on.
     this.wantPriceFollow = this.camera.followPrice;
     if (on) this.updateView();
-    this.frameState.view = this.camera.toView();
+    this.frameState.view = this.drawView();
     this.frameState.dirty = true;
     this.frameState.viewMoved = true;
   }
@@ -473,20 +495,20 @@ export class FollowPolicy {
   /** Set the PRICE follow mode (`P`, the axis chip, a gutter double-click). */
   setPriceFollow(mode: PriceFollow): void {
     const ring = this.host.ring();
-    this.pendingOverviewFit = mode === 'fit' && ring !== null && this.frameState.view.colScale > ring.capacityCols;
+    this.pendingOverviewFit = mode === 'fit' && ring !== null && this.camera.state.colSpan > ring.capacityCols;
     this.wantPriceFollow = mode;
     this.camera.setPriceFollow(mode);
     this.priceTarget = null;
     this.priceFitMemo = null;
     this.updateView();
-    this.frameState.view = this.camera.toView();
+    this.frameState.view = this.drawView();
     this.frameState.dirty = true;
   }
 
   /** A user gesture changed the camera: recompute uniforms, request a redraw. */
   onCameraChanged(): void {
     if (!this.camera.followTime) this.releaseLiveGlide();
-    this.frameState.view = this.camera.toView();
+    this.frameState.view = this.drawView();
     this.frameState.dirty = true;
     this.frameState.viewMoved = true;
     this.host.notifyViewChanged();
@@ -525,10 +547,11 @@ export class FollowPolicy {
   }
 
   /** Choose a real time duration without changing the user's follow policy. */
-  setTimeWindowMs(durationMs: number | null): boolean {
+  setTimeWindowMs(durationMs: number | null, fitDepth = false): boolean {
     const range = this.host.ring()?.residentRange() ?? null;
     if (!range || (durationMs !== null && (!Number.isFinite(durationMs) || durationMs <= 0))) return false;
     this.pendingOverviewFit = false;
+    this.fitDepth = fitDepth;
     if (durationMs === null) {
       this.requestedTimeWindow = null;
       this.userTimeZoomed = true;
@@ -551,6 +574,30 @@ export class FollowPolicy {
     this.camera.zoomTime(wantedSpan / this.camera.state.colSpan, end);
     this.camera.setTimeFrame(end - this.camera.state.colSpan, this.camera.state.colSpan);
     this.camera.state = { ...this.camera.state, followTime: following };
+    this.onCameraChanged();
+    return true;
+  }
+
+  /** Frame observed columns at launch even when their clock has a restart gap. */
+  openStartupHistory(targetCols: number): boolean {
+    const ring = this.host.ring();
+    if (ring === null || this.frameState.newestSeq < 0) return false;
+    // A time preset or user zoom chosen before the first painted frame wins.
+    // The caller can still prefetch pages for the selected setting.
+    if (this.userTimeZoomed || targetCols <= 0) return true;
+    const end = this.frameState.newestSeq + 1;
+    const span = Math.max(1, Math.min(targetCols, end));
+    const following = this.camera.followTime;
+    this.userTimeZoomed = true;
+    if (span > ring.capacityCols) {
+      this.pendingOverviewFit = true;
+      this.camera.state = { ...this.camera.state, colCenter: end - span / 2, colSpan: span };
+    } else {
+      this.camera.setTimeFrame(end - span, span);
+      this.camera.state = { ...this.camera.state, followTime: following };
+    }
+    this.onCameraChanged();
+    this.host.applyPriceFitFrame();
     this.onCameraChanged();
     return true;
   }

@@ -19,10 +19,10 @@ export class OverviewBars {
   readonly volume = new VolBars({ inferSpans: false });
   readonly cvd = new Cvd();
 
-  add(bar: BarColumn): void {
+  add(bar: BarColumn, closeColumn = bar.col_seq + 0.5): void {
     if (!Number.isSafeInteger(bar.col_seq)) return;
-    this.price.add(bar);
-    this.vwap.add(bar);
+    this.price.add(bar, closeColumn);
+    this.vwap.add(bar, closeColumn);
     this.volume.add(bar);
     this.cvd.add(bar);
   }

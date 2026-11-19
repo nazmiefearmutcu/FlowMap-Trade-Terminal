@@ -404,6 +404,7 @@ export function capabilityChips(capability: Record<string, unknown> | null | und
   if (typeof depth === 'string') chips.push(depth.toUpperCase());
   if (capability.depth_provenance === 'recorded-density') chips.push('RECORDED DENSITY');
   if (capability.synthetic === true) chips.push('SIM');
+  if (capability.public_tape === 'trial') chips.push('PUBLIC TRIAL');
   const tape = capability.tape ?? capability.trades;
   if (typeof tape === 'string') chips.push(`TAPE ${tape.toUpperCase()}`);
   const side = capability.trade_side;
@@ -447,6 +448,7 @@ export function capabilityChips(capability: Record<string, unknown> | null | und
  * an inferred or missing aggressor side is a caution step-down on a bare chip.
  */
 export function capabilityChipClass(chip: string): string {
+  if (chip === 'PUBLIC TRIAL') return 'cap cap--caution';
   if (chip === 'RECORDED DENSITY') return 'cap cap--depth cap--caution';
   // A simulated feed generates its book, prints and sides: fabricated, so the synthetic accent.
   if (chip === 'SIM') return 'cap cap--synth';
@@ -455,7 +457,7 @@ export function capabilityChipClass(chip: string): string {
   }
   if (chip.startsWith('SIDE')) {
     const side = sideValue(chip);
-    return side.includes('INFERRED') || isNoSideClaim(side) ? 'cap cap--caution' : 'cap';
+    return side.includes('INFERRED') || side === 'PROVIDER' || isNoSideClaim(side) ? 'cap cap--caution' : 'cap';
   }
   // --- depth chips ---
   if (chip.startsWith('SYNTH')) return 'cap cap--synth';
@@ -493,6 +495,7 @@ function isNoSideClaim(side: string): boolean {
  * translator it reads in English.
  */
 export function capabilityChipTitle(chip: string, t: Translate = englishT): string | undefined {
+  if (chip === 'PUBLIC TRIAL') return t('depthChip.publicTrial');
   if (chip === 'RECORDED DENSITY') return t('depthChip.recorded');
   if (chip === 'SIM') return t('depthChip.simulated');
   if (chip.startsWith('TAPE')) {
@@ -501,6 +504,7 @@ export function capabilityChipTitle(chip: string, t: Translate = englishT): stri
   if (chip.startsWith('SIDE')) {
     const side = sideValue(chip);
     if (side.includes('INFERRED')) return t('depthChip.sideInferred');
+    if (side === 'PROVIDER') return t('depthChip.sideProvider');
     if (isNoSideClaim(side)) return t('depthChip.sideNone');
     return undefined;
   }
@@ -530,6 +534,7 @@ export function depthScopeKey(capability: Record<string, unknown> | null | undef
  * A chip with no translated wording shows its token unchanged.
  */
 export function capabilityChipLabel(chip: string, t: Translate = activeT): string {
+  if (chip === 'PUBLIC TRIAL') return t('chip.publicTrial');
   if (chip === 'RECORDED DENSITY') return t('chip.recordedDensity');
   if (chip === 'SIM') return t('chip.sim');
   if (chip === 'SYNTH' || chip === 'SYNTH_PROFILE') return t('chip.synth');
@@ -544,7 +549,7 @@ export function capabilityChipLabel(chip: string, t: Translate = activeT): strin
     const side = sideValue(chip);
     const shown = side.includes('INFERRED')
       ? t('chip.inferred')
-      : isNoSideClaim(side) ? t('chip.none') : side;
+      : side === 'PROVIDER' ? t('chip.provider') : isNoSideClaim(side) ? t('chip.none') : side;
     return `${t('chip.side')} ${shown}`;
   }
   return chip;

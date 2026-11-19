@@ -1,11 +1,8 @@
-/**
- * The interface style.
- *
- * The window is always drawn in the pixel style: index.html stamps
- * `data-ui-style="pixel"` on the root element before the first paint, and
- * theme/pixel.css keys off it. There is no setting. The chart keeps the smooth
- * style (pixel.css exempts the chart parts; the renderer is never switched).
- */
-
 export const UI_STYLE_ATTRIBUTE = 'data-ui-style';
-export const UI_STYLE = 'pixel';
+export const UI_STYLE = 'terminal';
+export const UI_STYLES = [UI_STYLE, 'pixel'] as const;
+export type UiStyle = typeof UI_STYLES[number];
+
+export function applyUiStyle(style: UiStyle): void {
+  document.documentElement.setAttribute(UI_STYLE_ATTRIBUTE, style);
+}

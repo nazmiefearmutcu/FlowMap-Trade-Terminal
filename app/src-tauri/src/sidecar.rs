@@ -372,6 +372,7 @@ pub(crate) fn spawn_sidecar(
         )
         .env("FLOWMAP_RECORDING_GB_CAP", RECORDING_GB_CAP.to_string())
         .env("FLOWMAP_DATA_DIR", &recordings)
+        .env("FLOWMAP_EQUITY_PUBLIC_TAPE", "1")
         .env(SESSION_TOKEN_ENV, &launch.token)
         // Graceful stop: the server exits through uvicorn's normal path,
         // flushing its recorder, when its stdin reaches EOF. That is how the shell

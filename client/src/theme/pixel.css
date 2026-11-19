@@ -1,8 +1,7 @@
 /*
  * Pixel interface style.
  *
- * The window is always drawn in this style: index.html carries
- * `data-ui-style="pixel"` on the root element and there is no setting for it.
+ * The root carries `data-ui-style="pixel"` when selected in Appearance.
  * The chart is the exception. The renderer draws the smooth heatmap, and the
  * parts drawn on or beside it (axes, crosshair, legends, measure, drawings,
  * alert lines, indicator overlay, CVD pane) keep the smooth faces and corners;

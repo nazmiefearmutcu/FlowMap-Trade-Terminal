@@ -60,6 +60,7 @@ export const SIDE_UNKNOWN = 2;
 export const SIDE_SRC_EXCHANGE = 0;
 export const SIDE_SRC_INFERRED = 1;
 export const SIDE_SRC_NA = 2;
+export const SIDE_SRC_PROVIDER = 3;
 
 export type MarkerKind =
   | 'liquidation'
@@ -179,7 +180,7 @@ export interface Trade {
   price: number;
   size: number;
   side: number; // SIDE_BUY | SIDE_SELL | SIDE_UNKNOWN
-  side_src: number; // SIDE_SRC_EXCHANGE | SIDE_SRC_INFERRED | SIDE_SRC_NA
+  side_src: number; // SIDE_SRC_EXCHANGE | SIDE_SRC_INFERRED | SIDE_SRC_NA | SIDE_SRC_PROVIDER
   venue: string;
   /**
    * Per-session ingest sequence (uint16 on the wire, 1..65535, wrapping). Two

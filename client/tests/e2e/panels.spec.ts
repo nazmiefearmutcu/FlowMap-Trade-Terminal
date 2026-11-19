@@ -139,6 +139,20 @@ test('DOM ladder + tape render honestly off the bookStore', async ({ page }) => 
   expect(buyColor).toBe(tape.buy);
   expect(sellColor).toBe(tape.sell);
 
+  // In a narrow desk the header can wrap. A pointer two pixels inside the
+  // body must remain over the same row when HELD and the Resume action appear.
+  const rail = page.getByTestId('right-rail');
+  await rail.evaluate(el => { el.style.width = '265px'; el.style.flexBasis = '265px'; });
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const body = page.getByTestId('tape-body');
+  const before = (await body.boundingBox())!;
+  await page.mouse.move(before.x + 25, before.y + 2);
+  await expect(page.getByTestId('tape-held')).toBeVisible();
+  expect(await body.boundingBox()).toEqual(before);
+  await page.mouse.move(before.x + 25, before.y - 2);
+  await expect(page.getByTestId('tape-held')).toBeHidden();
+  expect(await body.boundingBox()).toEqual(before);
+
   // (d) collapse each panel body, then hide the whole rail.
   await page.locator('[data-testid="ladder-collapse"]').click();
   await expect(page.locator('[data-testid="ladder-body"]')).toHaveCount(0);

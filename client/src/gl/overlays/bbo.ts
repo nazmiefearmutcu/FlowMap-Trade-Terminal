@@ -49,7 +49,7 @@ export class Bbo {
     this.current = null;
   }
 
-  draw(frame: OverlayFrame): void {
+  draw(frame: OverlayFrame, startX = -1): void {
     const bbo = this.current;
     const { gm, solid, text } = frame;
     if (bbo === null || gm.price === null) return;
@@ -97,7 +97,7 @@ export class Bbo {
     ): void => {
       if (side === null) return;
       solid.begin();
-      solid.addThickLine(-1, side.y, 1, side.y, 2.1, color.gl, cssW, cssH);
+      solid.addThickLine(startX, side.y, 1, side.y, 2.1, color.gl, cssW, cssH);
       solid.flush();
       // Right-edge badge: e.g. "A 100.75 ×8·L2".
       const sizeText = formatSizeReadout(sz);

@@ -51,6 +51,7 @@ export const GL = {
   POINTS: 0,
   BLEND: 3042,
   DEPTH_TEST: 2929,
+  SCISSOR_TEST: 3089,
   ONE: 1,
   SRC_ALPHA: 770,
   ONE_MINUS_SRC_ALPHA: 771,
@@ -163,6 +164,7 @@ export function makeFakeGL(opts: FakeGLOptions = {}): FakeGL {
     deleteVertexArray: record('deleteVertexArray'),
 
     viewport: record('viewport'),
+    scissor: record('scissor'),
     disable: record('disable'),
     enable: record('enable'),
     finish: record('finish'),

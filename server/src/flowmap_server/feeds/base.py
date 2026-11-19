@@ -33,6 +33,7 @@ __all__ = [
     "BarSample",
     "CandleSample",
     "CandleSnapshot",
+    "CvdAnchor",
     "BoundedFeedQueue",
     "DropCounters",
     "FEED_QUEUE_MAXSIZE",
@@ -103,7 +104,13 @@ class CandleSnapshot(msgspec.Struct, frozen=True):
     candles: tuple[CandleSample, ...]
 
 
-FeedEvent = BookState | BarSample | CandleSnapshot | Trade | Marker | BBO
+class CvdAnchor(msgspec.Struct, frozen=True):
+    """New observable CVD scope, before its first signed trade (feed-only)."""
+    ts_ns: int
+    available: bool = True
+
+
+FeedEvent = BookState | BarSample | CandleSnapshot | CvdAnchor | Trade | Marker | BBO
 
 
 # -- live-ingest timestamp sanity (venue clocks are hostile) --------------------

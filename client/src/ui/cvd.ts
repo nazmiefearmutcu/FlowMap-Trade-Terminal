@@ -112,6 +112,28 @@ export interface CvdPoint {
   cvd: number;
 }
 
+/** A provider connection has a precise baseline; history before it is unknown.
+ * The server keeps raw cumulative bars for recording, so subtract that baseline
+ * only at display time. Missing timestamps cannot be treated as in-scope.
+ */
+export function scopedCvdSeries(
+  points: readonly CvdPoint[],
+  timestampAtColumn: (column: number) => bigint | null,
+  anchorNs: string,
+  offset: number,
+  endNs?: string,
+): CvdPoint[] {
+  if (!/^\d{1,24}$/.test(anchorNs) || !Number.isFinite(offset)) return [];
+  if (endNs !== undefined && !/^\d{1,24}$/.test(endNs)) return [];
+  const anchor = BigInt(anchorNs);
+  const scopeEnd = endNs === undefined ? null : BigInt(endNs);
+  return points.filter(point => {
+    const end = timestampAtColumn(point.col + 1);
+    const start = scopeEnd === null ? null : timestampAtColumn(point.col);
+    return end !== null && end > anchor && (scopeEnd === null || (start !== null && start < scopeEnd));
+  }).map(point => ({ col: point.col, cvd: point.cvd - offset }));
+}
+
 export interface ProjectedPoint {
   x: number;
   y: number;
@@ -140,6 +162,7 @@ export function cvdProject(
   width: number,
   height: number,
   out: ProjectedPoint[] = [],
+  columnFraction?: (col: number) => number,
 ): CvdProjection {
   // Match the input length exactly: stale tail cells from a previous, larger
   // repaint must never leak into the drawing loops.
@@ -153,7 +176,7 @@ export function cvdProject(
       if (v < min) min = v;
       if (v > max) max = v;
     }
-    const x = cvdColToX(p.col, startCol, endCol, width);
+    const x = columnFraction ? columnFraction(p.col) * width : cvdColToX(p.col, startCol, endCol, width);
     let cell = out[i];
     if (cell === undefined) {
       cell = { x, y: 0 };

@@ -43,7 +43,7 @@ export function resolveLegend(input: LegendInput, density?: readonly ChartStop[]
   } else {
    row = activeDensity ? RAMP_THEME : rampForColormap(colormap);
    gradient = activeDensity ? stopsGradient(activeDensity) : rampCssGradient(row);
-   rampName = t('heat.rampColormap', { name: colormap });
+   rampName = t('heat.rampColormap', { name: appearance?.colormap ?? colormap });
   }
   return { row, gradient, rampName, effectiveChannel: channel,
    topCap: channel === 'imbalance' ? t('heat.capAskHeavy') : t('heat.capMore'),

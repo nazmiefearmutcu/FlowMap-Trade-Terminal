@@ -75,3 +75,22 @@ test('market desk has persistent layouts and resizes the aligned chart without r
   await page.screenshot({ path: test.info().outputPath('terminal-desk-preview.png') });
   expect(errors).toEqual([]);
 });
+
+test('interface style switches without resetting the feed and is restored before render', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('flowmap.active-symbol.v1', JSON.stringify({ market: 'sim', symbol: 'SIM-DEMO' }));
+  });
+  await page.goto('/?scrollback=1&budget=512');
+  await page.waitForFunction(() => window.__flowmapLive?.renderer.marketFrameReady);
+  const session = await page.evaluate(() => window.__flowmapLive!.store.getState().sessionId);
+  await expect(page.locator('html')).toHaveAttribute('data-ui-style', 'terminal');
+  await page.getByTestId('settings-open').click();
+  await page.getByTestId('interface-pixel').click();
+  await expect(page.locator('html')).toHaveAttribute('data-ui-style', 'pixel');
+  expect(await page.evaluate(() => window.__flowmapLive!.store.getState().sessionId)).toBe(session);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('html')).toHaveAttribute('data-ui-style', 'pixel');
+  await page.getByTestId('settings-open').click();
+  await page.getByTestId('interface-terminal').click();
+  await expect(page.locator('html')).toHaveAttribute('data-ui-style', 'terminal');
+});

@@ -320,3 +320,11 @@ describe('removed chart style', () => {
     expect(out.contrast).toBe(40);
   });
 });
+
+it('opens old settings in Terminal and retains an explicit Pixel preference', () => {
+  const storage = memStorage();
+  expect(normalizeSettings({ settingsVersion: 3 }).interfaceStyle).toBe('terminal');
+  expect(normalizeSettings({ interfaceStyle: 'unknown' }).interfaceStyle).toBe('terminal');
+  saveSettings({ ...DEFAULT_SETTINGS, interfaceStyle: 'pixel' }, storage);
+  expect(loadSettings(storage).interfaceStyle).toBe('pixel');
+});

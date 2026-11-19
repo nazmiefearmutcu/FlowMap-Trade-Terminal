@@ -7,7 +7,9 @@ client never calls the third-party sources itself; it reads this route.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+import asyncio
+
+from fastapi import APIRouter, FastAPI, Request
 
 from flowmap_server.api.errors import ApiError
 from flowmap_server.data.market_map import (
@@ -24,12 +26,17 @@ router = APIRouter(prefix="/api")
 _MARKETS = frozenset({"us", "crypto"})
 
 
-def _service(request: Request) -> MarketMapService:
-    service = getattr(request.app.state, "market_map", None)
+def _service(app: FastAPI) -> MarketMapService:
+    service = getattr(app.state, "market_map", None)
     if not isinstance(service, MarketMapService):
         service = MarketMapService()
-        request.app.state.market_map = service
+        app.state.market_map = service
     return service
+
+
+async def prewarm(app: FastAPI) -> None:
+    service = _service(app)
+    await asyncio.gather(*(service.get(market) for market in ("us", "crypto")), return_exceptions=True)
 
 
 def _item_json(item: MapItem) -> dict[str, object]:
@@ -64,7 +71,7 @@ async def market_map(request: Request, market: str = "us") -> dict[str, object]:
             f"market must be one of {sorted(_MARKETS)}; got {market[:80]!r}",
         )
     try:
-        answer = await _service(request).get(market)
+        answer = await _service(request.app).get(market, allow_stale=True)
     except MarketMapUnavailable as exc:
         raise ApiError(503, "market_map_unavailable", str(exc)) from None
     return _answer_json(answer)

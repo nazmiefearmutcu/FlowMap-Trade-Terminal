@@ -79,3 +79,18 @@ def test_stored_capability_overrides_the_market_default():
     keyed = {"depth": "L1_BAND", "tape": "tick", "trade_side": "inferred"}
 
     assert replayed_capability(MARKET, keyed) == {**KEYLESS_SYNTH, **keyed}
+
+
+def test_live_cvd_scope_replaces_connecting_metadata_in_recording(tmp_path):
+    rec = Recorder(tmp_path, 20.0)
+    writer = rec.open_session(MARKET, SYMBOL, capability=KEYLESS_SYNTH)
+    writer.record_epoch(EPOCH)
+    for column in SimFeed.generate_history(seed=3, n_cols=8, start_ns=0, rows=ROWS):
+        writer.record_column(column)
+    writer.flush()
+    provider = {**KEYLESS_SYNTH, "cvd":"provider", "trade_side":"provider", "tape":"tick",
+                "public_tape":"trial", "cvd_anchor_ns":"500000000", "cvd_offset":11.}
+    writer.update_capability(provider, EPOCH)
+    writer.close()
+    assert _tail(rec).capability == provider
+    assert replayed_capability(MARKET, _tail(rec).capability)["cvd_offset"] == 11.

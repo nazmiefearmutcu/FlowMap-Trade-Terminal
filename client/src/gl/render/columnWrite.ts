@@ -52,6 +52,7 @@ export class ColumnWriter {
   constructor(
     private readonly host: ColumnWriteHost,
     private readonly partialGate: PartialDepthGate,
+    private readonly pendingNewest: () => number = () => -1,
   ) {}
 
   private get store(): StateSource { return this.host.store; }
@@ -126,7 +127,11 @@ export class ColumnWriter {
     // epoch), and keep the per-window VWAP map bounded to the resident range.
     this.axis.noteWritten(col);
     const r = ring.residentRange();
-    if (r !== null) this.overlayLayer.pruneOverlayWindows(r.oldest, r.newest);
+    // Bars arrive beside the snapshot depth, but shader compilation can defer
+    // the depth uploads across many frames. Keep the bars of that bounded
+    // pending snapshot until its columns land; pruning at the upload cursor
+    // used to delete all but its first 65 price/VWAP points.
+    if (r !== null) this.overlayLayer.pruneOverlayWindows(r.oldest, Math.max(r.newest, this.pendingNewest()));
   }
 
   /**

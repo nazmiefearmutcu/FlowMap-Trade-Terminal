@@ -17,11 +17,8 @@
  *      history-seam markers carry a "seam" note in their text) > other kinds —
  *      so the most load-bearing labels survive a busy frame.
  *
- * Honesty: every marker still draws its GLYPH / full-height hatch — the
- * declutter only affects the text chips. Collapsed counts say how many markers
- * the single chip stands for, so no real gap is ever hidden, and the overlay
- * only ever draws markers the FEED actually sent (kinds present = exactly the
- * ones the capability advertises, e.g. equity keyless emits only `gap`).
+ * Nearby seams share one hatch to avoid filling the chart with overlapping lines.
+ * The label count still includes every seam.
  *
  * SEAM ANCHORING: a time-instant marker (gap/session_break) whose
  * `ts_ns` is one of the ring's per-column t0 KNOTS is drawn ON that knot's left
@@ -103,6 +100,7 @@ const LABEL_SIZE = 9;
 const LABEL_PITCH = 12;
 /** Same-kind labels closer than this collapse into one counted badge. */
 const COLLAPSE_PX = 44;
+const HATCH_SPACING_PX = 6;
 /** Same-band tolerance for collapsing (top band vs price-row labels). */
 const COLLAPSE_DY = 14;
 /** Bounded vertical displacement attempts before a label is drawn in place. */
@@ -157,6 +155,7 @@ export class Markers {
   // Reused declutter scratch (a dirty frame should not allocate per marker).
   private readonly cands: LabelCand[] = [];
   private readonly groups: LabelGroup[] = [];
+  private readonly hatchLanes = new Set<number>();
 
   constructor(opts: MarkerOptions = {}) {
     this.opts = { ...DEFAULTS, ...opts };
@@ -226,6 +225,7 @@ export class Markers {
 
     solid.begin();
     this.cands.length = 0;
+    this.hatchLanes.clear();
 
     // Pass 1: glyphs/hatches for EVERY visible marker + label candidates
     // (unbounded here — priority/collapse decide what the text pass keeps).
@@ -252,9 +252,14 @@ export class Markers {
       if (cx < -1.04 || cx > 1.04) continue;
 
       if (VERTICAL.has(code)) {
-        // Full-height vertical hatch (time event, no price).
-        solid.addThickLine(cx, -1, cx, 1, 1.2, OVERLAY.gap.gl, cssW, cssH);
-        this.pushCand(gm.cssX(colf) + 3, 12, code, seam);
+        const x = gm.cssX(colf);
+        const lane = Math.floor(x / HATCH_SPACING_PX);
+        // Nearby time seams share a hatch so dense gaps cannot become a solid band.
+        if (!this.hatchLanes.has(lane)) {
+          this.hatchLanes.add(lane);
+          solid.addThickLine(cx, -1, cx, 1, 1.2, OVERLAY.gap.gl, cssW, cssH);
+        }
+        this.pushCand(x + 3, 12, code, seam);
         continue;
       }
 

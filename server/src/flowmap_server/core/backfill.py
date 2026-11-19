@@ -327,6 +327,19 @@ async def default_backfill_fn(
         from flowmap_server.feeds.equity import EQUITY_MARKETS
 
         if is_crypto_market(market):
+            # The Binance Spot API accepts the wire symbol directly. A complete
+            # market-table discovery can cost seconds on a cold desktop launch.
+            # Keep explicit exchange spellings on the normal resolver path.
+            if market == "binance-spot" and symbol.isascii() and symbol.isalnum():
+                try:
+                    native = await _native_candles(
+                        "binance", symbol.upper(), "spot", interval="1m",
+                        max_bars=max_cols, now_ns=now_ns,
+                    )
+                    if native:
+                        return native
+                except Exception:
+                    logger.debug("Binance symbol needs resolved candle backfill", exc_info=True)
             return await crypto_klines(market, symbol, max_bars=max_cols, now_ns=now_ns)
         if market in EQUITY_MARKETS:
             return await _equity_candles(symbol, max_cols=max_cols)

@@ -383,7 +383,7 @@ class HistoryMixin:
             ]
             if req.metadata_cursor is None
             else [],
-            bar_cols=[c.bar for c in columns] if req.metadata_cursor is None else [],
+            bar_cols=[builder.close_bar(c) for c in columns] if req.metadata_cursor is None else [],
             markers=visible_markers,
             big_trades=[],
         )

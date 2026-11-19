@@ -12,6 +12,8 @@ import { OVERVIEW_CAPACITY } from '../net/overviewHistory';
 import { historyGap } from './historyGap';
 import { densityForScale } from './columnGeometry';
 import { rowToPrice, type PriceScale } from './priceScale';
+import { columnExtent } from './render/columnWrite';
+import { drawProjectedDepth, gapProjection, mergeRestoredMinutes, type ChartView, type ClockGap, type GapProjection } from './gapProjection';
 
 /** A separate, fixed-size level of detail. It never evicts close-up history. */
 export class OverviewSurface {
@@ -26,8 +28,14 @@ export class OverviewSurface {
   readonly bars = new OverviewBars();
   readonly mips: MipChain | null;
   private times = new Map<number, bigint>();
+  private readonly depthPrices = new Map<number, { low: number; high: number }>();
+  private readonly traceBreaks = new Set<number>();
+  private readonly priceGaps = new Map<number, ClockGap>();
+  private clockProjection: { left: number; span: number; quote?: number; warp?: GapProjection } | null = null;
+  private slotDtNs = 250_000_000;
   private timeMemo: TimeMap | null = null;
   private originalTimeMemo: TimeMap | null = null;
+  private committedPage = false;
   revision = 0;
   readonly columnArrays = (col: number) => this.cache.arrays(col);
   private pendingLo = Infinity;
@@ -35,10 +43,12 @@ export class OverviewSurface {
   private densityBid: Float32Array;
   private densityAsk: Float32Array;
 
+  get ready(): boolean { return this.committedPage; }
+
   constructor(private readonly ctx: GLContext, rows: number, lut: WebGLTexture, readonly stride: number,
     private readonly nativeScale: PriceScale | null = null, private readonly nativeEpoch = 0,
     private readonly epochScale: ((epoch: number) => PriceScale | null) | null = null,
-    private readonly onAsyncReady?: () => void) {
+    private readonly onAsyncReady?: () => void, private readonly restoredMinutes = false) {
     this.densityBid = new Float32Array(rows);
     this.densityAsk = new Float32Array(rows);
     this.ring = new TileRing(ctx.gl, rows, OVERVIEW_CAPACITY / 256);
@@ -69,6 +79,11 @@ export class OverviewSurface {
       step: sourceScale.kind === 'hybrid' ? sourceScale.coreStep : sourceScale.step,
       scale: Object.freeze({ ...sourceScale }),
     } : null);
+    const [low, high] = columnExtent(column.bid, column.ask, this.ring.rows);
+    if (sourceScale && low >= 0) {
+      const shift = sourceScale.kind === 'hybrid' ? 0.5 : 0;
+      this.depthPrices.set(group, { low: rowToPrice(sourceScale, low - shift), high: rowToPrice(sourceScale, high + 1 - shift) });
+    } else this.depthPrices.delete(group);
     if (sourceScale?.kind === 'hybrid') this.normalizer.replaceColumn(group,
       densityForScale(sourceScale, column.bid, this.densityBid), column.ask ? densityForScale(sourceScale, column.ask, this.densityAsk) : null, sourceScale);
     else this.normalizer.replaceColumn(group, column.bid, column.ask, sourceScale);
@@ -81,26 +96,68 @@ export class OverviewSurface {
     if (range) {
       this.bars.prune(range.oldest, range.newest);
       for (const group of this.times.keys()) if (group < range.oldest || group >= range.newest + 1) this.times.delete(group);
+      for (const group of this.depthPrices.keys()) if (group < range.oldest || group > range.newest) this.depthPrices.delete(group);
+      for (const col of this.traceBreaks) if (col < range.oldest || col >= range.newest + 1) this.traceBreaks.delete(col);
+      for (const col of this.priceGaps.keys()) if (col < range.oldest || col >= range.newest + 1) this.priceGaps.delete(col);
     }
   }
 
   page(response: HistoryResponse): void {
-    for (const bar of response.bar_cols) this.bars.add({ ...bar, col_seq: Math.floor(bar.col_seq / this.stride) });
     const range = this.ring.residentRange();
+    for (const bar of response.bar_cols) {
+      const group = Math.floor(bar.col_seq / this.stride);
+      this.bars.add({ ...bar, col_seq: group }, (bar.col_seq + 0.5) / this.stride);
+      if (range && group >= range.oldest && group <= range.newest) {
+        this.times.set(bar.col_seq / this.stride, bar.t0_ns);
+      }
+    }
     for (const marker of response.markers) {
       const gap = historyGap(marker);
       if (!gap || !range) continue;
+      const right = gap.rightCol / this.stride;
+      // Closed minute prices still give a regular trace when the underlying
+      // order book has no columns between them.
+      const minute = 60_000_000_000n;
+      const minuteStep = gap.rightStart - gap.leftStart === minute && gap.leftStart % minute === 0n;
+      if ((!minuteStep || this.restoredMinutes) && right >= range.oldest && right < range.newest + 1) {
+        const left = (gap.leftCol + 0.5) / this.stride;
+        if (!minuteStep) this.traceBreaks.add(right);
+        this.priceGaps.set(right, { left, right, leftNs: gap.leftStart, rightNs: gap.rightStart });
+        if (left >= range.oldest && gap.rightStart - gap.leftStart > 90_000_000_000n) {
+          this.times.set(left, gap.leftStart + (gap.leftEnd - gap.leftStart) / 2n);
+        }
+      }
       for (const [col, time] of [[gap.leftCol / this.stride, gap.leftStart], [gap.rightCol / this.stride, gap.rightStart]] as const) {
         if (col >= range.oldest && col < range.newest + 1) this.times.set(col, time);
       }
     }
     this.timeMemo = null; this.originalTimeMemo = null;
+    this.clockProjection = null;
     this.revision++;
     this.flushMips();
+    if (range !== null) this.committedPage = true;
   }
 
-  view(source: HeatmapView): HeatmapView {
-    return { ...source, colOffset: source.colOffset / this.stride, colScale: source.colScale / this.stride };
+  view(source: HeatmapView & { liveQuoteStartX?: number }): ChartView {
+    const view = { ...source, colOffset: source.colOffset / this.stride, colScale: source.colScale / this.stride };
+    const quote = source.liveQuoteStartX;
+    if (!this.clockProjection || this.clockProjection.left !== view.colOffset || this.clockProjection.span !== view.colScale || this.clockProjection.quote !== quote) {
+      const time = this.timeMap(this.slotDtNs);
+      this.clockProjection = { left: view.colOffset, span: view.colScale, quote,
+        warp: gapProjection(view, time?.priceGaps ?? [], this.slotDtNs * this.stride, quote, time ?? undefined) };
+    }
+    return { ...view, timeProjection: this.clockProjection.warp };
+  }
+
+  depthPriceRange(left: number, right: number): { low: number; high: number } | null {
+    let low = Infinity;
+    let high = -Infinity;
+    for (const [group, span] of this.depthPrices) {
+      if (group < left || group > right) continue;
+      low = Math.min(low, span.low);
+      high = Math.max(high, span.high);
+    }
+    return high >= low ? { low, high } : null;
   }
 
   private flushMips(): void {
@@ -110,6 +167,7 @@ export class OverviewSurface {
   }
 
   timeMap(dtNs: number): TimeMap | null {
+    this.slotDtNs = dtNs;
     if (this.timeMemo) return this.timeMemo;
     const range = this.ring.residentRange();
     if (!range) return null;
@@ -118,7 +176,10 @@ export class OverviewSurface {
     const knots = [...this.times.entries()].filter(([col]) => col >= Math.max(range.oldest, this.ring.validFromSeq()) && col < range.newest + 1).sort((a, b) => a[0] - b[0]);
     if (!knots.length) return null;
     const [end, time] = knots[knots.length - 1];
+    const gaps = [...this.priceGaps.values()].sort((a, b) => a.right - b.right);
     this.timeMemo = { anchorSeq: end, anchorT0Ns: time, dtNs: dtNs * this.stride,
+      traceBreaks: [...this.traceBreaks].sort((a, b) => a - b),
+      priceGaps: this.restoredMinutes ? mergeRestoredMinutes(gaps) : gaps,
       slots: { startSeq: knots[0][0], cols: Float64Array.from(knots, k => k[0]), t0: Float64Array.from(knots, k => Number(k[1])) } };
     return this.timeMemo;
   }
@@ -127,6 +188,8 @@ export class OverviewSurface {
     if (this.originalTimeMemo) return this.originalTimeMemo;
     const local = this.timeMap(dtNs);
     this.originalTimeMemo = local ? { ...local, anchorSeq: local.anchorSeq * this.stride, dtNs,
+      traceBreaks: local.traceBreaks?.map(col => col * this.stride),
+      priceGaps: local.priceGaps?.map(gap => ({ ...gap, left: gap.left * this.stride, right: gap.right * this.stride })),
       slots: local.slots ? { ...local.slots, startSeq: local.slots.startSeq * this.stride, stride: this.stride,
         cols: local.slots.cols?.map(col => col * this.stride) } : undefined } : null;
     return this.originalTimeMemo;
@@ -170,7 +233,7 @@ export class OverviewSurface {
         priceHi: heatmap.priceScale ? rowToPrice(heatmap.priceScale, view.rowOffset + view.rowScale - (heatmap.priceScale.kind === 'linear' ? .5 : 0)) : undefined,
         referenceStep: heatmap.priceScale?.kind === 'hybrid' ? heatmap.priceScale.coreStep : heatmap.priceScale?.step }, this.level(view));
     }
-    heatmap.draw(view);
+    drawProjectedDepth(this.ctx.gl, view, segment => heatmap.draw(segment));
   }
 
   dispose(): void { this.normalizer.dispose(); this.mips?.dispose(); this.heatmap.dispose(); this.ring.dispose(); }

@@ -1,8 +1,9 @@
-import { useEffect, type MutableRefObject } from 'react';
+import { useEffect, useLayoutEffect, type MutableRefObject } from 'react';
 
 import { gammaForContrast } from '../gl/heatmap';
 import type { Renderer } from '../gl/renderer';
 import { getTheme } from '../theme';
+import { applyUiStyle } from '../theme/uiStyle';
 import { safeLocalStorage } from '../state/safeStorage';
 import { useFlowMapStore } from '../state/store';
 import { historyDepthCols, saveSettings, type FlowMapSettings } from '../ui/settings';
@@ -22,6 +23,7 @@ export function useSettingsApply(
   liveFollowRef: MutableRefObject<LiveFollow>,
   syncChartTheme: ChartThemeSync['syncChartTheme'],
 ): void {
+  useLayoutEffect(() => applyUiStyle(settings.interfaceStyle), [settings.interfaceStyle]);
   useEffect(() => {
     saveSettings(settings, safeLocalStorage());
     const r = rendererRef.current;

@@ -43,6 +43,7 @@ export interface Appearance extends ThemeRampStops {
 const cache = new Map<string, Appearance>();
 
 export function resolveAppearance(themeId: ThemeId, colormap: Colormap): Appearance {
+  if (themeId === 'contrast') colormap = 'theme';
   const key = `${themeId}|${colormap}`;
   const hit = cache.get(key);
   if (hit) return hit;
@@ -52,11 +53,11 @@ export function resolveAppearance(themeId: ThemeId, colormap: Colormap): Appeara
     ? theme.chart.density
     : ramp([bg, ...(theme.mode === 'light' ? LIGHT : DARK)[colormap]]);
   const imbalance = [
-    { t: 0, rgb: hexRgb(theme.mode === 'light' ? '#185D98' : '#94CAFF') },
+    { t: 0, rgb: hexRgb(themeId === 'contrast' ? theme.canvas.bid : theme.mode === 'light' ? '#185D98' : '#94CAFF') },
     // Both centre texels are neutral; signed zero does not acquire a side tint.
     { t: 127 / 255, rgb: hexRgb(bg) },
     { t: 128 / 255, rgb: hexRgb(bg) },
-    { t: 1, rgb: hexRgb(theme.mode === 'light' ? '#925010' : '#FFCE6E') },
+    { t: 1, rgb: hexRgb(themeId === 'contrast' ? theme.canvas.ask : theme.mode === 'light' ? '#925010' : '#FFCE6E') },
   ];
   const result: Appearance = { id: key, key, themeId, colormap, density, synth: theme.chart.synth, imbalance };
   cache.set(key, result);

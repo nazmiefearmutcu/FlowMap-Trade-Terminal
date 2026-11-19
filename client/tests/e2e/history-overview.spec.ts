@@ -125,11 +125,11 @@ test('whole history uses bounded coarse detail without cutting time, price or ol
     const original = state.requestHistory;
     const requests: ObservedHistoryRequest[] = [];
     (window as RequestWindow).__overviewHistoryRequests = requests;
-    store.setState({ requestHistory: (time: number, count: number, overview?: { start_col: number; end_col: number; stride: number }) => {
+    store.setState({ requestHistory: (time: number, count: number, overview?: { start_col: number; end_col: number; stride: number }, signal?: AbortSignal) => {
       const record: ObservedHistoryRequest = { count, start: overview?.start_col, end: overview?.end_col,
         stride: overview?.stride, started: performance.now() };
       requests.push(record);
-      return original(time, count, overview).then((response: { depth_cols: { col_seq: number }[]; bar_cols: unknown[] }) => {
+      return original(time, count, overview, signal).then((response: { depth_cols: { col_seq: number }[]; bar_cols: unknown[] }) => {
         Object.assign(record, { elapsed: performance.now() - record.started!, depths: response.depth_cols.length,
           bars: response.bar_cols.length, first: response.depth_cols[0]?.col_seq, last: response.depth_cols.at(-1)?.col_seq });
         return response;

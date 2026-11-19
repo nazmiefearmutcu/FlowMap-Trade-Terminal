@@ -225,13 +225,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if callable(run_catalog):
         preview_warm = asyncio.create_task(run_catalog(), name="market-preview-catalog")
     cfg = getattr(app.state, "cfg", None)
+    map_warm: asyncio.Task | None = None
     if getattr(cfg, "exit_on_stdin_eof", False):
         # The desktop shell holds our stdin; its EOF means it is gone.
         lifecycle.watch_stdin_eof(sys.stdin, lifecycle.request_shutdown)
+        map_warm = asyncio.create_task(market_map.prewarm(app), name="market-map-prewarm")
     try:
         yield
     finally:
-        warmups = [task for task in (prewarm, preview_warm) if task is not None]
+        warmups = [task for task in (prewarm, preview_warm, map_warm) if task is not None]
         for task in warmups:
             task.cancel()
         if warmups:
@@ -292,7 +294,7 @@ def create_app(
     eurex_service=None,
 ) -> FastAPI:
     from flowmap_server.feeds.eurex_service import EurexService, MARKET
-    from flowmap_server.api import eurex
+    from flowmap_server.api import eurex, price_history
     if eurex_service is None:
         eurex_service = EurexService(Path(cfg.data_dir), ring_columns=cfg.ring_columns)
     if manager is None:
@@ -378,6 +380,7 @@ def create_app(
     app.include_router(macro.router)
     app.include_router(research.router)
     app.include_router(eurex.router)
+    app.include_router(price_history.router)
     app.include_router(export.router)
     app.include_router(ws.router)
     return app

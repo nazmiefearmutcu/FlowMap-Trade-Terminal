@@ -4,12 +4,14 @@ import { ErrorBoundary } from './ui/ErrorBoundary';
 import './ui/theme.css';
 import './theme/themes.css'; // theme blocks (AFTER ui/theme.css)
 import './App.css';
-import './theme/pixel.css'; // interface style (AFTER every other sheet)
+import './theme/pixel.css';
+import './theme/terminal.css';
 
 import { initLocale, t } from './i18n';
 import { initTheme } from './theme';
 import { loadSettings } from './ui/settings';
 import { safeLocalStorage } from './state/safeStorage';
+import { applyUiStyle } from './theme/uiStyle';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
@@ -42,7 +44,9 @@ initTheme();
 initLocale();
 
 // Seed the persisted family before the first React render.
-document.documentElement.dataset.chartRamp = loadSettings(safeLocalStorage()).colormap;
+const settings = loadSettings(safeLocalStorage());
+applyUiStyle(settings.interfaceStyle);
+document.documentElement.dataset.chartRamp = settings.colormap;
 
 /**
  * The app module is imported lazily: its import graph evaluates the wire decoder,

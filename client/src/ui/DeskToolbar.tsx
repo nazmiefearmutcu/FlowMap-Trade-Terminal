@@ -24,7 +24,8 @@ export function DeskToolbar({ rendererRef, settings, layout, onLayout, onChange,
       setFollowing(r.following); setTracking(r.priceFollow !== 'off');
       const rate = r.stats().fps; setFps(Number.isFinite(rate) && rate > 0 ? Math.round(rate) : null);
       const overview = r.overviewStats?.();
-      setHistory(overview?.error ? t('desk.historyRetry') : overview && overview.progress.loaded < overview.progress.total
+      const remaining = overview ? overview.progress.total - overview.progress.loaded : 0;
+      setHistory(overview?.error ? t('desk.historyRetry') : overview && remaining > (overview.presented ? 1 : 0)
         ? `${t('desk.historyLoading')} ${formatNumber(overview.progress.loaded)}/${formatNumber(overview.progress.total)}` : '');
     }, 500);
     return () => window.clearInterval(id);

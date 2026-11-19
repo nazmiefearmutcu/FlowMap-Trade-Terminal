@@ -201,6 +201,7 @@ async def test_default_backfill_fn_degrades_to_a_cold_start(monkeypatch) -> None
         raise RuntimeError("everything is down")
 
     monkeypatch.setattr(backfill, "crypto_klines", boom)
+    monkeypatch.setattr(backfill, "_native_candles", boom)
     assert await backfill.default_backfill_fn(
         "binance-spot", "BTCUSDT", max_cols=10, now_ns=NOW
     ) == []

@@ -792,6 +792,7 @@ dependencies = [
     { name = "polars" },
     { name = "pypdf" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -803,7 +804,6 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
     { name = "ruff" },
-    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -817,6 +817,7 @@ requires-dist = [
     { name = "polars", specifier = ">=1.0" },
     { name = "pypdf", specifier = ">=6,<7" },
     { name = "uvicorn", specifier = ">=0.30" },
+    { name = "websockets", specifier = ">=16.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -828,7 +829,6 @@ dev = [
     { name = "pytest-cov", specifier = ">=5" },
     { name = "pytest-timeout", specifier = ">=2" },
     { name = "ruff", specifier = ">=0.6" },
-    { name = "websockets", specifier = ">=12" },
 ]
 
 [[package]]

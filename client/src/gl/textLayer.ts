@@ -37,6 +37,8 @@ export interface TextOpts {
   baseline?: CanvasTextBaseline;
   /** Font weight (default 400). */
   weight?: number;
+  /** Maximum ink width in CSS pixels, for bounded canvas gutters. */
+  maxWidth?: number;
 }
 
 export interface BadgeOpts extends TextOpts {
@@ -143,7 +145,8 @@ export class TextLayer {
     ctx.textAlign = opts.align ?? 'left';
     ctx.textBaseline = opts.baseline ?? 'alphabetic';
     ctx.fillStyle = opts.color ?? OVERLAY.axis.css;
-    ctx.fillText(str, x, y);
+    if (opts.maxWidth === undefined) ctx.fillText(str, x, y);
+    else ctx.fillText(str, x, y, opts.maxWidth);
   }
 
   /**

@@ -140,6 +140,7 @@ async def test_wide_overview_reads_all_partitions_and_preserves_genuine_old_dens
         assert bar.cvd_cum == source[-1].bar.cvd_cum
         assert bar.vwap_den_cum == source[-1].bar.vwap_den_cum
         assert depth.t0_ns == source[0].t0_ns
+        assert (bar.col_seq, bar.t0_ns) == (source[-1].col_seq, source[-1].t0_ns)
     assert session._overview_cache.bytes <= 32 * 1024 * 1024
 
 
@@ -450,6 +451,7 @@ async def test_inside_bin_disk_page_seams_preserve_exact_timestamps_and_survive_
     # trade volume to the integrated average.
     assert first.depth_cols[0].bid[4] == pytest.approx(np.mean([c.bid[4] for c in cols[:128]]))
     assert first.bar_cols[0].vol_buy == 256
+    assert (first.bar_cols[0].col_seq, first.bar_cols[0].t0_ns) == (cols[127].col_seq, cols[127].t0_ns)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("seam metadata must survive cached output without disk reads")

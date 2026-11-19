@@ -50,7 +50,7 @@ interface HoverState {
   readout: CrosshairReadout | null;
 }
 
-const READOUT_KEYS: (keyof CrosshairReadout)[] = ['colSeq', 'row', 'group', 'price', 'priceLo', 'priceHi', 'priceDecimals', 'bid', 'ask', 'timeNs', 'averageMs', 'sessionClock', 'inRange'];
+const READOUT_KEYS: (keyof CrosshairReadout)[] = ['colSeq', 'row', 'group', 'price', 'priceLo', 'priceHi', 'priceDecimals', 'bid', 'ask', 'timeNs', 'averageMs', 'recordingGap', 'sessionClock', 'inRange'];
 function sameReadout(a: CrosshairReadout | null, b: CrosshairReadout | null): boolean {
   return a === b || (a !== null && b !== null && READOUT_KEYS.every(key => Object.is(a[key], b[key])));
 }
@@ -247,7 +247,8 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   const flipX = x > cw - 280;
   const flipY = y > ch - 150;
   // A venue with no depth feed has no bid or ask sizes to show.
-  const depthRows = capability?.depth !== 'N/A';
+  const recordingGap = readout?.recordingGap === true;
+  const depthRows = !recordingGap && capability?.depth !== 'N/A';
   const boxStyle: React.CSSProperties = {
     left: flipX ? undefined : `${x + 14}px`,
     right: flipX ? `${cw - x + 14}px` : undefined,
@@ -261,15 +262,15 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
       <div className="crosshair__hline" style={{ top: `${y}px` }} />
       {readout && (
         <div className="crosshair__box" data-testid="crosshair-readout" style={boxStyle}>
-          {tier && (
+          {(recordingGap || tier) && (
             <div className="crosshair__line crosshair__line--head">
               <span className="crosshair__key">{t('crosshair.src')}</span>
               <span
-                className={`crosshair__tag${isSynth ? ' crosshair__tag--synth' : ''}${tierCaution ? ' crosshair__tag--caution' : ''}`}
+                className={`crosshair__tag${isSynth && !recordingGap ? ' crosshair__tag--synth' : ''}${tierCaution || recordingGap ? ' crosshair__tag--caution' : ''}`}
                 data-testid="crosshair-src"
-                title={tagTitle || undefined}
+                title={!recordingGap ? tagTitle || undefined : undefined}
               >
-                {tier}
+                {recordingGap ? t('crosshair.noRecording') : tier}
               </span>
             </div>
           )}
@@ -305,7 +306,7 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
             </span>
           </div>
           </>)}
-          {readout.group > 1 && (
+          {!recordingGap && readout.group > 1 && (
             <div className="crosshair__line crosshair__line--dim">
               <span className="crosshair__key">{t('crosshair.group')}</span>
               <span className="crosshair__val" data-testid="crosshair-group">

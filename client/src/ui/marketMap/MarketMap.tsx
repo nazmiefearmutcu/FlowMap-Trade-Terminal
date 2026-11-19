@@ -17,6 +17,8 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
+  type Dispatch,
+  type SetStateAction,
 } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -134,11 +136,17 @@ function isAbortError(err: unknown): boolean {
 }
 
 export function MarketMap({ open, onClose, onOpenChart }: MarketMapProps): JSX.Element | null {
+  const [states, setStates] = useState<Record<MapMarket, MarketState>>({ us: EMPTY_STATE, crypto: EMPTY_STATE });
   if (!open) return null;
-  return <MarketMapDialog onClose={onClose} onOpenChart={onOpenChart} />;
+  return <MarketMapDialog onClose={onClose} onOpenChart={onOpenChart} states={states} setStates={setStates} />;
 }
 
-function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>): JSX.Element {
+type MapDialogProps = Omit<MarketMapProps, 'open'> & {
+  states: Record<MapMarket, MarketState>;
+  setStates: Dispatch<SetStateAction<Record<MapMarket, MarketState>>>;
+};
+
+function MarketMapDialog({ onClose, onOpenChart, states, setStates }: MapDialogProps): JSX.Element {
   const t = useT();
   const zonePref = useTimeZone();
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -146,18 +154,11 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Partial<Record<MapMarket, HTMLButtonElement | null>>>({});
 
-  // A tab whose markets are switched off in Settings → Markets is not offered.
+  // The map is informational. A disabled feed only blocks opening its chart.
   const filter = useMarketFilter();
-  const tabs = useMemo(
-    () => MARKETS.filter((m) => (m === 'us' ? filter.isVisible('equity') : !filter.isGroupHidden('crypto'))),
-    [filter],
-  );
-  const [chosenMarket, setMarket] = useState<MapMarket>('us');
-  const market: MapMarket = tabs.includes(chosenMarket) ? chosenMarket : (tabs[0] ?? chosenMarket);
-  const allOff = tabs.length === 0;
+  const [market, setMarket] = useState<MapMarket>('us');
   const [periods, setPeriods] = useState<Record<MapMarket, string>>(DEFAULT_PERIOD);
   // Each tab keeps its own last data, so switching back shows it at once.
-  const [states, setStates] = useState<Record<MapMarket, MarketState>>({ us: EMPTY_STATE, crypto: EMPTY_STATE });
   const [reloadKey, setReloadKey] = useState(0);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [hovered, setHovered] = useState<Hover | null>(null);
@@ -190,7 +191,6 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   // Fetch the visible tab when it changes and on each refresh. Changing the tab or
   // closing aborts the request in flight; an aborted request writes nothing.
   useEffect(() => {
-    if (allOff) return undefined;
     const controller = new AbortController();
     setStates((prev) =>
       prev[market].error === null ? prev : { ...prev, [market]: { ...prev[market], error: null } },
@@ -206,12 +206,12 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
       },
     );
     return () => controller.abort();
-  }, [market, reloadKey, allOff]);
+  }, [market, reloadKey, setStates]);
 
   useEffect(() => {
-    const id = window.setInterval(() => setReloadKey((k) => k + 1), REFRESH_MS);
+    const id = window.setInterval(() => setReloadKey((k) => k + 1), data?.stale ? 3_000 : REFRESH_MS);
     return () => window.clearInterval(id);
-  }, []);
+  }, [data?.stale]);
 
   // The body's size drives the layout. Measured once, then followed as the window changes.
   useEffect(() => {
@@ -251,7 +251,7 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   const onTabKeyDown = (e: KeyboardEvent<HTMLButtonElement>): void => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
-    const next = tabs[(tabs.indexOf(market) + 1) % tabs.length] ?? market;
+    const next = market === 'us' ? 'crypto' : 'us';
     selectMarket(next);
     tabRefs.current[next]?.focus();
   };
@@ -288,12 +288,10 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
   const clamp = CLAMP_PERCENT[period];
   const hoveredItem = hovered === null ? undefined : itemsBySymbol.get(hovered.symbol);
   const hoveredRect = hovered === null ? undefined : rectsBySymbol.get(hovered.symbol);
-  const showStale = data !== null && data.stale;
+  const showStale = data?.stale === true;
 
   let body: JSX.Element;
-  if (allOff) {
-    body = <p className="market-map__state" role="status" data-testid="market-map-all-off">{t('marketMap.allOff')}</p>;
-  } else if (data === null && state.error !== null) {
+  if (data === null && state.error !== null) {
     body = (
       <div className="market-map__state" role="alert">
         <p>{t('marketMap.error')}</p>
@@ -409,7 +407,7 @@ function MarketMapDialog({ onClose, onOpenChart }: Omit<MarketMapProps, 'open'>)
         <div className="market-map__row">
           <h2 id="market-map-title" className="market-map__title">{t('marketMap.title')}</h2>
           <div className="market-map__tabs" role="tablist" aria-label={t('marketMap.title')}>
-            {tabs.map((m) => (
+            {MARKETS.map((m) => (
               <button
                 key={m}
                 ref={(el) => {

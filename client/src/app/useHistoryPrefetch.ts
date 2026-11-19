@@ -7,10 +7,8 @@ import { historyDepthCols, type FlowMapSettings } from '../ui/settings';
 export const HISTORY_PREFETCH_POLL_MS = 400;
 
 /**
- * First-launch history prefetch (once per session). When the chosen depth is not
- * 'off', wait for the first column (so the epoch's dt is known), translate the
- * wall-clock depth to columns, and eagerly pull that much history into the ring
- * so scroll-back is instant. Re-runs when the session identity changes.
+ * Apply the launch preference when the restored snapshot is drawable. Frame
+ * available history and request older pages as needed, once per live symbol.
  */
 export function useHistoryPrefetch(
   subKey: string | null,
@@ -23,17 +21,17 @@ export function useHistoryPrefetch(
     // pollute their request-count / LRU assertions.
     const p = new URLSearchParams(window.location.search);
     if (import.meta.env.DEV && ['scrollback', 'perf', 'normalize', 'overlays', 'panels'].some((m) => p.get(m) === '1')) return;
-    let done = false;
+    if (subKey === null) return;
     const id = window.setInterval(() => {
-      if (done) return;
-      const tl = rendererRef.current?.timeline();
-      if (!tl || !tl.timeBase) return; // wait for the first data
+      const renderer = rendererRef.current;
+      const tl = renderer?.timeline();
+      if (!renderer || !tl?.timeBase) return; // wait for the first data
       // Read the depth LIVE (not captured at setup) so a choice made during the
       // boot window before the first column takes effect.
       const depth = settingsRef.current.historyDepth;
-      if (depth !== 'off') rendererRef.current?.prefetchHistory(historyDepthCols(depth, tl.timeBase.dtNs));
-      done = true;
-      window.clearInterval(id);
+      if (depth === 'off' || renderer.prefetchHistory(historyDepthCols(depth, tl.timeBase.dtNs), true)) {
+        window.clearInterval(id);
+      }
     }, HISTORY_PREFETCH_POLL_MS);
     return () => window.clearInterval(id);
   }, [subKey, rendererRef, settingsRef]);

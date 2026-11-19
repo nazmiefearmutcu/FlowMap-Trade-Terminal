@@ -31,6 +31,8 @@ import { Markers } from './markers';
 import { OVERLAY } from './palette';
 import { PointBatch, SolidBatch } from './primitives';
 import { PriceLine } from './priceLine';
+import { PriceGapFill } from './priceGapFill';
+import type { ClockGap } from '../gapProjection';
 import type { OverviewBars } from './overviewBars';
 import { Profile } from './profile';
 import { Cvd } from './cvd';
@@ -39,12 +41,15 @@ import { VolBars, volumeStripHeight, VOLBAR_HEIGHT_FRAC } from './volbars';
 import { NativeCandles } from './nativeCandles';
 import { GexOverlay } from './gexLevels';
 import { DEFAULT_TEXT_SIZE, TextLayer } from '../textLayer';
-import type { HeatmapView } from '../heatmap';
+import type { ChartView } from '../gapProjection';
 import type { BarColumn, BBO, BookUpdate, Marker, Trade, GexLevelUpdate } from '../../proto/types';
 
 /** Everything one overlay frame needs from the renderer. */
 export interface OverlayDrawContext {
-  view: HeatmapView;
+  view: ChartView;
+  /** Clip-space start of the quote strip in live follow. */
+  liveQuoteStartX?: number;
+  priceGapSymbol?: string;
   dims: SurfaceDims;
   dpr: number;
   resident: { oldest: number; newest: number } | null;
@@ -82,6 +87,16 @@ export class OverlayManager {
   private points: PointBatch;
   private readonly text: TextLayer;
   private readonly volumeText: TextLayer;
+  private readonly priceGapFill = new PriceGapFill();
+
+  warmPriceGaps(symbol: string, gaps: readonly ClockGap[], changed: () => void): boolean {
+    this.priceGapFill.setSymbol(symbol);
+    return this.priceGapFill.warm(gaps, changed);
+  }
+
+  gapPriceRange(gaps: readonly ClockGap[], from: bigint, to: bigint): { low: number; high: number } | null {
+    return this.priceGapFill.priceRange(gaps, from, to);
+  }
   private priceAxis: TextLayer | null = null;
   private timeAxis: TextLayer | null = null;
 
@@ -204,6 +219,10 @@ export class OverlayManager {
 
   getVisibility(): OverlayVisibility {
     return { ...this.visibility };
+  }
+
+  get bboVisible(): boolean {
+    return this.visibility.bbo;
   }
 
   setBubbleMinSize(minSize: number): void {
@@ -434,6 +453,8 @@ export class OverlayManager {
     frame.columnScale = ctx.columnScale;
     frame.dataVersion = ctx.dataVersion;
     frame.changed = ctx.changed;
+    this.priceGapFill.setSymbol(ctx.priceGapSymbol ?? '');
+    frame.priceGapFill = ctx.priceGapSymbol ? this.priceGapFill : undefined;
     frame.mipLevel = ctx.mipLevel ?? 0;
     frame.pixelStyle = this.pixelStyle;
 
@@ -441,7 +462,8 @@ export class OverlayManager {
     this.text.syncSize(ctx.dims.cssW, ctx.dims.cssH, ctx.dpr);
     this.text.clear();
     const axisStyle = { pixel: this.pixelStyle };
-    if (this.visibility.axes) drawGridlines(this.text, this.gm, axisStyle);
+    if (this.visibility.axes) drawGridlines(this.text, this.gm, axisStyle, ctx.timeAxisClock);
+    this.drawRecordingGaps(ctx);
 
     // A separate, opaque bottom strip prevents changing heatmap/price ink
     // from changing the apparent height or colour of a completed volume bar.
@@ -481,7 +503,7 @@ export class OverlayManager {
     if (this.visibility.vwap) vwap.draw(frame);
     if (this.visibility.bbo) {
       this.bbo.set(this.effectiveBbo(ctx));
-      this.bbo.draw(frame);
+      this.bbo.draw(frame, ctx.liveQuoteStartX);
     }
     if (ctx.capability?.native_candles === true) this.nativeCandles.draw(frame);
     else if (this.visibility.price) priceLine.draw(frame);
@@ -509,6 +531,23 @@ export class OverlayManager {
     } else {
       this.priceAxis?.clear();
       this.timeAxis?.clear();
+    }
+  }
+
+  private drawRecordingGaps(ctx: OverlayDrawContext): void {
+    const segments = ctx.view.timeProjection?.segments;
+    if (!segments) return;
+    const width = ctx.dims.cssW;
+    for (const { x0, x1, gapNs } of segments) {
+      if (!gapNs || (x1 - x0) * width < 155) continue;
+      const minutes = Math.max(1, Math.round(gapNs / 60e9));
+      const hours = Math.floor(minutes / 60);
+      const duration = hours
+        ? `${hours} ${t('unit.h')} ${minutes % 60} ${t('unit.min')}`
+        : `${minutes} ${t('unit.min')}`;
+      this.text.badge((x0 + x1) * width / 2, 16, t('gl.recordingGap', { duration }), {
+        align: 'center', color: OVERLAY.axis.css, radius: 3,
+      });
     }
   }
 
@@ -574,6 +613,7 @@ export class OverlayManager {
   }
 
   dispose(): void {
+    this.priceGapFill.setSymbol('');
     this.profile.dispose();
     for (const box of this.axisBoxes.values()) box.dispose();
     this.axisBoxes.clear();

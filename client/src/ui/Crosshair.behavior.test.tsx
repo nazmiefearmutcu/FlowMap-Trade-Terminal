@@ -282,6 +282,21 @@ it('labels the rows with words, not abbreviations', () => {
   }
 });
 
+it('keeps the cursor clock visible and omits the book tier inside a recording gap', () => {
+  useFlowMapStore.setState({ capability: { depth: 'L2' } });
+  const mounted = mountProbedCrosshair({ recordingGap: true, inRange: false, bid: null, ask: null, group: 4 });
+  try {
+    expect(mounted.container.querySelector('[data-testid="crosshair-src"]')?.textContent).toBe('No order book recording');
+    expect(mounted.container.querySelector('[data-testid="crosshair-time"]')).not.toBeNull();
+    expect(mounted.container.querySelector('[data-testid="crosshair-bid"]')).toBeNull();
+    expect(mounted.container.querySelector('[data-testid="crosshair-ask"]')).toBeNull();
+    expect(mounted.container.querySelector('[data-testid="crosshair-group"]')).toBeNull();
+  } finally {
+    mounted.done();
+    useFlowMapStore.setState({ capability: null });
+  }
+});
+
 it('reads a grouped cell as its price band and level count, and an averaged cell as its window', () => {
   const mounted = mountProbedCrosshair({
     group: 4, price: 156.77, priceLo: 156.75, priceHi: 156.79, priceDecimals: 2, averageMs: 64_000,

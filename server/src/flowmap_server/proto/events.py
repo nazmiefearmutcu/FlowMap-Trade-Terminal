@@ -33,6 +33,7 @@ SIDE_UNKNOWN = 2
 SIDE_SRC_EXCHANGE = 0
 SIDE_SRC_INFERRED = 1
 SIDE_SRC_NA = 2
+SIDE_SRC_PROVIDER = 3  # provider-reported classification; not exchange-certified
 
 MarkerKind = Literal[
     "liquidation",
@@ -225,7 +226,7 @@ class Trade(msgspec.Struct):
     price: float
     size: float
     side: int  # SIDE_BUY | SIDE_SELL | SIDE_UNKNOWN
-    side_src: int  # SIDE_SRC_EXCHANGE | SIDE_SRC_INFERRED | SIDE_SRC_NA
+    side_src: int  # SIDE_SRC_EXCHANGE | SIDE_SRC_INFERRED | SIDE_SRC_NA | SIDE_SRC_PROVIDER
     venue: str  # wire: u8 length + UTF-8 bytes (<= 255 bytes)
     # Per-session ingest sequence, uint16 on the wire (see proto/wire.py TRADE).
     # 0 means unknown: legacy encoders and recordings that predate it.

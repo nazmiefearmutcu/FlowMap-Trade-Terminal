@@ -22,4 +22,12 @@
     }
   }
   document.documentElement.setAttribute('data-theme', id);
+  try {
+    const settings = JSON.parse(localStorage.getItem('flowmap.settings.v1'));
+    if (settings?.interfaceStyle === 'pixel') {
+      document.documentElement.setAttribute('data-ui-style', 'pixel');
+    }
+  } catch {
+    // The static terminal style covers missing or corrupt preferences.
+  }
 })();

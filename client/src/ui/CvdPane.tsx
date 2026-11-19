@@ -24,7 +24,7 @@ import { useT } from '../i18n/useT';
 import type { Renderer } from '../gl/renderer';
 import { OVERLAY } from '../gl/overlays/palette';
 import { useFlowMapStore } from '../state/store';
-import { cvdProject, cvdValueToY, fmtCvd, type ProjectedPoint } from './cvd';
+import { cvdProject, cvdValueToY, fmtCvd, scopedCvdSeries, type ProjectedPoint } from './cvd';
 
 interface CvdPaneProps {
   rendererRef: RefObject<Renderer | null>;
@@ -138,9 +138,12 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
   const t = useT();
   const [notice, setNotice] = useState<'na' | 'wait' | null>(null);
   // Read the honesty flag reactively; everything else is polled off the renderer.
-  const cvdCap = useFlowMapStore((s) => (s.capability?.cvd as string | undefined) ?? null);
+  const capability = useFlowMapStore((s) => s.capability);
+  const cvdCap = (capability?.cvd as string | undefined) ?? null;
   const cvdCapRef = useRef<string | null>(cvdCap);
   cvdCapRef.current = cvdCap;
+  const capabilityRef = useRef(capability);
+  capabilityRef.current = capability;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -214,9 +217,9 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       ctx.textBaseline = 'top';
       ctx.textAlign = 'left';
       ctx.fillStyle = ink.tagPlate;
-      ctx.fillRect(4, 2, 28, 13);
+      ctx.fillRect(4, 2, cap === 'provider' ? 140 : 28, 13);
       ctx.fillStyle = ink.series;
-      ctx.fillText('CVD', 7, 4);
+      ctx.fillText(cap === 'provider' ? t('cvd.providerLabel') : 'CVD', 7, 4);
 
       // Honesty: no usable aggressor side → don't draw a fake flat zero. The
       // reason is a DOM status line, so screen readers hear it (the canvas is aria-hidden).
@@ -228,14 +231,20 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       if (!tl || !r) return;
       const lo = Math.floor(tl.viewStartCol);
       const hi = Math.ceil(tl.viewEndCol);
-      const pts = r.cvdSeries(lo, hi);
+      const raw = r.cvdSeries(lo, hi);
+      const meta = capabilityRef.current;
+      const pts = cap === 'provider'
+        ? scopedCvdSeries(raw, column => r.timestampAtColumn(column),
+          String(meta?.cvd_anchor_ns ?? ''), Number(meta?.cvd_offset ?? Number.NaN),
+          typeof meta?.cvd_end_ns === 'string' ? meta.cvd_end_ns : undefined)
+        : raw;
       setNotice(pts.length === 0 ? 'wait' : null);
       if (pts.length === 0) return;
 
       // Single-pass, zero-allocation projection (bounds + x + y in place over a
       // reused buffer) — the old per-repaint `pts.map(...)` triple churned three
       // fresh arrays on every column flush.
-      const proj = cvdProject(pts, tl.viewStartCol, tl.viewEndCol, cssW, cssH, xyBufRef.current);
+      const proj = cvdProject(pts, tl.viewStartCol, tl.viewEndCol, cssW, cssH, xyBufRef.current, tl.columnFraction);
       const bounds = proj.bounds;
       const xy = proj.xy;
       const zeroY = cvdValueToY(0, bounds, cssH);
@@ -250,7 +259,19 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Build the polyline in the shared x transform (already projected above).
+      // Keep gaps in the recording empty in the cumulative pane too.
+      const emptySpans = tl.emptySpans;
+      if (emptySpans?.length) {
+        ctx.save();
+        ctx.beginPath();
+        let left = 0;
+        for (const { x0, x1 } of emptySpans) {
+          ctx.rect(left * cssW, 0, (x0 - left) * cssW, cssH);
+          left = x1;
+        }
+        ctx.rect(left * cssW, 0, (1 - left) * cssW, cssH);
+        ctx.clip();
+      }
 
       // Filled area between the line and the zero baseline — a three-stop
       // vertical fade (strongest at the line, already quiet by mid-pane, gone
@@ -283,6 +304,7 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       ctx.strokeStyle = ink.series;
       ctx.lineWidth = 1.8;
       ctx.stroke();
+      if (emptySpans?.length) ctx.restore();
 
       // Baseline "0" marker on a small ground plate (drawn over the fill, so it
       // stays readable when the wash covers the baseline side).
@@ -346,8 +368,9 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
         const themeKey = document.documentElement.dataset.theme ?? '';
         const tipCvd = tl && r ? r.cvdValueAt(tl.newestSeq) : Number.NaN;
         const ready = r?.marketFrameReady !== false;
+        const scopeKey = `${capabilityRef.current?.cvd_anchor_ns ?? ''}|${capabilityRef.current?.cvd_offset ?? ''}|${capabilityRef.current?.cvd_end_ns ?? ''}`;
         const sig = tl
-          ? `${cssW}x${cssH}|${dpr}|${cap}|${themeKey}|${tl.viewStartCol.toFixed(2)}|${tl.viewEndCol.toFixed(2)}|${tl.newestSeq}|${Number.isFinite(tipCvd) ? tipCvd : ''}|${r?.cvdRevision ?? 0}|${ready}|${r?.overviewStats?.()?.revision ?? 0}`
+          ? `${cssW}x${cssH}|${dpr}|${cap}|${scopeKey}|${themeKey}|${tl.viewStartCol.toFixed(2)}|${tl.viewEndCol.toFixed(2)}|${tl.newestSeq}|${Number.isFinite(tipCvd) ? tipCvd : ''}|${r?.cvdRevision ?? 0}|${ready}|${r?.overviewStats?.()?.revision ?? 0}`
           : `${cssW}x${cssH}|${dpr}|${cap}|${themeKey}|empty`;
         if (sig !== lastSig) {
           lastSig = sig;
@@ -364,10 +387,11 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       window.clearTimeout(pollTimer);
       sizeObserver?.disconnect();
     };
-  }, [rendererRef]);
+  }, [rendererRef, t]);
 
   return (
-    <section className="cvd-pane" data-testid="cvd-pane" aria-label={t('cvd.title')}>
+    <section className="cvd-pane" data-testid="cvd-pane" aria-label={t('cvd.title')}
+      title={cvdCap === 'provider' ? t('cvd.providerHint') : undefined}>
       <canvas ref={canvasRef} className="cvd-pane__canvas" aria-hidden="true" />
       {notice !== null && (
         <p className="cvd-pane__status" role="status" data-testid="cvd-pane-status">

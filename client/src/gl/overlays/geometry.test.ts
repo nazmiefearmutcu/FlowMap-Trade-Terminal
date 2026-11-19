@@ -45,6 +45,49 @@ function trade(ts: bigint, price: number): Trade {
 }
 
 describe('half-cell convention — price line', () => {
+  it.each([false, true])('leaves missing history blank in price and VWAP traces (pixel=%s)', pixelStyle => {
+    const g = gm();
+    const price = new PriceLine();
+    const vwap = new Vwap();
+    for (const col of [1, 2, 7, 8]) {
+      price.add(bar(col, col));
+      vwap.add({ col_seq: col, vwap_num_cum: col, vwap_den_cum: 1 } as BarColumn);
+    }
+    const paths: Pt[][] = [];
+    const segments: number[][] = [];
+    const frame = { gm: g, resident: null, pixelStyle,
+      text: { polyline: (pts: Pt[]) => paths.push(pts), dashedLine: () => {} },
+      solid: { begin: () => {}, flush: () => {},
+        addThickLine: (x0: number, _y0: number, x1: number) => segments.push([x0, x1]) },
+    } as unknown as OverlayFrame;
+    price.draw(frame);
+    vwap.draw(frame);
+    expect(paths.length).toBeGreaterThan(0);
+    expect(segments.length).toBeGreaterThan(0);
+    for (const path of paths) for (let i = 1; i < path.length; i++) {
+      expect(Math.abs(path[i].x - path[i - 1].x)).toBeLessThanOrEqual(DIMS.cssW / VIEW.colScale);
+    }
+    for (const [x0, x1] of segments) expect(Math.abs(x1 - x0)).toBeLessThanOrEqual(2 / VIEW.colScale + 1e-10);
+  });
+
+  it.each([false, true])('keeps source positions and breaks without losing regular samples (coarse=%s)', coarse => {
+    const g = coarse ? new GridMap(VIEW, DIMS, { ...TIME, traceBreaks: [2.2] }, PRICE) : gm();
+    const price = new PriceLine();
+    price.add({ ...bar(1, 4), t0_ns: 1_000_000_000n }, 1.85);
+    price.add({ ...bar(2, 40), t0_ns: 43_200_000_000_000n }, 2.92);
+    price.add({ ...bar(3, 41), t0_ns: coarse ? 50_400_000_000_000n : 43_201_000_000_000n }, 3.9);
+    const paths: Pt[][] = [];
+    const dashes: number[][] = [];
+    price.draw({ gm: g, resident: null, text: {
+      polyline: (pts: Pt[]) => paths.push(pts),
+      dashedLine: (x0: number, _y0: number, x1: number) => dashes.push([x0, x1]),
+    } } as unknown as OverlayFrame);
+
+    expect(dashes).toContainEqual([g.cssX(1.85) - 4, g.cssX(1.85) + 4]);
+    expect(paths.filter(p => p[0].x === g.cssX(2.92))[0].map(p => p.x)).toEqual([g.cssX(2.92), g.cssX(3.9)]);
+    expect(paths.filter(p => p[0].x === g.cssX(1.85)).every(p => p.length === 1)).toBe(true);
+  });
+
   it('draws the trace and the dashed level on the row-cell centre', () => {
     const g = gm();
     const pl = new PriceLine();

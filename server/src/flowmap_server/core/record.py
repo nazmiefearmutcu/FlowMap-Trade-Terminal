@@ -71,6 +71,8 @@ with ``kind`` in {columns, trades, markers, epochs}. Load-bearing decisions:
 
 from __future__ import annotations
 
+from flowmap_server.core.record_capability import _decode_capability, update_recorded_capability
+
 import itertools
 import json
 import logging
@@ -174,15 +176,6 @@ _EPOCHS_SCHEMA = {
 }
 
 
-def _decode_capability(raw: str | None) -> dict[str, object] | None:
-    """The capability a recording run stored on its epoch rows, if readable."""
-    if not raw:
-        return None
-    try:
-        value = json.loads(raw)
-    except ValueError:
-        return None  # not JSON: there is no capability to report
-    return value if isinstance(value, dict) else None
 
 
 def _hour_key(ts_ns: int) -> str:
@@ -554,6 +547,10 @@ class SessionRecorder:
         if not self._enabled:
             return
         self._epochs.append(params)
+
+    def update_capability(self, capability: dict[str, object], params: EpochParams) -> None:
+        """Record a changed provider scope alongside unchanged epoch geometry."""
+        update_recorded_capability(self, capability, params)
 
     def _bound(self, buf: list, cap: int, kind: str, ts_ns: int) -> None:
         """Keep a buffer under its cap by dropping its oldest rows in batches.
@@ -1250,8 +1247,7 @@ class Recorder:
                 row_id = row.get("recording_id", "") or ""
                 if row_id != recording_id:
                     continue
-                if run_capability is None:
-                    run_capability = row.get("capability") or None
+                run_capability = row.get("capability") or run_capability
                 params = _epoch_from_row(row)
                 if not recording_id:
                     legacy_epochs.append((_part_number(path), _hour_prefix(path), params))

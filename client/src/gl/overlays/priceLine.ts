@@ -34,8 +34,11 @@
 import type { OverlayFrame } from './frame';
 import { OVERLAY, parseCssColor } from './palette';
 import type { BarColumn } from '../../proto/types';
-import { visibleColRange } from './coords';
+import { visibleColRange, type GridMap } from './coords';
 import type { Pt } from '../textLayer';
+import type { PricePoint } from './priceGapFill';
+import { traceRuns } from './traceRuns';
+import { t } from '../../i18n';
 
 /** CSS-px width of the bright price-line core. */
 export const PRICE_LINE_WIDTH = 2.0;
@@ -55,6 +58,29 @@ export const PRICE_LEVEL_DASH: readonly number[] = [3, 6];
 const PRICE_STUB_PX = 10;
 /** Alpha of the right-edge stub (subtle; the core pass stays the brightest ink). */
 export const PRICE_STUB_ALPHA = 0.7;
+const MIN_BRIDGE_PX = 4;
+const MAX_VISIBLE_BRIDGES = 16;
+
+/** Leave request capacity for gaps that have a visible effect at this zoom. */
+export function visiblePriceBridges<T extends PricePoint>(runs: readonly T[][], width: number) {
+  return runs.slice(1).flatMap((run, i) => {
+    const left = runs[i][runs[i].length - 1];
+    const right = run[0];
+    const visibleWidth = Math.min(width, right.x) - Math.max(0, left.x);
+    return visibleWidth >= MIN_BRIDGE_PX && left.t0 !== undefined && right.t0 !== undefined
+      && right.t0 - left.t0 >= 2_000_000_000n ? [{ left, right, visibleWidth }] : [];
+  }).sort((a, b) => b.visibleWidth - a.visibleWidth).slice(0, MAX_VISIBLE_BRIDGES);
+}
+
+function visibleArchivePriceGaps(gm: GridMap) {
+  const viewEnd = gm.view.colOffset + gm.view.colScale;
+  return (gm.time?.priceGaps ?? []).flatMap(gap => {
+    if (gap.rightNs - gap.leftNs < 90_000_000_000n
+      || gap.right <= gm.view.colOffset || gap.left >= viewEnd) return [];
+    const width = Math.min(gm.dims.cssW, gm.cssX(gap.right)) - Math.max(0, gm.cssX(gap.left));
+    return width >= MIN_BRIDGE_PX ? [{ gap, width }] : [];
+  }).sort((a, b) => b.width - a.width).slice(0, 4).map(({ gap }) => gap);
+}
 
 /**
  * Pixel-style staircase through the same vertices: each step runs
@@ -91,8 +117,8 @@ export interface LastClose {
 }
 
 export class PriceLine {
-  /** Absolute col_seq → close price. */
-  private readonly closes = new Map<number, number>();
+  /** Absolute column (or overview group) to its actual close location. */
+  private readonly closes = new Map<number, { price: number; t0: bigint; xCol: number }>();
   private readonly extremes = new Map<number, { low: number; high: number }>();
   /** Newest close (highest col_seq seen) — O(1) maintenance, O(1) read. */
   private lastClose: LastClose | null = null;
@@ -102,10 +128,10 @@ export class PriceLine {
   private rangeMemo: { lo: number; hi: number; revision: number; result: { low: number; high: number } | null } | null = null;
 
   /** Record / refresh a column's close price at its absolute col_seq. */
-  add(bar: BarColumn): void {
+  add(bar: BarColumn, closeColumn = bar.col_seq + 0.5): void {
     if (!Number.isFinite(bar.c)) return;
     this.revision++;
-    this.closes.set(bar.col_seq, bar.c);
+    this.closes.set(bar.col_seq, { price: bar.c, t0: bar.t0_ns, xCol: closeColumn });
     const low = Number.isFinite(bar.l) && bar.l > 0 ? Math.min(bar.l, bar.c) : bar.c;
     const high = Number.isFinite(bar.h) && bar.h > 0 ? Math.max(bar.h, bar.c) : bar.c;
     const extent = this.extremes.get(bar.col_seq);
@@ -139,7 +165,7 @@ export class PriceLine {
   private scanPriceRange(lo: number, hi: number): { low: number; high: number } | null {
     let low = Infinity;
     let high = -Infinity;
-    for (const [col, price] of this.closes) {
+    for (const [col, { price }] of this.closes) {
       if (col < lo || col > hi || !(price > 0)) continue;
       const extent = this.extremes.get(col);
       low = Math.min(low, extent?.low ?? price);
@@ -185,27 +211,29 @@ export class PriceLine {
 
   /** Close price at a column (for tests / readouts), or NaN. */
   valueAt(colSeq: number): number {
-    const v = this.closes.get(colSeq);
-    return v === undefined ? Number.NaN : v;
+    return this.closes.get(colSeq)?.price ?? Number.NaN;
   }
 
   draw(frame: OverlayFrame): void {
     const { gm, text } = frame;
-    if (!gm.hasEvents || this.closes.size === 0) return;
+    if (!gm.hasEvents) return;
     const range = visibleColRange(gm.view, frame.resident);
-    if (range === null) return;
 
     // One vertex per visible column, in ascending column order. `+0.5` puts the
     // line on the uniform row's cell centre. Hybrid grids use the exact price
     // coordinate because half a log-wing row can be a large price difference.
-    const pts: Pt[] = [];
-    for (let c = range.lo; c <= range.hi; c++) {
+    const pts: Array<Pt & { col: number; t0: bigint; xCol: number }> = [];
+    const gapFill = frame.priceGapFill;
+    const wideGaps = gapFill ? visibleArchivePriceGaps(gm) : [];
+    const restored = gapFill ? wideGaps.filter(gap => gapFill.hasCloses(gap)) : [];
+    for (let c = range?.lo ?? 0; c <= (range?.hi ?? -1); c++) {
       const close = this.closes.get(c);
-      if (close === undefined || !Number.isFinite(close)) continue;
-      pts.push({ x: gm.cssX(c + 0.5), y: gm.cssY(gm.priceEventToRow(close)) });
+      if (close === undefined) continue;
+      // An overview bucket retains one close. Inside a restored minute run,
+      // keep that known close until the complete exchange series is available.
+      if (restored.some(gap => close.t0 > gap.leftNs && close.t0 < gap.rightNs)) continue;
+      pts.push({ col: c, t0: close.t0, xCol: close.xCol, x: gm.cssX(close.xCol), y: gm.cssY(gm.priceEventToRow(close.price)) });
     }
-    if (pts.length === 0) return;
-
     // No area wash: the old full-height `fillUnder` slab flooded the field and
     // tiled into flat 1-px slabs over reconstructed history.
     // The contrasting under-stroke + core carry the trace.
@@ -213,9 +241,32 @@ export class PriceLine {
     // Pixel chart style: the same closes as a staircase with square
     // joins. Normal style keeps the smooth round-joined polyline unchanged.
     const pixel = frame.pixelStyle === true;
-    const path = pixel ? steppedPath(pts) : pts;
+    // A projected recording break must not acquire a straight line between
+    // coarse closes, including while its independent candle page is loading.
+    const runs = traceRuns(pts, gm.time, wideGaps.flatMap(gap => [gap.left, gap.right]));
+    const paths = runs.map(run => pixel ? steppedPath(run) : run);
+    let filled = false;
+    const bridged: Array<{ left: number; right: number }> = [];
+    if (gapFill) {
+      if (frame.changed) gapFill.warm(wideGaps, frame.changed);
+      for (const { left, right } of visiblePriceBridges(runs, gm.dims.cssW)) {
+        const path = gapFill.path(gm, left, right, frame.changed);
+        if (!path) continue;
+        paths.push(pixel ? steppedPath(path) : path);
+        bridged.push({ left: left.xCol, right: right.xCol });
+        filled = true;
+      }
+      for (const gap of wideGaps) {
+        if (bridged.some(bridge => gap.right > bridge.left && gap.right <= bridge.right)) continue;
+        const path = gapFill.gapPath(gm, gap, frame.changed);
+        if (!path) continue;
+        paths.push(pixel ? steppedPath(path) : path);
+        filled = true;
+      }
+    }
+    if (filled) text.badge(6, 48, `Binance · ${t('indi.candles')}`, { color: OVERLAY.price.css });
     // Reuse the same points for the opaque under-stroke; no second history pass.
-    text.polyline(path, {
+    for (const path of paths) text.polyline(path, {
       width: PRICE_GLOW_WIDTH,
       color: OVERLAY.priceHalo.css,
       alpha: PRICE_GLOW_ALPHA,
@@ -226,8 +277,8 @@ export class PriceLine {
     // the core owns the joint; clamped to the chart surface (the pill lives in
     // the gutter canvas, so the two can never overlap).
     const newest = pts[pts.length - 1];
-    const stubEnd = Math.min(gm.dims.cssW, newest.x + PRICE_STUB_PX);
-    if (stubEnd - newest.x >= 1) {
+    const stubEnd = newest ? Math.min(gm.dims.cssW, newest.x + PRICE_STUB_PX) : 0;
+    if (newest && stubEnd - newest.x >= 1) {
       text.polyline([newest, { x: stubEnd, y: newest.y }], { width: PRICE_GLOW_WIDTH, color: OVERLAY.priceHalo.css, square: pixel });
       text.polyline([newest, { x: stubEnd, y: newest.y }], {
         width: PRICE_LINE_WIDTH,
@@ -237,11 +288,12 @@ export class PriceLine {
       });
     }
     // Bright core pass.
-    text.polyline(path, { width: PRICE_LINE_WIDTH, color: OVERLAY.price.css, square: pixel });
+    for (const path of paths) text.polyline(path, { width: PRICE_LINE_WIDTH, color: OVERLAY.price.css, square: pixel });
     // A single visible vertex: draw a short dash so it's still visible.
-    if (pts.length === 1) {
-      text.dashedLine(pts[0].x - 4, pts[0].y, pts[0].x + 4, pts[0].y, OVERLAY.priceHalo.css, [99, 0], PRICE_GLOW_WIDTH);
-      text.dashedLine(pts[0].x - 4, pts[0].y, pts[0].x + 4, pts[0].y, OVERLAY.price.css, [99, 0], PRICE_LINE_WIDTH);
+    for (const path of paths) if (path.length === 1) {
+      const point = path[0];
+      text.dashedLine(point.x - 4, point.y, point.x + 4, point.y, OVERLAY.priceHalo.css, [99, 0], PRICE_GLOW_WIDTH);
+      text.dashedLine(point.x - 4, point.y, point.x + 4, point.y, OVERLAY.price.css, [99, 0], PRICE_LINE_WIDTH);
     }
 
     // Dashed last-price level marker across the chart, with a solid right-edge
