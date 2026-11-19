@@ -6,7 +6,7 @@
 
 .app-notices {
   position: absolute;
-  top: 8px;
+  top: 40px;
   left: 8px;
   right: 8px;
   z-index: 30;
@@ -24,25 +24,30 @@
   align-items: center;
   gap: 8px;
   max-width: 100%;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: var(--r-2);
   border: 1px solid var(--line);
-  background: var(--bg);
+  background: var(--bg-1);
   color: var(--chart-ink);
+  box-shadow: var(--shadow-pop);
   font-size: var(--fs-md);
   line-height: 1.4;
 }
 
 .app-notice--fatal {
   border-color: var(--sell-line);
+  background: var(--sell-dim);
 }
 
 .app-notice--sim {
   border-color: var(--warn-line);
+  background: var(--warn-dim);
   color: var(--warn);
+  font-size: var(--fs-2xs);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
+  padding: 3px 9px;
 }
 
 .app-notice code {

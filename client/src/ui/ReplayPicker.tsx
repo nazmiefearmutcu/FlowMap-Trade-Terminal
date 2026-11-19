@@ -53,8 +53,36 @@ function zonedReadout(ns: bigint | null, zone: string | undefined): string {
   });
 }
 
-function utc(ns: bigint | null): string {
-  return ns === null ? '—' : new Date(Number(ns / 1_000_000n)).toISOString();
+function parseBigIntString(value: unknown): bigint | null {
+  if (typeof value !== 'string' || !/^-?\d+$/.test(value)) return null;
+  try { return BigInt(value); } catch { return null; }
+}
+
+function parseAvailability(raw: unknown): Availability {
+  if (raw === null || typeof raw !== 'object') throw new ReplayRequestError('invalid', 200);
+  const v = raw as Record<string, unknown>;
+  if (!Array.isArray(v.hours) || typeof v.max_columns !== 'number' || !Number.isFinite(v.max_columns)) {
+    throw new ReplayRequestError('invalid', 200);
+  }
+  const hours: string[] = [];
+  for (const h of v.hours) {
+    if (parseBigIntString(h) === null) throw new ReplayRequestError('invalid', 200);
+    hours.push(h as string);
+  }
+  if (v.latest_column_ns !== null && parseBigIntString(v.latest_column_ns) === null) {
+    throw new ReplayRequestError('invalid', 200);
+  }
+  return { hours, latest_column_ns: v.latest_column_ns as string | null, max_columns: v.max_columns };
+}
+
+function parseWindowPreview(raw: unknown): WindowPreview {
+  if (raw === null || typeof raw !== 'object') throw new ReplayRequestError('invalid', 200);
+  const v = raw as Record<string, unknown>;
+  if (parseBigIntString(v.start_ns) === null || parseBigIntString(v.end_ns) === null ||
+      typeof v.columns !== 'number' || !Number.isFinite(v.columns)) {
+    throw new ReplayRequestError('invalid', 200);
+  }
+  return { start_ns: v.start_ns as string, end_ns: v.end_ns as string, columns: v.columns };
 }
 
 /**
@@ -178,8 +206,9 @@ export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
     request.current?.abort();
     request.current = ctrl;
     setBusy(true); setError(null); setPreview(null); setRecordingOff(false);
-    void readJson<Availability>(`/api/recordings/availability?${query}`, ctrl.signal).then(async (a) => {
+    void readJson<unknown>(`/api/recordings/availability?${query}`, ctrl.signal).then(async (raw) => {
       if (ctrl.signal.aborted) return;
+      const a = parseAvailability(raw);
       setAvailability(a);
       if (a.latest_column_ns !== null) {
         const latest = BigInt(a.latest_column_ns);
@@ -209,8 +238,8 @@ export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
     const ctrl = new AbortController(); request.current?.abort(); request.current = ctrl;
     setBusy(true); setError(null);
     try {
-      const p = await readJson<WindowPreview>(`/api/recordings/window?${query}&start_ns=${startNs}&end_ns=${endNs}`, ctrl.signal);
-      if (!ctrl.signal.aborted) setPreview(p);
+      const raw = await readJson<unknown>(`/api/recordings/window?${query}&start_ns=${startNs}&end_ns=${endNs}`, ctrl.signal);
+      if (!ctrl.signal.aborted) setPreview(parseWindowPreview(raw));
     } catch (e) { if (!ctrl.signal.aborted) setError(replayErrorKey(e)); }
     finally { if (!ctrl.signal.aborted) setBusy(false); }
   };
@@ -221,8 +250,10 @@ export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
     const controls = panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled)');
     if (!controls?.length) return;
     const first = controls[0], last = controls[controls.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    const active = document.activeElement;
+    const inside = panel.current?.contains(active) ?? false;
+    if (e.shiftKey && (active === first || !inside)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (active === last || !inside)) { e.preventDefault(); first.focus(); }
   };
 
   return createPortal(<div className="replay-picker__backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -248,9 +279,9 @@ export function ReplayPicker({ market, symbol, onClose, onConfirm }: {
         <p>{t('replayPicker.limit')} {formatNumber(availability.max_columns)} {t('replayPicker.columns')}</p>
       </>}
       {error && <p className="replay-picker__error" role="alert">{t(error.key, error.status === undefined ? undefined : { status: error.status })}</p>}
-      {preview && <p role="status">{t('replayPicker.effective')} {utc(BigInt(preview.start_ns))} → {utc(BigInt(preview.end_ns))} · {preview.columns} {t('replayPicker.columns')}<br />{t('replayPicker.provenance')}</p>}
+      {preview && <p role="status">{t('replayPicker.effective')} {zonedReadout(BigInt(preview.start_ns), zone)} → {zonedReadout(BigInt(preview.end_ns), zone)} · {formatNumber(preview.columns)} {t('replayPicker.columns')}<br />{t('replayPicker.provenance')}</p>}
       <footer><button type="button" onClick={onClose}>{t('replayPicker.cancel')}</button>
-        <button type="button" disabled={busy} onClick={() => setRefresh((v) => v + 1)}>{t('replayPicker.refresh')}</button>
+        <button type="button" aria-disabled={busy || undefined} onClick={() => { if (!busy) setRefresh((v) => v + 1); }}>{t('replayPicker.refresh')}</button>
         {preview ? <button type="button" disabled={busy || startNs === null || endNs === null} onClick={() => {
           if (startNs !== null && endNs !== null) onConfirm(startNs, endNs);
         }}>{t('replayPicker.open')}</button> : <button type="button" disabled={busy || !availability?.hours.length} onClick={() => { void checkWindow(); }}>{t('replayPicker.check')}</button>}

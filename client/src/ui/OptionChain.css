@@ -20,7 +20,7 @@
   color: var(--text);
   background: var(--bg-1);
   border: 1px solid var(--line);
-  border-radius: var(--r-3);
+  border-radius: var(--r-dialog);
   box-shadow: var(--shadow-drop);
 }
 
@@ -79,7 +79,11 @@
 
 .option-chain__modes {
   display: flex;
-  gap: var(--sp-1);
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
 }
 
 .option-chain button,
@@ -91,10 +95,22 @@
   border-radius: var(--r-1);
   font: inherit;
   font-size: var(--fs-md);
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
 }
 
 .option-chain button {
   cursor: pointer;
+}
+
+.option-chain button:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--line-2);
+}
+
+.option-chain__modes button {
+  border-color: transparent;
+  background: transparent;
+  padding: var(--sp-1) var(--sp-3);
 }
 
 .option-chain button:disabled {
@@ -177,11 +193,20 @@
   top: 0;
   text-align: center;
   color: var(--text);
+  border-top: 2px solid transparent;
+}
+.option-chain__table thead tr:first-child th:first-child {
+  border-top-color: var(--accent);
+  color: var(--accent-bright);
+}
+.option-chain__table thead tr:first-child th:last-child {
+  border-top-color: var(--sell);
+  color: var(--sell-bright);
 }
 
 /* The second header row sits under the first: one line of text plus its padding. */
 .option-chain__table thead tr:nth-child(2) th {
-  top: calc(var(--fs-md) * 1.5 + var(--sp-2) * 2 + 1px);
+  top: calc(var(--fs-md) * 1.5 + var(--sp-2) * 2 + 3px);
 }
 
 .option-chain__table thead tr:first-child th,
@@ -193,6 +218,7 @@
   top: 0;
   text-align: center;
   background: var(--bg-3);
+  border-inline: 1px solid var(--line);
 }
 
 .option-chain__cell,
@@ -208,7 +234,7 @@
 }
 
 .option-chain__cell.is-itm {
-  background: var(--bg-2);
+  background: color-mix(in srgb, var(--bg-2) 78%, var(--bg-inset));
 }
 
 .option-chain__strike {
@@ -216,6 +242,14 @@
   font-weight: 600;
   color: var(--text);
   background: var(--bg-3);
+  border-inline: 1px solid var(--line);
+}
+
+.option-chain__table tbody tr:hover .option-chain__cell {
+  background: color-mix(in srgb, var(--bg-3) 65%, var(--bg-inset));
+}
+.option-chain__table tbody tr:hover .option-chain__strike {
+  background: var(--selection-bg);
 }
 
 .option-chain__table tr.is-atm .option-chain__strike {

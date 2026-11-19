@@ -64,7 +64,15 @@ export function SymbolSearchPalette(props: SymbolSearchPaletteProps): JSX.Elemen
         role="dialog"
         aria-modal="true"
         aria-label={t('search.dialogAria')}
-        onKeyDown={trapFocusKeyDown}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && !e.defaultPrevented) {
+            e.preventDefault();
+            if (pickingVenue) props.onTogglePicker();
+            else onClose();
+            return;
+          }
+          trapFocusKeyDown(e);
+        }}
       >
         <div className="sympal__head">
           <span className="sympal__icon" aria-hidden="true">

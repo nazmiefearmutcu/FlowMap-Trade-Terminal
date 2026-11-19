@@ -34,14 +34,20 @@ function engineHeld(status: SidecarStatus): boolean {
 export function holdWhileSidecarDown(target: SidecarHoldTarget): () => void {
   let active = true;
   let held = false;
+  let sawEvent = false;
   const apply = (status: SidecarStatus | null): void => {
     if (!active || status === null) return;
     held = engineHeld(status);
     target.setSidecarHold(held);
     setSidecarRestHold(held);
   };
-  const unlisten = listenSidecarStatus(apply);
-  void readSidecarStatus().then(apply);
+  const unlisten = listenSidecarStatus((status) => {
+    sawEvent = true;
+    apply(status);
+  });
+  void readSidecarStatus().then((status) => {
+    if (!sawEvent) apply(status);
+  });
   return () => {
     active = false;
     unlisten();

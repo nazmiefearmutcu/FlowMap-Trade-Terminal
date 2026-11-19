@@ -293,10 +293,12 @@ export function OptionChainDialog({
     if (!controls?.length) return;
     const first = controls[0];
     const last = controls[controls.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
+    const active = document.activeElement;
+    const inside = panel.current?.contains(active) ?? false;
+    if (e.shiftKey && (active === first || !inside)) {
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
+    } else if (!e.shiftKey && (active === last || !inside)) {
       e.preventDefault();
       first.focus();
     }

@@ -58,6 +58,7 @@ export function usePreviewWarmup(previewQuotes: PreviewQuotes): PreviewWarmup | 
     let timeout: number | undefined;
     let controller: AbortController | undefined;
     const poll = async () => {
+      if (stopped || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
       const requestedAt = Date.now();
       controller = new AbortController();
       const currentController = controller;
@@ -81,11 +82,24 @@ export function usePreviewWarmup(previewQuotes: PreviewQuotes): PreviewWarmup | 
           });
         next = body.warming ? 500 : 30_000;
       }
-      timer = window.setTimeout(() => void poll(), next);
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+        timer = window.setTimeout(() => void poll(), next);
+      }
     };
+    const onVis = (): void => {
+      if (stopped) return;
+      if (document.visibilityState === 'hidden') {
+        window.clearTimeout(timer);
+        timer = undefined;
+      } else if (timer === undefined) {
+        void poll();
+      }
+    };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis);
     void poll();
     return () => {
       stopped = true;
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis);
       controller?.abort();
       window.clearTimeout(timer);
       window.clearTimeout(timeout);

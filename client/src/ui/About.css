@@ -19,7 +19,7 @@
   background: var(--bg-1);
   color: var(--text-2);
   border: 1px solid var(--line-2);
-  border-radius: 12px;
+  border-radius: var(--r-dialog);
   box-shadow: var(--shadow-drop);
   overflow: hidden;
 }
@@ -46,7 +46,14 @@
   color: var(--text-2);
   border-radius: var(--r-1);
   padding: 2px 8px;
+  font-family: inherit;
   cursor: pointer;
+}
+.about__close:hover,
+.about__action:hover {
+  background: var(--bg-2);
+  border-color: var(--line-2);
+  color: var(--text);
 }
 
 .about__close:focus-visible,

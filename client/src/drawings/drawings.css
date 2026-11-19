@@ -101,6 +101,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  max-height: calc(100% - 60px);
+  overflow-y: auto;
   padding: 5px;
   background: var(--chart-chip-bg);
   border: 1px solid var(--chart-chip-border);

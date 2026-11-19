@@ -48,14 +48,32 @@ export function ClosedBanner(): JSX.Element | null {
 
   const closed = feedState === 'closed';
 
-  // Tick once a second while closed so the countdown updates; no timer runs on
-  // the common (open / crypto) path.
+  // Tick once a second while closed with a countdown target and visible tab;
+  // pause when hidden so background tabs do zero work.
   useEffect(() => {
-    if (!closed) return;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [closed]);
+    if (!closed || nextOpenTs === null) return;
+    let id: number | null = null;
+    const start = (): void => {
+      if (id !== null || document.visibilityState === 'hidden') return;
+      setNowMs(Date.now());
+      id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    };
+    const stop = (): void => {
+      if (id === null) return;
+      window.clearInterval(id);
+      id = null;
+    };
+    const onVis = (): void => {
+      if (document.visibilityState === 'hidden') stop();
+      else start();
+    };
+    start();
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [closed, nextOpenTs]);
 
   // Terminal refusal (pre-close Status feed_state='closed' +
   // close 1003): NO feed exists for this market — not an RTH-closed market that

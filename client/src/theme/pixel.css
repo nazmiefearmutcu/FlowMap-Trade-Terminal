@@ -109,12 +109,32 @@ html:root[data-ui-style='pixel'] .speed-cycle:active {
 }
 
 /* --- Floating surfaces: one hard step of depth, no blur. --- */
+html:root[data-ui-style='pixel'] .sympal__backdrop,
+html:root[data-ui-style='pixel'] .drawer-scrim,
+html:root[data-ui-style='pixel'] .option-chain__backdrop,
+html:root[data-ui-style='pixel'] .replay-picker__backdrop,
+html:root[data-ui-style='pixel'] .about__backdrop,
+html:root[data-ui-style='pixel'] .onboard__scrim {
+  backdrop-filter: none;
+}
 html:root[data-ui-style='pixel'] [role='dialog'],
 html:root[data-ui-style='pixel'] [role='menu'],
 html:root[data-ui-style='pixel'] [role='listbox'],
 html:root[data-ui-style='pixel'] [role='tooltip'] {
   box-shadow: var(--shadow-drop);
   backdrop-filter: none;
+}
+html:root[data-ui-style='pixel'] .market-strip,
+html:root[data-ui-style='pixel'] .desk-toolbar {
+  border-bottom-width: var(--px);
+}
+html:root[data-ui-style='pixel'] .option-chain,
+html:root[data-ui-style='pixel'] .replay-picker,
+html:root[data-ui-style='pixel'] .about,
+html:root[data-ui-style='pixel'] .onboard,
+html:root[data-ui-style='pixel'] .chart-startup__card {
+  border: var(--px) solid var(--px-edge);
+  box-shadow: var(--shadow-drop);
 }
 
 /* --- Version label: the build stamp reads as a small plate. --- */

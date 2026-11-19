@@ -5,22 +5,11 @@
  * never prints the raw detail: the module panes show the parsed fields they use.
  */
 
-import type { IntelligenceEvent } from '../state/intelligenceStore';
+import { intelKindKey, type IntelligenceEvent } from '../state/intelligenceStore';
 
 type Translate = (key: string, vars?: Record<string, string | number>) => string;
 
-/** Locale keys of the record kinds the drawer knows. Any other kind shows its raw token. */
-const KIND_KEYS: ReadonlyMap<string, string> = new Map([
-  ['capitol', 'intel.kind.capitol'],
-  ['defense_contract', 'intel.kind.defense_contract'],
-  ['sec_diff', 'intel.kind.sec_diff'],
-  ['jet_flight', 'intel.kind.jet_flight'],
-]);
-
-/** The locale key that names a record kind, or null for a kind the drawer does not know. */
-export function intelKindKey(kind: string): string | null {
-  return KIND_KEYS.get(kind) ?? null;
-}
+export { intelKindKey };
 
 /** The detail as a JSON object, or an empty object when the detail is not one. */
 export function parseIntelDetail(detail: string): Readonly<Record<string, unknown>> {
@@ -56,7 +45,10 @@ function tradeSide(type: string | null, t: Translate): string | null {
  */
 export function intelHeading(event: IntelligenceEvent, t: Translate): string {
   if (event.kind === 'capitol') {
-    const payload = parseIntelDetail(event.detail);
+    const payload =
+      event.fields && Object.keys(event.fields).length > 0
+        ? event.fields
+        : parseIntelDetail(event.detail);
     const who = textField(payload.politician) ?? t('intel.event.politicianUnknown');
     const side = tradeSide(textField(payload.type), t);
     return side === null

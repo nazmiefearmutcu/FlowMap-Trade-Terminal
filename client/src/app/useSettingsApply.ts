@@ -7,6 +7,7 @@ import { applyUiStyle } from '../theme/uiStyle';
 import { safeLocalStorage } from '../state/safeStorage';
 import { useFlowMapStore } from '../state/store';
 import { historyDepthCols, saveSettings, type FlowMapSettings } from '../ui/settings';
+import { setAlertSoundPref } from '../ui/alertSound';
 import type { ChartThemeSync } from './useChartThemeBridge';
 import type { LiveFollow } from './useSessionFollow';
 
@@ -25,6 +26,7 @@ export function useSettingsApply(
 ): void {
   useEffect(() => {
     saveSettings(settings, safeLocalStorage());
+    setAlertSoundPref(settings.alertSound);
     applyUiStyle(settings.chartStyle); // the window chrome follows the chart style
     const r = rendererRef.current;
     if (r) {

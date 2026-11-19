@@ -559,7 +559,7 @@ export class HistoryLoader {
       this.bandInFlight = false;
       const p = this.pendingBand;
       this.pendingBand = null;
-      if (p !== null) void this.runBandRefetch(p.lo, p.hi, p.anchorT0);
+      if (p !== null && this.active(generation)) void this.runBandRefetch(p.lo, p.hi, p.anchorT0);
     }
   }
 
@@ -715,17 +715,10 @@ export class HistoryLoader {
   /**
    * Clear ALL scroll-back state (go-live / re-subscribe / context restore).
    *
-   * This is more than the in-flight/latch pair it used to clear: the (col_seq →
-   * t0_ns) cache, the oldest-known anchor and the server's oldest-available
-   * bound belong to the SESSION the loader was backfilling. A re-subscribe
-   * reuses this instance for a NEW session whose grid restarts at col_seq 0 —
-   * a surviving cache would (a) derive before_t from the OLD symbol's price
-   * frame (wrong t0s under the reused seq keys) and (b) false-latch
-   * start-of-history as soon as the new session's early t0s fall below the old
-   * server bound, killing scroll-back for the new symbol. Clearing costs a
-   * re-seed (the renderer notes every column it writes, so the next live column
-   * restores the mapping) and at worst one wasted probe round-trip after
-   * go-live.
+   * Drops in-flight/latch state, the (col_seq → t0_ns) cache, oldest-known anchors,
+   * server oldest-available bound, and seam dedupe history so a re-subscribe's new
+   * grid (restarting at col_seq 0) never inherits stale frame bounds or suppresses
+   * seams from the new session.
    */
   reset(): void {
     this.generation++;
@@ -734,6 +727,7 @@ export class HistoryLoader {
     this.inFlightBeforeT = null;
     this.startOfHistoryFlag = false;
     this.colT0.clear();
+    this.recentSeams.length = 0;
     this.oldestKnownSeq = -1;
     this.oldestKnownT0 = 0n;
     this.oldestAvailableT0 = 0n;

@@ -225,7 +225,10 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
         return;
       }
 
-      if (!tl || !r) return;
+      if (!tl || !r) {
+        setNotice(null);
+        return;
+      }
       const lo = Math.floor(tl.viewStartCol);
       const hi = Math.ceil(tl.viewEndCol);
       const pts = r.cvdSeries(lo, hi);
@@ -250,17 +253,31 @@ export function CvdPane({ rendererRef }: CvdPaneProps): JSX.Element {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Build the polyline in the shared x transform (already projected above).
-
-      // Filled area between the line and the zero baseline — a three-stop
-      // vertical fade (strongest at the line, already quiet by mid-pane, gone
-      // at the baseline) so the strip reads as an under-line wash instead of a
-      // flat muddy slab.
-      const yMin = xy.reduce((m, p) => Math.min(m, p.y), xy[0].y);
-      const grad = ctx.createLinearGradient(0, yMin, 0, zeroY);
-      grad.addColorStop(0, ink.fillTop);
-      grad.addColorStop(0.4, ink.fillMid);
-      grad.addColorStop(1, ink.fillBottom);
+      // Filled area between the line and the zero baseline — fades from the
+      // curve toward zero on BOTH positive and negative sides without needing
+      // separate clip passes.
+      let yMin = xy[0].y;
+      let yMax = xy[0].y;
+      for (const p of xy) {
+        if (p.y < yMin) yMin = p.y;
+        if (p.y > yMax) yMax = p.y;
+      }
+      let grad: CanvasGradient;
+      if (yMin < zeroY && yMax > zeroY) {
+        const z = (zeroY - yMin) / (yMax - yMin);
+        grad = ctx.createLinearGradient(0, yMin, 0, yMax);
+        grad.addColorStop(0, ink.fillTop);
+        grad.addColorStop(z * 0.4, ink.fillMid);
+        grad.addColorStop(z, ink.fillBottom);
+        grad.addColorStop(z + (1 - z) * 0.6, ink.fillMid);
+        grad.addColorStop(1, ink.fillTop);
+      } else {
+        const extY = yMax > zeroY ? yMax : yMin;
+        grad = ctx.createLinearGradient(0, extY, 0, zeroY);
+        grad.addColorStop(0, ink.fillTop);
+        grad.addColorStop(0.4, ink.fillMid);
+        grad.addColorStop(1, ink.fillBottom);
+      }
       ctx.beginPath();
       ctx.moveTo(xy[0].x, zeroY);
       for (const p of xy) ctx.lineTo(p.x, p.y);

@@ -38,6 +38,8 @@ export interface TimelineSync {
   geom: MinimapGeom;
   /** Scrubber thumb position, from 0 to SCRUB_STEPS. */
   scrub: number;
+  /** True while the user is actively dragging the replay scrubber. */
+  scrubbing: boolean;
   /** The camera follows the live edge. */
   following: boolean;
   /** Attached to the drawn-window element the view listener paints. */
@@ -141,6 +143,7 @@ export function useTimelineSync(
 ): TimelineSync {
   const [geom, setGeom] = useState<MinimapGeom>(EMPTY_GEOM);
   const [scrub, setScrub] = useState(0);
+  const [scrubbing, setScrubbing] = useState(false);
   // Camera follow state, from the SAME poll as the extent (a plain boolean getter).
   const [following, setFollowing] = useState(true);
   const geomRef = useRef<MinimapGeom>(EMPTY_GEOM);
@@ -157,6 +160,11 @@ export function useTimelineSync(
     const replay: ReplayPlayback | null = state.subscription?.mode === 'replay' ? state.replayPlayback : null;
     if (r) setFollowing((f) => (f === r.following ? f : r.following));
     if (!tl) {
+      if (replay && !draggingRef.current) {
+        const replayExtent = { startNs: replay.startNs, endNs: replay.endNs };
+        const nv = Math.round(fractionOfExtent(replay.positionNs, replayExtent) * SCRUB_STEPS);
+        setScrub((prev) => (prev === nv ? prev : nv));
+      }
       if (geomRef.current !== EMPTY_GEOM) {
         geomRef.current = EMPTY_GEOM;
         setGeom(EMPTY_GEOM);
@@ -178,8 +186,9 @@ export function useTimelineSync(
     // Advance the playhead: map the newest column to ns and drive the scrubber
     // from its fraction of the session extent — unless the user is scrubbing.
     // Also self-corrects a stale thumb across session/symbol switches.
-    if (extent && toNs && !draggingRef.current) {
-      const f = fractionOfExtent(replay?.positionNs ?? toNs(tl.newestSeq), extent);
+    const posNs = replay?.positionNs ?? toNs?.(tl.newestSeq);
+    if (extent && posNs !== undefined && !draggingRef.current) {
+      const f = fractionOfExtent(posNs, extent);
       const nv = Math.round(f * SCRUB_STEPS);
       setScrub((prev) => (prev === nv ? prev : nv));
     }
@@ -213,6 +222,7 @@ export function useTimelineSync(
   useEffect(() => {
     return () => {
       draggingRef.current = false;
+      setScrubbing(false);
       if (seekTimerRef.current !== null) {
         window.clearTimeout(seekTimerRef.current);
         seekTimerRef.current = null;
@@ -238,6 +248,7 @@ export function useTimelineSync(
     const v = Number(e.target.value);
     setScrub(v);
     draggingRef.current = true;
+    setScrubbing(true);
     pendingFracRef.current = v / SCRUB_STEPS;
     if (seekTimerRef.current === null) {
       seekTimerRef.current = window.setTimeout(() => {
@@ -252,6 +263,7 @@ export function useTimelineSync(
   const onScrubCommit = (): void => {
     if (!draggingRef.current) return;
     draggingRef.current = false;
+    setScrubbing(false);
     if (seekTimerRef.current !== null) {
       window.clearTimeout(seekTimerRef.current);
       seekTimerRef.current = null;
@@ -259,5 +271,5 @@ export function useTimelineSync(
     commitSeek(pendingFracRef.current);
   };
 
-  return { geom, scrub, following, windowRef, onScrub, onScrubCommit };
+  return { geom, scrub, scrubbing, following, windowRef, onScrub, onScrubCommit };
 }

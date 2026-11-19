@@ -45,12 +45,13 @@ export function fmtDeltaTime(ns: bigint, units: DeltaTimeUnits = EN_DELTA_TIME_U
   if (ms < 1) return `${ns}${units.ns}`;
   if (ms < 1_000) return `${Math.round(ms)}${units.ms}`;
   if (ms < 10_000) return `${formatFixed(ms / 1_000, 1)}${units.s}`;
-  if (ms < 60_000) return `${Math.round(ms / 1_000)}${units.s}`;
-  const totalMin = Math.floor(ms / 60_000);
-  const totalHr = Math.floor(ms / 3_600_000);
-  if (totalHr < 1) return `${totalMin}${units.m} ${Math.round((ms % 60_000) / 1_000)}${units.s}`;
+  if (ms < 59_500) return `${Math.round(ms / 1_000)}${units.s}`;
+  const totalSec = Math.round(ms / 1_000);
+  const totalMin = Math.floor(totalSec / 60);
+  const totalHr = Math.floor(totalMin / 60);
+  if (totalHr < 1) return `${totalMin}${units.m} ${totalSec % 60}${units.s}`;
   if (totalHr < 24) return `${totalHr}${units.h} ${totalMin % 60}${units.m}`;
-  const days = Math.floor(ms / 86_400_000);
+  const days = Math.floor(totalHr / 24);
   return `${days}${units.d} ${totalHr % 24}${units.h}`;
 }
 

@@ -314,6 +314,7 @@ export function attachAxisGestures(
   };
 
   let dragging = false;
+  let armed = false;
   let lastY = 0;
   let originY = 0;
   let pointerId = -1;
@@ -321,6 +322,7 @@ export function attachAxisGestures(
   const onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0) return;
     dragging = true;
+    armed = false;
     pointerId = e.pointerId;
     lastY = originY = e.clientY;
     el.setPointerCapture?.(pointerId);
@@ -328,18 +330,27 @@ export function attachAxisGestures(
 
   const onPointerMove = (e: PointerEvent): void => {
     if (!dragging || e.pointerId !== pointerId) return;
+    if (e.buttons === 0) {
+      endDrag(e);
+      return;
+    }
     // Deadzone is measured on the CUMULATIVE travel from pointerdown, so a
-    // click with 1px of tremor never scales (and never claims the axis).
-    if (Math.abs(e.clientY - originY) < DRAG_DEADZONE_PX) return;
+    // click with 1px of tremor never scales (and never claims the axis), while
+    // once armed every smooth 1-2px move scales smoothly.
+    if (!armed) {
+      if (Math.abs(e.clientY - originY) < DRAG_DEADZONE_PX) return;
+      armed = true;
+    }
     const dy = e.clientY - lastY;
     lastY = e.clientY;
     if (dy === 0) return;
-    ctrl.scalePriceCentered(scaleFactorFromDrag(dy));
+    ctrl.scalePriceCentered(scaleFactorFromDrag(dy, true));
   };
 
   const endDrag = (e: PointerEvent): void => {
     if (e.pointerId !== pointerId) return;
     dragging = false;
+    armed = false;
     el.releasePointerCapture?.(pointerId);
     pointerId = -1;
   };

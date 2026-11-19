@@ -32,7 +32,10 @@ export function useIntelDrawerFocus({
     const off = pushOverlay('intel');
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
-      if (isTopOverlay('intel')) onCloseRef.current();
+      if (isTopOverlay('intel')) {
+        e.preventDefault();
+        onCloseRef.current();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => {
@@ -53,7 +56,7 @@ export function useIntelDrawerFocus({
     const aside = drawerRef.current;
     if (!aside) return;
     const focusable = aside.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
     );
     if (focusable.length === 0) return;
     const first = focusable[0];
@@ -64,7 +67,7 @@ export function useIntelDrawerFocus({
         e.preventDefault();
         last.focus();
       }
-    } else if (active === last) {
+    } else if (active === last || !aside.contains(active)) {
       e.preventDefault();
       first.focus();
     }

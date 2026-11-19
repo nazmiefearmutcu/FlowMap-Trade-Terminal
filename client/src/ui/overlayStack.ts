@@ -41,6 +41,11 @@ export function isTopOverlay(id: string): boolean {
   return stack.length > 0 && stack[stack.length - 1] === id;
 }
 
+/** True while any modal/overlay surface is mounted on the stack. */
+export function hasOpenOverlay(): boolean {
+  return stack.length > 0;
+}
+
 /** Test seam: force-clear (a real app pops via effect cleanup, LIFO). */
 export function resetOverlays(): void {
   stack.length = 0;

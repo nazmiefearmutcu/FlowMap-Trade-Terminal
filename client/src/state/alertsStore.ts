@@ -360,6 +360,20 @@ export function removeAlert(id: string): boolean {
   return false;
 }
 
+/** Delete all triggered alerts for `key` in one persistence + notification step. */
+export function clearTriggeredAlerts(key: string): number {
+  const list = byKey.get(key);
+  if (!list || list.length === 0) return 0;
+  const remaining = list.filter((a) => !a.triggered);
+  const removed = list.length - remaining.length;
+  if (removed === 0) return 0;
+  if (remaining.length === 0) byKey.delete(key);
+  else byKey.set(key, remaining);
+  persistKey(key);
+  bump();
+  return removed;
+}
+
 /**
  * Snooze: mute the alert for {@link SNOOZE_MS}, after which it evaluates again.
  * This is the explicit user mute and does NOT touch the fired latch/re-arm band

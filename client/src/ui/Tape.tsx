@@ -491,7 +491,7 @@ function TapeHeader({
       {/* No aria-pressed: the name (Hold / Resume) already carries the state. */}
       <button
         type="button"
-        className="panel__lock tape__hold"
+        className={`panel__lock tape__hold${held ? ' is-on' : ''}`}
         onClick={onToggleHold}
         data-testid="tape-hold"
       >

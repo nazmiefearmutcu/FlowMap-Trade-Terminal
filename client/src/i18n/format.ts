@@ -260,7 +260,8 @@ const clockFormatters = new Map<string, Intl.DateTimeFormat>();
  * format the requested zone.
  */
 export function formatClock(ms: number, pref: TimeZonePref, exchangeZone = 'UTC', withMs = false): string {
-  if (!Number.isFinite(ms)) return '—';
+  const date = new Date(ms);
+  if (!Number.isFinite(ms) || Number.isNaN(date.getTime())) return '—';
   const zone = resolveTimeZone(pref, exchangeZone);
   let clock: string;
   try {
@@ -276,12 +277,12 @@ export function formatClock(ms: number, pref: TimeZonePref, exchangeZone = 'UTC'
       });
       clockFormatters.set(key, format);
     }
-    const parts = format.formatToParts(new Date(ms));
+    const parts = format.formatToParts(date);
     clock = ['hour', 'minute', 'second']
       .map((type) => parts.find((p) => p.type === type)?.value ?? '00')
       .join(':');
   } catch {
-    clock = new Date(ms).toISOString().substring(11, 19);
+    clock = date.toISOString().substring(11, 19);
   }
   if (!withMs) return clock;
   const frac = ((Math.trunc(ms) % 1000) + 1000) % 1000;
@@ -325,7 +326,7 @@ function wallFields(ms: number, zone: string | undefined): Record<'year' | 'mont
  * name, or `undefined` for the system zone (the `resolveTimeZone` result).
  */
 export function zonedWallText(ms: number, zone: string | undefined): string {
-  if (!Number.isFinite(ms)) return '';
+  if (!Number.isFinite(ms) || Number.isNaN(new Date(ms).getTime())) return '';
   const f = wallFields(ms, zone);
   const frac = ((Math.trunc(ms) % 1000) + 1000) % 1000;
   return `${pad(f.year, 4)}-${pad(f.month)}-${pad(f.day)}T${pad(f.hour)}:${pad(f.minute)}:${pad(f.second)}.${pad(frac, 3)}`;

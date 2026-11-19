@@ -16,6 +16,7 @@
   background: var(--chart-chip-bg);
   border: 1px solid var(--chart-chip-border);
   border-radius: var(--r-1);
+  box-shadow: var(--shadow-pop);
   pointer-events: none;
   user-select: none;
   white-space: nowrap;

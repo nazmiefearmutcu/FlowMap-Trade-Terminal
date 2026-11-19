@@ -57,8 +57,8 @@ export function zoomFactorFromWheel(deltaY: number, deltaMode: number): number {
  * factor above 1 — matching the direction the wheel gives for the same visual
  * result. Returns exactly 1 (a no-op) inside the deadzone.
  */
-export function scaleFactorFromDrag(dyCss: number): number {
-  if (Math.abs(dyCss) < DRAG_DEADZONE_PX) return 1;
+export function scaleFactorFromDrag(dyCss: number, armed = false): number {
+  if (!armed && Math.abs(dyCss) < DRAG_DEADZONE_PX) return 1;
   return Math.exp(dyCss * SCALE_RATE);
 }
 

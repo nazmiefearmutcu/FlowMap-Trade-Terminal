@@ -825,7 +825,7 @@ export const tr: Record<string, string> = {
   'keysheet.chord': 'yazarken bile her yerden sembol arama',
   'keysheet.export': 'grafiği PNG olarak indir',
   'keysheet.measure': 'ölçüm aracı — grafikte sürükleyerek Δfiyat / Δzaman / Δderinlik',
-  'keysheet.alert': 'crosshair fiyatına fiyat alarmı (liste: grafikteki zil düğmesi)',
+  'keysheet.alert': 'imleç fiyatına fiyat alarmı (liste: grafikteki zil düğmesi)',
   'keysheet.hud': 'performans HUD — fps / kare ms / yükleme / çizim / önbellek',
   'perfHud.aria': 'çizim performansı',
   'perfHud.frame': 'kare',

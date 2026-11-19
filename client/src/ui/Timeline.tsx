@@ -94,7 +94,7 @@ export function Timeline({ rendererRef }: TimelineProps): JSX.Element {
   const lastClose = useFlowMapStore((s) => s.lastClose);
   const playback = useFlowMapStore((s) => s.replayPlayback);
   const isReplay = mode === 'replay';
-  const { geom, scrub, following, windowRef, onScrub, onScrubCommit } = useTimelineSync(rendererRef, isReplay, seek);
+  const { geom, scrub, scrubbing, following, windowRef, onScrub, onScrubCommit } = useTimelineSync(rendererRef, isReplay, seek);
 
   // Read the speed at CLICK time, not from the render closure, so a fast
   // double-click steps 1→2→5 instead of emitting SetSpeed(2) twice.
@@ -113,7 +113,9 @@ export function Timeline({ rendererRef }: TimelineProps): JSX.Element {
   const waiting =
     display === 'connecting' || display === 'reconnecting' || display === 'refused';
   const durationNs = extent ? extent.endNs - extent.startNs : 0n;
-  const positionNs = extent ? (playback?.positionNs ?? seekTargetNs(scrub / SCRUB_STEPS, extent)) - extent.startNs : 0n;
+  const positionNs = extent
+    ? (scrubbing || !playback ? seekTargetNs(scrub / SCRUB_STEPS, extent) : playback.positionNs) - extent.startNs
+    : 0n;
   const playing = attached && isReplay && !paused && !playback?.ended;
   const phase = transportPhase(isReplay, paused, following);
   // `—` until an attached session has produced real geometry — never the dead

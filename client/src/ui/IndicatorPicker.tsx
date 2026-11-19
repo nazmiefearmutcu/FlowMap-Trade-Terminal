@@ -17,9 +17,9 @@
  * Pure DOM + the store; no canvas, no timer loops. Closed = renders null.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
-import { CANDLE_TIMEFRAMES, getSnapshot, setTimeframe } from '../candles/store';
+import { CANDLE_TIMEFRAMES, getSnapshot, setTimeframe, subscribe as subscribeCandles } from '../candles/store';
 import { useT } from '../i18n/useT';
 import { INDICATOR_DEFS, defById } from '../indicators/registry';
 import { indicatorName, outputLabel, paramLabel } from '../indicators/labels';
@@ -89,9 +89,10 @@ export function IndicatorPicker(): JSX.Element | null {
     return () => opener?.focus?.();
   }, [open]);
 
+  const tfNs = useSyncExternalStore(subscribeCandles, getSnapshot).timeframeNs;
+
   if (!open) return null;
 
-  const tfNs = getSnapshot().timeframeNs;
   const atCap = active.length >= MAX_ACTIVE_INDICATORS;
 
   return (

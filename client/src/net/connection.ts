@@ -517,25 +517,17 @@ export class Connection {
     }
   }
 
-  /**
-   * Drop everything scoped to the session we are leaving. The replacement's grid
-   * restarts at `epoch = 0` with a low `col_seq` and its attach snapshot arrives
-   * `final=true`, so a surviving dedup cursor would discard the new symbol's
-   * whole history and leave only the forming right edge on screen; surviving
-   * epoch params would let the new grid decode against the old symbol's price
-   * frame; and an in-flight history page would splice the OLD symbol's columns
-   * into the new symbol's ring.
-   */
+  /** Drop everything scoped to the session we are leaving so old dedup/epochs/waiters never leak into the replacement. */
   private resetSessionState(): void {
     this.lastColSeq.clear();
     this.epochMap.clear();
     this.depthSeams.reset();
     this.seenTrades.clear();
     this.sessionId = null;
-    this.lastStatusFeedState = null; // the refused stream's verdict dies with it
-    this.failHistoryWaiters(
-      new Error('flowmap: history request abandoned — subscription changed'),
-    );
+    this.handshaken = false;
+    this.lastStatusFeedState = null;
+    this.lastStatusReason = null;
+    this.failHistoryWaiters(new Error('flowmap: history request abandoned — subscription changed'));
   }
 
   /** Reject every pending history request (timer cleared) and drop the waiters. */
@@ -993,23 +985,31 @@ export class Connection {
 
   private sendSubscribe(): void {
     const next = this.desiredSub;
-    if (next === null) return;
-    if (this.activeSub !== null) {
-      if (sameSub(this.activeSub, next)) return; // already on this exact stream
-      this.rawSend(encodeUnsubscribe());
+    if (next === null || !this.isSendable()) return;
+    if (this.activeSub !== null && sameSub(this.activeSub, next)) return;
+    try {
+      if (this.activeSub !== null) this.rawSend(encodeUnsubscribe());
+      this.rawSend(
+        encodeSubscribe({
+          market: next.market,
+          symbol: next.symbol,
+          mode: next.mode,
+          source: null,
+          start_t: next.startNs,
+          band: next.band,
+          end_t: next.endNs,
+        }),
+      );
+    } catch (err) {
+      console.warn('[flowmap] failed to send subscribe', err);
+      this.dropStalledSocket();
+      return;
     }
-    this.rawSend(
-      encodeSubscribe({
-        market: next.market,
-        symbol: next.symbol,
-        mode: next.mode,
-        source: null,
-        start_t: next.startNs,
-        band: next.band,
-        end_t: next.endNs,
-      }),
-    );
     this.activeSub = next;
+    const now = this.now();
+    this.handshakeDeadlineMs = now + SUBSCRIBE_HANDSHAKE_TIMEOUT_MS;
+    this.handshakeCeilingMs = now + SUBSCRIBE_HANDSHAKE_MAX_MS;
+    this.startWatchdog();
   }
 
   // --- inbound frames ----------------------------------------------------------

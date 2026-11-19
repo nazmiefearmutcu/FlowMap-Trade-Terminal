@@ -74,7 +74,7 @@ function trapTabKey(root: HTMLElement | null, e: ReactKeyboardEvent): void {
       e.preventDefault();
       last.focus();
     }
-  } else if (active === last) {
+  } else if (active === last || !root.contains(active)) {
     e.preventDefault();
     first.focus();
   }
@@ -104,7 +104,10 @@ function useDialogFocus(onClose: () => void): RefObject<HTMLButtonElement> {
     // surface (the settings drawer defers to whoever pushed later).
     const off = pushOverlay('alerts');
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && isTopOverlay('alerts')) onCloseRef.current();
+      if (e.key === 'Escape' && !e.defaultPrevented && isTopOverlay('alerts')) {
+        e.preventDefault();
+        onCloseRef.current();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => {

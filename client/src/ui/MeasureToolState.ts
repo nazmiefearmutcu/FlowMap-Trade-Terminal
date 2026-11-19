@@ -307,7 +307,10 @@ export function usePointerMeasure(
   const { armed, dragRef, rafRef, setRect, setReadout, setNotice } = m;
 
   // A drag sample still queued for the next frame must not land after unmount.
-  useEffect(() => () => cancelAnimationFrame(rafRef.current), [rafRef]);
+  useEffect(() => () => {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+  }, [rafRef]);
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     if (!armed || e.button !== 0) return;
@@ -380,7 +383,8 @@ export function useMeasureGeometry(st: DragState | null): MeasureGeometry {
   const startPx = priceAtRow(st?.anchor.row ?? Number.NaN, params);
   const endPx = priceAtRow(st?.end.row ?? Number.NaN, params);
   const dPrice = startPx && endPx ? endPx.price - startPx.price : null;
-  const dtTime = dtNs !== null && st ? BigInt(Math.round(dCol * dtNs)) : null;
+  const dtSpan = dtNs !== null && st ? dCol * dtNs : Number.NaN;
+  const dtTime = Number.isFinite(dtSpan) ? BigInt(Math.round(dtSpan)) : null;
   const book = st ? getSnapshot().book : null;
   const depth =
     st && book !== null

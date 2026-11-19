@@ -121,7 +121,7 @@ export function stepBodyKey(step: OnboardStep, singleKeys: boolean): string {
 }
 
 const FOCUSABLE =
-  'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+  'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 /* ----------------------------------------------------------- component */
 
@@ -161,7 +161,8 @@ export function OnboardingCard(): JSX.Element | null {
     if (!isOpen) return;
     const off = pushOverlay('onboard');
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && isTopOverlay('onboard')) {
+      if (e.key === 'Escape' && !e.defaultPrevented && isTopOverlay('onboard')) {
+        e.preventDefault();
         closeOnboarding();
       }
     };
@@ -182,10 +183,12 @@ export function OnboardingCard(): JSX.Element | null {
       if (focusables.length === 0) return;
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
+      const active = document.activeElement;
+      const inside = panel.contains(active);
+      if (e.shiftKey && (active === first || !inside)) {
         e.preventDefault();
         last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
+      } else if (!e.shiftKey && (active === last || !inside)) {
         e.preventDefault();
         first.focus();
       }

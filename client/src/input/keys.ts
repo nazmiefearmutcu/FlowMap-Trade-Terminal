@@ -25,6 +25,7 @@
  */
 
 import { isSingleKeyShortcutsEnabled } from './shortcutPrefs';
+import { hasOpenOverlay } from '../ui/overlayStack';
 
 export type GlobalKeyAction =
   | { type: 'space' }
@@ -129,6 +130,17 @@ export function routeGlobalKey(
   return null;
 }
 
+const SPACE_EXEMPT_ROLES = new Set([
+  'button',
+  'switch',
+  'checkbox',
+  'tab',
+  'radio',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+]);
+
 /** Classify a DOM event target for {@link routeGlobalKey}. */
 export function classifyTarget(target: EventTarget | null): KeyTargetContext {
   const el = target as (HTMLElement & { isContentEditable?: boolean }) | null;
@@ -141,7 +153,8 @@ export function classifyTarget(target: EventTarget | null): KeyTargetContext {
     tag === 'TEXTAREA' ||
     tag === 'SELECT' ||
     el.isContentEditable === true;
-  const button = tag === 'BUTTON' || el.getAttribute?.('role') === 'button';
+  const role = el.getAttribute?.('role');
+  const button = tag === 'BUTTON' || tag === 'SUMMARY' || (role !== null && role !== undefined && SPACE_EXEMPT_ROLES.has(role));
   const dialog =
     typeof el.closest === 'function' && el.closest('[role="dialog"]') !== null;
   const canvas = tag === 'CANVAS';
@@ -189,12 +202,17 @@ export function attachGlobalKeys(
 ): () => void {
   const onKeyDown = (ev: Event): void => {
     const e = ev as KeyboardEvent;
-    const action = routeGlobalKey(e.key, classifyTarget(e.target), {
-      meta: e.metaKey,
-      ctrl: e.ctrlKey,
-      shift: e.shiftKey,
-      alt: e.altKey,
-    });
+    const ctx = classifyTarget(e.target);
+    const action = routeGlobalKey(
+      e.key,
+      hasOpenOverlay() ? { ...ctx, dialog: true } : ctx,
+      {
+        meta: e.metaKey,
+        ctrl: e.ctrlKey,
+        shift: e.shiftKey,
+        alt: e.altKey,
+      },
+    );
     if (!action) return;
     e.preventDefault();
     // A held key fires OS auto-repeat keydowns. Every global action here is a

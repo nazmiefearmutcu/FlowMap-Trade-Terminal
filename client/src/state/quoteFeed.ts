@@ -34,7 +34,7 @@
  * testable with fake timers and an injected visibility source.
  */
 
-import { apiBase, withSessionHeader } from '../net/serverBase';
+import { apiBase, sidecarFetch } from '../net/serverBase';
 
 /** The `/api/quote` response subset consumers see (camelCase, server-verbatim). */
 export interface Quote {
@@ -82,7 +82,7 @@ interface Group {
   cb: (key: string, quote: Quote) => void;
   intervalMs: number;
   vis: VisibilitySource;
-  fetchImpl: typeof fetch;
+  fetchImpl: typeof fetch | null;
   timer: ReturnType<typeof setInterval> | null;
   visOff: () => void;
 }
@@ -107,8 +107,13 @@ function documentVisibility(): VisibilitySource {
   };
 }
 
-function boundFetch(): typeof fetch {
-  return (input, init) => globalThis.fetch(input, withSessionHeader(init));
+function isQuotePayload(value: unknown): value is Quote {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.symbol === 'string' &&
+    (v.price === null || (typeof v.price === 'number' && Number.isFinite(v.price)))
+  );
 }
 
 /**
@@ -212,16 +217,22 @@ async function fetchQuote(
   }, QUOTE_TIMEOUT_MS);
   try {
     const path = `/api/quote?market=${encodeURIComponent(parsed.market)}&symbol=${encodeURIComponent(parsed.symbol)}`;
-    const r = await untilAborted(
-      g.fetchImpl(`${apiBase()}${path}`, { signal: ctrl.signal }),
-      ctrl.signal,
-    );
+    const req =
+      g.fetchImpl !== null
+        ? g.fetchImpl(`${apiBase()}${path}`, { signal: ctrl.signal })
+        : sidecarFetch(path, { signal: ctrl.signal });
+    const r = await untilAborted(req, ctrl.signal);
+    if (ctrl.signal.aborted && !timedOut) return;
     if (!r.ok) {
       fanOut(key, unreachableQuote(key, parsed));
       return;
     }
-    const quote = await untilAborted(r.json() as Promise<Quote>, ctrl.signal);
+    const quote: unknown = await untilAborted(r.json(), ctrl.signal);
     if (ctrl.signal.aborted) return;
+    if (!isQuotePayload(quote)) {
+      fanOut(key, unreachableQuote(key, parsed));
+      return;
+    }
     lastGood.set(key, quote);
     fanOut(key, quote);
   } catch {
@@ -264,7 +275,7 @@ export function subscribeQuotes(
     cb,
     intervalMs,
     vis: opts.visibility ?? documentVisibility(),
-    fetchImpl: opts.fetchImpl ?? boundFetch(),
+    fetchImpl: opts.fetchImpl ?? null,
     timer: null,
     visOff: () => {},
   };

@@ -62,6 +62,7 @@ export function transportHandlers(get: StoreGet, set: StoreSet): Partial<Connect
         // is over, and its close info is stale.
         reconnectAttempts: 0,
         lastClose: null,
+        refusal: null,
         // NOTE `replayUnavailable` is deliberately NOT cleared here. The
         // live fallback triggered by the refusal lands its own handshake
         // moments later — clearing on Hello would erase the refusal the
@@ -106,7 +107,8 @@ export function transportHandlers(get: StoreGet, set: StoreSet): Partial<Connect
     },
     onStatus: (status) => {
       registerMarketZone(get().subscription?.market, status.capability);
-      const playback = playbackFromCapability(status.capability);
+      const hasPlayback = Object.prototype.hasOwnProperty.call(status.capability, 'playback');
+      const playback = hasPlayback ? playbackFromCapability(status.capability) : get().replayPlayback;
       set({
         // The server sends feed_state 'reconnecting' only as a pre-Hello progress
         // Status while a subscribe prepares, never for a real reconnect (that is the
@@ -121,8 +123,8 @@ export function transportHandlers(get: StoreGet, set: StoreSet): Partial<Connect
         overviewDegraded: overviewDegraded(status.capability),
         latencyMs: status.latency_ms,
         clockSkewMs: status.clock_skew_ms,
-        replayPlayback: playback,
-        ...(playback ? { speed: playback.speed, paused: playback.paused } : {}),
+        ...(hasPlayback ? { replayPlayback: playback } : {}),
+        ...(hasPlayback && playback ? { speed: playback.speed, paused: playback.paused } : {}),
       });
     },
     onConnStatus: (status) => set({ status }),

@@ -70,6 +70,7 @@ export function SettingsDrawer({ settings, onChange, onClose, onOpenAbout }: Set
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       if (isTopOverlay('settings')) {
+        e.preventDefault();
         onClose();
       }
     };
@@ -94,7 +95,7 @@ export function SettingsDrawer({ settings, onChange, onClose, onOpenAbout }: Set
     const aside = asideRef.current;
     if (!aside) return;
     const focusable = aside.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
     );
     if (focusable.length === 0) return;
     const first = focusable[0];
@@ -105,7 +106,7 @@ export function SettingsDrawer({ settings, onChange, onClose, onOpenAbout }: Set
         e.preventDefault();
         last.focus();
       }
-    } else if (active === last) {
+    } else if (active === last || !aside.contains(active)) {
       e.preventDefault();
       first.focus();
     }

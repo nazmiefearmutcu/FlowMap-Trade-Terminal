@@ -204,16 +204,18 @@ export function MinimapLabel({
           {waitText}
         </span>
       )}
-      {live && (
-        // In live mode the readout is the loaded session's SPAN, not elapsed time.
-        <span className="minimap__readout-k" style={{ opacity: 0.6 }}>{t('transport.span')}</span>
-      )}
-      <span
-        className="minimap__readout"
-        data-testid="time-readout"
-        style={{ fontVariantNumeric: 'tabular-nums' }}
-      >
-        {readout}
+      <span className="minimap__readout-group">
+        {live && (
+          // In live mode the readout is the loaded session's SPAN, not elapsed time.
+          <span className="minimap__readout-k">{t('transport.span')}</span>
+        )}
+        <span
+          className="minimap__readout"
+          data-testid="time-readout"
+          style={{ fontVariantNumeric: 'tabular-nums' }}
+        >
+          {readout}
+        </span>
       </span>
     </div>
   );

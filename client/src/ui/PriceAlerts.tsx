@@ -33,6 +33,7 @@ import { priceToRow as scalePriceToRow, scaleFromEpoch } from '../gl/priceScale'
 import {
   addAlert,
   alertsFor,
+  clearTriggeredAlerts,
   evaluateAlerts,
   getAlertsSnapshot,
   rearmAlert,
@@ -408,11 +409,7 @@ export function PriceAlerts({ rendererRef, soundEnabled, containerRef }: PriceAl
           onDelete={(id) => void removeAlert(id)}
           onSnooze={(id) => void snoozeAlert(id)}
           onRearm={(id) => void rearmAlert(id)}
-          onClearFired={() => {
-            for (const a of alerts) {
-              if (a.triggered) removeAlert(a.id);
-            }
-          }}
+          onClearFired={() => void clearTriggeredAlerts(key)}
         />
       )}
     </>

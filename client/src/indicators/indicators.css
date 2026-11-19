@@ -66,6 +66,9 @@
 :root:has(.drawer-scrim) .indi-picker {
   z-index: 52;
 }
+:root:has(.intel-drawer) .indi-picker {
+  z-index: 22;
+}
 
 .indi-picker__head {
   display: flex;
@@ -223,8 +226,8 @@
   padding: 2px 4px;
 }
 .indi-param input:focus-visible {
-  outline: 1px solid var(--chart-accent);
-  outline-offset: 0;
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .indi-color {

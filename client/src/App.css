@@ -49,9 +49,9 @@ body,
      it can. `min-height` keeps the one-row bar at its designed height. */
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px var(--sp-4);
+  gap: 4px var(--sp-3);
   min-height: var(--topbar-h);
-  padding: 4px var(--sp-4);
+  padding: 4px var(--sp-3);
   /* Bezel wash: a theme-relative top stop. A fixed near-black stop smeared
      across every light shell, so the top stop mixes --line into --bg-1:
      midnight keeps its shipped stop (within one channel value) and light
@@ -1430,6 +1430,20 @@ body,
   position: relative;
   color: var(--text-3);
   font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.tape__side {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+}
+.tape__row--buy .tape__side {
+  color: var(--accent);
+}
+.tape__row--sell .tape__side {
+  color: var(--sell);
 }
 
 .tape__row--buy .tape__px,
@@ -1513,9 +1527,10 @@ body,
   align-items: center;
   gap: var(--sp-3);
   flex: 0 0 auto;
-  /* Reserve the GO LIVE slot so its mount/unmount cannot resize .minimap
-     (which is flex: 1 1 auto) and rescale the scrubber under the cursor. */
   min-width: 132px;
+}
+.transport:empty {
+  display: none;
 }
 
 .transport__play {
@@ -1616,12 +1631,31 @@ body,
 
 .minimap__label {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: var(--sp-3);
   font-size: var(--fs-2xs);
   letter-spacing: 0.06em;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
+}
+
+.minimap__readout-group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.minimap__readout-k {
+  color: var(--text-3);
+  text-transform: lowercase;
+}
+
+.minimap__readout {
+  color: var(--text-2);
 }
 
 .minimap__track {
@@ -1983,6 +2017,12 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
   cursor: pointer;
   font-size: var(--fs-sm);
   color: var(--text);
@@ -2502,9 +2542,10 @@ body,
   font-size: var(--fs-xs);
   letter-spacing: 0.03em;
   color: var(--warn);
-  background: var(--scrim);
+  background: color-mix(in srgb, var(--bg-1) 92%, transparent);
   border: 1px solid var(--warn-line);
   border-radius: 999px;
+  box-shadow: var(--shadow-pop);
   pointer-events: none;
   animation: reconnect-drop 0.16s ease-out;
 }
@@ -2556,7 +2597,7 @@ body,
   border-color: color-mix(in srgb, var(--warn) 55%, transparent);
 }
 .reconnect-banner__retry:focus-visible {
-  outline: 1px solid var(--warn);
+  outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
 /* Terminal states (protocol mismatch, refused subscription): no retry, so the
@@ -2730,7 +2771,7 @@ body,
     --scrim: rgba(42, 30, 10, 0.4);
     --line: #AD8952;
     --line-2: #584124;
-    --line-soft: #AD8952;
+    --line-soft: color-mix(in srgb, var(--line) 42%, transparent);
     --text: #352818;
     --text-2: #47351E;
     --text-3: #584124;
@@ -2738,16 +2779,16 @@ body,
     --text-money: #352818;
     --accent: #176149;
     --accent-bright: #176149;
-    --accent-dim: #EEDBAD;
-    --accent-line: #AD8952;
-    --accent-glow: transparent;
+    --accent-dim: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
+    --accent-line: color-mix(in srgb, var(--accent) 52%, var(--line));
+    --accent-glow: color-mix(in srgb, var(--accent) 34%, transparent);
     --sell: #982F32;
     --sell-bright: #982F32;
-    --sell-dim: #EEDBAD;
-    --sell-line: #AD8952;
+    --sell-dim: color-mix(in srgb, var(--sell) 10%, var(--bg-2));
+    --sell-line: color-mix(in srgb, var(--sell) 52%, var(--line));
     --warn: #765012;
-    --warn-dim: #EEDBAD;
-    --warn-line: #AD8952;
+    --warn-dim: color-mix(in srgb, var(--warn) 10%, var(--bg-2));
+    --warn-line: color-mix(in srgb, var(--warn) 52%, var(--line));
     --replay: var(--warn);
     --live: var(--accent);
     --chart-bg: #FFF4DC;
@@ -2812,6 +2853,13 @@ body,
   .onboard__scrim,
   .keyshelp,
   .keyshelp__backdrop,
+  .about,
+  .about__backdrop,
+  .replay-picker,
+  .replay-picker__backdrop,
+  .option-chain,
+  .option-chain__backdrop,
+  .app-notices,
   .toasts,
   .reconnect-banner {
     display: none !important;
@@ -2843,7 +2891,14 @@ body,
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
-  border-radius: var(--r-1);
+}
+
+.tbtn:disabled,
+.panel__lock:disabled,
+.transport__play:disabled,
+.speed-cycle:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* --- scrollbars: thin, theme-tinted, quiet until hovered --- */
@@ -2870,15 +2925,9 @@ body,
 }
 
 /* --- tape: new prints settle in from above (React keys by trade id, so only
-   genuinely NEW rows mount and animate; scrolled rows never re-run it) --- */
+   genuinely NEW rows mount and animate; scrolled rows never re-run it).
+   DOM ladder rows stay stationary on mid-price shifts to avoid jitter. --- */
 .tape__row {
-  animation: fm-row-in var(--t-fast) both;
-}
-
-/* --- DOM ladder: entering price levels fade up; a CHANGED size span (keyed by
-   value in DomLadder) re-mounts and shimmer-fades to its new figure, so the
-   book reads as a flowing surface instead of snapping numbers --- */
-.ladder__row {
   animation: fm-row-in var(--t-fast) both;
 }
 
@@ -2929,7 +2978,11 @@ body,
   .sympal__vrow.is-active,
   .sympal__venuebtn.is-on,
   .watchlist__row.is-active,
-  .talent-badge.is-active {
+  .talent-badge.is-active,
+  .desk-toolbar button[aria-pressed='true'],
+  .desk-window button[aria-pressed='true'],
+  .market-strip__windows button[aria-pressed='true'],
+  .replay-picker button[aria-pressed='true'] {
     outline: 2px solid Highlight;
     outline-offset: -2px;
   }

@@ -167,6 +167,7 @@ export function listenSidecarStatus(onStatus: (status: SidecarStatus) => void): 
   let eventId: number | null = null;
   let disposed = false;
   const handler = i.transformCallback((event: unknown) => {
+    if (disposed) return;
     const status = parseSidecarStatus((event as { payload?: unknown } | null)?.payload);
     if (status !== null) onStatus(status);
   });

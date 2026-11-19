@@ -20,12 +20,20 @@
 import { safeLocalStorage } from '../state/safeStorage';
 import { loadSettings } from './settings';
 
+let prefOverride: boolean | null = null;
+
+/** Sync the active in-memory `alertSound` preference (works even when localStorage is blocked). */
+export function setAlertSoundPref(enabled: boolean): void {
+  prefOverride = enabled;
+}
+
 /**
  * The persisted `alertSound` setting, read at fire time so a Settings toggle
  * takes effect without re-mounting anything. Absent or blocked storage reads as
  * ON (the default); the settings module itself never throws.
  */
 export function alertSoundEnabled(): boolean {
+  if (prefOverride !== null) return prefOverride;
   try {
     return loadSettings(safeLocalStorage()).alertSound;
   } catch {
@@ -60,7 +68,8 @@ function audioCtor(): AudioContextCtor | null {
 }
 
 function context(): AudioContext | null {
-  if (ctx !== null) return ctx;
+  if (ctx !== null && ctx.state !== 'closed') return ctx;
+  ctx = null;
   const Ctor = audioCtor();
   if (Ctor === null) return null;
   try {
@@ -127,8 +136,12 @@ export function playAlertSound(now = Date.now()): boolean {
     armGestureResume();
     return false;
   }
+  try {
+    for (const [freq, offset, dur] of TONES) scheduleTone(audio, freq, offset, dur);
+  } catch {
+    return false;
+  }
   lastBeepAt = now;
-  for (const [freq, offset, dur] of TONES) scheduleTone(audio, freq, offset, dur);
   return true;
 }
 
@@ -137,4 +150,5 @@ export function resetAlertSoundForTest(): void {
   ctx = null;
   lastBeepAt = Number.NEGATIVE_INFINITY;
   gestureArmed = false;
+  prefOverride = null;
 }

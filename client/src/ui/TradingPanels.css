@@ -1,8 +1,9 @@
 .tape__controls {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px 8px;
   padding: 5px 8px;
   border-bottom: 1px solid var(--line);
   color: var(--text-3);
@@ -21,16 +22,26 @@
   font: inherit;
 }
 .tape__controls input { width: 68px; }
-.tape__count { margin-left: auto; white-space: nowrap; font-family: var(--font-mono); }
-.tape__hold { margin-left: auto; }
-.tape__hold[aria-pressed="true"] { color: var(--warn); }
+.tape__count { margin-left: auto; white-space: nowrap; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.tape__hold { margin-left: auto; white-space: nowrap; flex-shrink: 0; }
+.tape__hold.is-on,
+.tape__hold[aria-pressed="true"] {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-dim);
+}
 .dom-ladder .panel__header, .tape .panel__header {
-  gap: 6px;
+  gap: 4px 6px;
   flex-wrap: wrap;
-  min-height: 26px;
+  min-height: 28px;
   height: auto;
   padding-top: 4px;
   padding-bottom: 4px;
+}
+.dom-ladder .panel__lock,
+.dom-ladder .ladder__center {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .dom-ladder .ladder__center { margin-left: 0; }
 .ladder__summary {
@@ -53,6 +64,5 @@
 .watchlist__row[data-source="live-mid"] .watchlist__source,
 .watchlist__row[data-source="live-last"] .watchlist__source { color: var(--accent-bright); }
 @media (max-width: 800px) {
-  .tape__controls { flex-wrap: wrap; }
   .ladder__browse { display: none; }
 }

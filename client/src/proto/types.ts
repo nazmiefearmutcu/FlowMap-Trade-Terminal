@@ -99,7 +99,7 @@ export function playbackFromCapability(capability: Record<string, unknown>): Rep
       typeof p.generation !== 'number' || !Number.isInteger(p.generation) || p.generation < 0) return null;
   try {
     const startNs = BigInt(p.start_ns), endNs = BigInt(p.end_ns), positionNs = BigInt(p.position_ns);
-    if (endNs <= startNs || positionNs < startNs || positionNs >= endNs) return null;
+    if (endNs <= startNs || positionNs < startNs || (p.ended ? positionNs > endNs : positionNs >= endNs)) return null;
     return { startNs, endNs, positionNs, columns: p.columns, paused: p.paused,
       speed: p.speed, ended: p.ended, generation: p.generation };
   } catch { return null; }

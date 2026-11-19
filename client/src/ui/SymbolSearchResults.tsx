@@ -163,25 +163,39 @@ export function SymbolSearchResults(props: SymbolSearchResultsProps): JSX.Elemen
     listRef, pickingVenue, venuesLoaded, venueRows, venueTotal, rows, recentCount,
     scope, scopeState, scopeRowCount, query, active, onHover, onChooseVenue, onCommit, onRetry,
   } = props;
+  const hasListOptions =
+    pickingVenue || (scopeState !== 'loading' && scopeState !== 'failed' && rows.length > 0);
   return (
-    <div
-      className="sympal__list"
-      ref={listRef}
-      id="sympal-listbox"
-      role="listbox"
-      aria-label={pickingVenue ? t('search.venuesAria') : t('search.symbolsAria')}
-    >
-      {pickingVenue ? (
-        <VenueListing
-          venueRows={venueRows}
-          venueTotal={venueTotal}
-          venuesLoaded={venuesLoaded}
-          query={query}
-          active={active}
-          onHover={onHover}
-          onChooseVenue={onChooseVenue}
-        />
-      ) : scopeState === 'loading' ? (
+    <div className="sympal__list" ref={listRef}>
+      <div
+        id="sympal-listbox"
+        role="listbox"
+        aria-label={pickingVenue ? t('search.venuesAria') : t('search.symbolsAria')}
+      >
+        {pickingVenue ? (
+          <VenueListing
+            venueRows={venueRows}
+            venueTotal={venueTotal}
+            venuesLoaded={venuesLoaded}
+            query={query}
+            active={active}
+            onHover={onHover}
+            onChooseVenue={onChooseVenue}
+          />
+        ) : hasListOptions ? (
+          <SymbolRows
+            rows={rows}
+            recentCount={recentCount}
+            scope={scope}
+            scopeRowCount={scopeRowCount}
+            query={query}
+            active={active}
+            onHover={onHover}
+            onCommit={onCommit}
+          />
+        ) : null}
+      </div>
+      {!pickingVenue && scopeState === 'loading' ? (
         // The opt-in slow path: a venue's FIRST listing is a live REST round trip.
         // Say which venue and that seconds are expected. An unexplained empty list
         // would read as "no symbols".
@@ -189,7 +203,7 @@ export function SymbolSearchResults(props: SymbolSearchResultsProps): JSX.Elemen
           <span className="sympal__loadbar" aria-hidden="true" />
           {t('search.listingScope', { scope })}
         </div>
-      ) : scopeState === 'failed' ? (
+      ) : !pickingVenue && scopeState === 'failed' ? (
         // A FAILED listing is not the same claim as "this venue has no symbols": we
         // never got an answer, so we assert nothing about the venue and cache nothing.
         <div className="sympal__failed" data-testid="venue-failed" role="status" aria-live="polite">
@@ -199,7 +213,7 @@ export function SymbolSearchResults(props: SymbolSearchResultsProps): JSX.Elemen
             {t('search.retry')}
           </button>
         </div>
-      ) : rows.length === 0 ? (
+      ) : !pickingVenue && rows.length === 0 ? (
         <div className="sympal__empty">
           {scope !== ALL_VENUES
             ? scopeState === 'empty'
@@ -213,18 +227,7 @@ export function SymbolSearchResults(props: SymbolSearchResultsProps): JSX.Elemen
             </button>
           )}
         </div>
-      ) : (
-        <SymbolRows
-          rows={rows}
-          recentCount={recentCount}
-          scope={scope}
-          scopeRowCount={scopeRowCount}
-          query={query}
-          active={active}
-          onHover={onHover}
-          onCommit={onCommit}
-        />
-      )}
+      ) : null}
     </div>
   );
 }

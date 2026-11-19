@@ -5,7 +5,11 @@ import { useCallback, useRef, useState } from 'react';
 // shell has always had is pinned here. The hooks and components below no longer
 // import these files in that sequence, so the order would otherwise drift.
 import './ui/ChartLegend.css';
+import './watchlist/watchlist.css';
 import './ui/TradingPanels.css';
+import './ui/DomLadder.css';
+import './ui/OrderFlowPanel.css';
+import './ui/Tape.css';
 import './ui/Crosshair.css';
 import './theme/shell.css';
 import './drawings/drawings.css';
@@ -18,10 +22,9 @@ import './ui/AppNotices.css';
 import './app/AppShell.css';
 import './ui/About.css';
 import './ui/ChartStartupGate.css';
-import './ui/Tape.css';
 import './ui/ReplayPicker.css';
+import './ui/OptionChain.css';
 import './ui/TopBar.css';
-import './watchlist/watchlist.css';
 
 import type { Renderer } from './gl/renderer';
 import { useT } from './i18n/useT';
@@ -222,7 +225,7 @@ export function App() {
       />
       <MarketStrip rendererRef={rendererRef} />
       <DeskToolbar rendererRef={rendererRef} settings={settings} layout={desk.layout} onLayout={selectDesk}
-        onChange={applyPatch} onTrack={onTrackPrice} onFit={() => {
+        onChange={applyPatch} onToggleFollow={onToggleFollowKey} onTrack={onTrackPrice} onFit={() => {
           rendererRef.current?.setTimeWindowMs(null);
           rendererRef.current?.setPriceFollow('fit');
           if (useFlowMapStore.getState().subscription?.mode !== 'replay') setSettings(prev => ({ ...prev, followPrice: true }));

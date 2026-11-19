@@ -19,16 +19,21 @@ export interface MeasureRect {
 export function boxStyle(containerRef: RefObject<HTMLElement | null>, rect: MeasureRect): CSSProperties {
   const w = containerRef.current?.clientWidth ?? 0;
   const h = containerRef.current?.clientHeight ?? 0;
+  const left = Math.min(rect.anchor.x, rect.end.x);
   const right = Math.max(rect.anchor.x, rect.end.x);
+  const top = Math.min(rect.anchor.y, rect.end.y);
   const bottom = Math.max(rect.anchor.y, rect.end.y);
-  const flipX = right > w - 170;
-  const flipY = bottom > h - 96;
-  return flipX || flipY
-    ? {
-        right: flipX ? `${w - Math.min(rect.anchor.x, rect.end.x) + 10}px` : undefined,
-        bottom: flipY ? `${h - Math.min(rect.anchor.y, rect.end.y) + 10}px` : undefined,
-      }
-    : { left: `${right + 10}px`, top: `${bottom + 10}px` };
+  const flipX = w > 0 && right > w - 170;
+  const flipY = h > 0 && bottom > h - 96;
+  const clamp = (v: number, hi: number): number => Math.max(6, hi > 6 ? Math.min(hi, v) : v);
+  return {
+    ...(flipX
+      ? { right: `${clamp(w - left + 10, w - 170)}px` }
+      : { left: `${clamp(right + 10, w - 170)}px` }),
+    ...(flipY
+      ? { bottom: `${clamp(h - top + 10, h - 96)}px` }
+      : { top: `${clamp(bottom + 10, h - 96)}px` }),
+  };
 }
 
 type ReadoutFields = Pick<MeasureGeometry, 'deltaPriceText' | 'deltaTimeText' | 'depth' | 'isSynth' | 'startPx' | 'endPx'>;

@@ -37,7 +37,7 @@
 
 .intel-drawer__tabs {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   background: var(--bg-inset);
   border-bottom: 1px solid var(--line);
 }
@@ -47,16 +47,17 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  text-align: center;
   padding: 8px 4px;
   background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-bottom: 3px solid transparent;
   color: var(--text-2);
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
 
 .intel-tab:hover {
@@ -67,20 +68,22 @@
 .intel-tab.is-active {
   color: var(--focus);
   border-bottom-color: var(--focus);
-  background: var(--bg-2);
+  background: color-mix(in srgb, var(--focus) 12%, var(--bg-2));
 }
 
 /* Opaque ink, not opacity: a faded hint fell below AA on the light grounds. */
 .intel-tab__hint {
   font-size: var(--fs-2xs);
   color: var(--text-3);
-  margin-top: 1px;
+  margin-top: 2px;
 }
 
 .intel-drawer__context-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 6px 10px;
   padding: 6px var(--sp-4, 16px);
   background: var(--bg-inset);
   border-bottom: 1px solid var(--line);
@@ -244,7 +247,7 @@
 
 .vocal-metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   background: var(--bg-inset);
   padding: 8px;
@@ -547,8 +550,10 @@
 
 .intel-drawer__macro-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 6px 12px;
   padding: 8px var(--sp-4, 16px);
   background: var(--bg-inset);
   border-top: 1px solid var(--line);
@@ -596,6 +601,12 @@
 .macro-regime-badge.is-severe {
   background: color-mix(in srgb, var(--sell) 8%, var(--bg-inset));
   color: var(--sell);
+}
+.macro-regime-badge.is-unavailable,
+.macro-ticker__badge.is-unavailable {
+  background: var(--bg-2);
+  color: var(--text-3);
+  border: 1px solid var(--line-soft);
 }
 
 .intel-empty {

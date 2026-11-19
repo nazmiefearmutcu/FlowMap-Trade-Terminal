@@ -32,9 +32,14 @@ import { subscribeQuotes } from './quoteFeed';
 import { useFlowMapStore } from './store';
 import { alertSoundEnabled, playAlertSound } from '../ui/alertSound';
 
-/** The active subscription's `market:symbol` key, or null before the first Hello. */
-function activeKeyNow(sub: { market: string; symbol: string } | null): string | null {
-  return sub === null ? null : `${sub.market}:${sub.symbol}`;
+/**
+ * The active LIVE subscription's `market:symbol` key, or null before the first
+ * Hello or while replaying (PriceAlerts skips evaluation during replay, so the
+ * REST quote monitor covers the replayed symbol's live alerts).
+ */
+function activeKeyNow(sub: { market: string; symbol: string; mode?: string } | null): string | null {
+  if (sub === null || sub.mode === 'replay') return null;
+  return `${sub.market}:${sub.symbol}`;
 }
 
 /** Every key with at least one alert except `activeKey`, sorted (stable join). */

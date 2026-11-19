@@ -207,7 +207,7 @@ export class OverviewHistory {
       // Only the newest pump owns the flag: a superseded pump finishing late must
       // not report "idle" while the replacement is still on the wire.
       if (token === this.pumpToken) this.loading = false;
-      this.deps.changed();
+      if (!this.disposed) this.deps.changed();
     }
   }
 

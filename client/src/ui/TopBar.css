@@ -7,11 +7,21 @@
 
 .topbar__sim {
   color: var(--warn);
-  border: 1px solid var(--warn);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-dim);
   border-radius: var(--r-1);
   padding: 0 6px;
   font: 600 var(--fs-2xs) / 16px var(--font-mono);
   letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.topbar__eurex {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

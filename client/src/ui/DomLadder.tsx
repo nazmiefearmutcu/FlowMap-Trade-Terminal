@@ -264,11 +264,15 @@ export function buildLadder(
   const nrows = params.rows;
   const { bestBidRow, bestAskRow, midRow, spread } = deriveQuotes(snap, params, shape);
 
-  const center = centerOverride ?? midRow ?? (nrows - 1) / 2;
+  const center =
+    (centerOverride !== null && Number.isFinite(centerOverride) ? centerOverride : null) ??
+    (midRow !== null && Number.isFinite(midRow) ? midRow : null) ??
+    (nrows - 1) / 2;
   const centerInt = Math.round(center);
   // Quote/tape precision remains the venue precision, even in grouped depth.
   const decimals = priceDecimals(params.tick);
-  const half = Math.floor(Math.max(1, visRows) / 2);
+  const clampedVis = Math.max(1, Math.min(Math.max(1, nrows), Math.floor(visRows)));
+  const half = Math.floor(clampedVis / 2);
 
   const out: LadderRowVM[] = [];
   let maxSz = DENSITY_EPS;
@@ -332,7 +336,14 @@ export function DomLadder(): JSX.Element {
   const status = useFlowMapStore((s) => s.status);
   const feedState = useFlowMapStore((s) => s.feedState);
   const mode = useFlowMapStore((s) => s.subscription?.mode ?? 'live');
-  const snap = useBookSnapshot();
+  const rawSnap = useBookSnapshot();
+  const snap = useMemo(
+    () =>
+      rawSnap.sessionKey != null && sessionKey != null && rawSnap.sessionKey !== sessionKey
+        ? { ...rawSnap, book: null, bbo: null }
+        : rawSnap,
+    [rawSnap, sessionKey],
+  );
   const [collapsed, setCollapsed] = useState(false);
   const [locked, setLocked] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);

@@ -9,8 +9,8 @@ import { DEPTH_CHANNELS, type FlowMapSettings } from './settings';
 
 interface Props { rendererRef: RefObject<Renderer | null>; settings: FlowMapSettings; layout: DeskLayout;
   onLayout: (layout: DeskLayout) => void; onChange: (patch: Partial<FlowMapSettings>) => void;
-  onTrack: () => void; onFit: () => void }
-export function DeskToolbar({ rendererRef, settings, layout, onLayout, onChange, onTrack, onFit }: Props): JSX.Element {
+  onToggleFollow?: () => void; onTrack: () => void; onFit: () => void }
+export function DeskToolbar({ rendererRef, settings, layout, onLayout, onChange, onToggleFollow, onTrack, onFit }: Props): JSX.Element {
   const t = useT();
   const [following, setFollowing] = useState(true);
   const [tracking, setTracking] = useState(true);
@@ -46,7 +46,7 @@ export function DeskToolbar({ rendererRef, settings, layout, onLayout, onChange,
         data-testid={`desk-layer-${k}`}>{t(name)}</button>)}
     </div>
     <div className="desk-toolbar__group desk-toolbar__navigation">
-      <button type="button" aria-pressed={following} onClick={() => onChange({ follow: !following })} data-testid="desk-follow">{t('desk.follow')}</button>
+      <button type="button" aria-pressed={following} onClick={() => (onToggleFollow ? onToggleFollow() : onChange({ follow: !following }))} data-testid="desk-follow">{t('desk.follow')}</button>
       <button type="button" aria-pressed={tracking} onClick={() => tracking ? onChange({ followPrice: false }) : onTrack()} data-testid="desk-track">{t('desk.track')}</button>
       <button type="button" onClick={onFit} data-testid="desk-fit">{t('desk.fit')}</button>
     </div>

@@ -607,6 +607,11 @@ function receiveIntel(set: IntelSet, intel: MarketIntelligence): void {
   }
 }
 
+const INTEL_TABS: ReadonlySet<string> = new Set<IntelTab>(['DOCS', 'GOV', 'FLOW', 'GEO']);
+function validIntelTab(tab: unknown): IntelTab | undefined {
+  return typeof tab === 'string' && INTEL_TABS.has(tab) ? (tab as IntelTab) : undefined;
+}
+
 export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   drawerOpen: false,
   activeTab: 'DOCS',
@@ -621,16 +626,23 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   macro: null,
   events: [],
 
-  setDrawerOpen: (open, tab) =>
-    set({ drawerOpen: open, ...(tab ? { activeTab: tab } : {}) }),
+  setDrawerOpen: (open, tab) => {
+    const nextTab = validIntelTab(tab);
+    set({ drawerOpen: open, ...(nextTab ? { activeTab: nextTab } : {}) });
+  },
 
-  toggleDrawer: (tab) =>
+  toggleDrawer: (tab) => {
+    const nextTab = validIntelTab(tab);
     set((s) => ({
-      drawerOpen: tab ? (s.drawerOpen && s.activeTab === tab ? false : true) : !s.drawerOpen,
-      ...(tab ? { activeTab: tab } : {}),
-    })),
+      drawerOpen: nextTab ? (s.drawerOpen && s.activeTab === nextTab ? false : true) : !s.drawerOpen,
+      ...(nextTab ? { activeTab: nextTab } : {}),
+    }));
+  },
 
-  setActiveTab: (tab) => set({ activeTab: tab }),
+  setActiveTab: (tab) => {
+    const nextTab = validIntelTab(tab);
+    if (nextTab) set({ activeTab: nextTab });
+  },
 
   ingestGex: (update) => {
     if (!update || !text(update.symbol) ||
