@@ -186,8 +186,14 @@ mod tests {
     fn a_token_parameter_is_masked_even_when_its_secret_is_not_known() {
         let out = redact(b"accepted /ws?token=abc123&room=1 end", &[]);
         assert_eq!(out, b"accepted /ws?token=***&room=1 end");
-        let sub = redact(b"Sec-WebSocket-Protocol: flowmap.v1, flowmap.auth.deadbeef\n", &[]);
-        assert_eq!(sub, b"Sec-WebSocket-Protocol: flowmap.v1, flowmap.auth.***\n");
+        let sub = redact(
+            b"Sec-WebSocket-Protocol: flowmap.v1, flowmap.auth.deadbeef\n",
+            &[],
+        );
+        assert_eq!(
+            sub,
+            b"Sec-WebSocket-Protocol: flowmap.v1, flowmap.auth.***\n"
+        );
     }
 
     #[test]
