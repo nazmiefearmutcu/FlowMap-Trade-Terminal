@@ -39,6 +39,7 @@ touches the network.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import logging
 import math
@@ -661,6 +662,9 @@ class GlobalEquityFeed(EquityFeed):
                     poll = None
                     if snapshot is None or snapshot.is_empty:
                         self.poll_failures += 1
+                        inc_poll = getattr(self._stats, "inc_poll_failures", None)
+                        if callable(inc_poll):
+                            inc_poll()
                         if self.poll_failures == _POLL_FAILURES_BEFORE_NOTICE:
                             yield Marker(
                                 ts_ns=now,
@@ -684,8 +688,16 @@ class GlobalEquityFeed(EquityFeed):
                                     bid is not None and ask is not None
                                     and bid.size is not None and ask.size is not None
                                 ):
-                                    yield BBO(ts_ns=now, bid_px=bid.price, bid_sz=bid.size,
-                                              ask_px=ask.price, ask_sz=ask.size)
+                                    bpx, apx = float(bid.price), float(ask.price)
+                                    bsz, asz = float(bid.size), float(ask.size)
+                                    if (
+                                        math.isfinite(bpx) and bpx > 0.0
+                                        and math.isfinite(apx) and apx > 0.0
+                                        and math.isfinite(bsz) and bsz >= 0.0
+                                        and math.isfinite(asz) and asz >= 0.0
+                                    ):
+                                        yield BBO(ts_ns=now, bid_px=bpx, bid_sz=bsz,
+                                                  ask_px=apx, ask_sz=asz)
                         self._on_snapshot(builder, snapshot, now)
                         for trade in self._trades_of(snapshot, now):
                             yield trade
@@ -733,3 +745,5 @@ class GlobalEquityFeed(EquityFeed):
         finally:
             if poll is not None and not poll.done():
                 poll.cancel()
+                with contextlib.suppress(BaseException):
+                    await poll

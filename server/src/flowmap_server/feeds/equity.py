@@ -503,6 +503,9 @@ class EquityFeed:
                         )
                     else:
                         self.poll_failures += 1
+                        inc_poll = getattr(self._stats, "inc_poll_failures", None)
+                        if callable(inc_poll):
+                            inc_poll()
                         if self.poll_failures == _POLL_FAILURES_BEFORE_NOTICE:
                             logger.warning(
                                 "live price unavailable for %s after %d consecutive failed polls",
@@ -526,6 +529,8 @@ class EquityFeed:
         finally:
             if poll is not None and not poll.done():
                 poll.cancel()
+                with contextlib.suppress(BaseException):
+                    await poll
 
     def _stale_profile_date(self, last_bar_ts: int, now: int) -> datetime.date | None:
         """ET date of the warmup profile when it belongs to an earlier session than
@@ -584,7 +589,8 @@ class EquityFeed:
             return
         # Bounded fan-in: same drop-oldest contract as the crypto bridge.
         queue: BoundedFeedQueue[_EquityItem] = BoundedFeedQueue(
-            on_drop=self._stats.inc_feed_drops if self._stats is not None else None
+            on_drop=self._stats.inc_feed_drops if self._stats is not None else None,
+            on_marker_drop=getattr(self._stats, "inc_markers_dropped", None),
         )
         sink = _EquitySink(
             queue.put_nowait,

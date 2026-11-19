@@ -52,9 +52,11 @@ def _watch_stdin_eof(server: Any, stream: IO[Any]) -> threading.Thread:
     it. Setting ``should_exit`` is uvicorn's own graceful path: the lifespan
     shutdown runs, which flushes recordings before the process ends."""
 
+    raw = getattr(stream, "buffer", stream)
+
     def _watch() -> None:
         try:
-            while stream.read(1024):
+            while raw.read(1024):
                 pass
         except (OSError, ValueError):
             pass  # a broken pipe is the same signal as EOF
@@ -76,6 +78,9 @@ def _run_server(app: Any, *, exit_on_stdin_eof: bool, **kwargs: Any) -> None:
         return
     server = uvicorn.Server(uvicorn.Config(app, **kwargs))
     if sys.stdin is not None:
+        state = getattr(app, "state", None)
+        if state is not None:
+            state._stdin_eof_watched = True
         _watch_stdin_eof(server, sys.stdin)
     server.run()
 

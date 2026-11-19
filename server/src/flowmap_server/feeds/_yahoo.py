@@ -177,7 +177,6 @@ async def _request_bars(symbol: str) -> tuple[OHLCV, ...]:
                     f"https://{host}/v8/finance/chart/{quote(symbol, safe='')}",
                     params={"interval": "1m", "range": "5d", "includePrePost": "false"},
                 ) as response:
-                    response.raise_for_status()
                     chunks = []
                     size = 0
                     async for chunk in response.content.iter_chunked(64_000):
@@ -185,8 +184,16 @@ async def _request_bars(symbol: str) -> tuple[OHLCV, ...]:
                         if size > _BAR_RESPONSE_LIMIT:
                             raise YahooUnavailableError("Yahoo chart response too large")
                         chunks.append(chunk)
-
-                    bars = _parse_bars(json.loads(b"".join(chunks)), symbol, now_ns=time.time_ns())
+                    raw_body = b"".join(chunks)
+                    if getattr(response, "status", 200) == 404:
+                        try:
+                            _parse_bars(json.loads(raw_body), symbol, now_ns=time.time_ns())
+                        except UnknownSymbolError:
+                            raise
+                        except (ValueError, YahooUnavailableError):
+                            pass
+                    response.raise_for_status()
+                    bars = _parse_bars(json.loads(raw_body), symbol, now_ns=time.time_ns())
                     if bars:
                         return bars
                     answered_empty = True

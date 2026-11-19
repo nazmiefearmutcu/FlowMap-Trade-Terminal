@@ -100,7 +100,12 @@ def _cache_symbol(market: str, symbol: str) -> str:
     from flowmap_server.feeds.equity import EQUITY_MARKETS, is_equity_market
 
     listed = is_equity_market(market) and market not in EQUITY_MARKETS
-    return symbol if listed else symbol.upper()
+    if listed:
+        return symbol
+    # Bitfinex pairs use a leading lowercase 't' prefix (e.g. tBTCUSD).
+    if market.startswith("bitfinex") and len(symbol) > 1 and symbol[0] == "t" and symbol[1].isupper():
+        return "t" + symbol[1:].upper()
+    return symbol.upper()
 
 
 class QuoteData(msgspec.Struct):
@@ -798,8 +803,14 @@ async def _equity_quote(symbol: str) -> QuoteData:
     if latest is None:
         return QuoteData(market="equity", symbol=symbol.upper(), reachable=True, stale=True, as_of_ns=now)
     price, change = latest
-    closes = [float(b.close) for b in bars if b.close is not None]
-    last_bar = bars[-1]
+    usable = sorted(
+        (b for b in bars if b.close is not None and math.isfinite(float(b.close)) and float(b.close) > 0.0),
+        key=lambda b: int(b.source_ts if b.source_ts is not None else b.local_ts),
+    )
+    if not usable:
+        return QuoteData(market="equity", symbol=symbol.upper(), reachable=True, stale=True, as_of_ns=now)
+    closes = [float(b.close) for b in usable]
+    last_bar = usable[-1]
     last_ts = int(last_bar.source_ts if last_bar.source_ts is not None else last_bar.local_ts)
     closed = not USMarketCalendar().is_market_open(
         datetime.datetime.fromtimestamp(now / 1e9, tz=datetime.timezone.utc)

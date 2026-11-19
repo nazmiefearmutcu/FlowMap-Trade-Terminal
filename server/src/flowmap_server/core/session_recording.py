@@ -20,6 +20,21 @@ from flowmap_server.core.session_common import (
 
 logger = logging.getLogger(SESSION_LOGGER)
 
+_ABANDONED_RECORDING_TASKS: set[asyncio.Task] = set()
+
+
+def _retain_abandoned_task(task: asyncio.Task) -> None:
+    """Keep a timed-out recording task referenced and consume its exception on completion."""
+    _ABANDONED_RECORDING_TASKS.add(task)
+
+    def _done(done_task: asyncio.Task) -> None:
+        _ABANDONED_RECORDING_TASKS.discard(done_task)
+        if not done_task.cancelled():
+            exc = done_task.exception()
+            if exc is not None:
+                logger.error("abandoned recording task failed", exc_info=exc)
+
+    task.add_done_callback(_done)
 
 
 class _RecordingWriteWedged(RuntimeError):
@@ -188,6 +203,7 @@ class RecordingMixin:
                     self._stats.note_recording(self.session_id, False)
             self._flush_started_ns = None
             self._flush_stall_logged = False
+            self._set_recording_wedged(False)
             if self._stats is not None:
                 self._stats.clear_flush_wedged(self.session_id)
             return
@@ -317,12 +333,14 @@ class RecordingMixin:
             if not task.done():
                 await asyncio.wait({task}, timeout=_REC_DRAIN_TIMEOUT_S)
                 if not task.done():
+                    _retain_abandoned_task(task)
                     logger.error(
                         "recording work still in flight %.0fs after cancellation; not waiting longer",
                         _REC_DRAIN_TIMEOUT_S,
                     )
             raise
         if not done:
+            _retain_abandoned_task(task)
             logger.error(
                 "recording work wedged: still in flight after %.0fs; not waiting longer",
                 _REC_DRAIN_TIMEOUT_S,

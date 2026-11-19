@@ -14,6 +14,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
 import uuid
@@ -808,41 +809,23 @@ class PersistentPyramid:
         )
 
     def _convert_part(
-        self,
-        path,
-        bounds,
-        mapping,
-        epochs,
-        legacy_segments,
-        wanted_range,
-        start,
-        end,
-        stop,
-        stats,
+        self, path, bounds, mapping, epochs, legacy_segments, wanted_range, start, end, stop, stats
     ) -> dict | None:
-        """Write the fragments of one raw part and return its source entry.
-
-        None when the part was replaced while it was read (it is then never
-        published) or when ``stop`` cancelled the work; ``stats["cancelled"]``
-        tells the two apart.
-        """
+        """Write one raw part's fragments and return its source entry, or None."""
         from flowmap_server.core.overview import recorded_batches
 
-        before = path.stat()
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
+        try:
+            before = path.stat()
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            return None
         fragments, geometry, integrals = [], {}, {}
         batches = recorded_batches(
-            self.root,
-            self.market,
-            self.symbol,
-            [(bounds[0], bounds[1])],
-            self.recording_id,
-            mapping,
-            list(legacy_segments),
-            [(path, bounds)],
+            self.root, self.market, self.symbol, [(bounds[0], bounds[1])],
+            self.recording_id, mapping, list(legacy_segments), [(path, bounds)],
             epoch_maps=epochs,
         )
         for batch, maps in batches:
@@ -860,7 +843,10 @@ class PersistentPyramid:
                 fragments.append(self._write_fragment(group, cols, maps, geometry, integrals))
         if stats["cancelled"]:
             return None
-        after = path.stat()
+        try:
+            after = path.stat()
+        except OSError:
+            return None
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             return None
         return {
@@ -913,6 +899,8 @@ class PersistentPyramid:
                     "ask": item["ask"].astype("<f8").tobytes(),
                 }
             )
+        highs = [c.bar.h for c in cols if math.isfinite(c.bar.h)]
+        lows = [c.bar.l for c in cols if math.isfinite(c.bar.l)]
         payload = msgspec.msgpack.encode(
             {
                 "schema": SCHEMA,
@@ -922,8 +910,8 @@ class PersistentPyramid:
                 "samples": samples,
                 "first": msgspec.to_builtins(cols[0].bar),
                 "last": msgspec.to_builtins(cols[-1].bar),
-                "high": max(c.bar.h for c in cols),
-                "low": min(c.bar.l for c in cols),
+                "high": max(highs) if highs else float("nan"),
+                "low": min(lows) if lows else float("nan"),
                 "buy": sum(c.bar.vol_buy for c in cols),
                 "sell": sum(c.bar.vol_sell for c in cols),
             }
@@ -1096,7 +1084,8 @@ class PersistentPyramid:
 
 
 def pyramid_for(root, market, symbol, recording_id):
-    key = market, symbol, recording_id or ""
+    sym_dir = root._symbol_dir(market, symbol)
+    key = sym_dir.parent.name, sym_dir.name, recording_id or ""
     with root._column_time_lock:
         stores = getattr(root, "_persistent_pyramids", None)
         if stores is None:
@@ -1109,8 +1098,6 @@ def pyramid_for(root, market, symbol, recording_id):
         stores.setdefault(key, created)
         if isinstance(stores, OrderedDict):
             stores.move_to_end(key)
-            # Evict least-recently-used stores by count AND estimated manifest
-            # bytes; the store just touched is never evicted by its own insert.
             while len(stores) > 1 and (
                 len(stores) > MAX_RESIDENT_PYRAMIDS
                 or sum(getattr(s, "resident_bytes", 0) for s in stores.values())
@@ -1152,7 +1139,10 @@ def collect_retained_caches(root, directories, *, purge: bool = False) -> int:
                 ):
                     continue
                 market, symbol = directory.parent.name, directory.name
-                store = getattr(root, "_persistent_pyramids", {}).get((market, symbol, identity))
+                with root._column_time_lock:
+                    store = getattr(root, "_persistent_pyramids", {}).get(
+                        (market, symbol, identity)
+                    )
                 if store is None:
                     store = PersistentPyramid(root, market, symbol, identity)
                 if store._prepare_lock.acquire(blocking=False):

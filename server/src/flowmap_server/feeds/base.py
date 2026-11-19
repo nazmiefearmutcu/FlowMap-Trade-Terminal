@@ -161,6 +161,7 @@ class BoundedFeedQueue(Generic[_QueueItemT]):
         self,
         maxsize: int = FEED_QUEUE_MAXSIZE,
         on_drop: Callable[[], None] | None = None,
+        on_marker_drop: Callable[[], None] | None = None,
     ) -> None:
         self._items: deque[_QueueItemT] = deque()
         self._maxsize = max(1, maxsize)
@@ -169,10 +170,11 @@ class BoundedFeedQueue(Generic[_QueueItemT]):
         # Markers (gap, liquidation, session_break) are evicted only when nothing
         # else is left to evict; this counts the ones that were lost anyway.
         self.markers_dropped = 0
-        # Optional telemetry hook: fired on every drop-OLDEST
-        # eviction so the server-wide stats aggregate can count feed drops
-        # without polling per-feed counters. Must never raise into the producer.
+        # Optional telemetry hooks: fired on drop-OLDEST eviction so the
+        # server-wide stats aggregate counts drops without polling per-feed
+        # counters. Must never raise into the producer.
         self.on_drop = on_drop
+        self.on_marker_drop = on_marker_drop
 
     def put_nowait(self, item: _QueueItemT) -> None:
         items = self._items
@@ -202,6 +204,11 @@ class BoundedFeedQueue(Generic[_QueueItemT]):
         self.dropped += 1
         if isinstance(dropped, Marker):
             self.markers_dropped += 1
+            if self.on_marker_drop is not None:
+                try:
+                    self.on_marker_drop()
+                except Exception:  # telemetry must not kill the feed
+                    logger.debug("marker drop telemetry hook failed", exc_info=True)
         if self.on_drop is not None:
             try:
                 self.on_drop()

@@ -220,9 +220,12 @@ async def symbols(q: str = "") -> dict[str, list[dict[str, object]]]:
 def recording_availability(request: Request, market: str, symbol: str) -> dict:
     manager = getattr(request.app.state, "manager", None)
     recorder = manager.recorder if manager is not None else None
-    result = recorder.availability(market, symbol) if recorder is not None else {
-        "market": market, "symbol": symbol, "hours": [], "latest_column_ns": None,
-        "coverage": "filename-hour-buckets"}
+    try:
+        result = recorder.availability(market, symbol) if recorder is not None else {
+            "market": market, "symbol": symbol, "hours": [], "latest_column_ns": None,
+            "coverage": "filename-hour-buckets"}
+    except ValueError as exc:
+        raise ApiError(422, "invalid_params", str(exc)) from exc
     cfg = manager.cfg if manager is not None else None
     # recording_enabled lets the client explain an empty list: "no
     # recordings" with the switch off is a settings problem, not an empty store.

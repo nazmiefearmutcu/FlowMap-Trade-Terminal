@@ -26,15 +26,15 @@ CLASS_LINE_BUDGET = 700
 # Ratchet ceilings for core modules still over budget, keyed by path under src/flowmap_server.
 LEGACY_MODULE_CEILINGS: dict[str, int] = {
     "core/backfill.py": 835,
-    "core/grid.py": 1191,
-    "core/overview.py": 1296,
-    "core/pyramid.py": 1216,
-    "core/record.py": 1605,
+    "core/grid.py": 1188,
+    "core/overview.py": 1292,
+    "core/pyramid.py": 1206,
+    "core/record.py": 1589,
 }
 # Ratchet ceilings for classes still over budget, keyed by "path::ClassName".
 LEGACY_CLASS_CEILINGS: dict[str, int] = {
-    "core/grid.py::Grid": 990,
-    "core/pyramid.py::PersistentPyramid": 951,
+    "core/grid.py::Grid": 987,
+    "core/pyramid.py::PersistentPyramid": 938,
 }
 
 

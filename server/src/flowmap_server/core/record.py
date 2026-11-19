@@ -556,15 +556,10 @@ class SessionRecorder:
         self._epochs.append(params)
 
     def _bound(self, buf: list, cap: int, kind: str, ts_ns: int) -> None:
-        """Keep a buffer under its cap by dropping its oldest rows in batches.
-
-        Batches (cap/8) keep the front-deletion cost amortized. The loss is
-        counted and marked in the recording as a ``gap`` marker at the point the
-        data resumes, so a reader sees a hole instead of a seamless stream.
-        """
+        """Keep a buffer under its cap by dropping its oldest rows in batches."""
         if len(buf) <= cap:
-            return  # exactly at the cap is a full buffer, not an overflow
-        drop = max(1, cap // 8)
+            return
+        drop = max(len(buf) - cap, max(1, cap // 8))
         del buf[:drop]
         self.dropped_rows[kind] = self.dropped_rows.get(kind, 0) + drop
         logger.warning(
@@ -576,6 +571,7 @@ class SessionRecorder:
                 ts_ns=ts_ns, kind="gap",
                 text=f"recording buffer overflow: {drop} {kind} rows dropped",
             ))
+            self._bound(self._markers, _BUFFER_MAX_MARKERS, "markers", ts_ns)
 
     def record_column(self, col: FinalizedColumn) -> None:
         self._check_open()
@@ -622,9 +618,6 @@ class SessionRecorder:
         self._flush_kind("columns", self._columns, lambda c: c.t0_ns, self._columns_frame)
         self._flush_kind("trades", self._trades, lambda t: t.ts_ns, self._trades_frame)
         self._flush_kind("markers", self._markers, lambda m: m.ts_ns, self._markers_frame)
-        # Epochs carry no timestamp: bucket into the newest hour seen so far
-        # (hour 0 if nothing timestamped was ever recorded). load_tail reads
-        # every epochs file, so the bucket never affects correctness.
         self._flush_kind("epochs", self._epochs, lambda _e: self._max_ts_ns, self._epochs_frame)
 
     def _flush_kind(self, kind, rows, ts_of, to_frame) -> None:
@@ -641,11 +634,17 @@ class SessionRecorder:
                     to_frame(groups[hour]).write_parquet(tmp)
                     _durable_replace(tmp, path)  # fsync, atomic os.replace, fsync dir
                 except BaseException:
-                    tmp.unlink(missing_ok=True)
-                    marker.unlink(missing_ok=True)  # nothing landed: number reusable
+                    for cleanup in (tmp, marker):
+                        try:
+                            cleanup.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                     raise
-                marker.unlink(missing_ok=True)  # landed: the part guards its number
                 groups[hour] = []  # landed: never re-written on a retry
+                try:
+                    marker.unlink(missing_ok=True)  # landed: the part guards its number
+                except OSError:
+                    pass
         finally:
             # Keep only the rows of groups that did NOT land.
             rows[:] = [r for group in groups.values() for r in group]
@@ -657,8 +656,7 @@ class SessionRecorder:
         lists out here means a flush running in an executor thread touches
         ONLY the snapshot — rows recorded while it writes stay in the live
         buffers and land in the next flush, with no shared mutable state.
-        Returns ``None`` when every buffer is empty (callers skip the thread
-        hop instead of writing nothing)."""
+        Returns ``None`` when every buffer is empty."""
         if not (self._columns or self._trades or self._markers or self._epochs):
             return None
         bufs = (self._columns, self._trades, self._markers, self._epochs)
@@ -666,42 +664,26 @@ class SessionRecorder:
         return bufs
 
     def restore_buffers(self, bufs: tuple[list, list, list, list]) -> None:
-        """Re-attach a FAILED flush's unwritten rows to the live buffers.
-
-        ``flush_buffers`` leaves whatever did not land on disk in the snapshot
-        lists. The owning session now RETRIES transient flush failures after
-        a cooldown (session docstring) instead of disabling recording, so
-        those rows must return to the FRONT of the live buffers — they are
-        the OLDEST rows of the failed snapshot, and prepending keeps buffer
-        order chronological. Without the restore, a retry would silently skip
-        everything the failed flush was holding."""
+        """Re-attach a failed flush's unwritten rows to the front of live buffers."""
         columns, trades, markers, epochs = bufs
         if columns:
             self._columns[:0] = columns
+            self._bound(self._columns, _BUFFER_MAX_COLUMNS, "columns", self._columns[-1].t0_ns)
         if trades:
             self._trades[:0] = trades
+            self._bound(self._trades, _BUFFER_MAX_TRADES, "trades", self._trades[-1].ts_ns)
         if markers:
             self._markers[:0] = markers
+            self._bound(self._markers, _BUFFER_MAX_MARKERS, "markers", self._markers[-1].ts_ns)
         if epochs:
             self._epochs[:0] = epochs
 
     def flush_buffers(self, bufs: tuple[list, list, list, list]) -> None:
-        """Write a :meth:`take_buffers` snapshot to part files.
-
-        Same per-(hour, kind) grouping, temp+rename atomicity, part-number
-        progression, and exception-safety as :meth:`flush` — safe to run off
-        the event loop because it touches only the snapshot lists plus the
-        locked part counter. On failure the UNWRITTEN rows stay in the
-        snapshot lists; the owning session restores them to the live buffers
-        (:meth:`restore_buffers`) and retries after a cooldown — a transient
-        IO failure delays a part, it does not end the recording."""
+        """Write a :meth:`take_buffers` snapshot to part files off-loop."""
         columns, trades, markers, epochs = bufs
         self._flush_kind("columns", columns, lambda c: c.t0_ns, self._columns_frame)
         self._flush_kind("trades", trades, lambda t: t.ts_ns, self._trades_frame)
         self._flush_kind("markers", markers, lambda m: m.ts_ns, self._markers_frame)
-        # Epochs carry no timestamp: bucket into the newest hour seen so far
-        # (hour 0 if nothing timestamped was ever recorded). load_tail reads
-        # every epochs file, so the bucket never affects correctness.
         self._flush_kind("epochs", epochs, lambda _e: self._max_ts_ns, self._epochs_frame)
 
     def _columns_frame(self, cols: list[FinalizedColumn]) -> pl.DataFrame:
@@ -1308,10 +1290,10 @@ class Recorder:
         height = table.height
         rows = int(epoch_map[int(table["epoch"][-1])].rows)
         bid = np.ascontiguousarray(
-            table["bid"].list.explode().to_numpy(), dtype=np.float32
+            table["bid"].list.explode(empty_as_null=True).to_numpy(), dtype=np.float32
         ).reshape(height, rows)
         ask = np.ascontiguousarray(
-            table["ask"].list.explode().to_numpy(), dtype=np.float32
+            table["ask"].list.explode(empty_as_null=True).to_numpy(), dtype=np.float32
         ).reshape(height, rows)
         out: list[FinalizedColumn] = []
         for i, row in enumerate(table.drop(["bid", "ask"]).iter_rows(named=True)):
@@ -1392,6 +1374,8 @@ class Recorder:
                 str(_hour_start_ns(h)) for h in hours], "bucket_ns": "3600000000000",
                 "latest_column_ns": str(newest) if newest is not None else None,
                 "coverage": "filename-hour-buckets", "parts": len(paths)}
+            if key not in self._availability_cache and len(self._availability_cache) >= 256:
+                self._availability_cache.pop(next(iter(self._availability_cache)))
             self._availability_cache[key] = (time.monotonic(), result)
             return result
 

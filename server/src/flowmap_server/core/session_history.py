@@ -14,7 +14,7 @@ from flowmap_server.core.overview import (
     add_recording,
     native_group_epochs,
 )
-from flowmap_server.core.pyramid import metadata_page, pyramid_for
+from flowmap_server.core.pyramid import PartSnapshot, metadata_page, pyramid_for
 from flowmap_server.core.record import TailData
 from flowmap_server.core.session_common import (
     _T_MAX,
@@ -279,8 +279,10 @@ class HistoryMixin:
         """Validate immutable part stamps once for this request.
 
         The scalar representative and density passes reuse this same snapshot;
-        complete aggregate cache hits leave it empty and do no scan. A changed
-        source generation drops the aggregate cache.
+        complete aggregate cache hits leave it empty and do no scan. Only real
+        source mutations (deleted/replaced parts, new parts in an already-cached
+        window, or changed epoch semantics) drop the aggregate cache; panning
+        across part boundaries keeps previously cached aggregates warm.
         """
         parts: list = []
         if self._recorder_root is not None:
@@ -292,13 +294,67 @@ class HistoryMixin:
                 self._recording_identity,
             )
             parts = await self._overview_call(store.parts, start, end)
-            generation = await self._overview_call(store.generation, parts, start, end, epochs)
-            if (
+            epoch_snap = PartSnapshot()
+            epoch_snap.epoch_stamps = getattr(parts, "epoch_stamps", None)
+            epoch_gen = await self._overview_call(store.generation, epoch_snap, 0, -1, epochs)
+            stamps_map = getattr(parts, "stamps", {})
+            window_parts: dict[str, tuple[int, int, int, int]] = {}
+            for path, bounds in parts:
+                if (
+                    bounds is None
+                    or store.recording_id not in bounds[2]
+                    or bounds[1] < start
+                    or bounds[0] > end
+                ):
+                    continue
+                stamp = stamps_map.get(path)
+                if stamp is None:
+                    try:
+                        st = path.stat()
+                        stamp = (st.st_size, st.st_mtime_ns)
+                    except OSError:
+                        continue
+                window_parts[path.name] = (stamp[0], stamp[1], bounds[0], bounds[1])
+            seen: dict[str, tuple[int, int, int, int]] = getattr(self, "_overview_seen_parts", {})
+            queried: list[tuple[int, int]] = getattr(self, "_overview_queried_ranges", [])
+            invalidated = (
                 self._overview_source_generation is not None
-                and generation != self._overview_source_generation
-            ):
+                and epoch_gen != self._overview_source_generation
+            )
+            if not invalidated:
+                for name, (sz, mtime, lo, hi) in seen.items():
+                    if hi < start or lo > end:
+                        continue
+                    cur = window_parts.get(name)
+                    if cur is None or cur[:2] != (sz, mtime):
+                        invalidated = True
+                        break
+            if not invalidated:
+                for name, (sz, mtime, lo, hi) in window_parts.items():
+                    prev = seen.get(name)
+                    if prev is not None:
+                        if prev[:2] != (sz, mtime):
+                            invalidated = True
+                            break
+                    elif any(not (hi < qlo or lo > qhi) for qlo, qhi in queried):
+                        invalidated = True
+                        break
+            if invalidated:
                 self._overview_cache = OverviewCache()
-            self._overview_source_generation = generation
+                seen = {}
+                queried = []
+            seen.update(window_parts)
+            queried.append((start, end))
+            queried.sort()
+            merged: list[tuple[int, int]] = []
+            for qlo, qhi in queried:
+                if merged and qlo <= merged[-1][1] + 1:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], qhi))
+                else:
+                    merged.append((qlo, qhi))
+            self._overview_seen_parts = seen
+            self._overview_queried_ranges = merged
+            self._overview_source_generation = epoch_gen
         return parts
 
     async def _overview_fill_ram(

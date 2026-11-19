@@ -80,11 +80,19 @@ f"{sorted(EQUITY_MARKETS)}, 'world-<mic>', 'futures-<venue>', 'forex', 'indices'
     )
 
 
-def feed_factory(cfg: Config, *, realtime_sim: bool, eurex_service: EurexService | None = None):
+def feed_factory(
+    cfg: Config,
+    *,
+    realtime_sim: bool,
+    stats: DropCounters | None = None,
+    eurex_service: EurexService | None = None,
+):
     """Bind *cfg* into the single-argument factory the session manager wants."""
 
     def factory(sub: events.Subscribe) -> Feed:
-        return build_feed(sub, cfg, realtime_sim=realtime_sim, eurex_service=eurex_service)
+        return build_feed(
+            sub, cfg, realtime_sim=realtime_sim, stats=stats, eurex_service=eurex_service
+        )
 
     return factory
 

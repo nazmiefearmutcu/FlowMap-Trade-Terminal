@@ -45,13 +45,14 @@ def _ensure_utf8(stream: TextIO) -> None:
             pass
 
 
-# A session token in a URL query (``?token=<value>``) is a credential: uvicorn
-# logs the raw WebSocket path on every handshake. Scrubbed before queueing.
-_TOKEN_PARAM_RE = re.compile(r"(?i)(\btoken=)[^\s&\"'#)\]]+")
+# A session token in a URL query (``?token=<value>``) or WS auth subprotocol
+# (``flowmap.auth.<value>``) is a credential: uvicorn logs raw WebSocket paths
+# and headers during handshakes. Scrubbed before queueing.
+_TOKEN_PARAM_RE = re.compile(r"(?i)(\btoken=|flowmap\.auth\.)[^\s&,;\"'#)\]]+")
 
 
 def redact_secrets(text: str) -> str:
-    """Replace the value of every ``token=`` URL parameter in ``text``."""
+    """Replace session token values in URL parameters and auth subprotocols."""
     return _TOKEN_PARAM_RE.sub(r"\1***", text)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 import msgspec
 import numpy as np
@@ -115,21 +116,26 @@ class BookMixin:
             "L2-snapshot",
         ):
             if len(ev.bid_px) and len(ev.ask_px):
-                bi, ai = int(np.argmax(ev.bid_px)), int(np.argmin(ev.ask_px))
-                quote = events.BBO(
-                    ts_ns=ev.ts_ns,
-                    bid_px=float(ev.bid_px[bi]),
-                    bid_sz=float(ev.bid_sz[bi]),
-                    ask_px=float(ev.ask_px[ai]),
-                    ask_sz=float(ev.ask_sz[ai]),
-                )
-                if (
-                    quote.bid_px > 0
-                    and quote.ask_px >= quote.bid_px
-                    and (self._bbo is None or quote.ts_ns >= self._bbo.ts_ns)
-                ):
-                    self._bbo = quote
-                    self._broadcast(wire.encode(quote), col=False)
+                valid_b = np.isfinite(ev.bid_px) & (ev.bid_px > 0) & np.isfinite(ev.bid_sz) & (ev.bid_sz >= 0)
+                valid_a = np.isfinite(ev.ask_px) & (ev.ask_px > 0) & np.isfinite(ev.ask_sz) & (ev.ask_sz >= 0)
+                if np.any(valid_b) and np.any(valid_a):
+                    b_px, b_sz = ev.bid_px[valid_b], ev.bid_sz[valid_b]
+                    a_px, a_sz = ev.ask_px[valid_a], ev.ask_sz[valid_a]
+                    bi, ai = int(np.argmax(b_px)), int(np.argmin(a_px))
+                    quote = events.BBO(
+                        ts_ns=ev.ts_ns,
+                        bid_px=float(b_px[bi]),
+                        bid_sz=float(b_sz[bi]),
+                        ask_px=float(a_px[ai]),
+                        ask_sz=float(a_sz[ai]),
+                    )
+                    if (
+                        quote.bid_px > 0
+                        and quote.ask_px >= quote.bid_px
+                        and (self._bbo is None or quote.ts_ns >= self._bbo.ts_ns)
+                    ):
+                        self._bbo = quote
+                        self._broadcast(wire.encode(quote), col=False)
         cols = self._grid.on_book(ev.ts_ns, ev.bid_px, ev.bid_sz, ev.ask_px, ev.ask_sz)
         self._emit_finalized(cols)
         anchor = self._reanchor_ref(ev)
@@ -162,12 +168,17 @@ class BookMixin:
         started at a nominal $100 p0 recentre on the symbol's real price (e.g. an
         AAPL profile near $180) regardless of which side the split leaves
         populated."""
-        if len(ev.bid_px) and len(ev.ask_px):
-            return (float(np.max(ev.bid_px)) + float(np.min(ev.ask_px))) / 2.0
-        if len(ev.bid_px):
-            return (float(np.min(ev.bid_px)) + float(np.max(ev.bid_px))) / 2.0
-        if len(ev.ask_px):
-            return (float(np.min(ev.ask_px)) + float(np.max(ev.ask_px))) / 2.0
+        bids = ev.bid_px[np.isfinite(ev.bid_px) & (ev.bid_px > 0)] if len(ev.bid_px) else ev.bid_px
+        asks = ev.ask_px[np.isfinite(ev.ask_px) & (ev.ask_px > 0)] if len(ev.ask_px) else ev.ask_px
+        if len(bids) and len(asks):
+            mid = (float(np.max(bids)) + float(np.min(asks))) / 2.0
+            return mid if math.isfinite(mid) else None
+        if len(bids):
+            mid = (float(np.min(bids)) + float(np.max(bids))) / 2.0
+            return mid if math.isfinite(mid) else None
+        if len(asks):
+            mid = (float(np.min(asks)) + float(np.max(asks))) / 2.0
+            return mid if math.isfinite(mid) else None
         return None
 
     def _emit_finalized(self, cols: list[FinalizedColumn]) -> None:

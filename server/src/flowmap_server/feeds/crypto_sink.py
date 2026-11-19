@@ -202,15 +202,23 @@ class _BridgeSink(Sink):
                 )
             )
         elif isinstance(record, BookTicker):
-            self._emit(
-                BBO(
-                    ts_ns=self._ts(record),
-                    bid_px=record.bid_px,
-                    bid_sz=record.bid_sz,
-                    ask_px=record.ask_px,
-                    ask_sz=record.ask_sz,
+            bid_px, ask_px = float(record.bid_px), float(record.ask_px)
+            bid_sz, ask_sz = float(record.bid_sz), float(record.ask_sz)
+            if (
+                math.isfinite(bid_px) and bid_px > 0.0
+                and math.isfinite(ask_px) and ask_px > 0.0
+                and math.isfinite(bid_sz) and bid_sz >= 0.0
+                and math.isfinite(ask_sz) and ask_sz >= 0.0
+            ):
+                self._emit(
+                    BBO(
+                        ts_ns=self._ts(record),
+                        bid_px=bid_px,
+                        bid_sz=bid_sz,
+                        ask_px=ask_px,
+                        ask_sz=ask_sz,
+                    )
                 )
-            )
         elif isinstance(record, Liquidation):
             self._emit(
                 Marker(

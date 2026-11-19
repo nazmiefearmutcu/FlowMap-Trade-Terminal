@@ -218,23 +218,21 @@ async def resolve_symbol_cached(market: str, symbol: str) -> str:
     if hit is not None:
         return hit
     task = _PENDING_RESOLVES.get(key)
-    if task is None:
+    if task is None or task.done():
         task = asyncio.create_task(
             _resolve_and_cache(market, symbol),
             name=f"resolve-symbol-{market}:{symbol}",
         )
         _PENDING_RESOLVES[key] = task
-    try:
-        out = await task
-    except BaseException:
-        # A failure (or the waiter's own cancellation) must not pin the
-        # in-flight slot — the next caller retries.
-        if _PENDING_RESOLVES.get(key) is task:
-            _PENDING_RESOLVES.pop(key, None)
-        raise
-    if _PENDING_RESOLVES.get(key) is task:
-        _PENDING_RESOLVES.pop(key, None)
-    return out
+
+        def _cleanup(done_task: asyncio.Task[str]) -> None:
+            if _PENDING_RESOLVES.get(key) is done_task:
+                _PENDING_RESOLVES.pop(key, None)
+            if not done_task.cancelled():
+                done_task.exception()
+
+        task.add_done_callback(_cleanup)
+    return await asyncio.shield(task)
 
 
 async def _resolve_and_cache(market: str, symbol: str) -> str:
@@ -494,7 +492,8 @@ class CryptoFeed:
         # on the queue) instead of growing RSS without limit. The connector's
         # end sentinel is never the dropped item (see BoundedFeedQueue).
         queue: BoundedFeedQueue[_CryptoItem] = BoundedFeedQueue(
-            on_drop=self._stats.inc_feed_drops if self._stats is not None else None
+            on_drop=self._stats.inc_feed_drops if self._stats is not None else None,
+            on_marker_drop=getattr(self._stats, "inc_markers_dropped", None),
         )
         sink = _BridgeSink(
             queue.put_nowait,

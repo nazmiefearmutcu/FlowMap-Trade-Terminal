@@ -463,7 +463,14 @@ class Grid:
         self._bar_has_trade = False
         self._vol_buy = self._vol_sell = self._cvd_cum = 0.0
         self._vwap_num_cum = self._vwap_den_cum = 0.0
-        self._epoch_params.clear()
+        self._epoch = 0
+        c = self._cfg
+        self._epoch_params = {
+            0: EpochParams(
+                epoch=0, tick=c.tick, tick_multiple=c.tick_multiple,
+                dt_ns=c.dt_ns, p0=c.p0, rows=c.rows,
+            )
+        }
 
     def install_replay_column(self, col: FinalizedColumn, ep: EpochParams, seq: int) -> FinalizedColumn:
         """Install the recorded aggregate directly; it is already finalized.
@@ -599,31 +606,21 @@ class Grid:
         self._state[1] = self._map_levels(ask_px, ask_sz)
 
     def _map_levels(self, px: np.ndarray, sz: np.ndarray) -> np.ndarray:
-        """Scatter price levels into a dense [rows] float64 profile.
-
-        ``row = round((px - p0) / (tick * tick_multiple))``; out-of-range
-        levels are dropped (they return after a re-anchor). Non-finite prices
-        or sizes (NaN/inf) are dropped BEFORE the rint/int cast — they would
-        otherwise poison the density texels and raise RuntimeWarnings.
-        """
+        """Scatter finite non-negative price levels into a dense [rows] float64 profile."""
         rows = self._cfg.rows
         px64 = np.asarray(px, dtype=np.float64)
         sz64 = np.asarray(sz, dtype=np.float64)
-        finite = np.isfinite(px64) & np.isfinite(sz64)
-        px64 = px64[finite]
-        sz64 = sz64[finite]
-        if self._scale.kind == SCALE_HYBRID:
-            # Non-uniform grid: rows come from the piecewise map. It returns NaN
-            # for a non-positive price (log space has no zero), so re-filter —
-            # an unfiltered rint(NaN) would bin those onto row 0.
-            rf = rows_for_prices(self._scale, px64)
-            ok = np.isfinite(rf)
-            r = np.rint(rf[ok]).astype(np.int64)
-            sz64 = sz64[ok]
-        else:
-            r = np.rint((px64 - self._p0) / self._step).astype(np.int64)
+        finite = np.isfinite(px64) & np.isfinite(sz64) & (sz64 >= 0.0)
+        px64, sz64 = px64[finite], sz64[finite]
+        rf = (
+            rows_for_prices(self._scale, px64)
+            if self._scale.kind == SCALE_HYBRID
+            else (px64 - self._p0) / self._step
+        )
+        ok = np.isfinite(rf) & (rf >= -0.5) & (rf < rows - 0.5)
+        r = np.rint(rf[ok]).astype(np.int64)
         mask = (r >= 0) & (r < rows)
-        return np.bincount(r[mask], weights=sz64[mask], minlength=rows)
+        return np.bincount(r[mask], weights=sz64[ok][mask], minlength=rows)
 
     @staticmethod
     def _pack_density(density: np.ndarray) -> tuple[np.ndarray, float]:

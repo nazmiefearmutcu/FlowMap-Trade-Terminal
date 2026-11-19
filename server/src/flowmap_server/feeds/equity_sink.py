@@ -118,6 +118,9 @@ class _EquitySink:
             sizes_ok = math.isfinite(bid_sz) and bid_sz >= 0.0 and math.isfinite(ask_sz) and ask_sz >= 0.0
             if not (prices_ok and sizes_ok):
                 self.dropped_quotes += 1
+                inc_quotes = getattr(self._stats, "inc_quotes_dropped", None)
+                if callable(inc_quotes):
+                    inc_quotes()
                 if self.dropped_quotes == 1:
                     logger.warning(
                         "equity feed: dropped invalid quote (bid=%r ask=%r bid_sz=%r ask_sz=%r); "

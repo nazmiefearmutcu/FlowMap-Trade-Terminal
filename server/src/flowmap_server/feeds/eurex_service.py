@@ -134,14 +134,20 @@ class EurexService:
                 self._source = self._source_factory(self._store)
                 # Opened, not collecting: nothing is being fetched until a chart opens.
                 self._state['status'] = 'idle'
+                self._opened = True
             except Exception:
+                if self._store is not None:
+                    try:
+                        await safe_worker(self._store.close)
+                    except Exception:
+                        pass
+                    self._store = None
                 self._state.update(status='error', error_code='store_unavailable')
             except asyncio.CancelledError:
                 if self._store is not None:
                     await safe_worker(self._store.close)
                     self._store = None
                 raise
-            self._opened = True
 
     # Kept for callers of the earlier name: opening is all it ever needed to do for a reader.
     start = open

@@ -45,7 +45,7 @@ from fastapi.responses import StreamingResponse
 from flowmap_server.api.errors import ApiError
 from flowmap_server.core.grid import Grid
 from flowmap_server.core.session import Session, SessionManager
-from flowmap_server.core.price_scale import row_to_price
+from flowmap_server.core.price_scale import row_to_price, scale_of
 
 __all__ = ["router", "EXPORT_MAX_BYTES", "EXPORT_DEFAULT_COLUMNS"]
 
@@ -129,9 +129,15 @@ class _Snapshot:
     tick: float
     dt_ns: int
     rows: int
-    price_lo: float
-    price_hi: float
-    columns: list[tuple[int, np.ndarray, np.ndarray]]  # (t0_ns, bid f32, ask f32)
+    columns: list[tuple[int, float, float, np.ndarray, np.ndarray]]  # (t0_ns, lo, hi, bid, ask)
+
+
+def _finite_list(values: np.ndarray) -> list[float]:
+    """Convert an array to JSON-safe finite Python floats."""
+    arr = np.asarray(values, dtype=np.float32)
+    if not np.all(np.isfinite(arr)):
+        arr = np.where(np.isfinite(arr), arr, 0.0)
+    return arr.tolist()
 
 
 def _snapshot(grid: Grid, n: int, symbol: str, market: str) -> _Snapshot:
@@ -144,14 +150,23 @@ def _snapshot(grid: Grid, n: int, symbol: str, market: str) -> _Snapshot:
     """
     cfg = grid.cfg
     rows = int(cfg.rows)
-    scale = grid.scale
-    columns: list[tuple[int, np.ndarray, np.ndarray]] = []
+    fallback_scale = grid.scale
+    extent_by_epoch: dict[int, tuple[float, float]] = {}
+    columns: list[tuple[int, float, float, np.ndarray, np.ndarray]] = []
     for c in grid.history(_MAX_T_NS, n):
         depth = grid.to_depth(c)
         # Synth grids drop the ask channel on the wire; the export keeps the
         # grid's own ask density rather than failing the whole request.
         ask = depth.ask if depth.ask is not None else c.ask.astype(np.float32)
-        columns.append((int(c.t0_ns), np.asarray(depth.bid), np.asarray(ask)))
+        ext = extent_by_epoch.get(c.epoch)
+        if ext is None:
+            try:
+                col_scale = scale_of(grid.epoch_params_for(c.epoch))
+            except KeyError:
+                col_scale = fallback_scale
+            ext = (row_to_price(col_scale, 0.0), row_to_price(col_scale, float(rows)))
+            extent_by_epoch[c.epoch] = ext
+        columns.append((int(c.t0_ns), ext[0], ext[1], np.asarray(depth.bid), np.asarray(ask)))
     return _Snapshot(
         symbol=symbol,
         market=market,
@@ -161,8 +176,6 @@ def _snapshot(grid: Grid, n: int, symbol: str, market: str) -> _Snapshot:
         tick=grid.current_epoch_params().tick,
         dt_ns=int(cfg.dt_ns),
         rows=rows,
-        price_lo=row_to_price(scale, 0.0),
-        price_hi=row_to_price(scale, float(rows)),
         columns=columns,
     )
 
@@ -170,7 +183,6 @@ def _snapshot(grid: Grid, n: int, symbol: str, market: str) -> _Snapshot:
 def _csv_lines(snap: _Snapshot) -> Iterator[str]:
     """CSV body, one line per finalized column (comment header first)."""
     rows = snap.rows
-    price_lo, price_hi = snap.price_lo, snap.price_hi
     # The comment line must stay ONE line and header-safe: the symbol is raw
     # Subscribe text, so project it (see _safe_export_name).
     yield (
@@ -180,29 +192,31 @@ def _csv_lines(snap: _Snapshot) -> Iterator[str]:
     )
     names = ",".join(f"b{i},a{i}" for i in range(rows))
     yield f"t0_ns,price_lo,price_hi,{names}\n"
-    for t0_ns, bid_values, ask_values in snap.columns:
+    for t0_ns, price_lo, price_hi, bid_values, ask_values in snap.columns:
         values = ",".join(
-            f"{b!r},{a!r}" for b, a in zip(bid_values.tolist(), ask_values.tolist())
+            f"{b!r},{a!r}" for b, a in zip(_finite_list(bid_values), _finite_list(ask_values))
         )
         yield f"{t0_ns},{price_lo!r},{price_hi!r},{values}\n"
 
 
 def _json_chunks(snap: _Snapshot) -> Iterator[str]:
     """JSON body as stream chunks: ``{"symbol","tick","columns":[...]}``."""
+    tick = snap.tick if np.isfinite(snap.tick) else 0.0
     yield (
-        '{"symbol":' + json.dumps(snap.symbol)
-        + ',"tick":' + json.dumps(snap.tick)
+        '{"symbol":' + json.dumps(snap.symbol, allow_nan=False)
+        + ',"tick":' + json.dumps(tick, allow_nan=False)
         + ',"columns":['
     )
     last = len(snap.columns) - 1
-    for i, (t0_ns, bid_values, ask_values) in enumerate(snap.columns):
+    for i, (t0_ns, _lo, _hi, bid_values, ask_values) in enumerate(snap.columns):
         chunk = json.dumps(
             {
                 "t0": t0_ns,
-                "bids": bid_values.tolist(),
-                "asks": ask_values.tolist(),
+                "bids": _finite_list(bid_values),
+                "asks": _finite_list(ask_values),
             },
             separators=(",", ":"),
+            allow_nan=False,
         )
         yield chunk + ("," if i < last else "")
     yield "]}"

@@ -36,6 +36,7 @@ refusal Status) never interleave mid-frame with queue flushes or pings.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -459,6 +460,8 @@ class _Connection:
         finally:
             if not receive.done():
                 receive.cancel()
+                with contextlib.suppress(BaseException):
+                    await receive
         if receive.done() and not receive.cancelled():
             return receive.result()
         return None
@@ -466,6 +469,8 @@ class _Connection:
     async def _drop_session(self) -> None:
         self._invalidate_history()
         if self._session is not None:
+            if getattr(self._session, "conn_stats", None) == self._conn_stats:
+                self._session.conn_stats = None
             await self._manager.unsubscribe(self._session, self._client)
             self._session = None
 
@@ -853,8 +858,10 @@ class _Connection:
             await self._send(wire.encode(status))
         finally:
             # The close must happen even when the Status could not be sent, or
-            # the peer never learns why it was refused.
+            # the peer never learns why it was refused. Serialized with sends so
+            # a concurrent ping/flush cannot interleave with websocket.close.
             try:
-                await self._ws.close(code=code)
+                async with self._send_lock:
+                    await self._ws.close(code=code)
             except Exception:  # already closing/closed
                 logger.debug("ws close after refusal failed", exc_info=True)

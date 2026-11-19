@@ -1042,23 +1042,19 @@ def warm_part_index(
             return
         if not was_warmed:
             _load_part_index(root, directory)
-        # A fresh directory scan validates every request's file size/mtime.
-        # On Windows these regular-file attributes come from enumeration,
-        # avoiding one handle-opening Path.stat for every historical part.
-        # DirEntry metadata never survives this request or warmup.
+        # Fresh directory scan validates size/mtime without holding handles.
         entries = []
         named_index = getattr(parts, "index_by_name", {})
         with os.scandir(directory) as scan:
             for entry in scan:
                 if "-columns-" not in entry.name or not entry.name.endswith(".parquet"):
-                    if (
-                        hasattr(parts, "epoch_stamps")
-                        and "-epochs-" in entry.name
-                        and entry.name.endswith(".parquet")
-                        and entry.is_file(follow_symlinks=False)
-                    ):
-                        stat = entry.stat(follow_symlinks=False)
-                        parts.epoch_stamps.append([entry.name, stat.st_size, stat.st_mtime_ns])
+                    if hasattr(parts, "epoch_stamps") and "-epochs-" in entry.name and entry.name.endswith(".parquet"):
+                        try:
+                            if entry.is_file(follow_symlinks=False):
+                                stat = entry.stat(follow_symlinks=False)
+                                parts.epoch_stamps.append([entry.name, stat.st_size, stat.st_mtime_ns])
+                        except OSError:
+                            continue
                     continue
                 try:
                     if not entry.is_file(follow_symlinks=False):

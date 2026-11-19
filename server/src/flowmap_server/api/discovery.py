@@ -67,7 +67,7 @@ _QUOTE_SIMPLE_MARKETS = frozenset({"crypto", "equity", "sim"})
 # A symbol is a short ticker or pair: letters, digits and the separators venues
 # use (BRK.B, BTC/USDT, BTC-PERP, ^GSPC, ETH:USDC). Anything else is refused
 # before it can reach an upstream request or a cache key.
-_SYMBOL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:+=^!-]{0,63}")
+_SYMBOL_PATTERN = re.compile(r"[A-Za-z0-9^][A-Za-z0-9._/:+=^!-]{0,63}")
 # An option series is named by its expiry day and its contract family (SPXW, XU030D).
 _EXPIRY_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 _ROOT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")

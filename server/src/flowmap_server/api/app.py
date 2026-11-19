@@ -186,7 +186,9 @@ def _install_error_handlers(app: FastAPI) -> None:
         return _error_response("internal_error", "internal server error", 500)
 
 
-def _server_feed_factory(cfg: Config, eurex_service=None) -> Callable[[events.Subscribe], Feed]:
+def _server_feed_factory(
+    cfg: Config, eurex_service=None, stats=None
+) -> Callable[[events.Subscribe], Feed]:
     """Server-path feed factory: realtime sim + live crypto/equity.
 
     Same routing as the test path (both go through ``feeds.router``); only the
@@ -194,7 +196,7 @@ def _server_feed_factory(cfg: Config, eurex_service=None) -> Callable[[events.Su
     wall time, which keeps the event loop live and the demo stream watchable
     (4 columns/s at dt=250 ms).
     """
-    return feed_factory(cfg, realtime_sim=True, eurex_service=eurex_service)
+    return feed_factory(cfg, realtime_sim=True, stats=stats, eurex_service=eurex_service)
 
 
 @asynccontextmanager
@@ -224,7 +226,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if callable(run_catalog):
         preview_warm = asyncio.create_task(run_catalog(), name="market-preview-catalog")
     cfg = getattr(app.state, "cfg", None)
-    if getattr(cfg, "exit_on_stdin_eof", False):
+    if (
+        getattr(cfg, "exit_on_stdin_eof", False)
+        and not getattr(app.state, "_stdin_eof_watched", False)
+    ):
         # The desktop shell holds our stdin; its EOF means it is gone.
         lifecycle.watch_stdin_eof(sys.stdin, lifecycle.request_shutdown)
     try:
@@ -237,10 +242,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await asyncio.gather(*warmups, return_exceptions=True)
         close_cache = getattr(market_cache, "aclose", None)
         if callable(close_cache):
-            await close_cache()
-        eurex_service = getattr(app.state, 'eurex_service', None)
+            try:
+                await close_cache()
+            except Exception:
+                logger.debug("market cache close failed during shutdown", exc_info=True)
+        eurex_service = getattr(app.state, "eurex_service", None)
         if eurex_service is not None:
-            await eurex_service.close()
+            try:
+                await eurex_service.close()
+            except Exception:
+                logger.debug("eurex service close failed during shutdown", exc_info=True)
         manager = getattr(app.state, "manager", None)
         flush_all = getattr(manager, "flush_all", None)
         if flush_all is not None:
@@ -255,6 +266,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     "shutdown flush did not finish within %.0fs; unflushed rows may be lost",
                     SHUTDOWN_FLUSH_DEADLINE_S,
                 )
+        await _close_shared_http_clients()
+
+
+async def _close_shared_http_clients() -> None:
+    """Close process-wide feed HTTP pools on shutdown without leaking errors."""
+    from flowmap_server.feeds.asset_markets import close_asset_feed
+    from flowmap_server.feeds.global_equity import close_live_feed
+    from flowmap_server.feeds.option_chains import close_published_chains
+
+    for closer in (close_live_feed, close_asset_feed, close_published_chains):
+        try:
+            await closer()
+        except Exception:
+            logger.debug("shared feed client close failed during shutdown", exc_info=True)
 
 
 def create_app(
@@ -267,7 +292,7 @@ def create_app(
     from flowmap_server.feeds.eurex_service import EurexService, MARKET
     from flowmap_server.api import eurex
     if eurex_service is None:
-        eurex_service = EurexService(Path(cfg.data_dir), ring_columns=cfg.ring_columns)
+        eurex_service = EurexService(Path(cfg.data_dir).expanduser(), ring_columns=cfg.ring_columns)
     if manager is None:
         recorder = Recorder(
             # expanduser defensively: from_env already expands, but a Config
@@ -278,13 +303,13 @@ def create_app(
         )
         manager = SessionManager(
             cfg,
-            feed_factory=_server_feed_factory(cfg, eurex_service),
             recorder=recorder,
             # First-launch history backfill. The network seam dispatches
             # crypto -> klines, equity -> Yahoo, sim -> no-op; tests inject their
             # own manager (no backfill).
             backfill_fn=asset_backfill_fn,
         )
+        manager._feed_factory = _server_feed_factory(cfg, eurex_service, stats=manager.stats)
     # Discovery cache: all movers/quote network lives behind this
     # TTL-debounced cache. Tests inject a canned cache; the default wires the live
     # provider seams, called on /api/movers|/api/quote reads and by the lifespan

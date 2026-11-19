@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import math
 import time
 from collections.abc import AsyncIterator, Mapping
 
@@ -86,8 +87,11 @@ class _Clock:
         self._wall0 = time.monotonic()
 
     def set_speed(self, x: float) -> None:
+        val = float(x)
+        if not math.isfinite(val):
+            return
         self.t = self.now()
-        self.speed = max(0.0, float(x))
+        self.speed = min(100_000.0, max(0.0, val))
         self._wall0 = time.monotonic()
 
     def seek(self, t: int) -> None:
