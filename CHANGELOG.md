@@ -7,6 +7,60 @@ Unreleased work sits on top of the newest listed commit.
 
 ## [Unreleased]
 
+## [1.7.1] — 2026-11-20
+
+Release notes: [docs/release-notes-1.7.1.md](docs/release-notes-1.7.1.md).
+
+### Fixed
+
+- **WebGL rendering and GPU context recovery.** Rebuild GPU heatmap ring textures from CPU history
+  after `webglcontextrestored`, clamp zero-height price bands in the heatmap shader, reset mip and
+  column geometry caches across symbol and DPR changes, and fix overlay/indicator DPR scaling and
+  PNG export composition.
+  ([`gl/render/restoreRing.ts`](client/src/gl/render/restoreRing.ts),
+  [`gl/heatmap.ts`](client/src/gl/heatmap.ts),
+  [`ui/IndicatorOverlayCanvasPaint.ts`](client/src/ui/IndicatorOverlayCanvasPaint.ts))
+- **Overlays, drawings and crosshair.** Resolve label collisions across axes, BBO markers, GEX
+  levels, VWAP and volume-profile tags; fix drawing painter coordinates and clip bounds; refine
+  crosshair pill layout and heat-legend formatting.
+  ([`gl/overlays/bbo.ts`](client/src/gl/overlays/bbo.ts),
+  [`gl/overlays/axes.ts`](client/src/gl/overlays/axes.ts),
+  [`ui/Crosshair.tsx`](client/src/ui/Crosshair.tsx))
+- **Frontend state, transport and accessibility.** Guard WebSocket reconnect, history paging,
+  sidecar hold-off and quote feeds against stale responses; prevent mouse-event objects from being
+  stored as the Research drawer's active tab; harden keyboard shortcuts, focus traps, ARIA
+  attributes, alert sound/monitoring, closed-market banner and replay picker state.
+  ([`net/connection.ts`](client/src/net/connection.ts),
+  [`state/intelligenceStore.ts`](client/src/state/intelligenceStore.ts),
+  [`ui/ReplayPicker.tsx`](client/src/ui/ReplayPicker.tsx))
+- **Python server stability and Polars 2.0 compatibility.** Harden feed error handling and shutdown
+  in crypto, equity, global-equity, Eurex and replay feeds; tighten grid, pyramid, session-book,
+  history, recording and export bounds; clean up WebSocket teardown and clear Polars 2.0
+  deprecations.
+  ([`core/session_history.py`](server/src/flowmap_server/core/session_history.py),
+  [`core/pyramid.py`](server/src/flowmap_server/core/pyramid.py),
+  [`api/app.py`](server/src/flowmap_server/api/app.py))
+- **Desktop shell hardening.** Validate Windows `GetExtendedTcpTable` buffer bounds before slice
+  construction and require `127.0.0.1` loopback listeners on Windows and macOS; redact
+  `flowmap.auth.<token>` subprotocol tokens using per-pipe `RedactingSink` buffers; add backoff on
+  failed log rotation; write a sibling `flowmap.pid` file so a second Windows instance can focus
+  the running window; escape newlines in AppleScript dialogs; fsync unique temporary files in
+  atomic writes and enforce strict HTTP 200 status checks with write timeouts on health probes.
+  ([`listener.rs`](app/src-tauri/src/listener.rs),
+  [`server_log.rs`](app/src-tauri/src/server_log.rs),
+  [`redact.rs`](app/src-tauri/src/redact.rs),
+  [`instance_lock.rs`](app/src-tauri/src/instance_lock.rs))
+
+### Changed
+
+- **Theme tokens and institutional UI layout.** Refined surface hierarchy, contrast tokens, focus
+  rings, tabular figures and compact controls across themes and Pixel style; prevented top-bar
+  settings button wrapping and desk-toolbar FPS readout clipping on narrower windows in English
+  and Turkish.
+  ([`theme/themes.css`](client/src/theme/themes.css),
+  [`App.css`](client/src/App.css),
+  [`ui/Desk.css`](client/src/ui/Desk.css))
+
 ## [1.7.0] — 2026-11-15
 
 Release notes: [docs/release-notes-1.7.0.md](docs/release-notes-1.7.0.md).
