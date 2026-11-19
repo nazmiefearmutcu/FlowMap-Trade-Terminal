@@ -40,7 +40,7 @@ describe('TextLayer', () => {
     return { clears, moves, lines };
   }
 
-  it('syncSize sizes the DPR-scaled backing store and clear() wipes the CSS box', () => {
+  it('syncSize sizes the DPR-scaled backing store and clear() wipes the full backing store', () => {
     const { clears } = install();
     const canvas = document.createElement('canvas');
     const layer = new TextLayer(canvas);
@@ -52,10 +52,10 @@ describe('TextLayer', () => {
     expect(layer.height).toBe(200);
 
     layer.clear();
-    expect(clears).toEqual([[0, 0, 320, 200]]);
+    expect(clears).toEqual([[0, 0, 640, 400]]);
 
     // A resize is picked up by the next clear (the backing store was resized,
-    // so the full new box must be wiped — a stale smaller rect would leave ink).
+    // so the full new backing store must be wiped — a stale smaller rect would leave ink).
     layer.syncSize(100, 50, 1);
     expect(canvas.width).toBe(100);
     layer.clear();

@@ -22,6 +22,7 @@ import {
   type DepthChannel,
   type Heatmap,
 } from '../heatmap';
+import { sanitizeDpr } from '../heatmapMath';
 import {
   RAMP_FLOW,
   RAMP_SYNTH,
@@ -69,6 +70,7 @@ export interface ShadingHost {
   activeOverview(): OverviewSurface | null;
   overviewSurface(): OverviewSurface | null;
   dpr(): number;
+  glLost?(): boolean;
   prefersReducedMotion(): boolean;
   clearBackground(): void;
 }
@@ -191,9 +193,11 @@ export class Shading {
     if (same) return;
     this.chartTheme = theme;
     setThemeStops(theme);
-    uploadLUTAtlas(this.host.gl(), this.host.lut());
+    const gl = this.host.gl();
+    const lost = this.host.glLost?.() === true || (typeof gl.isContextLost === 'function' && gl.isContextLost());
+    if (!lost) uploadLUTAtlas(gl, this.host.lut());
     this.applyRamp();
-    this.host.clearBackground();
+    if (!lost) this.host.clearBackground();
     this.host.frameState.dirty = true;
   }
 
@@ -370,10 +374,11 @@ export class Shading {
     const m = this.host.mips();
     const maxLevel = m !== null && m.usable ? m.maxLevel : 0;
     const gl = this.host.gl();
+    const dpr = sanitizeDpr(this.host.dpr());
     return selectLevel(
-      projectedRowsPerPixel(this.host.frameState.view, this.host.axis.overlayPriceMap()?.scale ?? null, gl.drawingBufferHeight),
+      projectedRowsPerPixel(this.host.frameState.view, this.host.axis.overlayPriceMap()?.scale ?? null, gl.drawingBufferHeight) * dpr,
       maxLevel,
-      this.host.frameState.view.colScale / Math.max(1, gl.drawingBufferWidth),
+      (this.host.frameState.view.colScale / Math.max(1, gl.drawingBufferWidth)) * dpr,
       includeFloor ? this.tickGroupingLevel() : 0,
     ).level;
   }

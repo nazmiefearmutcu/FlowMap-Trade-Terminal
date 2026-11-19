@@ -30,6 +30,7 @@ import type { ColumnCache } from '../columnCache';
 import type { ViewportNormalizer } from '../normalize';
 import type { OverlayManager } from '../overlays/manager';
 import { CoarseOverview, type OverviewStats } from './coarseOverview';
+import { repopulateRingFromCache } from './restoreRing';
 import type { AxisMap } from './axisMap';
 import type { FollowPolicy } from './followPolicy';
 import type { FrameState, StateSource } from './frameState';
@@ -543,16 +544,16 @@ export class GpuLifecycle {
     this.host.onFrameRestored();
     try {
       this.host.rebuildGL();
+      this.contextLost = false;
       this.host.setRenderFailure(null);
+      this.frameState.dirty = true;
+      this.frameState.viewMoved = true;
     } catch (err) {
       this.host.setRenderFailure(err instanceof Error ? err.message : String(err));
       setTimeout(() => {
         throw err;
       }, 0);
     }
-    this.contextLost = false;
-    this.frameState.dirty = true;
-    this.frameState.viewMoved = true;
   };
 
   /** Rebuild ctx + LUT + ring + heatmap + mips after a restore, preserving the
@@ -581,9 +582,7 @@ export class GpuLifecycle {
       this.mips = null;
       this.heatmap = null;
       const ring = this.installRing(this.ringRows, this.ringLayers);
-      // Geometry and camera policy survived the GPU loss. Resetting against
-      // the empty cache would shrink All/history views and re-arm tracking
-      // after a manual pan. Restore resources without changing either axis.
+      repopulateRingFromCache(ring, this.mips, this.extents, this.host.columnCache(), this.axis, () => this.host.countUpload());
       this.camera.setLimits({ ...this.camera.limits, ...limitsFor(this.ringRows, ring.capacityCols), timeWindow: this.camera.limits.timeWindow });
       this.frameState.view = this.camera.toView();
     }

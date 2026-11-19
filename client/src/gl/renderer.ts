@@ -327,7 +327,7 @@ export class Renderer {
       overlays: () => this.overlays,
       activeOverview: () => this.activeOverview(),
       overviewSurface: () => this.gpu.overviewSurface,
-      dpr: () => this.dpr,
+      dpr: () => this.dpr, glLost: () => this.gpu.glLost(),
       prefersReducedMotion: () => this.prefersReducedMotion(),
       clearBackground: () => this.clearBackground(),
     };

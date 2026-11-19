@@ -51,7 +51,7 @@ export function createRolling(period: number): RollingSum {
     let q = 0;
     for (let i = 0; i < count; i += 1) {
       const x = buf[i];
-      if (!Number.isNaN(x)) {
+      if (Number.isFinite(x)) {
         s += x;
         q += x * x;
       }
@@ -68,7 +68,7 @@ export function createRolling(period: number): RollingSum {
       let c = count;
       if (c === period) {
         const evict = buf[head];
-        if (Number.isNaN(evict)) {
+        if (!Number.isFinite(evict)) {
           n -= 1;
         } else {
           s -= evict;
@@ -77,7 +77,7 @@ export function createRolling(period: number): RollingSum {
       } else {
         c += 1;
       }
-      if (Number.isNaN(v)) {
+      if (!Number.isFinite(v)) {
         n += 1;
       } else {
         s += v;

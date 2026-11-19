@@ -60,6 +60,25 @@ export interface HybridScale {
 
 export type PriceScale = LinearScale | HybridScale;
 
+/** Zero-allocation structural equality for two PriceScales. */
+export function samePriceScale(a: PriceScale | null | undefined, b: PriceScale | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.kind !== b.kind || a.rows !== b.rows) return false;
+  if (a.kind === 'linear' && b.kind === 'linear') return a.p0 === b.p0 && a.step === b.step;
+  if (a.kind === 'hybrid' && b.kind === 'hybrid') {
+    return a.dnRows === b.dnRows && a.coreRows === b.coreRows && a.coreP0 === b.coreP0
+      && a.coreStep === b.coreStep && a.loPrice === b.loPrice && a.hiPrice === b.hiPrice;
+  }
+  return false;
+}
+
+/** Deterministic string key for a PriceScale without JSON serialization overhead. */
+export function priceScaleKey(s: PriceScale): string {
+  return s.kind === 'linear'
+    ? `L:${s.rows}:${s.p0}:${s.step}`
+    : `H:${s.rows}:${s.dnRows}:${s.coreRows}:${s.coreP0}:${s.coreStep}:${s.loPrice}:${s.hiPrice}`;
+}
+
 /** Top of the linear core (price at row `dnRows + coreRows`). */
 export function coreHiPrice(s: HybridScale): number {
   return s.coreP0 + s.coreRows * s.coreStep;

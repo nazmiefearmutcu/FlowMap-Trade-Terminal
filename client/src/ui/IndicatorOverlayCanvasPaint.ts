@@ -147,6 +147,12 @@ export function paintSubPanes(f: PaintFrame, subActive: readonly ActiveIndicator
   ctx.font = `10px ${themedVar('--font-mono', MONO_FALLBACK)}`;
   ctx.textBaseline = 'top';
 
+  const xCoords = new Float64Array(cs.length);
+  for (let i = 0; i < cs.length; i += 1) {
+    const col = colAt[i];
+    xCoords[i] = Number.isFinite(col) ? to(col, 0).x : Number.NaN;
+  }
+
   for (let li = 0; li < subActive.length; li += 1) {
     const a = subActive[li];
     const inst = instances.get(a.uid);
@@ -156,22 +162,47 @@ export function paintSubPanes(f: PaintFrame, subActive: readonly ActiveIndicator
     const y0 = laneTop + 3;
     const y1 = laneBottom - 5;
 
-    // Lane scale: min/max across ALL outputs of this indicator.
+    const isRsi = inst.def.id === 'rsi';
+    const hasHistogram = inst.def.outputs.some((o) => o.histogram);
+
+    // Lane scale: auto-scale over visible candles first (falling back to full buffer).
     let lo = Number.POSITIVE_INFINITY;
     let hi = Number.NEGATIVE_INFINITY;
-    for (const ring of inst.rings) {
-      for (let i = 0; i < cs.length; i += 1) {
-        const v = ring[slotOf(cs[i].bi)];
-        if (Number.isFinite(v)) {
-          if (v < lo) lo = v;
-          if (v > hi) hi = v;
+    if (isRsi) {
+      lo = 0;
+      hi = 100;
+    } else {
+      for (const ring of inst.rings) {
+        for (let i = 0; i < cs.length; i += 1) {
+          const x = xCoords[i];
+          if (!Number.isFinite(x) || x < -20 || x > cssW + 20) continue;
+          const v = ring[slotOf(cs[i].bi)];
+          if (Number.isFinite(v)) {
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+          }
         }
       }
-    }
-    if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
-    if (hi === lo) {
-      hi += Math.abs(hi) * 1e-6 + 1e-9;
-      lo -= Math.abs(lo) * 1e-6 + 1e-9;
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+        for (const ring of inst.rings) {
+          for (let i = 0; i < cs.length; i += 1) {
+            const v = ring[slotOf(cs[i].bi)];
+            if (Number.isFinite(v)) {
+              if (v < lo) lo = v;
+              if (v > hi) hi = v;
+            }
+          }
+        }
+      }
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+      if (hasHistogram) {
+        lo = Math.min(lo, 0);
+        hi = Math.max(hi, 0);
+      }
+      if (hi === lo) {
+        hi += Math.abs(hi) * 1e-6 + 1e-9;
+        lo -= Math.abs(lo) * 1e-6 + 1e-9;
+      }
     }
     const yOf = (v: number): number => y1 - ((v - lo) / (hi - lo)) * (y1 - y0);
 
@@ -183,18 +214,33 @@ export function paintSubPanes(f: PaintFrame, subActive: readonly ActiveIndicator
       ctx.lineTo(cssW, laneBottom - 0.5);
     }
     ctx.stroke();
+
+    const hiLabel = fmtVal(hi);
+    const loLabel = fmtVal(lo);
     ctx.fillStyle = inkDim;
     ctx.textAlign = 'left';
-    ctx.fillText(fmtVal(hi), 4, y0);
-    ctx.fillText(fmtVal(lo), 4, y1 - 10);
+    ctx.fillText(hiLabel, 4, y0);
+    ctx.fillText(loLabel, 4, y1 - 10);
 
-    const xOf = (i: number): number => {
-      const col = colAt[i];
-      return Number.isFinite(col) ? to(col, 0).x : Number.NaN;
-    };
+    // Clip all plotted data to this lane so excursions never bleed across lanes.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, laneTop, cssW, laneH);
+    ctx.clip();
 
-    // Zero line when the lane spans it (MACD-style lanes).
-    if (lo < 0 && hi > 0) {
+    // RSI 30/70 reference lines, or zero line when the lane spans zero.
+    if (isRsi) {
+      ctx.strokeStyle = zeroInk;
+      ctx.setLineDash([3, 3]);
+      for (const level of [30, 70]) {
+        const ly = yOf(level);
+        ctx.beginPath();
+        ctx.moveTo(0, ly);
+        ctx.lineTo(cssW, ly);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    } else if (lo < 0 && hi > 0) {
       const zy = yOf(0);
       ctx.strokeStyle = zeroInk;
       ctx.setLineDash([3, 3]);
@@ -205,6 +251,23 @@ export function paintSubPanes(f: PaintFrame, subActive: readonly ActiveIndicator
       ctx.setLineDash([]);
     }
 
+    // Dynamic histogram bar width derived from visible candle spacing.
+    let barSpacing = cssW / Math.max(8, cs.length);
+    if (hasHistogram) {
+      let minStep = Number.POSITIVE_INFINITY;
+      let prevX = Number.NaN;
+      for (let i = 0; i < cs.length; i += 1) {
+        const x = xCoords[i];
+        if (!Number.isFinite(x) || x < -20 || x > cssW + 20) continue;
+        if (Number.isFinite(prevX)) {
+          const dx = Math.abs(x - prevX);
+          if (dx > 0.5 && dx < minStep) minStep = dx;
+        }
+        prevX = x;
+      }
+      if (Number.isFinite(minStep)) barSpacing = minStep;
+    }
+
     // Histogram outputs first (behind the lines), then lines.
     for (let oi = 0; oi < inst.def.outputs.length; oi += 1) {
       const out = inst.def.outputs[oi];
@@ -212,12 +275,12 @@ export function paintSubPanes(f: PaintFrame, subActive: readonly ActiveIndicator
       const ring = inst.rings[oi];
       ctx.fillStyle = colorOf(a.uid, out);
       const zy = yOf(0);
-      const halfW = Math.max(1, Math.min(4, cssW / Math.max(8, cs.length) / 2));
+      const halfW = Math.max(1, Math.min(6, barSpacing * 0.36));
       for (let i = 0; i < cs.length; i += 1) {
         const v = ring[slotOf(cs[i].bi)];
         if (!Number.isFinite(v)) continue;
-        const x = xOf(i);
-        if (!Number.isFinite(x)) continue;
+        const x = xCoords[i];
+        if (!Number.isFinite(x) || x < -halfW || x > cssW + halfW) continue;
         const y = yOf(v);
         ctx.fillRect(x - halfW, Math.min(y, zy), halfW * 2, Math.max(1, Math.abs(y - zy)));
       }
@@ -236,7 +299,7 @@ export function paintSubPanes(f: PaintFrame, subActive: readonly ActiveIndicator
           started = false;
           continue;
         }
-        const x = xOf(i);
+        const x = xCoords[i];
         if (!Number.isFinite(x)) {
           started = false;
           continue;
@@ -251,11 +314,14 @@ export function paintSubPanes(f: PaintFrame, subActive: readonly ActiveIndicator
       }
       ctx.stroke();
     }
+    ctx.restore();
 
-    // Lane title (left, after the scale labels) + latest values (right).
+    // Lane title (placed past widest scale label) + latest values (right).
+    const scaleW = Math.max(ctx.measureText(hiLabel).width, ctx.measureText(loLabel).width);
+    const titleX = Math.max(40, Math.ceil(scaleW) + 10);
     ctx.fillStyle = titleInk;
     ctx.textAlign = 'left';
-    ctx.fillText(inst.def.outputs.map((o) => outputLabel(o.key, o.label)).join('·'), 40, y0);
+    ctx.fillText(inst.def.outputs.map((o) => outputLabel(o.key, o.label)).join('·'), titleX, y0);
     let labelX = cssW - 6;
     ctx.textAlign = 'right';
     for (let oi = inst.def.outputs.length - 1; oi >= 0; oi -= 1) {

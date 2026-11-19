@@ -140,8 +140,10 @@ export function accumulateProfile(
         const targetShift = 0.5;
         const priceLo = rowToPrice(target, rowLo - targetShift);
         const priceHi = rowToPrice(target, rowHi + 1 - targetShift);
-        const sourceLo = Math.max(0, Math.floor(priceToRow(source, priceLo) + sourceShift));
-        const sourceHi = Math.min(bid.length - 1, Math.floor(priceToRow(source, priceHi) + sourceShift));
+        const rawSrcLo = priceToRow(source, priceLo);
+        const rawSrcHi = priceToRow(source, priceHi);
+        const sourceLo = Number.isFinite(rawSrcLo) ? Math.max(0, Math.floor(rawSrcLo + sourceShift)) : 0;
+        const sourceHi = Number.isFinite(rawSrcHi) ? Math.min(bid.length - 1, Math.floor(rawSrcHi + sourceShift)) : bid.length - 1;
         for (let r = sourceLo; r <= sourceHi; r++) {
           const quantity = bid[r] + (ask !== null ? ask[r] : 0);
           if (!(quantity > 0)) continue;
@@ -149,8 +151,10 @@ export function accumulateProfile(
           const high = rowToPrice(source, r + 1 - sourceShift);
           const width = high - low;
           if (!(width > 0) || !Number.isFinite(width)) continue;
-          const first = Math.max(rowLo, Math.floor(priceToRow(target, low) + targetShift));
-          const last = Math.min(rowHi, Math.floor(priceToRow(target, high) + targetShift));
+          const rawFirst = priceToRow(target, low);
+          const rawLast = priceToRow(target, high);
+          const first = Number.isFinite(rawFirst) ? Math.max(rowLo, Math.floor(rawFirst + targetShift)) : rowLo;
+          const last = Number.isFinite(rawLast) ? Math.min(rowHi, Math.floor(rawLast + targetShift)) : rowHi;
           for (let t = first; t <= last; t++) {
             const overlap = Math.min(high, rowToPrice(target, t + 1 - targetShift)) - Math.max(low, rowToPrice(target, t - targetShift));
             if (overlap > 0) bins[t - rowLo] += quantity * overlap / width;

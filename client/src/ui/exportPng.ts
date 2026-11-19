@@ -33,7 +33,7 @@ import {
   type Colormap,
 } from '../gl/lut';
 
-import { depthIsSynthetic, depthReadoutTier, resolveLegend, type LegendInput, type LegendDescriptor } from './heatLegendModel';
+import { depthIsSynthetic, depthReadoutTier, rampIsSynthetic, resolveLegend, type LegendInput, type LegendDescriptor } from './heatLegendModel';
 import { t } from '../i18n';
 import {
   exchangeZoneFor,
@@ -144,6 +144,10 @@ export interface ExportLayers {
   gl: HTMLCanvasElement;
   /** The over-heatmap 2D ink layer (price line / gridlines / badges). */
   ink?: HTMLCanvasElement | null;
+  /** User annotations drawing canvas layered over the chart. */
+  drawings?: HTMLCanvasElement | null;
+  /** Active indicators overlay/sub-pane canvas layered over the chart. */
+  indicators?: HTMLCanvasElement | null;
   /** Opaque volume strip beneath the price chart. */
   volume?: HTMLCanvasElement | null;
   /** Right-hand price gutter (labels + last-price pill). */
@@ -190,7 +194,7 @@ export function exportProvenanceNotes(input: ExportProvenanceInput): string[] {
  * helpers as the on-screen legend, so the exported PNG cannot disagree with the screen.
  */
 export function exportRampVerdict(capability: Record<string, unknown> | null | undefined): { synth: boolean; tier: string | null } {
-  return { synth: depthIsSynthetic(capability, null), tier: depthReadoutTier(capability, null) };
+  return { synth: rampIsSynthetic(capability, null), tier: depthReadoutTier(capability, null) };
 }
 
 /** The footer's mode word, in the UI language: the same `live` and `replay` the chart shows. */
@@ -246,6 +250,8 @@ export function collectExportLayers(
   return {
     gl,
     ink: doc.querySelector<HTMLCanvasElement>('canvas.overlay-text'),
+    drawings: doc.querySelector<HTMLCanvasElement>('canvas.draw-layer__canvas'),
+    indicators: doc.querySelector<HTMLCanvasElement>('canvas.indi-canvas'),
     volume: (() => {
       const canvas = doc.querySelector<HTMLCanvasElement>('canvas.overlay-volume');
       return canvas?.style.display === 'none' ? null : canvas;
@@ -368,6 +374,10 @@ export function composeExportLayers(
   ctx.drawImage(gl, 0, 0);
   const ink = layers?.ink;
   if (ink && ink.width > 0 && ink.height > 0) ctx.drawImage(ink, 0, 0);
+  const indicators = layers?.indicators;
+  if (indicators && indicators.width > 0 && indicators.height > 0) ctx.drawImage(indicators, 0, 0);
+  const drawings = layers?.drawings;
+  if (drawings && drawings.width > 0 && drawings.height > 0) ctx.drawImage(drawings, 0, 0);
   if (layers?.volume && volumeH > 0) ctx.drawImage(layers.volume, 0, glH);
   const priceAxis = layers?.priceAxis;
   if (priceAxis && pW > 0) ctx.drawImage(priceAxis, glW, 0);
@@ -461,6 +471,7 @@ function drawPriceLegendChip(
   const size = px(10);
   ctx.font = `400 ${size}px ${FONT_STACK}`;
   const items = priceLegendItems(overlays);
+  if (items.length === 0) return;
   const widths = items.map((it) => swatchW + labelGap + ctx.measureText(it.label).width);
   const totalW = pad * 2 + widths.reduce((a, b) => a + b, 0) + gap * (items.length - 1);
   const h = px(18);

@@ -441,26 +441,17 @@ export class OverlayManager {
     this.text.syncSize(ctx.dims.cssW, ctx.dims.cssH, ctx.dpr);
     this.text.clear();
     const axisStyle = { pixel: this.pixelStyle };
-    if (this.visibility.axes) drawGridlines(this.text, this.gm, axisStyle);
+    if (this.visibility.axes) drawGridlines(this.text, this.gm, axisStyle, ctx.timeAxisClock ?? null);
 
-    // A separate, opaque bottom strip prevents changing heatmap/price ink
-    // from changing the apparent height or colour of a completed volume bar.
-    // Its x transform is the exact same camera; only its local y origin differs.
-    // Invert plotH = stageH - clamp(16, stageH * .07, 44), using the
-    // ResizeObserver geometry. Reading the parent after drawing forces layout.
-    // Keep the fractional height: the CSS strip is clamp(16px, 7%, 44px), so a
-    // rounded canvas would leave a sub-pixel gap or overlap at the plot's bottom
-    // edge. The opaque fill below covers the last partial device row instead.
+    // Separate opaque bottom strip for traded volume bars.
     const stripH = volumeStripHeight(ctx.dims.cssH / (1 - VOLBAR_HEIGHT_FRAC));
     const volumeCanvas = this.volumeText.canvas;
     volumeCanvas.style.display = this.visibility.volume ? '' : 'none';
-    const height = `${stripH}px`;
-    if (volumeCanvas.style.height !== height) volumeCanvas.style.height = height;
-    this.volumeText.syncSize(ctx.dims.cssW, stripH, ctx.dpr);
-    this.volumeText.clear();
     if (this.visibility.volume) {
-      // A whole-CSS-px strip keeps its bitmap and the opaque fill on the same
-      // device rows; a fractional height left the last row partly see-through.
+      const height = `${stripH}px`;
+      if (volumeCanvas.style.height !== height) volumeCanvas.style.height = height;
+      this.volumeText.syncSize(ctx.dims.cssW, stripH, ctx.dpr);
+      this.volumeText.clear();
       this.volumeText.rect(0, 0, ctx.dims.cssW, Math.ceil(stripH * ctx.dpr) / ctx.dpr, OVERLAY.volumeBg);
       this.volumeText.rect(0, 0, ctx.dims.cssW, 1, OVERLAY.grid.css);
       Object.assign(this.volumeDims, ctx.dims, { cssH: stripH, drawH: stripH * ctx.dpr });
@@ -473,37 +464,27 @@ export class OverlayManager {
       frame.text = this.text;
     }
 
-    // GL overlays in the effective z-order (each flushes its own geometry →
-    // z-order). BBO draws BEFORE the price line so the near-white last-price
-    // core keeps the top layer where the inside quote touches it.
-    // The teal/red quote lines used to overpaint the 1.8px price core.
+    // GL overlays in z-order: BBO lines sit under the price core; BBO text badges
+    // draw after the price line so the white price core never slices through badge text.
     if (this.visibility.profile) this.profile.draw(frame);
     if (this.visibility.vwap) vwap.draw(frame);
     if (this.visibility.bbo) {
       this.bbo.set(this.effectiveBbo(ctx));
-      this.bbo.draw(frame);
+      this.bbo.drawLines(frame);
     }
     if (ctx.capability?.native_candles === true) this.nativeCandles.draw(frame);
     else if (this.visibility.price) priceLine.draw(frame);
+    if (this.visibility.bbo) this.bbo.drawBadges(frame);
     if (this.visibility.gex ?? true) this.gexLevels.draw(frame);
     if (this.visibility.bubbles) this.bubbles.draw(frame);
     if (this.visibility.markers) this.markers.draw(frame);
 
-    // Honesty badges: surface reduced-fidelity states on the text layer.
     this.drawHonestyBadges(ctx);
 
-    // Axes into their gutters (share the viewport dimension → aligned). The
-    // gutters are wiped on EVERY repaint: with axes off they would otherwise
-    // keep the last tick labels and the price pill, and nothing else ever
-    // clears those canvases. drawPriceAxis/drawTimeAxis clear
-    // before they draw, so each path clears exactly once. Sizing goes through
-    // `syncGutters()` so the SAME box math runs here and on the PriceAxis
-    // self-heal path (a boot whose first frames predate layout, or a canvas
-    // element replaced under the manager, must re-match without a resize).
     this.syncGutters(ctx.dpr);
     if (this.visibility.axes) {
       if (this.priceAxis) {
-        drawPriceAxis(this.priceAxis, this.gm, this.visibility.price ? priceLine.last() : null, axisStyle);
+        drawPriceAxis(this.priceAxis, this.gm, this.visibility.price ? priceLine.last() : null, { pixel: this.pixelStyle, topClearPx: 24 });
       }
       if (this.timeAxis) drawTimeAxis(this.timeAxis, this.gm, ctx.timeAxisClock ?? null, axisStyle);
     } else {

@@ -1,6 +1,7 @@
 import { ColumnCache } from './columnCache';
 import type { GLContext } from './context';
 import { Heatmap, selectLevel, type HeatmapView } from './heatmap';
+import { sanitizeDpr } from './heatmapMath';
 import { projectedRowsPerPixel } from './priceProjection';
 import { MipChain } from './mips';
 import { ViewportNormalizer, PHYSICAL_NORM_FLOOR } from './normalize';
@@ -30,6 +31,7 @@ export class OverviewSurface {
   private originalTimeMemo: TimeMap | null = null;
   revision = 0;
   readonly columnArrays = (col: number) => this.cache.arrays(col);
+  readonly columnScale = (col: number) => this.priceScaleAt(col);
   private pendingLo = Infinity;
   private pendingHi = -Infinity;
   private densityBid: Float32Array;
@@ -133,8 +135,13 @@ export class OverviewSurface {
   }
 
   level(view: HeatmapView): number {
-    return selectLevel(projectedRowsPerPixel(view, this.heatmap.priceScale, this.ctx.gl.drawingBufferHeight),
-      this.mips?.usable ? this.mips.maxLevel : 0, view.colScale / Math.max(1, this.ctx.gl.drawingBufferWidth), this.heatmap.levelFloor).level;
+    const dpr = sanitizeDpr(this.heatmap.dpr);
+    return selectLevel(
+      projectedRowsPerPixel(view, this.heatmap.priceScale, this.ctx.gl.drawingBufferHeight) * dpr,
+      this.mips?.usable ? this.mips.maxLevel : 0,
+      (view.colScale / Math.max(1, this.ctx.gl.drawingBufferWidth)) * dpr,
+      this.heatmap.levelFloor,
+    ).level;
   }
   priceScaleAt(col: number): PriceScale | null {
     const cached = this.cache.priceAt(col)?.scale;
@@ -152,6 +159,8 @@ export class OverviewSurface {
     heatmap.toleranceValue = template.toleranceValue;
     heatmap.channel = template.channel;
     heatmap.levelFloor = template.levelFloor;
+    heatmap.pixel = template.pixel;
+    heatmap.lowSpan = template.lowSpan;
     heatmap.dpr = template.dpr;
     heatmap.encoding.decodeScale = template.encoding.decodeScale;
     heatmap.encoding.ramp = template.encoding.ramp;

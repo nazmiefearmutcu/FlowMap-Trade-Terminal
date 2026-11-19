@@ -268,16 +268,36 @@ const TAG_MARGIN = 4;
 const TAG_TEXT_DARK = '#000000';
 const TAG_TEXT_LIGHT = '#FFFFFF';
 
-/** WCAG relative luminance of a `#rrggbb` ink; null for any other colour form. */
+/** WCAG relative luminance of `#rgb`, `#rrggbb`, or `rgb(r,g,b)` / `rgba(...)`; null otherwise. */
 function inkLuminance(color: string): number | null {
-  const m = /^#([0-9a-f]{6})$/i.exec(color);
-  if (m === null) return null;
-  const n = parseInt(m[1], 16);
+  let r: number;
+  let g: number;
+  let b: number;
+  const hex6 = /^#([0-9a-f]{6})$/i.exec(color.trim());
+  if (hex6 !== null) {
+    const n = parseInt(hex6[1], 16);
+    r = (n >> 16) & 255;
+    g = (n >> 8) & 255;
+    b = n & 255;
+  } else {
+    const hex3 = /^#([0-9a-f]{3})$/i.exec(color.trim());
+    if (hex3 !== null) {
+      r = parseInt(hex3[1][0] + hex3[1][0], 16);
+      g = parseInt(hex3[1][1] + hex3[1][1], 16);
+      b = parseInt(hex3[1][2] + hex3[1][2], 16);
+    } else {
+      const rgb = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(color.trim());
+      if (rgb === null) return null;
+      r = Math.max(0, Math.min(255, Number(rgb[1])));
+      g = Math.max(0, Math.min(255, Number(rgb[2])));
+      b = Math.max(0, Math.min(255, Number(rgb[3])));
+    }
+  }
   const lin = (c: number): number => {
     const v = c / 255;
-    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   };
-  return 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
 /**
@@ -359,28 +379,32 @@ export function paintDrawing(
       ctx.lineTo(width, y);
       ctx.stroke();
       // Right-edge price tag so the level is readable without tracing the line
-      // to the axis. The plate is the drawing's ink, so the tag reads as the line.
+      // to the axis. Clamp y inside the viewport so edge levels stay readable.
+      const halfTag = TAG_H / 2;
+      const tagY = Math.min(Math.max(y, halfTag + 1), Math.max(halfTag + 1, opts.height - halfTag - 1));
       ctx.font = LABEL_FONT;
       const text = fmtPriceTag(d.points[0].price, opts.priceDecimals);
       const tagW = ctx.measureText(text).width + TAG_PAD_X * 2;
       ctx.fillStyle = d.style.color;
-      ctx.fillRect(width - TAG_MARGIN - tagW, y - TAG_H / 2, tagW, TAG_H);
+      ctx.fillRect(width - TAG_MARGIN - tagW, tagY - halfTag, tagW, TAG_H);
       ctx.fillStyle = tagTextColor(d.style.color);
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(text, width - TAG_MARGIN - TAG_PAD_X, y);
+      ctx.fillText(text, width - TAG_MARGIN - TAG_PAD_X, tagY);
       break;
     }
     case 'hray': {
       const p = d.points[0];
       const x0 = proj.xAt(p.tNs);
       const y = proj.yAt(p.price);
-      ctx.beginPath();
-      ctx.moveTo(x0, y);
-      ctx.lineTo(width, y);
-      ctx.stroke();
-      // Origin knob so the ray's start is visible even off-selection.
-      ctx.fillRect(x0 - 2, y - 2, 4, 4);
+      if (x0 <= width) {
+        ctx.beginPath();
+        ctx.moveTo(Math.max(0, x0), y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+      // Origin knob so the ray's start is visible when on-screen.
+      if (x0 >= -2 && x0 <= width + 2) ctx.fillRect(x0 - 2, y - 2, 4, 4);
       break;
     }
     case 'rect': {
@@ -474,10 +498,12 @@ export function paintDraft(
     paintDrawing(ctx, draft, proj, { ...opts, draft: true });
   }
   // Placed anchors get handles; the ghost cursor does not.
+  ctx.save();
   for (let i = 0; i < pts.length; i += 1) {
     const p = pts[i];
     paintHandle(ctx, proj.xAt(p.tNs), proj.yAt(p.price), color, false);
   }
+  ctx.restore();
 }
 
 /**

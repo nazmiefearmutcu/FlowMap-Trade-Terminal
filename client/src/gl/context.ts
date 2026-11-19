@@ -88,6 +88,11 @@ export function initGL(canvas: HTMLCanvasElement, opts: InitGLOptions = {}): GLC
   if (!gl) {
     throw new Error('flowmap/gl: WebGL2 is not available in this browser/context');
   }
+  // Drain any stale pre-existing error left on a reused canvas context
+  // (e.g. React StrictMode double-mount or context restore) before probing.
+  for (let i = 0; i < 16; i++) {
+    if (gl.getError() === gl.NO_ERROR) break;
+  }
 
   const colorBufferFloat = gl.getExtension('EXT_color_buffer_float') !== null;
   if (!colorBufferFloat) {

@@ -83,8 +83,17 @@ export class Vwap {
     if (pts.length === 0) return;
 
     const segments: TraceSegment[] = [];
-    for (let i = 1; i < pts.length; i++) {
-      segments.push({ x0: pts[i - 1].x, y0: pts[i - 1].y, x1: pts[i].x, y1: pts[i].y });
+    if (frame.pixelStyle) {
+      for (let i = 1; i < pts.length; i++) {
+        const prev = pts[i - 1];
+        const curr = pts[i];
+        segments.push({ x0: prev.x, y0: prev.y, x1: curr.x, y1: prev.y });
+        if (curr.y !== prev.y) segments.push({ x0: curr.x, y0: prev.y, x1: curr.x, y1: curr.y });
+      }
+    } else {
+      for (let i = 1; i < pts.length; i++) {
+        segments.push({ x0: pts[i - 1].x, y0: pts[i - 1].y, x1: pts[i].x, y1: pts[i].y });
+      }
     }
     // A single visible vertex: draw a short dash so it's still visible.
     if (pts.length === 1) {

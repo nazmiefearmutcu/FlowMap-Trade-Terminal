@@ -321,7 +321,7 @@ export class FollowPolicy {
     // Track the price line the user sees. The time-weighted book can still
     // contain old touch levels, and its midpoint is not the last traded price.
     const price = this.host.overlays().lastPrice();
-    const map = price !== null ? this.axis.overlayPriceMap() : null;
+    const map = this.axis.overlayPriceMap();
     const liveRow = map !== null && price !== null
       ? priceToPlotRow(mapScale(map), price)
       : this.trackedRowN;
@@ -340,8 +340,9 @@ export class FollowPolicy {
       const center = Math.abs(this.priceTarget - current) < span / Math.max(1, this.host.cssHeight()) ? this.priceTarget : next;
       const bottom = scalePriceToRow(scale, Math.max(2 ** -126, center - span / 2));
       const top = scalePriceToRow(scale, center + span / 2);
+      const prevRow = this.camera.state.rowCenter;
       this.camera.remapPrice((bottom + top) / 2, top - bottom);
-      if (center === this.priceTarget) this.priceTarget = null;
+      if (center === this.priceTarget || this.camera.state.rowCenter === prevRow) this.priceTarget = null;
       this.frameState.dirty = true;
       return;
     }
@@ -362,7 +363,9 @@ export class FollowPolicy {
       this.frameState.dirty = true;
       return;
     }
+    const prevRow = this.camera.state.rowCenter;
     this.camera.setRowCenter(next);
+    if (this.camera.state.rowCenter === prevRow) this.priceTarget = null;
     this.frameState.dirty = true;
     // Time glide composes BOTH axes and notifies once later in this frame.
   }

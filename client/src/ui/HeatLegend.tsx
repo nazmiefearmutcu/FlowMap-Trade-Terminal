@@ -6,7 +6,7 @@ import { useFlowMapStore } from '../state/store';
 import { useT } from '../i18n/useT';
 import { getSnapshot, subscribe as subscribeBook } from '../state/bookStore';
 import { useTheme } from '../theme';
-import { depthIsSynthetic, depthReadoutTier, resolveLegend } from './heatLegendModel';
+import { depthIsSynthetic, depthReadoutTier, rampIsSynthetic, resolveLegend } from './heatLegendModel';
 import type { ChartStop } from '../theme/registry';
 interface HeatLegendProps { colormap: Colormap; channel: DepthChannelMode }
 export type LegendStop = ChartStop;
@@ -24,18 +24,19 @@ export function HeatLegend({ colormap, channel }: HeatLegendProps): JSX.Element 
   // reads as real liquidity here.
   const [bookMode, setBookMode] = useState<number | null>(() => getSnapshot().book?.mode ?? null);
   useEffect(() => subscribeBook((snap) => setBookMode(snap.book ? snap.book.mode : null)), []);
-  // Same verdict as the renderer's ramp: a replayed recording is synthetic unless
-  // it is marked recorded-density, so the legend never draws real-depth ink for it.
-  const synth = depthIsSynthetic(capability, bookMode);
+  // Tier provenance marks simulated/synthetic feeds honestly (`SYNTH`), while
+  // the gradient bar follows the exact ramp painted by WebGL (`rampIsSynthetic`).
+  const synthData = depthIsSynthetic(capability, bookMode);
+  const synthRamp = rampIsSynthetic(capability, bookMode);
   const tier = depthReadoutTier(capability, bookMode);
   const recorded = capability?.depth_provenance === 'recorded-density';
-  const legend = resolveLegend({ channel, colormap, synth, theme });
+  const legend = resolveLegend({ channel, colormap, synth: synthRamp, theme });
   const channelSuffix =
-    channel === 'sum' || synth ? '' : t('heat.channelSuffix', { channel });
+    channel === 'sum' || synthRamp ? '' : t('heat.channelSuffix', { channel });
   return (
     <div
-      className={`heat-legend${synth ? ' heat-legend--synth' : ''}${
-        !synth && channel === 'imbalance' ? ' heat-legend--divergent' : ''
+      className={`heat-legend${synthData ? ' heat-legend--synth' : ''}${
+        !synthRamp && channel === 'imbalance' ? ' heat-legend--divergent' : ''
       }`}
       data-testid="heat-legend"
       data-channel={legend.effectiveChannel}

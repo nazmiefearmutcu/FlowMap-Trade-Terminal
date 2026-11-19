@@ -57,6 +57,8 @@ export interface AxisStyle {
    * UI font.
    */
   readonly pixel?: boolean;
+  /** Top clearance (CSS px) reserved for gutter controls like the FIT/TRACK chip. */
+  readonly topClearPx?: number;
 }
 
 /** Snap a CSS-px position to the centre of its pixel block (identity unless pixel style). */
@@ -267,8 +269,8 @@ export function priceTickPositions(gm: GridMap, cssH: number): number[] {
  * Time tick gutter-x positions only: EXACTLY the collision-filtered labels.
  * Sharing the layout keeps gridlines and visible labels on the same ticks.
  */
-export function timeTickPositions(gm: GridMap, cssW: number): number[] {
-  return timeAxisModel(gm, cssW).map(label => label.pos);
+export function timeTickPositions(gm: GridMap, cssW: number, clock: TimeAxisClock | null = null): number[] {
+  return timeAxisModel(gm, cssW, clock).map(label => label.pos);
 }
 
 /**
@@ -283,9 +285,22 @@ export function timeTickPositions(gm: GridMap, cssW: number): number[] {
 export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | null = null, style: AxisStyle = {}): void {
   layer.clear();
   const cssW = layer.width;
+  const topClear = style.topClearPx ?? 0;
+  let pillY: number | null = null;
+  let pillLabel = '';
+  if (last !== null && gm.price !== null) {
+    const rawY = gm.cssY(gm.priceEventToRow(last.price));
+    if (rawY >= -8 && rawY <= layer.height + 8) {
+      const dec = quoteDecimals(gm.price.tick ?? gm.price.step);
+      pillY = Math.min(Math.max(rawY, 9), layer.height - 9);
+      pillLabel = formatPrice(last.price, dec);
+    }
+  }
   const model = priceAxisModel(gm, layer.height);
   for (const t of model) {
     const y = snapToPixelBlock(t.pos, style.pixel);
+    if (topClear > 0 && y < topClear) continue;
+    if (pillY !== null && Math.abs(y - pillY) < 12) continue;
     layer.line(0, y, AXIS_TICK_LEN, y, OVERLAY.axis.css, 1, AXIS_TICK_ALPHA);
     layer.text(cssW - 6, y, t.label, {
       align: 'right',
@@ -295,13 +310,8 @@ export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | n
       weight: AXIS_LABEL_WEIGHT,
     });
   }
-  if (last === null || gm.price === null) return;
-  const dec = quoteDecimals(gm.price.tick ?? gm.price.step);
-  // Row-cell centre (`+0.5`), matching the price line and its dashed level —
-  // the pill must sit on the cell the heatmap paints.
-  const y = gm.cssY(gm.priceEventToRow(last.price));
-  if (y < -8 || y > layer.height + 8) return;
-  layer.badge(cssW - 3, Math.min(Math.max(y, 9), layer.height - 9), formatPrice(last.price, dec), {
+  if (pillY === null) return;
+  layer.badge(cssW - 3, pillY, pillLabel, {
     align: 'right',
     bg: OVERLAY.pricePill.css,
     color: OVERLAY.pricePillText.css,
@@ -318,13 +328,15 @@ export function drawPriceAxis(layer: TextLayer, gm: GridMap, last: LastClose | n
 export function drawTimeAxis(layer: TextLayer, gm: GridMap, clock: TimeAxisClock | null = null, style: AxisStyle = {}): void {
   layer.clear();
   const cssW = layer.width;
+  const zone = timeAxisZoneText(clock);
+  const plotW = cssW - zoneReservePx(zone);
   const model = timeAxisModel(gm, cssW, clock);
   for (let i = 0; i < model.length; i++) {
     const t = { pos: snapToPixelBlock(model[i].pos, style.pixel), label: model[i].label };
     layer.line(t.pos, 0, t.pos, AXIS_TICK_LEN, OVERLAY.axis.css, 1, AXIS_TICK_ALPHA);
-    // Clamp the edge labels inward so the first/last time isn't half-clipped by
-    // the gutters (the tick mark itself stays at t.pos).
-    const { x, align } = timeLabelPlacement(t, i, model.length, cssW);
+    // Clamp the edge labels inward so the first/last time stays clear of both
+    // the gutter edge and the right-hand timezone abbreviation.
+    const { x, align } = timeLabelPlacement(t, i, model.length, plotW);
     layer.text(x, 15, t.label, {
       align,
       baseline: 'alphabetic',
@@ -333,7 +345,6 @@ export function drawTimeAxis(layer: TextLayer, gm: GridMap, clock: TimeAxisClock
       weight: AXIS_LABEL_WEIGHT,
     });
   }
-  const zone = timeAxisZoneText(clock);
   if (zone !== '') {
     layer.text(cssW - 2, 15, zone, {
       align: 'right',
@@ -363,7 +374,7 @@ function sameGridline(a: number, b: number): boolean {
  * one pixel row, e.g. an edge tick landing on a major) are drawn once.
  * Color/width stay `OVERLAY.grid` / 1 px (alpha is owned by the palette).
  */
-export function drawGridlines(text: TextLayer, gm: GridMap, style: AxisStyle = {}): void {
+export function drawGridlines(text: TextLayer, gm: GridMap, style: AxisStyle = {}, clock: TimeAxisClock | null = null): void {
   const cssW = text.width;
   const cssH = text.height;
   let prev = Number.NaN;
@@ -374,7 +385,7 @@ export function drawGridlines(text: TextLayer, gm: GridMap, style: AxisStyle = {
     text.line(0, y, cssW, y, OVERLAY.grid.css, 1);
   }
   prev = Number.NaN;
-  for (const raw of timeTickPositions(gm, cssW)) {
+  for (const raw of timeTickPositions(gm, cssW, clock)) {
     const x = snapToPixelBlock(raw, style.pixel);
     if (sameGridline(x, prev)) continue;
     prev = x;

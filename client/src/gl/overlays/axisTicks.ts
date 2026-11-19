@@ -47,7 +47,7 @@ export function priceTickModel(
   const start = Math.ceil(lo / step) * step;
   // Guard against a pathological tiny step producing a huge array.
   for (let i = 0, p = start; p <= hi + step * 1e-9 && i < 1000; i++, p = start + i * step) {
-    out.push(Number(p.toFixed(10)));
+    out.push(p === 0 ? 0 : Number(p.toPrecision(12)));
   }
   return { step, ticks: out };
 }
@@ -174,8 +174,16 @@ export function fmtClock(ns: bigint): string {
 
 /** ns → HH:MM:SS.mmm when sub-second ticks are in play. */
 export function fmtClockMs(ns: bigint): string {
-  const ms = Number((ns / 1_000_000n) % 1000n);
-  return `${fmtClock(ns)}.${String(((ms % 1000) + 1000) % 1000).padStart(3, '0')}`;
+  const absMs = (ns < 0n ? -ns : ns) / 1_000_000n;
+  const totalSec = Number(absMs / 1000n);
+  if (!Number.isFinite(totalSec)) return '--:--:--.---';
+  const sign = ns < 0n && absMs > 0n ? '-' : '';
+  const ms = Number(absMs % 1000n);
+  const s = totalSec % 60;
+  const m = Math.floor(totalSec / 60) % 60;
+  const h = Math.floor(totalSec / 3600) % 24;
+  const p = (v: number): string => String(v).padStart(2, '0');
+  return `${sign}${p(h)}:${p(m)}:${p(s)}.${String(ms).padStart(3, '0')}`;
 }
 
 /**

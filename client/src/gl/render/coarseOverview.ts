@@ -107,6 +107,9 @@ export class CoarseOverview {
           this.overview = new OverviewSurface(this.ctx, ring.rows, this.lut, stride, this.axis.overlayPriceMap()?.scale ?? null, epoch,
             sourceEpoch => { const params = this.store.getState().epochs.get(sourceEpoch); return params ? this.axis.priceMapFor(params).scale ?? null : null; },
             () => { this.frameState.dirty = true; });
+          const norm = this.host.normalizer();
+          this.overview.normalizer.percentile = norm.percentile;
+          this.overview.normalizer.whitePercentile = norm.whitePercentile;
           this.frameState.dirty = true;
         },
         column: (column, stride) => {

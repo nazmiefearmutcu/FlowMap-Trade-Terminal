@@ -23,9 +23,9 @@ const GEX_LINE_WIDTH_PX = 1.8;
 
 /**
  * Minimum vertical gap, in css px, between two right-edge badges. A size-10 badge
- * is about 12 px tall, so anything closer would overprint its neighbour.
+ * with 3 px padding is 16 px tall, so 18 px pitch keeps a 2 px breathing gap.
  */
-export const BADGE_PITCH_PX = 12;
+export const BADGE_PITCH_PX = 18;
 
 /**
  * Spread badge anchors that sit closer than `pitch` apart (the
@@ -114,16 +114,17 @@ export class GexOverlay {
     if (levels.length === 0) return;
 
     const order = levels.map((_, i) => i).sort((a, b) => levels[a].cy - levels[b].cy);
-    const stacked = stackBadgeY(order.map((i) => levels[i].cy), BADGE_PITCH_PX, 0, cssH);
+    const stacked = stackBadgeY(order.map((i) => levels[i].cy), BADGE_PITCH_PX, 9, Math.max(9, cssH - 9));
     order.forEach((levelIndex, k) => {
       levels[levelIndex].labelY = stacked[k];
     });
 
+    solid.begin();
     for (const level of levels) {
-      solid.begin();
       addUnderStrokedSegments(solid, [{ x0: -1, y0: level.y, x1: 1, y1: level.y }], GEX_LINE_WIDTH_PX, level.colorGl, cssW, cssH);
-      solid.flush();
-
+    }
+    solid.flush();
+    for (const level of levels) {
       // Right-edge badge on text layer, at its stacked anchor (the line stays on the true row).
       text.badge(cssW - 4, level.labelY, `${level.label} ${formatPrice(level.price, decimals)}`, {
         align: 'right',

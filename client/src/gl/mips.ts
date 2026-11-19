@@ -283,10 +283,10 @@ export class MipChain {
 
     const cap = ring.capacityCols;
     const a0 = fromSeq - (fromSeq % 4);
-    // Largest 4-group end ≤ hi — a pass never reads slots past the resident
-    // newest (below-validFrom slots are masked; above-newest slots are unwritten
-    // garbage and NOT masked).
-    const b0 = hi - ((hi + 1) % 4);
+    // Cover the full 4-group of hi when its remaining members are already
+    // resident, while never reading slots past the resident newest.
+    const maxB0 = range !== null ? range.newest - ((range.newest + 1) % 4) : hi - ((hi + 1) % 4);
+    const b0 = Math.min(hi + (3 - (hi % 4)), maxB0);
     const validFrom = ring.validFromSeq();
 
     // Row-only mip: per-column groups, so the WHOLE resident part of the splice
@@ -353,14 +353,15 @@ export class MipChain {
       s = segEnd + 1;
     }
 
-    // level-1 → level-2: only 16-groups FULLY inside [a0..b0] (all four of their
-    // level-1 columns were rebuilt by the passes above) and fully post-gap. A
-    // 16-group never straddles a tile layer (256 % 16 == 0), so this is again
-    // one pass per tile-layer segment.
-    if (this.tex2 !== null && this.maxLevel >= 2 && b0 >= 15) {
+    // level-1 → level-2: bake every 16-group intersecting [a0..b0] that lies
+    // fully within resident post-gap columns so straddling history splices
+    // update level-2 immediately.
+    if (this.tex2 !== null && this.maxLevel >= 2 && maxB0 >= 15) {
       const align16Up = (v: number): number => v + ((16 - (v % 16)) % 16);
-      const c0 = Math.max(align16Up(a0), align16Up(validFrom));
-      const c1 = b0 - 15 - ((b0 - 15) % 16); // last 16-aligned group start ≤ b0−15
+      const minRes = range !== null ? Math.max(range.oldest, validFrom) : validFrom;
+      const c0 = Math.max(a0 - (a0 % 16), align16Up(minRes));
+      const maxC1 = maxB0 - 15 - ((maxB0 - 15) % 16);
+      const c1 = Math.min(b0 - (b0 % 16), maxC1);
       let g = c0;
       while (g <= c1) {
         const segEnd = Math.min(

@@ -20,6 +20,10 @@ export class ViewWorker {
       else pending?.resolve(event.data);
     };
     this.worker.onerror = event => { this.pending?.reject(new Error(event.message)); this.pending = null; };
+    this.worker.onmessageerror = () => {
+      this.pending?.reject(new Error('flowmap: view worker message deserialization failed'));
+      this.pending = null;
+    };
   }
   private send(message: unknown, transfer: Transferable[] = []): Promise<unknown> {
     return new Promise((resolve, reject) => {

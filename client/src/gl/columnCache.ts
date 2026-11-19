@@ -292,6 +292,16 @@ export class ColumnCache {
     return { bid: bidSum, ask: askSum };
   }
 
+  /** All currently resident absolute col_seqs, sorted ascending. */
+  cachedSeqs(): number[] {
+    const out: number[] = [];
+    for (let slot = 0; slot < this.capacity; slot++) {
+      if ((this.flags[slot] & FLAG_PRESENT) !== 0) out.push(this.seqs[slot]);
+    }
+    out.sort((a, b) => a - b);
+    return out;
+  }
+
   /**
    * Drop every cached column and release ALL pool pages (the next `put`
    * re-allocates the touched pages at the new session's row count — a symbol

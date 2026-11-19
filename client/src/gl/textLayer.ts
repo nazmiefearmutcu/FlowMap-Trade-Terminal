@@ -129,11 +129,12 @@ export class TextLayer {
     return (Math.round(v * this.dpr - dw / 2) + dw / 2) / this.dpr;
   }
 
-  /** Clear the whole layer (call once at the start of a dirty frame). */
+  /** Clear the whole backing store (call once at the start of a dirty frame). */
   clear(): void {
-    // clearRect ignores the current transform's translate but respects scale;
-    // clearing the full CSS box covers the device buffer since we only scale.
-    this.ctx.clearRect(0, 0, this.cssW, this.cssH);
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.restore();
   }
 
   /** Draw a single line of text at CSS `(x, y)`. */

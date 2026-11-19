@@ -1162,7 +1162,7 @@ describe('the SUM-mip level cross-fade in the fragment shader source', () => {
     expect(HEATMAP_FRAG).toContain(
       'acc = mix(accF * 4.0, acc, clamp(u_levelFade, 0.0, 1.0));',
     );
-    expect(HEATMAP_FRAG).toContain('if (u_levelFade > 0.001) {');
+    expect(HEATMAP_FRAG).toContain('if (u_levelFade > 0.001 && u_levelFade < 0.999) {');
     // The finer fetch lives in the SUM else-branch only (level 0 never blends).
     const mipBranch = HEATMAP_FRAG.slice(HEATMAP_FRAG.indexOf('} else {'));
     expect(mipBranch).toContain('fetchFine(');

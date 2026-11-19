@@ -153,8 +153,17 @@ export function IndicatorOverlayCanvas({
       const maxWait = useFlowMapStore.getState().subscription?.mode === 'live' ? 16 : IDLE_MAX_MS;
       const wait = painted ? 0 : Math.min(maxWait, 2 ** idleStep);
       if (wait === 0) raf = requestAnimationFrame(draw);
-      else pollTimer = window.setTimeout(() => { raf = requestAnimationFrame(draw); }, wait);
+      else pollTimer = window.setTimeout(() => { pollTimer = 0; raf = requestAnimationFrame(draw); }, wait);
     };
+
+    const wake = (): void => {
+      if (raf !== 0 || pollTimer !== 0) return;
+      idleStep = 0;
+      raf = requestAnimationFrame(draw);
+    };
+    const unsubIndicators = useIndicatorStore.subscribe((state) => {
+      if (state.active.length > 0 || !emptyCleared) wake();
+    });
 
     // --- kernel instance management -------------------------------------------
 
@@ -316,10 +325,14 @@ export function IndicatorOverlayCanvas({
     // --- the signature-gated loop (CvdPane pattern) -------------------------------
 
     const draw = (): void => {
+      raf = 0;
       const store = useIndicatorStore.getState();
       if (store.active.length === 0) {
         if (!emptyCleared) {
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
           ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.restore();
           syncInstances([]);
           lastActiveSig = '';
           lastSig = '';
@@ -327,7 +340,7 @@ export function IndicatorOverlayCanvas({
           snapVersion = -1;
           emptyCleared = true;
         }
-        scheduleNext(false);
+        // Sleep completely when no indicators are active; unsubIndicators wakes us.
         return;
       }
       emptyCleared = false;
@@ -356,16 +369,15 @@ export function IndicatorOverlayCanvas({
       const to = mapRef.current?.toChart ?? IDENTITY_TO;
       const c0 = to(0, 0);
       const c1 = to(1000, 1000);
-      // The LIVE time base is part of the signature, not only the snapshot's:
-      // paint() resolves it the same way.
-      const sig = `${cssW}x${cssH}|${dpr}|${stripRef.current}|${activeSig}|${snap.version}|${
+      const themeTag = document.documentElement.dataset.theme ?? '';
+      const epSig = ep
+        ? `${ep.p0}:${ep.rows}:${ep.dt_ns}:${ep.scale_kind ?? 0}:${ep.dn_rows ?? 0}:${ep.core_rows ?? 0}:${ep.core_p0 ?? 0}:${ep.core_step ?? 0}:${ep.lo_price ?? 0}:${ep.hi_price ?? 0}`
+        : 'ep0';
+      // The LIVE time base, theme, and hybrid geometry are part of the signature.
+      const sig = `${cssW}x${cssH}|${dpr}|${themeTag}|${stripRef.current}|${activeSig}|${snap.version}|${
         timeMapSig(timeRef.current?.() ?? snap.timeMap)
-      }|${fm.gridEpoch}|${ep ? `${ep.p0}:${ep.rows}:${ep.dt_ns}:${ep.scale_kind ?? 0}` : 'ep0'}|${c0.x},${c0.y},${c1.x},${c1.y}`;
+      }|${fm.gridEpoch}|${epSig}|${c0.x},${c0.y},${c1.x},${c1.y}`;
       let painted = false;
-      // NOTE the gate is the SIGNATURE, not `active.length > 0`: when the last
-      // indicator is removed the signature must still change (empty activeSig),
-      // and paint()'s first op is a full clearRect — skipping the empty case
-      // would leave the last EMA/RSI line inked on the canvas forever.
       if (cssW !== 0 && cssH !== 0 && sig !== lastSig) {
         lastSig = sig;
         paint();
@@ -374,11 +386,12 @@ export function IndicatorOverlayCanvas({
       scheduleNext(painted);
     };
 
-    scheduleNext(true);
+    if (useIndicatorStore.getState().active.length > 0) scheduleNext(true);
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(pollTimer);
       instances.clear();
+      unsubIndicators();
       unsubCandles();
     };
   }, []);

@@ -68,6 +68,17 @@ export function depthIsSynthetic(capability: Record<string, unknown> | null | un
 }
 
 /**
+ * Whether the rendered heatmap uses the synthetic amber ramp (mirrors Shading.applyRamp).
+ * Non-replay simulated feeds (e.g. SIM-DEMO) render the full theme density ramp while
+ * still carrying synthetic provenance on their tier badge.
+ */
+export function rampIsSynthetic(capability: Record<string, unknown> | null | undefined, bookMode: number | null): boolean {
+  const honest = honestDepthTier(capability);
+  if (typeof honest === 'string') return honest === 'SYNTH' || honest === 'SYNTH_PROFILE';
+  return bookMode === MODE_SYNTH_PROFILE;
+}
+
+/**
  * The depth label every readout prints (legend tier, crosshair source tag, measure
  * depth): `SYNTH` for synthetic depth, `L2-SNAPSHOT` for a polled venue book, which
  * is a snapshot and must never read as a native L2 feed, and otherwise the

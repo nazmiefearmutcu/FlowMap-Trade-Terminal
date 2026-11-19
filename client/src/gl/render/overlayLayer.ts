@@ -290,7 +290,7 @@ export class OverlayLayer {
     ctx.view = overview ? overview.view(this.frameState.view) : this.frameState.view;
     ctx.overviewBars = overview?.bars ?? null;
     ctx.columnArrays = overview?.columnArrays ?? this.rawColumnArrays;
-    ctx.columnScale = overview ? col => overview.priceScaleAt(col) : this.rawColumnScale;
+    ctx.columnScale = overview?.columnScale ?? this.rawColumnScale;
     ctx.dataVersion = (overview?.normalizer ?? this.normalizer).tilesVersion;
     ctx.dims.drawW = gl.drawingBufferWidth;
     ctx.dims.drawH = gl.drawingBufferHeight;

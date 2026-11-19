@@ -9,6 +9,7 @@
 
 import type { ColumnCache } from '../columnCache';
 import { densityForScale } from '../columnGeometry';
+import { samePriceScale } from '../priceScale';
 import type { HistoryLoader } from '../../net/history';
 import type { MipChain } from '../mips';
 import type { PriceMap } from '../overlays/coords';
@@ -41,7 +42,7 @@ export interface ColumnWriteHost {
 /** Whether two native price maps describe the same grid (the same affine and scale). */
 export function sameNativePrice(a: PriceMap, b: PriceMap): boolean {
   return a === b || (a.p0 === b.p0 && a.step === b.step && a.tick === b.tick
-    && JSON.stringify(a.scale) === JSON.stringify(b.scale));
+    && samePriceScale(a.scale, b.scale));
 }
 
 export class ColumnWriter {

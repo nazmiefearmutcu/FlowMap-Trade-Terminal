@@ -336,7 +336,7 @@ export class Heatmap {
     this.uploadTransfer();
     const plan = this.planSampling(view, mips);
     this.uploadSampling(plan);
-    this.uploadFloor(physicalProjection, plan.nRowTaps, plan.blk);
+    this.uploadFloor(physicalProjection, plan);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     gl.bindVertexArray(null);
     checkGLError(gl, 'Heatmap.draw', true);
@@ -393,7 +393,7 @@ export class Heatmap {
     this.tileRing.geometry.flushResolution();
     gl.bindTexture(gl.TEXTURE_2D, this.tileRing.geometry.resolutionTexture ?? this.lut);
     gl.uniform1i(this.u.u_resolution, RESOLUTION_UNIT);
-    gl.uniform1i(this.u.u_resolutionEnabled, this.tileRing.geometry.resolutionTexture ? 1 : 0);
+    gl.uniform1i(this.u.u_resolutionEnabled, this.tileRing.geometry.hasResolution ? 1 : 0);
   }
 
   /** The price-axis projection uniforms: the hybrid core/wings or the linear grid. */
@@ -406,8 +406,11 @@ export class Heatmap {
       const low = rowToPrice(scale, view.rowOffset);
       const high = rowToPrice(scale, view.rowOffset + view.rowScale);
       const coreHi = scale.coreP0 + scale.coreRows * scale.coreStep;
-      const dnLog = Math.log(scale.coreP0 / scale.loPrice) / Math.max(1, scale.dnRows);
-      const upLog = Math.log(scale.hiPrice / coreHi) / Math.max(1, scale.rows - scale.dnRows - scale.coreRows);
+      const upRows = scale.rows - scale.dnRows - scale.coreRows;
+      const dnLog = scale.dnRows > 0 && scale.loPrice > 0 && scale.coreP0 > scale.loPrice
+        ? Math.log(scale.coreP0 / scale.loPrice) / scale.dnRows : scale.coreStep / Math.max(scale.coreP0, 1e-30);
+      const upLog = upRows > 0 && scale.hiPrice > coreHi && coreHi > 0
+        ? Math.log(scale.hiPrice / coreHi) / upRows : scale.coreStep / Math.max(coreHi, 1e-30);
       gl.uniform4f(this.u.u_priceCore, scale.dnRows, scale.coreRows, scale.coreStep, scale.coreP0);
       gl.uniform4f(this.u.u_priceWings, dnLog, upLog, low - scale.coreP0, high - low);
       gl.uniform1f(this.u.u_pricePixel, (high - low) * sanitizeDpr(this.dpr) / Math.max(1, gl.drawingBufferHeight));
@@ -594,24 +597,21 @@ export class Heatmap {
     uploadFloatArray(gl, this.u.u_rowMipWeights, plan.rowMipWeights);
   }
 
-  /**
-   * The black point scales by the pixel's ROW footprint. `intensity` sums nRowTaps
-   * rows of a blk-row block and divides only the COLUMN dimension by blk, and
-   * normMipScale(level) is 1 by design (gl/normalize.ts), so an unscaled floor would
-   * hide a different amount of size at every zoom. Clamped below 1 so the
-   * re-expansion never degenerates. Hybrid pixels select their own local row
-   * footprint in the shader; ordinary views keep the frame-wide floor semantics.
-   */
-  private uploadFloor(physicalProjection: boolean, nRowTaps: number, blk: number): void {
+  /** Scale the black point smoothly by the pixel's effective row footprint. */
+  private uploadFloor(physicalProjection: boolean, plan: FramePlan): void {
     const gl = this.gl;
-    const floorRows = physicalProjection ? 1 : nRowTaps * blk;
+    let floorRows = 1;
+    if (!physicalProjection) {
+      const coarse = plan.nRowTaps * plan.blk;
+      if (plan.rowFade > 0) floorRows = 1 + (coarse - 1) * plan.rowFade;
+      else if (plan.levelFade > 0) {
+        const fine = plan.nRowTapsFine * Math.max(1, plan.blk / 4);
+        floorRows = fine + (coarse - fine) * plan.levelFade;
+      } else floorRows = coarse;
+    }
     const calibratedFloor = this.toleranceValue === null
-      ? this.floor
-      : floorForTolerance(this.toleranceValue, this.normalizer);
-    const floor = Math.min(
-      TOLERANCE_MAX_FLOOR,
-      Math.max(0, calibratedFloor) * floorRows,
-    );
+      ? this.floor : floorForTolerance(this.toleranceValue, this.normalizer);
+    const floor = Math.min(TOLERANCE_MAX_FLOOR, Math.max(0, calibratedFloor) * floorRows);
     gl.uniform1f(this.u.u_floor, floor);
     gl.uniform1f(this.u.u_floorScale, 1 / Math.max(1 - floor, 1e-6));
   }

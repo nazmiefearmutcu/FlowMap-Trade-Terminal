@@ -295,10 +295,13 @@ export class TestHooks {
    */
   snapshot(): string | null {
     if (this.gpu.glLost()) return null;
+    this.gpu.spliceMips.flush(this.gpu.mips, this.gpu.ring);
     this.shading.updateNormalization();
     if (this.gpu.heatmap !== null) {
       this.gpu.heatmap.priceScale = this.axis.overlayPriceMap()?.scale ?? null;
-      this.gpu.heatmap.draw(this.frameState.view);
+      const overview = this.gpu.activeOverview();
+      if (overview) overview.draw(this.frameState.view, this.gpu.heatmap);
+      else this.gpu.heatmap.draw(this.frameState.view);
     }
     this.overlayLayer.drawOverlays();
     return this.canvas.toDataURL('image/png');

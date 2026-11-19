@@ -336,15 +336,19 @@ export class FrameLoop {
     // range is populated. This guard is O(1) (visible-left vs resident-oldest) —
     // never O(history) — so the perf gate stays green.
     if (this.frameState.viewMoved && this.gpu.history !== null && this.gpu.ring !== null && this.frameState.view.colScale <= this.gpu.ring.capacityCols) {
-      this.frameState.viewMoved = false;
-      this.gpu.history.ensureVisible({
-        leftCol: Math.floor(this.frameState.view.colOffset),
-        span: this.frameState.view.colScale,
-        following: this.camera.followTime,
-        // Display LOD does not suppress history: every mip is generated from
-        // the same resident columns, including when the price axis is wide.
-        level: this.shading.currentLevel(false),
-      });
+      // Keep viewMoved armed while the ring is still empty so history backfill
+      // runs as soon as columns arrive instead of silently dropping the trigger.
+      if (this.gpu.ring.residentRange() !== null) {
+        this.frameState.viewMoved = false;
+        this.gpu.history.ensureVisible({
+          leftCol: Math.floor(this.frameState.view.colOffset),
+          span: this.frameState.view.colScale,
+          following: this.camera.followTime,
+          // Display LOD does not suppress history: every mip is generated from
+          // the same resident columns, including when the price axis is wide.
+          level: this.shading.currentLevel(false),
+        });
+      }
     }
   }
 

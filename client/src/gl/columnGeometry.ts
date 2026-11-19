@@ -63,6 +63,7 @@ export class ColumnGeometry {
   constructor(private gl: WebGL2RenderingContext, private cols: number, private layers: number) { this.mirror = new Float32Array(cols * layers * 8); }
   get texture(): WebGLTexture | null { return this.textureN; }
   get resolutionTexture(): WebGLTexture | null { return this.resolutionN; }
+  get hasResolution(): boolean { return this.resolutionN !== null && this.resolutionRanges.size > 0; }
   /** Exact disjoint intervals are packed into an atlas after one header per
    * resident column. Header offset/count avoids padding every column to the
    * largest interval list and preserves holes without an eight-range cap. */
@@ -116,10 +117,15 @@ export class ColumnGeometry {
     const d = this.scratch;
     if (scale.kind === 'hybrid') {
       const end = scale.coreP0 + scale.coreRows * scale.coreStep;
+      const upRows = scale.rows - scale.dnRows - scale.coreRows;
+      const dnLog = scale.dnRows > 0 && scale.loPrice > 0 && scale.coreP0 > scale.loPrice
+        ? Math.log(scale.coreP0 / scale.loPrice) / scale.dnRows
+        : scale.coreStep / Math.max(scale.coreP0, 1e-30);
+      const upLog = upRows > 0 && scale.hiPrice > end && end > 0
+        ? Math.log(scale.hiPrice / end) / upRows
+        : scale.coreStep / Math.max(end, 1e-30);
       d.set([scale.dnRows, scale.coreRows, scale.coreStep, scale.coreP0,
-        Math.log(scale.coreP0 / scale.loPrice) / Math.max(1, scale.dnRows),
-        Math.log(scale.hiPrice / end) / Math.max(1, scale.rows - scale.dnRows - scale.coreRows), 0,
-        scale.coreP0 - Math.fround(scale.coreP0)]);
+        dnLog, upLog, 0, scale.coreP0 - Math.fround(scale.coreP0)]);
     } else d.set([-1, scale.rows, scale.step, scale.p0, 0, 0, 0, scale.p0 - Math.fround(scale.p0)]);
     const slot = ((col % (this.cols * this.layers)) + this.cols * this.layers) % (this.cols * this.layers);
     // Flush once before the draw: a history page updates one small metadata

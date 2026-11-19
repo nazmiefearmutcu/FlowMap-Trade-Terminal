@@ -340,7 +340,7 @@ export class Viewport {
     const row = Math.floor(rowf + (centered ? 0.5 : 0));
     const onGrid = Number.isFinite(row) && row >= 0 && row < rows;
     const range = ring.residentRange();
-    const inRange = range !== null && sampleCol >= range.oldest && sampleCol <= range.newest && cache.arrays(sampleCol) !== null && onGrid;
+    const inRange = range !== null && sampleCol >= range.oldest && sampleCol <= range.newest && cache.has(sampleCol) && onGrid;
     const price = scale && onGrid ? scaleRowToPrice(scale,
       displayScale?.kind === 'hybrid' || scale.kind === 'hybrid' ? rowf : row) : null;
     // Native quote precision is independent of the storage bucket width.
@@ -356,7 +356,8 @@ export class Viewport {
       const high = scaleRowToPrice(displayScale, this.frameState.view.rowOffset + this.frameState.view.rowScale);
       const width = scaleStepAtRow(scale, rowf);
       const footprint = (high - low) / cssH / Math.max(width, 1e-30);
-      const maxLevel = this.gpu.mips?.usable ? this.gpu.mips.maxLevel : 0;
+      const activeMips = overview ? overview.mips : this.gpu.mips;
+      const maxLevel = activeMips?.usable ? activeMips.maxLevel : 0;
       const level = Math.min(maxLevel, Math.max(this.shading.tickGroupingLevel(), footprint >= 16 ? 2 : footprint >= 4 ? 1 : 0));
       blk = 4 ** level;
       taps = Math.max(1, Math.min(4, Math.ceil(footprint / blk)));

@@ -88,21 +88,24 @@ void main() {
   }
   vec2 d = gl_PointCoord * 2.0 - 1.0;
   float r = sqrt(dot(d, d));
-  if (r > 1.0) discard;
+  // Compute screen-space derivatives before discard so control flow stays uniform.
   float fw = fwidth(r);
-  float edge = smoothstep(1.0, 1.0 - fw * 1.6, r);
+  if (r > 1.0) discard;
+  float edge = 1.0 - smoothstep(1.0 - max(fw * 1.6, 1e-4), 1.0, r);
   // Soft spherical fill: brightest at the core, dimmer toward the translucent
   // edge. Keeps the palette hue; the alpha falloff does the sphere read.
-  float fill = mix(0.62, 1.0, smoothstep(1.0, 0.25, r));
+  float fill = mix(0.62, 1.0, 1.0 - smoothstep(0.25, 1.0, r));
   float a = v_color.a * edge * fill;
   // Darker rim: a ~1-2 px band ENDING where the soft AA fade starts, so the
   // shading lands on visible pixels (peaking at the half-alpha edge) instead of
   // hiding inside the fade. Fractions clamp so tiny dots stay mostly solid.
-  float rim = smoothstep(max(1.0 - 3.5 * fw, 0.55), max(1.0 - 0.75 * fw, 0.80), r);
+  float rimLo = max(1.0 - 3.5 * fw, 0.55);
+  float rimHi = max(max(1.0 - 0.75 * fw, 0.80), rimLo + 1e-4);
+  float rim = smoothstep(rimLo, rimHi, r);
   // Top-left gloss (gl_PointCoord y is down → negative y is up). Gated to dots
   // ≥ ~10 px so the 6 px floor dots stay flat specks instead of noisy blobs.
   vec2 hl = vec2(-0.34, -0.36);
-  float spec = smoothstep(0.40, 0.06, length(d - hl)) * smoothstep(7.0, 12.0, v_size);
+  float spec = (1.0 - smoothstep(0.06, 0.40, length(d - hl))) * smoothstep(7.0, 12.0, v_size);
   // Premultiplied output (see SolidBatch's fragment shader); the glint mixes
   // toward premultiplied white (≤ a) and the outer rim is darkened afterwards —
   // still premultiplied (rgb ≤ a).

@@ -341,7 +341,7 @@ export class VolBars {
       if (total <= 0) continue; // honest gap: no volume, no bar
       const color = barColor(buy[b], sell[b]);
       if (color === null) continue;
-      const h = volumeHeight(total, cap, stripH);
+      const h = Math.min(volumeHeight(total, cap, stripH), Math.max(0, yBase - 1));
       // Use the same absolute-column transform as PriceLine's vertex, rather
       // than reconstructing a position from the visible range's two edges.
       const x = gm.cssX(lo + (b + 0.5) * bucketWidth);

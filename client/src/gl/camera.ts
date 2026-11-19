@@ -662,7 +662,7 @@ export class Camera {
       const bottomPrice = clamp(low + delta, domain.low, domain.high - span);
       const bottom = priceToRow(scale, bottomPrice);
       const top = priceToRow(scale, bottomPrice + span);
-      this.state = pan({ ...this.state, rowCenter: (bottom + top) / 2, rowSpan: top - bottom }, this.limits, dCols, 0, kill);
+      this.state = clampPriceCamera(pan({ ...this.state, rowCenter: (bottom + top) / 2, rowSpan: top - bottom }, this.limits, dCols, 0, kill), this.limits);
       return;
     }
     this.state = pan(this.state, this.limits, dCols, dRows, kill);

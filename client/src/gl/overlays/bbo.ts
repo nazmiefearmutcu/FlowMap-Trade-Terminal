@@ -31,8 +31,15 @@ export interface BboState {
   source: BboSource;
 }
 
-/** Minimum vertical distance (CSS px) between the ask and bid badges. */
-const BADGE_PITCH_PX = 12;
+/** Minimum vertical distance (CSS px) between the ask and bid badges (a size-10 badge with 3 px pad is 16 px tall). */
+const BADGE_PITCH_PX = 16;
+
+interface BboLayout {
+  ask: { y: number; cy: number } | null;
+  bid: { y: number; cy: number } | null;
+  askCy: number;
+  bidCy: number;
+}
 
 export class Bbo {
   private current: BboState | null = null;
@@ -49,63 +56,71 @@ export class Bbo {
     this.current = null;
   }
 
-  draw(frame: OverlayFrame): void {
+  private layout(frame: OverlayFrame): BboLayout | null {
     const bbo = this.current;
-    const { gm, solid, text } = frame;
-    if (bbo === null || gm.price === null) return;
-
-    const cssW = gm.dims.cssW;
+    const { gm } = frame;
+    if (bbo === null || gm.price === null) return null;
     const cssH = gm.dims.cssH;
-    const decimals = quoteDecimals(gm.price.tick ?? gm.price.step);
-    const tag = bbo.source === 'l2' ? ' ·L2' : '';
-
-    /** Clip-space line height and badge centre for one side; null when unquoted or off-screen. */
     const place = (price: number): { y: number; cy: number } | null => {
-      if (!Number.isFinite(price)) return null; // one-sided book / unknown quote
-      // Uniform cell centres; exact price coordinates on hybrid grids.
+      if (!Number.isFinite(price)) return null;
       const rowf = gm.priceEventToRow(price);
       const y = gm.clipY(rowf);
-      if (y < -1.02 || y > 1.02) return null; // off-screen vertically
+      if (y < -1.02 || y > 1.02) return null;
       return { y, cy: gm.cssY(rowf) };
     };
     const ask = place(bbo.askPx);
     const bid = place(bbo.bidPx);
-    // A one-tick spread puts the two quotes on adjacent rows. Their badges would
-    // overprint, so a pair closer than the badge pitch is pushed apart around its
-    // midpoint, keeping ask above bid.
-    let askCy = ask?.cy ?? 0;
-    let bidCy = bid?.cy ?? 0;
+    const topBound = 9;
+    const botBound = Math.max(topBound, cssH - 9);
+    const clampY = (v: number): number => Math.min(botBound, Math.max(topBound, v));
+    let askCy = ask ? clampY(ask.cy) : 0;
+    let bidCy = bid ? clampY(bid.cy) : 0;
     if (ask !== null && bid !== null && Math.abs(askCy - bidCy) < BADGE_PITCH_PX) {
-      const mid = (askCy + bidCy) / 2;
+      const mid = clampY((ask.cy + bid.cy) / 2);
       const half = BADGE_PITCH_PX / 2;
-      if (askCy <= bidCy) {
-        askCy = mid - half;
-        bidCy = mid + half;
+      if (ask.cy <= bid.cy) {
+        askCy = Math.max(topBound, Math.min(botBound - BADGE_PITCH_PX, mid - half));
+        bidCy = Math.min(botBound, askCy + BADGE_PITCH_PX);
       } else {
-        askCy = mid + half;
-        bidCy = mid - half;
+        bidCy = Math.max(topBound, Math.min(botBound - BADGE_PITCH_PX, mid - half));
+        askCy = Math.min(botBound, bidCy + BADGE_PITCH_PX);
       }
     }
+    return { ask, bid, askCy, bidCy };
+  }
 
-    const drawSide = (
-      side: { y: number } | null,
-      price: number,
-      sz: number,
-      color: (typeof OVERLAY)['bid'],
-      key: string,
-      cy: number,
-    ): void => {
+  /** Draw only the horizontal GL touch lines (placed under the price line). */
+  drawLines(frame: OverlayFrame): void {
+    const lay = this.layout(frame);
+    if (lay === null || (lay.ask === null && lay.bid === null)) return;
+    const { gm, solid } = frame;
+    solid.begin();
+    if (lay.ask !== null) solid.addThickLine(-1, lay.ask.y, 1, lay.ask.y, 2.1, OVERLAY.ask.gl, gm.dims.cssW, gm.dims.cssH);
+    if (lay.bid !== null) solid.addThickLine(-1, lay.bid.y, 1, lay.bid.y, 2.1, OVERLAY.bid.gl, gm.dims.cssW, gm.dims.cssH);
+    solid.flush();
+  }
+
+  /** Draw only the right-edge 2D text badges (placed above the price line so it never slices text). */
+  drawBadges(frame: OverlayFrame): void {
+    const bbo = this.current;
+    const lay = this.layout(frame);
+    const { gm, text } = frame;
+    if (bbo === null || lay === null || gm.price === null) return;
+    const cssW = gm.dims.cssW;
+    const decimals = quoteDecimals(gm.price.tick ?? gm.price.step);
+    const tag = bbo.source === 'l2' ? ' ·L2' : '';
+    const emit = (side: { y: number } | null, price: number, sz: number, colorCss: string, key: string, cy: number): void => {
       if (side === null) return;
-      solid.begin();
-      solid.addThickLine(-1, side.y, 1, side.y, 2.1, color.gl, cssW, cssH);
-      solid.flush();
-      // Right-edge badge: e.g. "A 100.75 ×8·L2".
       const sizeText = formatSizeReadout(sz);
       const label = `${key} ${formatPrice(price, decimals)}${sizeText !== '' ? ` ×${sizeText}` : ''}${tag}`;
-      text.badge(cssW - 3, cy, label, { align: 'right', color: color.css, size: 10 }); // size-budget: dense price tag
+      text.badge(cssW - 3, cy, label, { align: 'right', color: colorCss, size: 10 }); // size-budget: dense price tag
     };
+    emit(lay.ask, bbo.askPx, bbo.askSz, OVERLAY.ask.css, t('overlay.bbo.askSide'), lay.askCy);
+    emit(lay.bid, bbo.bidPx, bbo.bidSz, OVERLAY.bid.css, t('overlay.bbo.bidSide'), lay.bidCy);
+  }
 
-    drawSide(ask, bbo.askPx, bbo.askSz, OVERLAY.ask, t('overlay.bbo.askSide'), askCy);
-    drawSide(bid, bbo.bidPx, bbo.bidSz, OVERLAY.bid, t('overlay.bbo.bidSide'), bidCy);
+  draw(frame: OverlayFrame): void {
+    this.drawLines(frame);
+    this.drawBadges(frame);
   }
 }

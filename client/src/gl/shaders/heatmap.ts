@@ -735,7 +735,7 @@ void main() {
     // draw switches to the level-0 branch at fade 0, so a raw texelFetch sum
     // here left a visible band-entry step.
     // fade <= 0.001 skips these fetches entirely.
-    if (u_levelFade > 0.001) {
+    if (u_levelFade > 0.001 && u_levelFade < 0.999) {
       vec2 accF;
       if (u_level == 1) {
         accF = sampleField0(colf, rowf);

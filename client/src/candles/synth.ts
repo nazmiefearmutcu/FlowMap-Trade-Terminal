@@ -159,6 +159,7 @@ export function createCandleSynth(timeframeNs: number, ring: number = DEFAULT_RI
       if (
         !Number.isFinite(price) ||
         !Number.isFinite(size) ||
+        size < 0 ||
         typeof tsNs !== 'bigint' ||
         tsNs < 0n
       ) {
@@ -175,6 +176,11 @@ export function createCandleSynth(timeframeNs: number, ring: number = DEFAULT_RI
       }
 
       const bi = tsNs / tfBig();
+      const biNum = Number(bi);
+      if (!Number.isSafeInteger(biNum)) {
+        stats.droppedLate += 1;
+        return;
+      }
 
       if (firstBi === null) {
         firstBi = bi;
@@ -195,14 +201,7 @@ export function createCandleSynth(timeframeNs: number, ring: number = DEFAULT_RI
 
       const slot = Number(bi % BigInt(ring));
       const cur = slots[slot];
-      if (cur === undefined || cur.bi !== Number(bi)) {
-        // NOTE bi fits a double exactly while < 2^53 buckets; a 1ns timeframe
-        // for 2^53 ns ≈ 104 days is far outside a session's life. Guarded below.
-        const biNum = Number(bi);
-        if (!Number.isSafeInteger(biNum)) {
-          stats.droppedLate += 1;
-          return;
-        }
+      if (cur === undefined || cur.bi !== biNum) {
         slots[slot] = {
           bi: biNum,
           t0Ns: bi * tfBig(),

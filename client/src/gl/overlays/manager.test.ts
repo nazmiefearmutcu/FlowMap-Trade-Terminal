@@ -249,14 +249,23 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
     expect(g.clears).toHaveLength(1);
   });
 
-  it('draws BBO before the price line so the price core keeps z-order', () => {
+  it('draws BBO lines before the price line and BBO badges after so text stays readable', () => {
     const order: string[] = [];
-    const holder = manager as unknown as Record<string, { draw: (f: unknown) => void }>;
-    for (const name of ['profile', 'vwap', 'priceLine', 'bbo', 'bubbles', 'markers']) {
+    const holder = manager as unknown as Record<
+      string,
+      { draw: (f: unknown) => void; drawLines?: (f: unknown) => void; drawBadges?: (f: unknown) => void }
+    >;
+    for (const name of ['profile', 'vwap', 'priceLine', 'bubbles', 'markers']) {
       holder[name].draw = () => {
         order.push(name);
       };
     }
+    holder.bbo.drawLines = () => {
+      order.push('bboLines');
+    };
+    holder.bbo.drawBadges = () => {
+      order.push('bboBadges');
+    };
     manager.setVisibility({
       profile: true,
       vwap: true,
@@ -267,7 +276,7 @@ describe('OverlayManager (fake GL + recording 2D)', () => {
       axes: false,
     });
     manager.draw(drawCtx());
-    expect(order).toEqual(['profile', 'vwap', 'bbo', 'priceLine', 'bubbles', 'markers']);
+    expect(order).toEqual(['profile', 'vwap', 'bboLines', 'priceLine', 'bboBadges', 'bubbles', 'markers']);
   });
 
   it('reset() re-inits the price-line high-water (restarted col_seq=0 must not freeze)', () => {

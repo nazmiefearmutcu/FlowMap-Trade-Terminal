@@ -49,7 +49,7 @@
  */
 
 import { systemClock, type GlClock } from './clock';
-import { priceToRow, rowToPrice, type PriceScale } from './priceScale';
+import { priceScaleKey, priceToRow, rowToPrice, type PriceScale } from './priceScale';
 import { ViewWorker } from './viewWorker';
 
 const DEFAULT_BINS = 256;
@@ -99,10 +99,7 @@ const NORM_RETRY_MAX_MS = 30_000;
 const scaleKeys = new WeakMap<PriceScale, string>();
 function scaleKeyOf(scale: PriceScale): string {
   let key = scaleKeys.get(scale);
-  if (key === undefined) {
-    key = JSON.stringify(scale);
-    scaleKeys.set(scale, key);
-  }
+  if (key === undefined) { key = priceScaleKey(scale); scaleKeys.set(scale, key); }
   return key;
 }
 
@@ -217,13 +214,7 @@ export class ViewportNormalizer {
   /** Samples in the last visible CDF; zero for a viewport with no density. */
   private mergedTotal = 0;
 
-  /**
-   * Bumped on EVERY histogram-affecting mutation (a column fold, a tile
-   * eviction, reset). The viewport-percentile memo below keys on it, so a dirty
-   * frame with an unchanged visible window and unchanged histograms skips the
-   * tile merge entirely (updateNormalization runs every dirty
-   * frame; the merge was the only O(tiles·bins) part of it).
-   */
+  /** Bumped on every histogram-affecting mutation so unchanged views skip the O(tiles·bins) merge. */
   private versionN = 0;
   /** Memo key of the last {@link viewportPercentiles} merge. */
   private memoKey = {
@@ -795,8 +786,10 @@ export class ViewportNormalizer {
     const physical = scale !== null && view.priceLo !== undefined && view.priceHi !== undefined && view.priceHi > view.priceLo;
     const step = scale?.kind === 'hybrid' ? scale.coreStep : scale?.step ?? 1;
     const epsilon = physical ? Math.max(1e-10, Number.EPSILON * Math.max(Math.abs(view.priceLo!), Math.abs(view.priceHi!), 1) / step * 4) : 0;
-    return [Math.max(0, physical ? Math.floor(lo + .5 + epsilon) : Math.ceil(lo - .5)),
-      Math.min((scale?.rows ?? Infinity) - 1, physical ? Math.ceil(hi + .5 - epsilon) - 1 : Math.floor(hi + .5))];
+    const sLo = Number.isFinite(lo) ? lo : 0;
+    const sHi = Number.isFinite(hi) ? hi : (scale?.rows ?? 0) - 1;
+    return [Math.max(0, physical ? Math.floor(sLo + .5 + epsilon) : Math.ceil(sLo - .5)),
+      Math.min((scale?.rows ?? Infinity) - 1, physical ? Math.ceil(sHi + .5 - epsilon) - 1 : Math.floor(sHi + .5))];
   }
 
   /** Motion preference (WCAG 2.3.3): `true` snaps the EMA to each raw value. */

@@ -1,4 +1,4 @@
-import { priceToRow, rowToPrice, type PriceScale } from './priceScale';
+import { priceToRow, rowToPrice, samePriceScale, type PriceScale } from './priceScale';
 
 export interface ViewColumn { bid: Float32Array; ask: Float32Array | null; scale: PriceScale | null }
 export type ViewTask = {
@@ -30,8 +30,10 @@ export class ViewWorkerEngine {
       const physical = task.priceLo !== undefined && task.priceHi !== undefined && task.priceHi > task.priceLo;
       const reference = scale.kind === 'hybrid' ? scale.coreStep : scale.step;
       const epsilon = physical ? Math.max(1e-10, Number.EPSILON * Math.max(Math.abs(task.priceLo!), Math.abs(task.priceHi!), 1) / reference * 4) : 0;
-      const lo = physical ? Math.floor(priceToRow(scale, task.priceLo!) + .5 + epsilon) : Math.ceil(task.rowLo - .5);
-      const hi = physical ? Math.ceil(priceToRow(scale, task.priceHi!) + .5 - epsilon) - 1 : Math.floor(task.rowHi + .5);
+      const rawLo = physical ? priceToRow(scale, task.priceLo!) : task.rowLo;
+      const rawHi = physical ? priceToRow(scale, task.priceHi!) : task.rowHi;
+      const lo = physical ? (Number.isFinite(rawLo) ? Math.floor(rawLo + .5 + epsilon) : 0) : Math.ceil(task.rowLo - .5);
+      const hi = physical ? (Number.isFinite(rawHi) ? Math.ceil(rawHi + .5 - epsilon) - 1 : bid.length - 1) : Math.floor(task.rowHi + .5);
       const logMin = Math.log(task.histMin), binScale = task.bins / (Math.log(task.histMax) - logMin);
       const shift = task.referenceStep ? Math.log(task.referenceStep / reference) * binScale : 0;
       for (let row = Math.max(0, lo); row <= Math.min(bid.length - 1, hi); row++) {
@@ -47,7 +49,7 @@ export class ViewWorkerEngine {
       return;
     }
     const target = task.target;
-    const same = JSON.stringify(scale) === JSON.stringify(target);
+    const same = samePriceScale(scale, target);
     this.sampled ||= !same;
     if (same) {
       for (let row = Math.max(0, task.rowLo); row <= Math.min(task.rowHi, bid.length - 1); row++) {
@@ -56,16 +58,18 @@ export class ViewWorkerEngine {
       return;
     }
     const visibleLo = rowToPrice(target, task.rowLo - .5), visibleHi = rowToPrice(target, task.rowHi + .5);
-    const lo = Math.max(0, Math.floor(priceToRow(scale, visibleLo) + .5));
-    const hi = Math.min(bid.length - 1, Math.floor(priceToRow(scale, visibleHi) + .5));
+    const rawLo = priceToRow(scale, visibleLo), rawHi = priceToRow(scale, visibleHi);
+    const lo = Number.isFinite(rawLo) ? Math.max(0, Math.floor(rawLo + .5)) : 0;
+    const hi = Number.isFinite(rawHi) ? Math.min(bid.length - 1, Math.floor(rawHi + .5)) : bid.length - 1;
     for (let row = lo; row <= hi; row++) {
       const quantity = bid[row] + (ask?.[row] ?? 0);
       if (!(quantity > 0)) continue;
       const low = rowToPrice(scale, row - .5), high = rowToPrice(scale, row + .5);
       const width = high - low;
-      if (!(width > 0)) continue;
-      const first = Math.max(task.rowLo, Math.floor(priceToRow(target, low) + .5));
-      const last = Math.min(task.rowHi, Math.floor(priceToRow(target, high) + .5));
+      if (!(width > 0) || !Number.isFinite(width)) continue;
+      const rFirst = priceToRow(target, low), rLast = priceToRow(target, high);
+      const first = Number.isFinite(rFirst) ? Math.max(task.rowLo, Math.floor(rFirst + .5)) : task.rowLo;
+      const last = Number.isFinite(rLast) ? Math.min(task.rowHi, Math.floor(rLast + .5)) : task.rowHi;
       for (let t = first; t <= last; t++) {
         const overlap = Math.min(high, rowToPrice(target, t + .5)) - Math.max(low, rowToPrice(target, t - .5));
         if (overlap > 0) this.bins[t - task.rowLo] += quantity * overlap / width;

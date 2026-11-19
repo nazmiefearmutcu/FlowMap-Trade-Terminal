@@ -165,7 +165,10 @@ useEffect(() => {
     canvas.removeEventListener('pointermove', onMove);
     canvas.removeEventListener('pointerleave', onLeave);
     clearReprobe();
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    }
   };
 }, [canvasRef, rendererRef, probeKeyRef, setHover]);
 }
@@ -205,23 +208,47 @@ export function Crosshair({ canvasRef, rendererRef }: CrosshairProps): JSX.Eleme
   // A snapshot book (ccxt polling) is not a native L2 feed: its tag takes the caution tone.
   const tierCaution = tier === 'L2-SNAPSHOT' && !isSynth;
 
-  // Place the readout box near the cursor, flipping away from the near edge.
+  // Place the readout box near the cursor, flipping away from edges and HeatLegend.
   const canvas = canvasRef.current;
   const cw = canvas?.clientWidth ?? 0;
   const ch = canvas?.clientHeight ?? 0;
-  const flipX = x > cw - 180;
-  const flipY = y > ch - 110;
+  const flipX = x > cw - 240;
+  const flipY = y > ch - 150;
   const boxStyle: React.CSSProperties = {
-    left: flipX ? undefined : `${x + 14}px`,
-    right: flipX ? `${cw - x + 14}px` : undefined,
-    top: flipY ? undefined : `${y + 14}px`,
-    bottom: flipY ? `${ch - y + 14}px` : undefined,
+    left: flipX ? undefined : `${Math.max(6, Math.min(cw - 190, x + 14))}px`,
+    right: flipX ? `${Math.max(62, Math.min(cw - 190, cw - x + 14))}px` : undefined,
+    top: flipY ? undefined : `${Math.max(6, Math.min(ch - 140, y + 14))}px`,
+    bottom: flipY ? `${Math.max(24, Math.min(ch - 140, ch - y + 14))}px` : undefined,
   };
+  const edgePriceText = readout?.price !== null && readout?.price !== undefined ? fmtPrice(readout) : null;
+  const edgeTimeText = readout?.timeNs !== null && readout?.timeNs !== undefined
+    ? fmtTime(readout.timeNs, zonePref, exchangeZone, sessionRelative)
+    : null;
+  const pillY = Math.max(11, Math.min(Math.max(11, ch - 11), y));
+  const pillX = Math.max(48, Math.min(Math.max(48, cw - 48), x));
 
   return (
     <div className="crosshair" aria-hidden="true">
       <div className="crosshair__vline" style={{ left: `${x}px` }} />
       <div className="crosshair__hline" style={{ top: `${y}px` }} />
+      {edgePriceText && (
+        <div
+          className="crosshair__edge-pill crosshair__edge-pill--price"
+          data-testid="crosshair-price-pill"
+          style={{ top: `${pillY}px` }}
+        >
+          {edgePriceText}
+        </div>
+      )}
+      {edgeTimeText && (
+        <div
+          className="crosshair__edge-pill crosshair__edge-pill--time"
+          data-testid="crosshair-time-pill"
+          style={{ left: `${pillX}px` }}
+        >
+          {edgeTimeText}
+        </div>
+      )}
       {readout && (
         <div className="crosshair__box" data-testid="crosshair-readout" style={boxStyle}>
           {tier && (
