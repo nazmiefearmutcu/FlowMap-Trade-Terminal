@@ -21,7 +21,6 @@ use windows::core::PCWSTR;
 use crate::dialog_text::Lang;
 use crate::lock_or_recover;
 use crate::recording::recording_env;
-use crate::redact::RedactingSink;
 use crate::server_log::{open_sidecar_log, pump_output};
 use crate::shell_log;
 
@@ -226,6 +225,7 @@ pub(crate) fn health_ok(port: u16, token: &str) -> bool {
         return false;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(1000)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(1000)));
     let token_header = if token.is_empty() {
         String::new()
     } else {
@@ -239,7 +239,8 @@ pub(crate) fn health_ok(port: u16, token: &str) -> bool {
     }
     let mut buf = String::new();
     let _ = stream.read_to_string(&mut buf);
-    buf.contains("200") && buf.contains("\"status\":\"ok\"")
+    let status_200 = buf.starts_with("HTTP/1.1 200") || buf.starts_with("HTTP/1.0 200");
+    status_200 && buf.contains("\"status\":\"ok\"")
 }
 
 /// Stop a sidecar: close its stdin (the EOF the server treats as "stop"), send
@@ -328,10 +329,8 @@ pub(crate) fn spawn_sidecar(
     let recordings = launch.data_dir.join("recordings");
     fs::create_dir_all(&recordings)?;
 
-    let log = Arc::new(Mutex::new(RedactingSink::new(
-        open_sidecar_log(&launch.log_path, spawn_index)?,
-        vec![launch.token.clone()],
-    )));
+    let log = Arc::new(Mutex::new(open_sidecar_log(&launch.log_path, spawn_index)?));
+    let secrets = vec![launch.token.clone()];
     shell_log(&format!(
         "starting sidecar {} -m flowmap_server on :{} (spawn {spawn_index})",
         launch.python.display(),
@@ -389,10 +388,10 @@ pub(crate) fn spawn_sidecar(
 
     let mut child = command.spawn()?;
     if let Some(stdout) = child.stdout.take() {
-        pump_output(stdout, Arc::clone(&log));
+        pump_output(stdout, Arc::clone(&log), secrets.clone());
     }
     if let Some(stderr) = child.stderr.take() {
-        pump_output(stderr, log);
+        pump_output(stderr, log, secrets);
     }
     ManagedChild::new(child, recording)
 }

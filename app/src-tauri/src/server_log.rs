@@ -9,12 +9,15 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::redact::{self, RedactingSink};
 use crate::{now_secs, shell_log, utc_timestamp};
 
 /// The server log is moved aside to `*.previous.log` at this size.
 const SERVER_LOG_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// Backoff after a failed rename so a locked log on Windows does not retry on every write.
+const ROTATE_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 
 /// `<name>.previous.log` next to `<name>.log`.
 fn previous_log_path(path: &Path) -> PathBuf {
@@ -23,16 +26,19 @@ fn previous_log_path(path: &Path) -> PathBuf {
 
 /// Move `path` aside to its `.previous.log` name, replacing any older copy. With no
 /// current log there is nothing to move, and the older copy is kept as it is.
-pub(crate) fn rotate_to_previous(path: &Path) {
+/// Returns `true` when there was nothing to move or the rename succeeded.
+pub(crate) fn rotate_to_previous(path: &Path) -> bool {
     if !path.is_file() {
-        return;
+        return true;
     }
     let previous = previous_log_path(path);
     let _ = fs::remove_file(&previous);
     if let Err(err) = fs::rename(path, &previous) {
         // Without the move the log keeps growing past its cap, so say so.
         shell_log(&format!("could not move {} aside: {err}", path.display()));
+        return false;
     }
+    true
 }
 
 /// Open `path` for appending; returns the file and its current length.
@@ -50,6 +56,7 @@ pub(crate) struct RotatingLog {
     file: Option<File>,
     written: u64,
     max_bytes: u64,
+    rotate_backoff_until: Option<Instant>,
 }
 
 impl RotatingLog {
@@ -60,14 +67,25 @@ impl RotatingLog {
             file: Some(file),
             written,
             max_bytes,
+            rotate_backoff_until: None,
         })
     }
 
     fn rotate(&mut self) {
+        if self
+            .rotate_backoff_until
+            .is_some_and(|until| Instant::now() < until)
+        {
+            return;
+        }
         // Close before renaming: Windows refuses to rename an open file.
         self.file = None;
-        rotate_to_previous(&self.path);
-        self.written = 0;
+        if rotate_to_previous(&self.path) {
+            self.written = 0;
+            self.rotate_backoff_until = None;
+        } else {
+            self.rotate_backoff_until = Some(Instant::now() + ROTATE_FAILURE_BACKOFF);
+        }
     }
 }
 
@@ -124,31 +142,47 @@ pub(crate) fn open_sidecar_log(path: &Path, spawn_index: u32) -> io::Result<Rota
     Ok(log)
 }
 
-/// Copy a child's output into the shared, redacting log until the pipe closes.
-/// Write errors are ignored on purpose: the pipe must keep draining, or the
-/// sidecar would block on a full pipe.
+/// Shared handle to a `RotatingLog`, allowing each stream's own `RedactingSink`
+/// to hold an independent line buffer while serializing whole-line writes.
+struct SharedRotatingLog(Arc<Mutex<RotatingLog>>);
+
+impl Write for SharedRotatingLog {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut log = crate::lock_or_recover(&self.0);
+        log.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut log = crate::lock_or_recover(&self.0);
+        log.flush()
+    }
+}
+
+/// Copy a child's output into the shared rotating log through a stream-private
+/// `RedactingSink` until the pipe closes. Keeping one `RedactingSink` per pipe
+/// ensures stdout and stderr partial reads never interleave inside `pending` or
+/// flush each other's incomplete tokens on EOF. Write errors are ignored on
+/// purpose: the pipe must keep draining, or the sidecar would block.
 pub(crate) fn pump_output<R: Read + Send + 'static>(
     mut source: R,
-    sink: Arc<Mutex<RedactingSink<RotatingLog>>>,
+    log: Arc<Mutex<RotatingLog>>,
+    secrets: Vec<String>,
 ) {
     std::thread::spawn(move || {
+        let mut sink = RedactingSink::new(SharedRotatingLog(log), secrets);
         let mut buf = [0u8; 8192];
         loop {
             match source.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if let Ok(mut log) = sink.lock() {
-                        let _ = log.write_all(&buf[..n]);
-                    }
+                    let _ = sink.write_all(&buf[..n]);
                 }
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
         }
-        // The pipe closed: release any partial last line, redacted.
-        if let Ok(mut log) = sink.lock() {
-            let _ = log.finish();
-        }
+        // The pipe closed: release this stream's partial last line, redacted.
+        let _ = sink.finish();
     });
 }
 

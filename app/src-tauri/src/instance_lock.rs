@@ -82,11 +82,18 @@ fn parse_lock_pid(content: &str) -> Option<u32> {
     content.trim().parse::<u32>().ok()
 }
 
-/// The PID of the instance that holds the lock, as written into the lock file.
+/// The PID of the instance that holds the lock. Reads the unlocked sibling
+/// `flowmap.pid` first (on Windows, `flowmap.lock` holds a mandatory exclusive
+/// lock so another instance cannot read it), falling back to `flowmap.lock`.
 pub(crate) fn lock_holder_pid(data_dir: &Path) -> Option<u32> {
-    fs::read_to_string(data_dir.join("flowmap.lock"))
-        .ok()
-        .and_then(|content| parse_lock_pid(&content))
+    for name in ["flowmap.pid", "flowmap.lock"] {
+        if let Ok(content) = fs::read_to_string(data_dir.join(name)) {
+            if let Some(pid) = parse_lock_pid(&content) {
+                return Some(pid);
+            }
+        }
+    }
+    None
 }
 
 /// The single-instance guard: an advisory-locked file held open for the whole
@@ -126,9 +133,13 @@ pub(crate) fn acquire_instance_lock(data_dir: &Path) -> Result<InstanceGuard, Lo
     match file.try_lock() {
         Ok(()) => {
             // Diagnostic content only — never trusted for liveness.
+            let pid_text = std::process::id().to_string();
             let _ = file.set_len(0);
-            let _ = write!(file, "{}", std::process::id());
+            let _ = write!(file, "{pid_text}");
             let _ = file.sync_all();
+            // Sibling unlocked PID file so a second Windows instance can read
+            // the holder PID and bring the existing window forward.
+            let _ = fs::write(data_dir.join("flowmap.pid"), format!("{pid_text}\n"));
             Ok(InstanceGuard { _file: file })
         }
         // Another live FlowMap process holds the lock.
@@ -166,6 +177,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("flowmap-lock-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let _first = acquire_instance_lock(&dir).expect("first acquire");
+        assert_eq!(
+            lock_holder_pid(&dir),
+            Some(std::process::id()),
+            "a second instance must be able to read the holder PID while the lock is held"
+        );
         match acquire_instance_lock(&dir) {
             Err(LockError::AlreadyRunning) => {}
             other => panic!("expected AlreadyRunning, got {other:?}"),

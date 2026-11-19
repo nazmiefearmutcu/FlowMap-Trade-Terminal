@@ -39,13 +39,18 @@ pub(crate) fn show_native_dialog(title: &str, message: &str) {
 /// platform, not only on a Mac.
 #[cfg(any(test, target_os = "macos"))]
 fn applescript_dialog(title: &str, message: &str) -> String {
-    // AppleScript string literals: escape backslashes and quotes, join lines with `return`.
-    let quoted = message
+    // AppleScript string literals: normalize CR/CRLF, escape backslashes and
+    // quotes, and join lines with `return`.
+    let normalized = message.replace("\r\n", "\n").replace('\r', "\n");
+    let quoted = normalized
         .split('\n')
         .map(|line| format!("\"{}\"", line.replace('\\', "\\\\").replace('"', "\\\"")))
         .collect::<Vec<_>>()
         .join(" & return & ");
-    let title = title.replace('\\', "\\\\").replace('"', "\\\"");
+    let title = title
+        .replace(['\r', '\n'], " ")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     format!(
         "display dialog {quoted} with title \"{title}\" with icon stop buttons {{\"OK\"}} default button \"OK\""
     )

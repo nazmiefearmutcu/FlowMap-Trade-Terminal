@@ -52,8 +52,6 @@ pub(crate) fn owned_by(port: u16, pid: u32) -> bool {
         TCP_TABLE_OWNER_PID_LISTENER,
     };
     use windows::Win32::Networking::WinSock::AF_INET;
-    /// MIB_TCP_STATE_LISTEN.
-    const LISTEN_STATE: u32 = 2;
 
     let mut size: u32 = 0;
     // The table can grow between the sizing call and the read, so retry a few times.
@@ -83,21 +81,57 @@ pub(crate) fn owned_by(port: u16, pid: u32) -> bool {
         if status != NO_ERROR.0 {
             return false;
         }
+        let buf_bytes = buf.len() * std::mem::size_of::<u64>();
+        if buffer.is_none() || buf_bytes < std::mem::size_of::<u32>() {
+            return false;
+        }
         let table = buf.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
-        // SAFETY: the call succeeded, so the buffer holds the table header followed
-        // by `dwNumEntries` rows.
+        // SAFETY: `buffer` was non-null, `buf_bytes >= size_of::<u32>()`, and we
+        // verify every row fits inside `buf` before constructing the slice.
         let rows = unsafe {
             let count = (*table).dwNumEntries as usize;
+            let needed = count
+                .checked_mul(std::mem::size_of::<MIB_TCPROW_OWNER_PID>())
+                .and_then(|rows_bytes| std::mem::size_of::<u32>().checked_add(rows_bytes));
+            if needed.is_none_or(|n| n > buf_bytes) {
+                return false;
+            }
             std::slice::from_raw_parts((*table).table.as_ptr(), count)
         };
         return rows.iter().any(|row: &MIB_TCPROW_OWNER_PID| {
-            row.dwState == LISTEN_STATE
-                && row.dwOwningPid == pid
-                // The port is in network byte order in the low 16 bits.
-                && u16::from_be(row.dwLocalPort as u16) == port
+            windows_row_matches(
+                row.dwState,
+                row.dwOwningPid,
+                row.dwLocalAddr,
+                row.dwLocalPort,
+                port,
+                pid,
+            )
         });
     }
     false
+}
+
+/// True when a Windows `MIB_TCPROW_OWNER_PID` describes a 127.0.0.1 LISTEN socket
+/// owned by `pid` on `port`. Pure helper so address filtering is unit-tested
+/// without opening a non-loopback listener.
+#[cfg(any(windows, test))]
+fn windows_row_matches(
+    state: u32,
+    owning_pid: u32,
+    local_addr: u32,
+    local_port: u32,
+    port: u16,
+    pid: u32,
+) -> bool {
+    /// MIB_TCP_STATE_LISTEN.
+    const LISTEN_STATE: u32 = 2;
+    let loopback = u32::from_ne_bytes([127, 0, 0, 1]);
+    state == LISTEN_STATE
+        && owning_pid == pid
+        && local_addr == loopback
+        // The port is in network byte order in the low 16 bits.
+        && u16::from_be(local_port as u16) == port
 }
 
 /// True when process `pid` owns a TCP listener on 127.0.0.1:`port`.
@@ -149,7 +183,7 @@ pub(crate) fn owned_by(port: u16, pid: u32) -> bool {
     command
         .args(["-nP", "-t", "-a", "-p"])
         .arg(pid.to_string())
-        .arg(format!("-iTCP:{port}"))
+        .arg(format!("-iTCP@127.0.0.1:{port}"))
         .arg("-sTCP:LISTEN")
         .stdin(Stdio::null())
         .stderr(Stdio::null());
@@ -326,5 +360,18 @@ mod tests {
             started.elapsed() < Duration::from_secs(10),
             "it must not wait out the timeout"
         );
+    }
+
+    #[test]
+    fn windows_row_check_requires_loopback_address() {
+        let loopback = u32::from_ne_bytes([127, 0, 0, 1]);
+        let any_addr = u32::from_ne_bytes([0, 0, 0, 0]);
+        let port_be = u32::from(8720u16.to_be());
+        assert!(windows_row_matches(2, 42, loopback, port_be, 8720, 42));
+        assert!(
+            !windows_row_matches(2, 42, any_addr, port_be, 8720, 42),
+            "non-loopback listeners must not pass ownership verification"
+        );
+        assert!(!windows_row_matches(5, 42, loopback, port_be, 8720, 42));
     }
 }

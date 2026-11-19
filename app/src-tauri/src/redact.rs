@@ -22,6 +22,8 @@ const TAIL_KEPT: usize = 256;
 const VALUE_END: &[u8] = b"&\"' \t\r\n)]}>,;";
 /// The query-string key whose value is always masked.
 const TOKEN_KEY: &[u8] = b"token=";
+/// The WebSocket subprotocol prefix carrying the browser session token.
+const AUTH_SUBPROTO_KEY: &[u8] = b"flowmap.auth.";
 
 /// Replace every known secret, and every `token=<value>` query value, in `bytes`.
 pub(crate) fn redact(bytes: &[u8], secrets: &[&str]) -> Vec<u8> {
@@ -47,21 +49,31 @@ fn replace_all(haystack: &[u8], needle: &[u8], with: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Mask the value of every `token=` parameter, whatever the secret was. This
-/// covers logs written before the session token was known to the shell.
+/// Mask the value of every `token=` parameter and `flowmap.auth.<token>`
+/// subprotocol, whatever the secret was. This covers logs written before the
+/// session token was known to the shell.
 fn mask_token_params(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        let is_key = bytes[i..].len() >= TOKEN_KEY.len()
-            && bytes[i..i + TOKEN_KEY.len()].eq_ignore_ascii_case(TOKEN_KEY);
-        if !is_key {
+        let matched_len = if bytes[i..].len() >= TOKEN_KEY.len()
+            && bytes[i..i + TOKEN_KEY.len()].eq_ignore_ascii_case(TOKEN_KEY)
+        {
+            Some(TOKEN_KEY.len())
+        } else if bytes[i..].len() >= AUTH_SUBPROTO_KEY.len()
+            && bytes[i..i + AUTH_SUBPROTO_KEY.len()].eq_ignore_ascii_case(AUTH_SUBPROTO_KEY)
+        {
+            Some(AUTH_SUBPROTO_KEY.len())
+        } else {
+            None
+        };
+        let Some(key_len) = matched_len else {
             out.push(bytes[i]);
             i += 1;
             continue;
-        }
-        out.extend_from_slice(&bytes[i..i + TOKEN_KEY.len()]);
-        i += TOKEN_KEY.len();
+        };
+        out.extend_from_slice(&bytes[i..i + key_len]);
+        i += key_len;
         let end = bytes[i..]
             .iter()
             .position(|byte| VALUE_END.contains(byte))
@@ -174,6 +186,8 @@ mod tests {
     fn a_token_parameter_is_masked_even_when_its_secret_is_not_known() {
         let out = redact(b"accepted /ws?token=abc123&room=1 end", &[]);
         assert_eq!(out, b"accepted /ws?token=***&room=1 end");
+        let sub = redact(b"Sec-WebSocket-Protocol: flowmap.v1, flowmap.auth.deadbeef\n", &[]);
+        assert_eq!(sub, b"Sec-WebSocket-Protocol: flowmap.v1, flowmap.auth.***\n");
     }
 
     #[test]

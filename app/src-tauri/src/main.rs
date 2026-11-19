@@ -278,11 +278,27 @@ fn utc_timestamp(unix_secs: u64) -> String {
     )
 }
 
-/// Replace `path` with `bytes` via a sibling temporary file and a rename.
+/// Replace `path` with `bytes` via a unique sibling temporary file, fsync, and rename.
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
+    use std::sync::atomic::AtomicU64;
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp.{}.{seq}", std::process::id()));
+    let write_res = (|| -> io::Result<()> {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(err) = write_res {
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    if let Err(err) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// Initial window size: the 1440x900 design size, capped at 90% of the primary
